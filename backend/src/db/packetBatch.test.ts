@@ -92,7 +92,7 @@ test('packet batches retry transient database failures without losing the pendin
   assert.match(statements[3]!, /existing\.packet_hash = d\.packet_hash/);
   assert.match(statements[3]!, /ROW_NUMBER\(\) OVER/);
   assert.match(statements[2]!, /pg_try_advisory_xact_lock\(hashtext\(.meshcore:packet-batch-writer.\)\)/);
-  assert.match(statements[3]!, /INSERT INTO packets \(\s*observation_id,/);
+  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?packets \(\s*observation_id,/);
   assert.match(statements[3]!, /COALESCE\(i\.observation_id_in, gen_random_uuid\(\)\) AS observation_id/);
   assert.match(statements[3]!, /SELECT observation_id, time, packet_hash/);
   assert.match(statements[3]!, /network, observation_id\s+FROM new_rows/);

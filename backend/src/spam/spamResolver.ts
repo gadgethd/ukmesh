@@ -165,7 +165,7 @@ export async function resolveSpamOrigin(
   // 1. Receptions that carry a path, with the observer's id, hop, location.
   const recRes = await query<ReceptionRow>(
     `SELECT p.rx_node_id, p.hop_count, p.path_hashes, n.lat AS olat, n.lon AS olon
-       FROM packets p
+       FROM mesh.packets p
        JOIN core.nodes n ON n.node_id = p.rx_node_id
       WHERE p.packet_hash = ANY($1)
         AND ($2::text[] IS NULL OR p.network = ANY($2))

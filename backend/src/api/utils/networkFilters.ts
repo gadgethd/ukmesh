@@ -193,7 +193,7 @@ export function networkFilters(
           ${nodeRef} = ANY(${nodeAliasArraySql(observerParam)})
           OR ${nodeRef} IN (
             SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
-            FROM packets p
+            FROM mesh.packets p
             LEFT JOIN core.node_identity_aliases src_alias
               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
             WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})

@@ -323,7 +323,7 @@ function buildNodeScopeClause(
       `${nodeRef} = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
       `OR ${nodeRef} IN (
          SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
-         FROM packets p
+         FROM mesh.packets p
          LEFT JOIN core.node_identity_aliases src_alias
            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
          WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
@@ -384,7 +384,7 @@ export async function refreshRecentPathEvidence(
        SELECT p.path_hash_size_bytes,
               UPPER(h.hash) AS hash,
               MAX(p.time) AS max_time
-       FROM packets p
+       FROM mesh.packets p
        CROSS JOIN LATERAL unnest(p.path_hashes) AS h(hash)
        WHERE p.time > NOW() - INTERVAL '1 hour' * $1
          AND p.path_hash_size_bytes >= 2
@@ -752,7 +752,7 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
     SELECT p.time, p.packet_hash,
            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
            topic, packet_type, hop_count, rssi, snr, payload
-    FROM packets p
+    FROM mesh.packets p
     LEFT JOIN core.node_identity_aliases src_alias
       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
     WHERE p.${column} = requested.node_id
@@ -782,7 +782,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
   // Location packets are sent as part of the advert broadcast
   const res = await pool.query(
     `SELECT time, packet_hash
-     FROM packets p
+     FROM mesh.packets p
      WHERE p.packet_type = 4
        AND UPPER(BTRIM(COALESCE(p.src_node_id, p.payload->>'publicKey')))
              = ANY(${nodeAliasArraySql('$1')})
@@ -862,7 +862,7 @@ export async function getRecentPackets(
              COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
-      FROM packets p
+      FROM mesh.packets p
       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
@@ -887,7 +887,7 @@ export async function getRecentPackets(
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
-      FROM packets
+      FROM mesh.packets
       LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
         AND time > ${fiveMinAgo}
@@ -950,7 +950,7 @@ export async function getRecentMessages(
              COALESCE(p.payload->>'_summary', pd.summary) AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
-      FROM packets p
+      FROM mesh.packets p
       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
@@ -980,7 +980,7 @@ export async function getRecentMessages(
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
-      FROM packets
+      FROM mesh.packets
       LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
       WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
@@ -1023,7 +1023,7 @@ export async function getRecentMessageTags(limit = 200, network?: string) {
        FROM mesh.message_tags mt
       WHERE mt.tagged_at > NOW() - INTERVAL '24 hours'
         AND EXISTS (
-          SELECT 1 FROM packets p
+          SELECT 1 FROM mesh.packets p
            WHERE p.packet_hash = mt.packet_hash
              AND p.time > NOW() - INTERVAL '24 hours'
              ${buildPacketScopeClause(scope, 'p', network)}
@@ -1065,7 +1065,7 @@ export async function getChannelMessageHistory(
   while (selected.size < selectionLimit) {
     const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
       `SELECT p.time, p.packet_hash
-       FROM packets p
+       FROM mesh.packets p
        LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
        WHERE p.packet_type = 5
          AND p.time > ${historyWindow}
@@ -1121,7 +1121,7 @@ export async function getChannelMessageHistory(
              ${summaryExpr} AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
-      FROM packets p
+      FROM mesh.packets p
       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
@@ -1179,7 +1179,7 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes,
         p.region_scope
-     FROM packets p
+     FROM mesh.packets p
      LEFT JOIN core.node_identity_aliases rx_alias
        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
      LEFT JOIN core.node_identity_aliases src_alias
@@ -1202,7 +1202,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex,
               mt.tags, mt.confidence AS tag_confidence
-       FROM packets p
+       FROM mesh.packets p
        LEFT JOIN mesh.message_tags mt ON mt.packet_hash = p.packet_hash
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -1217,7 +1217,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     pool.query(
       `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
               p.iata, p.time, p.rssi, p.snr, p.hop_count
-       FROM packets p
+       FROM mesh.packets p
        LEFT JOIN core.node_identity_aliases rx_alias
          ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
        WHERE p.packet_hash = $1
@@ -1671,7 +1671,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
        MIN(p.time) AS first_packet,
        MAX(p.time) AS last_packet
      FROM filtered f
-     LEFT JOIN packets p ON p.src_node_id = f.src_node_id
+     LEFT JOIN mesh.packets p ON p.src_node_id = f.src_node_id
        AND p.network = f.network
        AND p.time > NOW() - INTERVAL '1 hour' * $1
      GROUP BY f.src_node_id, f.spoofed_name, f.public_key, f.claimed_lat, f.claimed_lon,
@@ -1717,7 +1717,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        ss.claimed_lat,
        ss.claimed_lon,
        ss.spoofed_name
-     FROM packets p
+     FROM mesh.packets p
      LEFT JOIN core.nodes n ON n.node_id = p.rx_node_id
      LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
        AND ss.network = p.network
@@ -1753,7 +1753,7 @@ export async function getSpamAllObservers() {
        MIN(p.hop_count)    AS hop_count,
        MAX(p.rssi)         AS rssi
      FROM spam_suspects ss
-     JOIN packets p
+     JOIN mesh.packets p
        ON  p.src_node_id = ss.src_node_id
        AND p.network = ss.network
        AND p.packet_type  = 4

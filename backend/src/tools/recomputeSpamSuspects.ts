@@ -44,7 +44,7 @@ async function main(): Promise<void> {
       p.hop_count,
       p.payload->>'timestamp' AS payload_timestamp,
       p.network
-    FROM packets p
+    FROM mesh.packets p
     WHERE p.packet_type = 4
       AND p.time > NOW() - ($1 * INTERVAL '1 day')
       AND p.payload ? 'publicKey'

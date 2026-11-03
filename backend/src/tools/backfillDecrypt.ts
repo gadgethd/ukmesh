@@ -44,7 +44,7 @@ async function phaseA(): Promise<number> {
   await pool.query(
     `CREATE TABLE backfill_candidates AS
        SELECT DISTINCT ON (packet_hash) packet_hash, upper(raw_hex) AS raw_hex
-         FROM packets p
+         FROM mesh.packets p
         WHERE packet_type = 5
           AND raw_hex IS NOT NULL
           AND time > NOW() - ($1::int * INTERVAL '1 day')

@@ -48,7 +48,7 @@ export async function getActivePublicFeedReaderUsernames(
         AND settings.enabled = TRUE
       WHERE EXISTS (
         SELECT 1
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = feed_node.node_id
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'
@@ -75,7 +75,7 @@ export async function getActivePublicFeedNodeIds(
         AND settings.enabled = TRUE
       WHERE EXISTS (
         SELECT 1
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = feed_node.node_id
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'
@@ -106,7 +106,7 @@ export function createPublicFeedRepository(
     }>(
       `WITH recent_activity AS (
         SELECT COUNT(*)::int AS recent_packet_count
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = ANY($2::text[])
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'

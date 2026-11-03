@@ -103,7 +103,7 @@ function degradePacketRows(rows: Array<Record<string, unknown>>): void {
   }
 }
 
-/** Truncate packets-table path_hashes to 1-byte prefixes; force size = 1. */
+/** Truncate mesh.packets-table path_hashes to 1-byte prefixes; force size = 1. */
 function degradingQuery(real: QueryFn): QueryFn {
   return (async (text: string, params?: unknown[]) => {
     const res = await real(text, params);
@@ -162,7 +162,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   }>(
     `SELECT DISTINCT ON (packet_hash) packet_hash, network, rx_node_id, src_node_id, path_hashes,
             time::text AS observed_at
-      FROM packets
+      FROM mesh.packets
       WHERE network = ANY($1) AND path_hash_size_bytes > 1 AND path_hashes IS NOT NULL
         AND cardinality(path_hashes) >= 2 AND rx_node_id IS NOT NULL AND src_node_id IS NOT NULL
         AND time > NOW() - INTERVAL '45 days'

@@ -55,7 +55,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
          COUNT(*) AS packets_48h,
          COUNT(DISTINCT meshcore_canonical_node_id(p.src_node_id))
            FILTER (WHERE p.src_node_id IS NOT NULL) AS unique_src_48h
-       FROM packets p
+       FROM mesh.packets p
        WHERE p.time > NOW() - INTERVAL '48 hours'
          AND p.network = ANY($1::text[])
          AND p.rx_node_id IS NOT NULL
@@ -121,7 +121,7 @@ export async function linkHistoryRows(
               ${nodeAliasArraySql('$2')} AS b_ids
      ), recent AS (
        SELECT p.time, p.observation_id, p.snr, p.rssi
-       FROM packets p
+       FROM mesh.packets p
        WHERE p.time > NOW() - ($3::text || ' hours')::interval
          AND p.time <= NOW()
          AND p.network = ANY($4::text[])

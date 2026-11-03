@@ -1258,7 +1258,7 @@ export async function backfillHistoricalLinks(
     }>(
       `SELECT DISTINCT ON (packet_hash)
          packet_hash, rx_node_id, src_node_id, hop_count, raw_hex
-       FROM packets
+       FROM mesh.packets
        WHERE time < $1
          AND packet_hash > $2
          AND rx_node_id IS NOT NULL

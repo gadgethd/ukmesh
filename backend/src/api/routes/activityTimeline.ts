@@ -43,7 +43,7 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
              p.packet_hash,
              meshcore_canonical_node_id(p.rx_node_id) AS rx_node_id,
              meshcore_canonical_node_id(p.src_node_id) AS src_node_id
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.time > NOW() - ${windowParam}::interval
              ${filters.packetsAlias('p')}
          ),

@@ -240,7 +240,7 @@ export async function lazyResolvePath(
   }>(
     `SELECT DISTINCT ON (rx_node_id)
             rx_node_id, src_node_id, path_hashes, path_hash_size_bytes
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND ${packetTimePredicate}
@@ -279,7 +279,7 @@ export async function lazyResolvePath(
     hop_count: number | null;
   }>(
     `SELECT DISTINCT rx_node_id, hop_count
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND ${packetTimePredicate}

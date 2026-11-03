@@ -36,7 +36,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
        b.window_start::text,
        b.window_end::text,
        (SELECT COUNT(*)::text
-          FROM packets p
+          FROM mesh.packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
            AND (
@@ -44,7 +44,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
            )) AS source_rows,
        (SELECT COUNT(DISTINCT date_trunc('hour', p.time))::text
-          FROM packets p
+          FROM mesh.packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
            AND (
@@ -132,7 +132,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
              COUNT(p.rssi)::bigint AS rssi_count,
              COALESCE(SUM(p.snr), 0)::double precision AS snr_sum,
              COUNT(p.snr)::bigint AS snr_count
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
              AND (
@@ -266,7 +266,7 @@ async function catchUpCurrentHour(): Promise<void> {
              COUNT(p.rssi)::bigint AS rssi_count,
              COALESCE(SUM(p.snr), 0)::double precision AS snr_sum,
              COUNT(p.snr)::bigint AS snr_count
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
              AND (
@@ -330,7 +330,7 @@ async function backfillDailyStats(days: number): Promise<void> {
                 p.hop_count AS max_hop_count,
                 p.packet_hash AS max_hop_hash,
                 p.time AS max_hop_seen_at
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time >= $1::date - $2::integer
            AND p.time < $1::date - ($2::integer - 1)
            AND p.hop_count IS NOT NULL
@@ -392,7 +392,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            UPPER(p.packet_hash) AS packet_hash,
            MIN(p.time) AS first_seen,
            MAX(p.time) AS last_seen
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time > $1::timestamptz
            AND p.time <= $2::timestamptz
            AND p.packet_hash IS NOT NULL
@@ -424,7 +424,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            UPPER(p.rx_node_id) AS rx_node_id,
            MIN(p.time) AS first_seen,
            MAX(p.time) AS last_seen
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time > $1::timestamptz
            AND p.time <= $2::timestamptz
            AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'

@@ -78,7 +78,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              raw_hex,
              path_hash_size_bytes,
              path_hashes
-           FROM packets
+           FROM mesh.packets
            WHERE network = 'test'
            ORDER BY time DESC
            LIMIT 2000`,
@@ -236,7 +236,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
     async listInferredPackets(scope, limit) {
       return (await query<InferredPacketRow>(
         `SELECT p.packet_hash, p.time::text, p.path_hashes, p.path_hash_size_bytes
-           FROM packets p
+           FROM mesh.packets p
           WHERE p.time > NOW() - INTERVAL '7 days'
             ${scope.packetsAlias('p')}
             AND p.path_hash_size_bytes > 1
@@ -321,7 +321,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
            SELECT ARRAY(SELECT source_node_id FROM peer_aliases) AS ids
          ), recent_counts AS (
            SELECT pa.peer_id, COUNT(*)::integer AS recent_count_72h
-             FROM packets p
+             FROM mesh.packets p
              JOIN peer_aliases pa ON pa.source_node_id = CASE
                WHEN p.rx_node_id = ANY((SELECT ids FROM source_ids)::text[])
                  THEN p.src_node_id ELSE p.rx_node_id END

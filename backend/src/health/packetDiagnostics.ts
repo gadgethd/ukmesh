@@ -8,7 +8,7 @@ export const INGEST_HEALTH_SQL = `WITH latest_rx AS (
          ) AS last_packet_at,
          MAX(time) AS latest_at,
          MAX(time) FILTER (WHERE network = 'test') AS latest_test_at
-    FROM packets
+    FROM mesh.packets
    WHERE time > NOW() - INTERVAL '3 days'
      AND rx_node_id IS NOT NULL AND rx_node_id <> ''
    GROUP BY rx_node_id
@@ -25,7 +25,7 @@ SELECT
     THEN FLOOR(EXTRACT(EPOCH FROM (NOW() - last_packet_at)) / 60)
     ELSE NULL END)::text AS max_stale_minutes,
   '15'::text AS stale_threshold_minutes,
-  (SELECT MAX(time)::text FROM packets
+  (SELECT MAX(time)::text FROM mesh.packets
     WHERE network IS DISTINCT FROM 'test'
       AND split_part(topic, '/', 1) <> 'meshcore-test') AS global_last_packet_at
 FROM active_rx`;
@@ -39,7 +39,7 @@ export const PATH_HASH_HEALTH_SQL = `SELECT
   COALESCE(SUM(hops.three_byte), 0)::text AS three_byte,
   MAX(p.time) FILTER (WHERE hops.multibyte)::text AS latest_multibyte_at,
   COUNT(*) FILTER (WHERE hops.multibyte)::text AS multibyte_packets_24h
-FROM packets p
+FROM mesh.packets p
 CROSS JOIN LATERAL (
   SELECT COUNT(*) FILTER (WHERE length(h) = 2) AS one_byte,
          COUNT(*) FILTER (WHERE length(h) = 4) AS two_byte,

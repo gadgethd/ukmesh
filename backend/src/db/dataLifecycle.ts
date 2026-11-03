@@ -23,7 +23,7 @@ export type DataCompressionPolicy = Readonly<{
 // Compression-only targets are intentionally separate from deletable targets:
 // packet_paths is present here and can never enter a retention allowlist.
 export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Object.freeze([
-  { table: 'packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'packets', qualifiedTable: 'mesh.packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
   { table: 'node_neighbor_samples', qualifiedTable: 'core.node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
@@ -32,6 +32,7 @@ export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Objec
 export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.freeze([
   {
     table: 'packets',
+    qualifiedTable: 'mesh.packets',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'hypertable',

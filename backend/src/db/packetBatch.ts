@@ -424,7 +424,7 @@ export async function persistEntriesCore(
          WHERE d.identity_rank = 1
            AND (d.observation_id_in IS NOT NULL OR NOT EXISTS (
              SELECT 1
-             FROM packets existing
+             FROM mesh.packets existing
              WHERE existing.time = d.time
                AND existing.packet_hash = d.packet_hash
                AND existing.rx_node_id IS NOT DISTINCT FROM d.rx_node_id
@@ -503,7 +503,7 @@ export async function persistEntriesCore(
          JOIN claimed USING (observation_id)
        ),
        inserted AS (
-         INSERT INTO packets (
+         INSERT INTO mesh.packets (
            observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
            packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
            advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,

@@ -88,7 +88,7 @@ export async function lazyResolvePathLegacy(
     rx_node_id: string; path_hashes: string[] | null; path_hash_size_bytes: number | null;
   }>(
     `SELECT DISTINCT ON (rx_node_id) rx_node_id, path_hashes, path_hash_size_bytes
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1 AND ($2::text[] IS NULL OR network = ANY($2)) AND rx_node_id IS NOT NULL
       ORDER BY rx_node_id, COALESCE(cardinality(path_hashes), 0) DESC, COALESCE(path_hash_size_bytes, 0) DESC, time ASC`,
     [packetHash, scopedNetworks],
@@ -99,7 +99,7 @@ export async function lazyResolvePathLegacy(
   const allObserverIds = canonicalObs.rows.map((r) => r.rx_node_id);
 
   const allHopRows = await query<{ rx_node_id: string; hop_count: number | null }>(
-    `SELECT rx_node_id, hop_count FROM packets
+    `SELECT rx_node_id, hop_count FROM mesh.packets
       WHERE packet_hash = $1 AND ($2::text[] IS NULL OR network = ANY($2)) AND rx_node_id IS NOT NULL AND hop_count IS NOT NULL`,
     [packetHash, scopedNetworks],
   );

@@ -56,7 +56,7 @@ test('node links preserve metrics and fetch one scoped aggregate for the entire 
   assert.match(calls[0]!.sql, /to_char\(rl.last_observed AT TIME ZONE 'UTC'/);
   const aggregate = calls[1]!;
   assert.deepEqual(aggregate.params, [['ukmesh', 'northeast', 'teesside'], nodeId, JSON.stringify([link])]);
-  assert.equal(aggregate.sql.match(/FROM packets p/g)?.length, 1);
+  assert.equal(aggregate.sql.match(/FROM (?:mesh\.)?packets p/g)?.length, 1);
   assert.match(aggregate.sql, /COUNT\(\*\)::integer AS recent_count_72h/);
   assert.match(aggregate.sql, /GROUP BY pa.peer_id/);
   assert.match(aggregate.sql, /LEFT JOIN recent_counts/);

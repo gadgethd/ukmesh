@@ -35,7 +35,7 @@ type Chunk = { range_start: Date; range_end: Date };
 
 // The two assignment expressions below are copied verbatim from migration 049.
 // Keep packet privacy semantics here aligned with the deployed DB function.
-const PACKET_UPDATE_SQL = `UPDATE packets p
+const PACKET_UPDATE_SQL = `UPDATE mesh.packets p
      SET is_private = EXISTS (
            SELECT 1
            FROM core.private_node_prefixes pp

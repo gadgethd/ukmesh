@@ -122,7 +122,7 @@ async function main(): Promise<void> {
                  FILTER (WHERE p.route_type IN (0, 3) AND p.raw_hex <> ''))[1] AS raw,
               (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems,
               (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
-         FROM packets p
+         FROM mesh.packets p
          LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
         WHERE p.route_type IN (0, 3)
           AND p.time > now() - make_interval(days => $1)
@@ -276,7 +276,7 @@ async function main(): Promise<void> {
 
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(
       `SELECT e, count(DISTINCT p.packet_hash) AS c
-         FROM packets p, unnest(p.path_hashes) AS e
+         FROM mesh.packets p, unnest(p.path_hashes) AS e
         WHERE p.route_type = 1
           AND p.path_hash_size_bytes >= 2
           AND p.time > now() - interval '7 days'

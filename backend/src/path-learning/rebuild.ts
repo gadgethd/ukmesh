@@ -495,7 +495,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
  * public packet reads. */
 export function pathLearningNetworksSql(): string {
   return `SELECT DISTINCT network
-     FROM packets
+     FROM mesh.packets
      WHERE network IS NOT NULL
        AND time > $1::timestamptz
        AND time <= $2::timestamptz
@@ -588,7 +588,7 @@ export function pathLearningTrainingPacketsSql(
   const limitParam = hasSourceNetwork ? 4 : 3;
   return `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
             time, rx_node_id, src_node_id, path_hashes, payload->>'direction' AS direction
-       FROM packets
+       FROM mesh.packets
       WHERE rx_node_id IS NOT NULL
         AND path_hashes IS NOT NULL
         AND cardinality(path_hashes) > 0

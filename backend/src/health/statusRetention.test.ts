@@ -10,6 +10,7 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
   const byTable = new Map(RETENTION_TARGETS.map((target) => [target.table, target]));
   assert.deepEqual(byTable.get('packets'), {
     table: 'packets',
+    qualifiedTable: 'mesh.packets',
     timestampColumn: 'time',
     retention: '30 days',
     batchSize: 25_000,

@@ -70,7 +70,7 @@ async function capture(file: string) {
     };
     // The learner trains only on buckets 0..69. Split at packet hash so every
     // observation of a held-out packet is excluded from all learned priors.
-    const gold = await rows<{ packet_hash: string }>(`SELECT DISTINCT packet_hash FROM packets
+    const gold = await rows<{ packet_hash: string }>(`SELECT DISTINCT packet_hash FROM mesh.packets
       WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
         AND path_hash_size_bytes = 3 AND cardinality(path_hashes) >= 2
         AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) >= 70`, [scope, windowDays]);
@@ -78,7 +78,7 @@ async function capture(file: string) {
     const observations = await rows<Observation>(`SELECT time::text, network, packet_hash, rx_node_id, src_node_id,
       packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes,
       mod(hashtext(packet_hash)::bigint + 2147483648, 100)::int AS split
-      FROM packets WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
+      FROM mesh.packets WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
         AND packet_hash = ANY($3::text[]) ORDER BY time, packet_hash, rx_node_id`,
     [scope, windowDays, gold.map((row) => row.packet_hash)]);
     const snapshot: Snapshot = { capturedAt, network, windowDays, calibration, nodes, links, prefixes, transitions, priors, observations };
@@ -141,7 +141,7 @@ function snapshotQuery(snapshot: Snapshot, observations: Observation[]) {
       if (!set) { set = new Set(ids); membership.set(ids, set); }
       return set.has(id);
     };
-    if (/FROM packets\b/i.test(sql)) {
+    if (/FROM mesh.packets\b/i.test(sql)) {
       if (/SELECT DISTINCT rx_node_id, hop_count/i.test(sql)) return { rows: observations };
       const byObserver = new Map<string | null, Observation>();
       for (const row of [...observations].sort((a, b) => (b.path_hashes?.length ?? 0) - (a.path_hashes?.length ?? 0))) {

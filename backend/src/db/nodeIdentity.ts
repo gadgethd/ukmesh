@@ -735,7 +735,7 @@ export async function refreshNodeIdentityAliases(
       }>(
         `SELECT rx_node_id AS node_id, COUNT(*)::text AS count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM packets
+           FROM mesh.packets
           WHERE rx_node_id = src_node_id
             AND packet_type = 4
             AND rx_node_id = ANY($1::text[])
@@ -763,7 +763,7 @@ export async function refreshNodeIdentityAliases(
                 COUNT(*)::text AS packet_count,
                 COUNT(*) FILTER (WHERE packet_type = 4)::text AS advert_count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM packets
+           FROM mesh.packets
           WHERE rx_node_id = ANY($1::text[])
             AND src_node_id = ANY($1::text[])
             AND rx_node_id <> src_node_id

@@ -75,7 +75,7 @@ export async function countLogicalMessages(
 ): Promise<number> {
   const result = await analyticsQuery<{ count: string }>(
     `SELECT COUNT(DISTINCT p.packet_hash)::text AS count
-       FROM packets p
+       FROM mesh.packets p
       WHERE p.packet_type = 5
         AND p.time >= $1
         AND p.time < $2
@@ -109,7 +109,7 @@ export async function loadRecentMessages(
           p.payload->>'_summary'               AS summary,
           p.payload->'decrypted'->>'timestamp' AS claimed_ts,
           p.time                               AS observed_at
-       FROM packets p
+       FROM mesh.packets p
        WHERE p.packet_type = 5
          AND p.time >= $1
          AND p.time < $2
@@ -179,7 +179,7 @@ export async function loadRecentMessages(
             MIN(p.hop_count)    AS min_hop,
             MAX(p.rssi)         AS best_rssi,
             MAX(p.snr)          AS best_snr
-     FROM packets p
+     FROM mesh.packets p
      JOIN core.nodes n ON n.node_id = p.rx_node_id
      WHERE p.packet_type = 5
        AND p.time >= $1
@@ -498,7 +498,7 @@ export async function getPublicIncidents(
   where.push(`EXISTS (
          SELECT 1
            FROM spam_message_members m
-           JOIN packets p
+           JOIN mesh.packets p
              ON p.packet_hash = m.packet_hash
             AND p.network = m.network
           WHERE m.incident_key = i.incident_key
@@ -579,7 +579,7 @@ export async function getPublicIncident(
         AND EXISTS (
               SELECT 1
                 FROM spam_message_members m
-                JOIN packets p
+                JOIN mesh.packets p
                   ON p.packet_hash = m.packet_hash
                  AND p.network = m.network
                WHERE m.incident_key = i.incident_key
@@ -604,7 +604,7 @@ export async function getPublicIncident(
      WHERE m.incident_key = $1
        AND EXISTS (
              SELECT 1
-               FROM packets p
+               FROM mesh.packets p
               WHERE p.packet_hash = m.packet_hash
                 AND p.network = m.network
                 AND ${publicPacketPrivacySql('p')}

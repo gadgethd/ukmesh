@@ -72,7 +72,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
       const result = await deps.query<{ node_id: string; name: string | null; lat: number; lon: number; ord: number }>(
         `WITH target AS (
            SELECT p.path_hashes
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.packet_hash = $${filters.params.length + 1}
              ${filters.packetsAlias('p')}
            ORDER BY p.time DESC

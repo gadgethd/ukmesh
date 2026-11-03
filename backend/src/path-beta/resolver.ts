@@ -688,7 +688,7 @@ export async function resolveBetaPathForPacketHash(
   throwIfResolutionAborted(options);
   const packetResult = await query<PathPacket>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
-     FROM packets
+     FROM mesh.packets
      WHERE packet_hash = $1
        AND ($2::text[] IS NULL OR network = ANY($2))
        ${observer ? 'AND rx_node_id = $3' : ''}
@@ -949,7 +949,7 @@ async function loadMultiObserverInputs(
   throwIfResolutionAborted(options);
   const allResult = await query<PathPacket>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
-     FROM packets
+     FROM mesh.packets
      WHERE packet_hash = $1
        AND ($2::text[] IS NULL OR network = ANY($2))
        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
@@ -1097,7 +1097,7 @@ export async function createMultiObserverPathBatchResolver(
            CROSS JOIN LATERAL (
              SELECT p.packet_hash, p.rx_node_id, p.src_node_id, p.packet_type, p.route_type, p.payload->>'direction' AS direction,
                     p.hop_count, p.path_hashes, p.path_hash_size_bytes, p.time
-               FROM packets p
+               FROM mesh.packets p
               WHERE p.packet_hash = requested.packet_hash
                 AND ($2::text[] IS NULL OR p.network = ANY($2))
                 AND p.time >= $3

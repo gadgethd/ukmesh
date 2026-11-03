@@ -13,7 +13,6 @@
     "node_identity_link_radio_reports",
     "node_link_radio_reports",
     "packet_paths",
-    "packets",
     "path_corridor_priors",
     "path_edge_priors",
     "path_model_calibration",
@@ -43,20 +42,12 @@
       "analysis_workload_state"
     ],
     "api/hopreachCompatibility.ts": [],
-    "api/routes/activityTimeline.ts": [
-      "packets"
-    ],
+    "api/routes/activityTimeline.ts": [],
     "api/routes/auditwave.performance.test.ts": [],
     "api/routes/exports.test.ts": [],
-    "api/routes/exports.ts": [
-      "packets"
-    ],
-    "api/routes/misc.ts": [
-      "packets"
-    ],
-    "api/routes/mqttNodes.integration.test.ts": [
-      "packets"
-    ],
+    "api/routes/exports.ts": [],
+    "api/routes/misc.ts": [],
+    "api/routes/mqttNodes.integration.test.ts": [],
     "api/routes/nodeStatus.ts": [],
     "api/routes/ownerPacketSharing.test.ts": [],
     "api/routes/ownerPublicFeed.test.ts": [],
@@ -64,86 +55,55 @@
     "api/routes/regions.ts": [],
     "api/routes/rfValidation.test.ts": [],
     "api/routes/telemetry.ts": [],
-    "api/utils/networkFilters.ts": [
-      "packets"
-    ],
+    "api/utils/networkFilters.ts": [],
     "db/index.ts": [
       "node_identity_link_radio_reports",
-      "packets",
       "spam_suspects"
     ],
     "db/ledgerArchive.integration.test.ts": [],
-    "db/migrations.ts": [
-      "packets"
-    ],
-    "db/nodeIdentity.ts": [
-      "packets"
-    ],
+    "db/migrations.ts": [],
+    "db/nodeIdentity.ts": [],
     "db/nodeIdentityRefresh.integration.test.ts": [],
-    "db/nodeNameHistory.integration.test.ts": [
-      "packets"
-    ],
+    "db/nodeNameHistory.integration.test.ts": [],
     "db/packetBatch.integration.test.ts": [
       "packet_paths",
-      "packets",
       "schema_migration_compatibility",
       "schema_migrations"
     ],
-    "db/packetBatch.test.ts": [
-      "packets"
-    ],
+    "db/packetBatch.test.ts": [],
     "db/packetBatch.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
-    "db/packetDailyBoundary.integration.test.ts": [
-      "packets"
-    ],
+    "db/packetDailyBoundary.integration.test.ts": [],
     "db/packetVisibilityFence.test.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "db/privacyCompletion.integration.test.ts": [],
     "db/publicVisibilityMigration.test.ts": [],
     "db/recentRead.integration.test.ts": [],
-    "db/regionScoping.integration.test.ts": [
-      "packets"
-    ],
+    "db/regionScoping.integration.test.ts": [],
     "db/silentRecovery.integration.test.ts": [],
     "db/visibilityConvergence.integration.test.ts": [
       "packet_paths",
-      "packets",
       "schema_migrations"
     ],
-    "health/packetDiagnostics.integration.test.ts": [
-      "packets"
-    ],
-    "health/packetDiagnostics.ts": [
-      "packets"
-    ],
+    "health/packetDiagnostics.integration.test.ts": [],
+    "health/packetDiagnostics.ts": [],
     "health/status.ts": [
       "packet_paths",
       "path_model_calibration"
     ],
     "maintenance/staleMqttObservers.integration.test.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "maintenance/staleMqttObservers.native.integration.test.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "maintenance/staleMqttObservers.test.ts": [],
     "maintenance/staleMqttObservers.ts": [],
-    "mqtt/client.ts": [
-      "packets"
-    ],
-    "mqtt/observationIdentity.ts": [
-      "packets"
-    ],
-    "mqtt/spamDetector.ts": [
-      "packets"
-    ],
+    "mqtt/client.ts": [],
+    "mqtt/observationIdentity.ts": [],
+    "mqtt/spamDetector.ts": [],
     "nodes/mapSuppressions.ts": [],
     "operations/operatorOperations.ts": [
       "analysis_runs",
@@ -158,9 +118,7 @@
     "owner/ownerService.integration.test.ts": [],
     "owner/packetShareRepository.integration.test.ts": [],
     "owner/packetShareRepository.ts": [],
-    "owner/publicFeedRepository.ts": [
-      "packets"
-    ],
+    "owner/publicFeedRepository.ts": [],
     "path-beta/championPriors.ts": [
       "path_corridor_priors",
       "path_position_prefix_priors",
@@ -168,7 +126,6 @@
       "path_transition_priors"
     ],
     "path-beta/resolver.ts": [
-      "packets",
       "path_edge_priors",
       "path_model_calibration",
       "path_motif_priors",
@@ -179,12 +136,10 @@
       "path_slow_resolutions"
     ],
     "path-lazy/evaluate.ts": [
-      "packets",
       "path_corridor_priors",
       "path_transition_priors"
     ],
     "path-lazy/lazyResolver.ts": [
-      "packets",
       "path_corridor_priors",
       "path_model_calibration",
       "path_position_prefix_priors",
@@ -193,13 +148,11 @@
     ],
     "path-lazy/lazyResolverLegacy.ts": [
       "ml_path_prefix_scores",
-      "packets",
       "path_edge_priors",
       "path_prefix_priors"
     ],
     "path-learning/rebuild.privacy.test.ts": [],
     "path-learning/rebuild.ts": [
-      "packets",
       "path_model_calibration"
     ],
     "pathing/pathingRepository.ts": [
@@ -213,59 +166,42 @@
     "privacy/generationHealth.ts": [],
     "ram/liveRead.ts": [],
     "ram/runtime.integration.test.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "regions/filter.ts": [],
     "regions/nodeSource.ts": [],
     "repositories/networkAnalysis.test.ts": [],
     "repositories/networkAnalysis.ts": [],
-    "repositories/nodeLinks.integration.test.ts": [
-      "packets"
-    ],
-    "repositories/nodes.test.ts": [
-      "packets"
-    ],
-    "repositories/nodes.ts": [
-      "packets"
-    ],
+    "repositories/nodeLinks.integration.test.ts": [],
+    "repositories/nodes.test.ts": [],
+    "repositories/nodes.ts": [],
     "repositories/ownerAlerts.ts": [],
     "repositories/pathEvidence.ts": [],
     "repositories/plannedCoverage.ts": [],
     "repositories/plannedNodes.ts": [],
     "repositories/productFeatures.test.ts": [
-      "node_link_radio_reports",
-      "packets"
+      "node_link_radio_reports"
     ],
-    "repositories/productFeatures.ts": [
-      "packets"
-    ],
+    "repositories/productFeatures.ts": [],
     "spam/analyzer.ts": [
       "spam_message_incidents"
     ],
     "spam/repository.integration.test.ts": [
       "analysis_runs",
       "analysis_workload_state",
-      "packets",
       "spam_message_incidents",
       "spam_message_members"
     ],
     "spam/repository.privacy.test.ts": [
-      "packets",
       "spam_message_incidents",
       "spam_message_members"
     ],
     "spam/repository.ts": [
-      "packets",
       "spam_message_incidents",
       "spam_message_members"
     ],
-    "spam/spamResolver.test.ts": [
-      "packets"
-    ],
-    "spam/spamResolver.ts": [
-      "packets"
-    ],
+    "spam/spamResolver.test.ts": [],
+    "spam/spamResolver.ts": [],
     "stats/chartSnapshot.test.ts": [
       "stats_chart_snapshots"
     ],
@@ -273,31 +209,21 @@
       "stats_chart_snapshots"
     ],
     "stats/multibytePathFacts.test.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "stats/multibytePathFacts.ts": [
       "packet_paths"
     ],
-    "stats/statsRepository.test.ts": [
-      "packets"
-    ],
-    "stats/statsRepository.ts": [
-      "packets"
-    ],
-    "tools/backfillDecrypt.ts": [
-      "packets"
-    ],
+    "stats/statsRepository.test.ts": [],
+    "stats/statsRepository.ts": [],
+    "tools/backfillDecrypt.ts": [],
     "tools/backfillMultibytePathFacts.ts": [],
-    "tools/backfillStatsRollups.ts": [
-      "packets"
-    ],
+    "tools/backfillStatsRollups.ts": [],
     "tools/cleanupOrphanedAnalysisRuns.ts": [
       "analysis_runs",
       "analysis_workload_state"
     ],
     "tools/pathAccuracy.ts": [
-      "packets",
       "path_corridor_priors",
       "path_model_calibration",
       "path_position_prefix_priors",
@@ -306,11 +232,8 @@
       "path_transition_priors"
     ],
     "tools/provisionScotmesh.ts": [],
-    "tools/rebuildRegionParticipation.ts": [
-      "packets"
-    ],
+    "tools/rebuildRegionParticipation.ts": [],
     "tools/recomputeSpamSuspects.ts": [
-      "packets",
       "spam_suspects"
     ],
     "tools/reresolveSpamOrigins.ts": [
@@ -322,14 +245,11 @@
     "workers/link-backfill.ts": [],
     "workers/link-recompute.ts": [],
     "workers/privacy-rematerialization.ts": [
-      "packet_paths",
-      "packets"
+      "packet_paths"
     ],
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [],
     "ws/publicAuthorization.integration.test.ts": [],
-    "ws/regionScoping.integration.test.ts": [
-      "packets"
-    ]
+    "ws/regionScoping.integration.test.ts": []
   }
 }

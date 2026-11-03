@@ -202,7 +202,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
           p.companion_sender AS sender,
           COUNT(DISTINCT p.packet_hash)::text AS message_count,
           MAX(p.time) AS last_message_at
-        FROM packets p
+        FROM mesh.packets p
         WHERE
           p.packet_type = 5
           AND p.companion_sender IS NOT NULL
@@ -290,7 +290,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
                   SUM(packet_count)::bigint AS packet_count
            FROM (
              SELECT rx_node_id, COUNT(*) AS packet_count
-             FROM packets
+             FROM mesh.packets
              WHERE time > NOW() - INTERVAL '24 hours'
                AND rx_node_id IS NOT NULL
                ${packetNetworkClause}
