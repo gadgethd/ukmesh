@@ -34,16 +34,22 @@ docker exec meshcore-infra-timescaledb-1 psql -U meshcore -d meshcore -Atc "
     from mesh.packets where time > now() - interval '24 hours';
   select 'recent_missing_uid|' || count(*)
     from mesh.packets where time > now() - interval '24 hours' and packet_uid is null;
+  select 'wire64_coverage|' || count(*) || '|' || count(*) filter (where packet_uid is not null) || '|' || count(*) filter (where packet_uid is null)
+    from mesh.packets where time > now() - interval '24 hours'
+      and length(packet_hash) = 64 and btrim(raw_hex) <> '';
+  select 'blank64|' || count(*)
+    from mesh.packets where time > now() - interval '24 hours'
+      and length(packet_hash) = 64 and btrim(raw_hex) = '';
   select 'owner_acl|' || desired_generation || '|' || rendered_generation || '|' || applied_generation || '|' || last_verified_at
     from core.owner_acl_state;
   select 'owner_accounts|' || count(*) from core.owner_accounts;
   select 'owner_nodes|' || count(*) from core.owner_account_nodes;
 " >"$OUT/coverage.txt" 2>&1
 
-missing_uid=$(awk -F'|' '$1 == "recent_missing_uid" { print $2 }' "$OUT/coverage.txt")
+missing_wire_uid=$(awk -F'|' '$1 == "wire64_coverage" { print $4 }' "$OUT/coverage.txt")
 covered_hours=$(awk -F'|' '$1 == "covered_hours" { print $2 }' "$OUT/coverage.txt")
-if [[ -z "$missing_uid" || "$missing_uid" -ne 0 ]]; then
-  fail "24h rows still missing packet_uid: ${missing_uid:-unknown}"
+if [[ -z "$missing_wire_uid" || "$missing_wire_uid" -ne 0 ]]; then
+  fail "24h wire-backed 64-hex rows still missing packet_uid: ${missing_wire_uid:-unknown}"
 fi
 if [[ -z "$covered_hours" || "$covered_hours" -lt 24 ]]; then
   fail "24h coverage has only ${covered_hours:-unknown} covered hours"
