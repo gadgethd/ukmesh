@@ -6,6 +6,8 @@ const reuseExistingServer = !process.env['CI'] && !process.env['PLAYWRIGHT_PORT_
 
 export default defineConfig({
   testDir: './test/e2e',
+  // Pay the cold MapLibre transform during setup, not inside a test's budget.
+  globalSetup: './test/e2e/warmDevServer',
   fullyParallel: true,
   forbidOnly: Boolean(process.env['CI']),
   retries: process.env['CI'] ? 1 : 0,
