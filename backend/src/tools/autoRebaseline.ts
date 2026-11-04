@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
-  decideOwnerBaselineAction,
+  readOwnerBaselineDecision,
   parseRefreshValidationSummary,
   refreshValidationPassed,
 } from '../owner/autoRebaseline.js';
@@ -24,21 +24,6 @@ function canExecute(filePath: string): boolean {
   }
 }
 
-async function readReadiness(): Promise<{ status: number; payload: unknown }> {
-  const response = await fetch(readyzUrl, {
-    method: 'GET',
-    redirect: 'error',
-    signal: AbortSignal.timeout(10_000),
-  });
-  let payload: unknown;
-  try {
-    payload = await response.json();
-  } catch {
-    throw new Error(`readiness response was not JSON (HTTP ${response.status})`);
-  }
-  return { status: response.status, payload };
-}
-
 function runRefresh(args: string[], env: NodeJS.ProcessEnv) {
   return spawnSync(refreshScript, args, {
     cwd: repoRoot,
@@ -53,8 +38,10 @@ async function main(): Promise<void> {
     throw new Error('usage: autoRebaseline.js [--check]');
   }
 
-  const readiness = await readReadiness();
-  const decision = decideOwnerBaselineAction(readiness.status, readiness.payload);
+  const decision = await readOwnerBaselineDecision(
+    readyzUrl,
+    process.env['OWNER_BASELINE_OPERATOR_TOKEN'] ?? process.env['OPERATOR_SITE_TOKEN'],
+  );
   if (checkOnly) {
     process.stdout.write(`${JSON.stringify({
       mode: 'check',

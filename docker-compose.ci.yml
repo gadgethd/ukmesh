@@ -81,7 +81,10 @@ services:
     volumes:
       - ./backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
+      # The entrypoint's temporary init server accepts Unix-socket connections
+      # before base.sql finishes, but db-migrate connects over TCP. Probe TCP
+      # so dependants wait for init scripts and the final server to be ready.
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
       interval: 30s
       timeout: 10s
       retries: 10

@@ -15,7 +15,7 @@ import {
   writeAclAtomically,
 } from '../mqtt/aclManager.js';
 import { ownerGrantConfigGeneration, parseOwnerGrantConfig } from './ownerGrantConfig.js';
-import { convergeOwnerAcl, createOwnerAclReadinessRecovery } from './ownerAclConvergence.js';
+import { convergeOwnerAcl, createOwnerAclReadinessRecovery, createOwnerAclReconciliation } from './ownerAclConvergence.js';
 import { getPublicFeedConfig } from './publicFeedConfig.js';
 import {
   getActivePublicFeedReaderUsernames,
@@ -57,7 +57,7 @@ function systemReadwriteAclTopics(): string[] {
     .filter(Boolean);
 }
 
-let inFlight: Promise<void> | null = null;
+const reconciliation = createOwnerAclReconciliation(reconcileOwnerAuthorizationPass);
 let reconcileTimer: NodeJS.Timeout | null = null;
 
 const recoverReadiness = createOwnerAclReadinessRecovery({
@@ -71,8 +71,11 @@ export function getConvergedOwnerAclReadiness(): ReturnType<typeof getOwnerAclRe
 }
 
 export function reconcileOwnerAuthorization(): Promise<void> {
-  if (inFlight) return inFlight;
-  const run = (async () => {
+  return reconciliation.reconcile();
+}
+
+function reconcileOwnerAuthorizationPass(): Promise<void> {
+  return (async () => {
     const mode = ownerAclMode();
     const configured = parseOwnerGrantConfig(String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''));
     const configGeneration = ownerGrantConfigGeneration(configured);
@@ -137,11 +140,7 @@ export function reconcileOwnerAuthorization(): Promise<void> {
     const message = error instanceof Error ? error.message : String(error);
     await updateOwnerAclState({ lastError: message }).catch(() => undefined);
     throw error;
-  }).finally(() => {
-    if (inFlight === run) inFlight = null;
   });
-  inFlight = run;
-  return run;
 }
 
 export async function startOwnerAuthorizationReconciler(): Promise<void> {
@@ -164,5 +163,5 @@ export async function stopOwnerAuthorizationReconciler(): Promise<void> {
     clearInterval(reconcileTimer);
     reconcileTimer = null;
   }
-  await inFlight;
+  await reconciliation.waitForIdle();
 }
