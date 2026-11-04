@@ -911,7 +911,15 @@ export async function getRecentPackets(
       mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
-    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = rp.packet_hash
+    LEFT JOIN LATERAL (
+      SELECT mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE ${packetIdentityKeySql('p2')} = rp.identity_key
+         AND mt2.tags IS NOT NULL
+       ORDER BY mt2.tagged_at DESC
+       LIMIT 1
+    ) mt ON TRUE
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -1002,7 +1010,15 @@ export async function getRecentMessages(
       mt.tags, mt.confidence AS tag_confidence
     FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
-    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = m.packet_hash
+    LEFT JOIN LATERAL (
+      SELECT mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE ${packetIdentityKeySql('p2')} = m.identity_key
+         AND mt2.tags IS NOT NULL
+       ORDER BY mt2.tagged_at DESC
+       LIMIT 1
+    ) mt ON TRUE
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
