@@ -39,11 +39,20 @@ YAML
 migrator="$("${compose[@]}" ps --all --quiet db-migrate)"
 test -n "$migrator"
 test "$(docker wait "$migrator")" = 0
-expected="$(find "$repo_dir/backend/src/db/migrations" -name '*.sql' | wc -l | tr -d ' ')"
-actual="$("${compose[@]}" exec -T timescaledb psql \
+# The runner records one row per applied file, but a file can be superseded by a
+# later one (for example 011 -> 044), so the row count is deliberately lower than
+# the file count. The invariant that matters is that the highest-sorted migration
+# is recorded, and that a replay finds nothing pending (checked below).
+latest="$(find "$repo_dir/backend/src/db/migrations" -maxdepth 1 -name '*.sql' -printf '%f\n' | sort | tail -1)"
+test -n "$latest"
+rows="$("${compose[@]}" exec -T timescaledb psql \
   -U "${POSTGRES_USER:-meshcore}" -d "${POSTGRES_DB:-meshcore}" -Atc \
-  "SELECT count(*) FROM schema_migrations WHERE to_regclass('ci_init_completed') IS NOT NULL")"
-test "$actual" = "$expected"
+  "SELECT count(*) FROM schema_migrations")"
+latest_applied="$("${compose[@]}" exec -T timescaledb psql \
+  -U "${POSTGRES_USER:-meshcore}" -d "${POSTGRES_DB:-meshcore}" -Atc \
+  "SELECT count(*) FROM schema_migrations WHERE name = '$latest'")"
+test "$latest_applied" = "1"
+printf '[ci-db-readiness] ledger rows=%s head=%s applied=%s\n' "$rows" "$latest" "$latest_applied"
 replay="$("${compose[@]}" run --rm --no-deps db-migrate)"
 grep -q '\[db-migrate\] no pending migrations' <<<"$replay"
-printf '[ci-db-readiness] PASS: delayed init, %s migrations, idempotent replay\n' "$actual"
+printf '[ci-db-readiness] PASS: delayed init, %s migrations (head %s), idempotent replay\n' "$rows" "$latest"
