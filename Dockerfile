@@ -5,6 +5,8 @@ COPY frontend/package.json frontend/package-lock.json ./
 RUN npm ci
 COPY frontend/ ./
 ARG VITE_APP_HOSTNAME
+ARG VITE_BUILD_TARGET=combined
+ENV VITE_BUILD_TARGET=$VITE_BUILD_TARGET
 ENV VITE_APP_HOSTNAME=$VITE_APP_HOSTNAME
 RUN npm run build
 

@@ -1,8 +1,14 @@
-import { dashboardOrigin } from './localServers.js';
-import { expect, test, type Page, type Route } from '@playwright/test';
+import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
 const NODE_ID = 'A'.repeat(64);
+
+function dashboardBaseUrl(info: TestInfo): string {
+  const url = info.config.projects.find((project) => project.name === 'dashboard-desktop')?.use.baseURL;
+  if (typeof url !== 'string') throw new Error('dashboard-desktop baseURL is required');
+  return url;
+}
+
 
 const TEST_MAP_STYLE = {
   version: 8,
@@ -94,6 +100,9 @@ const repeater = {
 
 async function fulfillApi(route: Route) {
   const pathname = new URL(route.request().url()).pathname;
+  if (pathname === '/api/stats/observers/live') return route.fulfill({ json: {
+    generatedAt: new Date().toISOString(), windowMinutes: 15, regions: [],
+  } });
   if (pathname === '/api/stats/charts') return route.fulfill({ json: chartStats });
   if (pathname === '/api/stats') {
     return route.fulfill({
@@ -192,29 +201,40 @@ async function installFixtures(page: Page, dismissDisclaimer = true) {
 }
 
 async function installDashboardWebSocket(page: Page) {
-  await page.routeWebSocket(/\/ws(?:\?|$)/, (socket) => {
-    socket.send(JSON.stringify({
-      type: 'initial_state',
-      ts: Date.now(),
-      data: {
-        nodes: [{
-          ...repeater,
-          public_key: NODE_ID,
-        }],
-        packets: [{
-          time: '2026-07-18T12:00:00Z',
-          packet_hash: 'fixture-message',
-          rx_node_id: NODE_ID,
-          src_node_id: NODE_ID,
-          packet_type: 5,
-          hop_count: 1,
-          summary: 'Keyboard fixture message',
-          path_hashes: [],
-        }],
-        viable_links: [],
-      },
-    }));
-  });
+  await page.addInitScript(({ fixtureNode, nodeId }) => {
+    const NativeWebSocket = window.WebSocket;
+    class FixtureWebSocket extends EventTarget {
+      static readonly CONNECTING = 0; static readonly OPEN = 1;
+      static readonly CLOSING = 2; static readonly CLOSED = 3;
+      readyState = FixtureWebSocket.CONNECTING;
+      onopen: ((event: Event) => void) | null = null;
+      onmessage: ((event: MessageEvent<string>) => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+      onerror: ((event: Event) => void) | null = null;
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super();
+        if (new URL(url).pathname !== '/ws') {
+          return new NativeWebSocket(url, protocols) as unknown as FixtureWebSocket;
+        }
+        window.setTimeout(() => {
+          if (this.readyState !== FixtureWebSocket.CONNECTING) return;
+          this.readyState = FixtureWebSocket.OPEN;
+          this.onopen?.(new Event('open'));
+          this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+            type: 'initial_state', ts: Date.now(), data: {
+              nodes: [{ ...fixtureNode, last_seen: new Date().toISOString(), network: 'ukmesh', public_key: nodeId }],
+              packets: [{ time: new Date().toISOString(), network: 'ukmesh', packet_hash: 'fixture-message',
+                rx_node_id: nodeId, src_node_id: nodeId, packet_type: 5, hop_count: 1,
+                summary: 'Keyboard fixture message', path_hashes: [] }],
+              viable_links: [],
+            },
+          }) }));
+        }, 0);
+      }
+      send() {} close() { this.readyState = FixtureWebSocket.CLOSED; }
+    }
+    Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
+  }, { fixtureNode: repeater, nodeId: NODE_ID });
 }
 
 async function expectNoSeriousAxeIssues(page: Page) {
@@ -247,6 +267,33 @@ const publicRoutes = [
   '/spam',
 ] as const;
 
+test('observer activity refreshes independently of an old chart snapshot', async ({ page }) => {
+  await installFixtures(page);
+  const generatedAt = '2026-11-01T12:00:00Z';
+  await page.route('**/api/stats/charts?**', route => route.fulfill({ json: {
+    ...chartStats, snapshot: { generatedAt }, observerRegions: [{
+      iata: 'EDI', activeObservers: 0, observers: 4, packets7d: 120, packets24h: 20,
+      lastPacketAt: generatedAt, series: [], health: { score: 0, status: 'poor' },
+    }],
+  } }));
+  let activeObservers = 2;
+  await page.route('**/api/stats/observers/live?**', route => route.fulfill({ json: {
+    generatedAt: new Date().toISOString(), windowMinutes: 15,
+    regions: [{ iata: 'EDI', activeObservers, lastPacketAt: new Date().toISOString() }],
+  } }));
+  await page.goto('/stats?tab=observers');
+  const card = page.locator('#observer-region-EDI');
+  await expect(card.getByText('Receiving packets', { exact: true })).toBeVisible();
+  await expect(card.getByText('2 / 4', { exact: true })).toBeVisible();
+  const timestamp = page.getByText(/^Chart data as of/);
+  await expect(timestamp).toContainText('2026');
+  const originalTimestamp = await timestamp.textContent();
+  activeObservers = 3;
+  await page.getByRole('button', { name: /refresh/i }).click();
+  await expect(card.getByText('3 / 4', { exact: true })).toBeVisible();
+  await expect(timestamp).toHaveText(originalTimestamp!);
+});
+
 for (const route of publicRoutes) {
   test(`public route ${route} has no serious or critical axe issue`, async ({ page }) => {
     await installFixtures(page);
@@ -256,9 +303,9 @@ for (const route of publicRoutes) {
   });
 }
 
-test('dashboard dialogs trap focus, close with Escape, and restore the trigger', async ({ page }) => {
+test('dashboard dialogs trap focus, close with Escape, and restore the trigger', async ({ page }, info) => {
   await installFixtures(page, false);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
 
   const initialDialog = page.getByRole('dialog', { name: 'Data disclaimer' });
   await expect(initialDialog).toBeVisible();
@@ -333,10 +380,10 @@ test('repeater search exposes keyboard selection and tolerates IME composition',
   await expect(search).toHaveValue('東');
 });
 
-test('reduced-motion preference removes repeating CSS animation', async ({ page }) => {
+test('reduced-motion preference removes repeating CSS animation', async ({ page }, info) => {
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await installFixtures(page);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
   const repeating = await page.evaluate(() => Array.from(document.querySelectorAll('*'))
     .filter((element) => {
       const style = getComputedStyle(element);
@@ -346,10 +393,10 @@ test('reduced-motion preference removes repeating CSS animation', async ({ page 
   expect(repeating).toEqual([]);
 });
 
-test('keyboard-only dashboard flow selects a node, reads details, and toggles a packet row', async ({ page }) => {
+test('keyboard-only dashboard flow selects a node, reads details, and toggles a packet row', async ({ page }, info) => {
   await installFixtures(page);
   await installDashboardWebSocket(page);
-  await page.goto(`${dashboardOrigin}/`);
+  await page.goto(dashboardBaseUrl(info));
 
   const packet = page.locator('.packet-item').filter({ hasText: 'Keyboard fixture message' });
   await expect(packet).toHaveAttribute('aria-label', /Pin GRP packet/);

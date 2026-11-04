@@ -239,16 +239,24 @@ export function createServiceWorkerRuntime(environment) {
   const fetchBasemapMetadata = async (request) => {
     await readMetadata();
     const cache = await environment.caches.open(activeBasemapMetadataCacheName());
-    const cached = await cache.match(request);
+    const metadataUrl = new URL(request.url);
+    const sessionVersioned = metadataUrl.searchParams.has('v')
+      && (metadataUrl.pathname === '/planet' || metadataUrl.pathname.startsWith('/styles/'));
+    // Old workers need a new request URL to escape pinned metadata. Keep one
+    // canonical entry here so those session/retry nonces cannot grow the cache
+    // indefinitely, and retain a last-known response for offline recovery.
+    if (sessionVersioned) metadataUrl.searchParams.delete('v');
+    const metadataKey = metadataUrl.toString();
+    const cached = await cache.match(metadataKey);
     const cachedAt = Number(cached?.headers.get('x-meshcore-cached-at') ?? 0);
-    if (cached && now() - cachedAt < policy.basemapMetadataTtlMs) return cached;
+    if (cached && !sessionVersioned && now() - cachedAt < policy.basemapMetadataTtlMs) return cached;
     try {
       const response = await environment.fetch(request);
       if (response.ok && !metadataState.rollbackMode) {
         const body = await response.clone().arrayBuffer();
         const headers = new Headers(response.headers);
         headers.set('x-meshcore-cached-at', String(now()));
-        await cache.put(request, new Response(body, {
+        await cache.put(metadataKey, new Response(body, {
           status: response.status,
           statusText: response.statusText,
           headers,

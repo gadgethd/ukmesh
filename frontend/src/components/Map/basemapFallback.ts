@@ -1,10 +1,10 @@
 /**
- * Bundled offline basemap.
+ * Independent raster basemap with a bundled offline outline underneath.
  *
- * Used only when the remote OpenFreeMap style/tiles cannot be recovered. It is
- * intentionally tiny and dependency-free: Natural Earth land polygons clipped to
- * the UK/IE window (served from our own origin) plus DOM city labels. No glyph
- * PBFs, no third-party hosts — so it still renders when the map CDN is blocked.
+ * Used only when OpenFreeMap cannot be recovered. OSM raster tiles provide
+ * streets and labels without the vector service, sprites or glyphs. Browser
+ * HTTP caching and the normal page Referer are preserved. If both providers
+ * fail, our own Natural Earth outline and DOM city labels remain available.
  */
 import * as maplibregl from 'maplibre-gl';
 import type { StyleSpecification } from 'maplibre-gl';
@@ -13,6 +13,7 @@ import type { MapTheme } from './mapConfig.js';
 export const FALLBACK_LAND_URL = '/basemap/uk-land.geojson';
 export const FALLBACK_CITIES_URL = '/basemap/uk-cities.geojson';
 export const FALLBACK_LABEL_CLASS = 'map-fallback-label';
+export const FALLBACK_RASTER_SOURCE_ID = 'fallback-streets';
 /** Above this zoom the DOM labels crowd the view; the outline still shows. */
 export const FALLBACK_LABEL_MAX_ZOOM = 10;
 
@@ -24,6 +25,14 @@ export function buildFallbackStyle(theme: MapTheme): StyleSpecification {
       'fallback-land': {
         type: 'geojson',
         data: FALLBACK_LAND_URL,
+        attribution: 'Natural Earth',
+      },
+      [FALLBACK_RASTER_SOURCE_ID]: {
+        type: 'raster',
+        tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+        tileSize: 256,
+        maxzoom: 19,
+        attribution: '<a href="https://www.openstreetmap.org/copyright">© OpenStreetMap contributors</a>',
       },
     },
     layers: [
@@ -48,6 +57,15 @@ export function buildFallbackStyle(theme: MapTheme): StyleSpecification {
         paint: {
           'line-color': dark ? '#2f4a63' : '#a7bacb',
           'line-width': ['interpolate', ['linear'], ['zoom'], 4, 0.7, 8, 1.4, 12, 2.2],
+        },
+      },
+      {
+        id: FALLBACK_RASTER_SOURCE_ID,
+        type: 'raster',
+        source: FALLBACK_RASTER_SOURCE_ID,
+        paint: {
+          'raster-saturation': dark ? -0.65 : 0,
+          'raster-brightness-max': dark ? 0.7 : 1,
         },
       },
     ],

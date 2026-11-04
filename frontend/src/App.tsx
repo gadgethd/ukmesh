@@ -368,6 +368,12 @@ export const App: React.FC = () => {
           const payload = await statsRes.value.json() as DashboardStats;
           if (!cancelled) setFetchedStats(payload);
         }
+      } catch (error) {
+        // Scope changes can abort the body after fetch has already fulfilled.
+        // Keep that cancellation inside the poller and let the next poll retry.
+        if (!cancelled && (error as DOMException).name !== 'AbortError') {
+          console.warn('[app] live data refresh failed');
+        }
       } finally {
         if (!cancelled) {
           setInitialPollLoaded(true);

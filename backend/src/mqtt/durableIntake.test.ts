@@ -5,6 +5,7 @@ import { once } from 'node:events';
 import mqtt, { type MqttClient } from 'mqtt';
 import mqttPacket from 'mqtt-packet';
 import { installDurableMqttIntake } from './durableIntake.js';
+import { ramMqttDeliveryKey } from './observationIdentity.js';
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean) {
@@ -37,9 +38,14 @@ test('wire: backlog processes keepalive responses while PUBACK waits for commit'
   let release!: () => void;
   const commit = new Promise<void>((resolve) => { release = resolve; });
   const errors: string[] = [];
+  const queueWaits: number[] = [];
+  const wireAcks: number[] = [];
   const client = mqtt.connect(`mqtt://127.0.0.1:${(server.address() as net.AddressInfo).port}`, { clientId: 'durable-intake-test', keepalive: 1, reconnectPeriod: 0, clean: false });
   client.on('error', (error) => errors.push(error.message));
-  installDurableMqttIntake(client, () => commit, (error) => errors.push(error.message));
+  installDurableMqttIntake(client, () => commit, (error) => errors.push(error.message), {
+    observeQueueWait: (seconds) => queueWaits.push(seconds),
+    observeWireAck: (seconds) => wireAcks.push(seconds),
+  });
   t.after(async () => { release(); await client.endAsync(true); for (const socket of sockets) socket.destroy(); server.close(); });
   await once(client, 'connect');
   await pause(2_700);
@@ -47,8 +53,12 @@ test('wire: backlog processes keepalive responses while PUBACK waits for commit'
   assert.equal(client.connected, true);
   assert.deepEqual(errors, []);
   assert.equal(acks, 0, 'no acknowledgement before persistence');
+  assert.equal(wireAcks.length, 0, 'no successful-ack latency before the actual write');
   release();
   await until(() => acks === 30);
+  await until(() => wireAcks.length === 30);
+  assert.ok(wireAcks.every((seconds) => seconds >= 2), 'ack latency includes the held commit');
+  assert.ok(queueWaits.some((seconds) => seconds >= 2), 'queue latency includes waiting behind the held topic');
 });
 
 test('failed commits, overflow and old sessions cannot acknowledge new deliveries', async () => {
@@ -72,4 +82,45 @@ test('failed commits, overflow and old sessions cannot acknowledge new deliverie
   await failed.drain();
   assert.equal(failures.at(-1), 'DB unavailable');
   assert.deepEqual(sent, []);
+});
+
+test('wire: QoS 0 packets without message IDs receive independent RAM admission claims', async (t) => {
+  const sockets = new Set<net.Socket>();
+  let acknowledgements = 0;
+  const server = net.createServer((socket) => {
+    sockets.add(socket);
+    const parser = mqttPacket.parser();
+    socket.on('data', (data) => parser.parse(data));
+    parser.on('packet', (packet) => {
+      if (packet.cmd === 'connect') {
+        socket.write(mqttPacket.generate({ cmd: 'connack', returnCode: 0, sessionPresent: false }));
+        for (const payload of ['first', 'second']) {
+          socket.write(mqttPacket.generate({ cmd: 'publish', topic: 'owned/packets', payload,
+            qos: 0, dup: false, retain: false }));
+        }
+      }
+      if (packet.cmd === 'puback') acknowledgements++;
+    });
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const keys: string[] = [];
+  const errors: string[] = [];
+  const client = mqtt.connect(`mqtt://127.0.0.1:${(server.address() as net.AddressInfo).port}`, { reconnectPeriod: 0 });
+  client.on('error', (error) => errors.push(error.message));
+  const intake = installDurableMqttIntake(client, async (packet) => {
+    assert.equal(packet.messageId, undefined);
+    keys.push(ramMqttDeliveryKey({ clientId: 'owned-qos0-fixture', qos: packet.qos!,
+      messageId: packet.messageId, topic: packet.topic, payload: Buffer.from(packet.payload), observationKey: 'fixture' }));
+  }, (error) => errors.push(error.message));
+  t.after(async () => {
+    await client.endAsync(true);
+    for (const socket of sockets) socket.destroy();
+    server.close();
+  });
+  await until(() => keys.length === 2);
+  await intake.drain();
+  assert.notEqual(keys[0], keys[1]);
+  assert.equal(acknowledgements, 0);
+  assert.deepEqual(errors, []);
 });

@@ -185,3 +185,22 @@ test('F02 refuses a contended writer before any mutation and gates the hourly pr
   assert.doesNotMatch(statements[1]!, /locked AS MATERIALIZED/);
   assert.match(statements[1]!, /WHERE \(network = 'test'\s+OR topic_prefix <> 'meshcore-test'\)/);
 });
+
+test('an immediate flush failure rejects its packet without an unhandled process failure', async () => {
+  const { spawnSync } = await import('node:child_process');
+  const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
+    import assert from 'node:assert/strict';
+    import { configurePacketBatch, enqueuePacket } from './src/db/packetBatch.ts';
+    import { buildPacketBatchInput } from './src/db/packetInput.ts';
+    const query = async (sql) => {
+      if (sql.includes('jsonb_agg(jsonb_build_object')) return { rows: [{ generation: '1', prefixes: [] }] };
+      if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
+      throw Object.assign(new Error('permanent packet data failure'), { code: '22003' });
+    };
+    configurePacketBatch(query, (work) => work(query));
+    await assert.rejects(enqueuePacket(buildPacketBatchInput({ packetHash: 'poison', packetType: 3,
+      topic: 'meshcore/LHR/fixture/packets', rawHex: '00' })), /permanent packet data failure/);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  `], { encoding: 'utf8', env: { ...process.env, MQTT_INGEST_FLUSH_MS: '0' }, timeout: 10_000 });
+  assert.equal(child.status, 0, child.stderr);
+});

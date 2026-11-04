@@ -641,6 +641,7 @@ export { observerRegionFromTopic, buildPacketBatchInput } from './packetInput.js
 
 
 export async function insertNodeStatusSample(sample: {
+  observedAt?: string;
   nodeId: string;
   network?: string;
   batteryMv?: number | null;
@@ -656,13 +657,13 @@ export async function insertNodeStatusSample(sample: {
     `WITH sample_insert AS (
        INSERT INTO node_status_samples
        (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
-       VALUES (NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
      UPDATE nodes
-        SET last_status_at = (SELECT time FROM sample_insert),
+        SET last_status_at = GREATEST(last_status_at, (SELECT time FROM sample_insert)),
             last_seen = GREATEST(last_seen, (SELECT time FROM sample_insert)),
-            is_online = TRUE
+            is_online = is_online OR (SELECT time FROM sample_insert) > NOW() - INTERVAL '15 minutes'
       WHERE node_id = $1`,
     [
       sample.nodeId,
@@ -675,6 +676,7 @@ export async function insertNodeStatusSample(sample: {
       sample.airUtilTx ?? null,
       sample.stats ? JSON.stringify(sample.stats) : null,
       sample.status ?? null,
+      sample.observedAt ?? null,
     ],
   );
 }
@@ -989,6 +991,13 @@ export async function getRecentMessages(
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
+    selected_msgs AS MATERIALIZED (
+      SELECT * FROM recent_msgs
+      ${overlapParam ? `WHERE packet_hash = ANY(${overlapParam}::text[])
+        OR packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+      ORDER BY time DESC, packet_hash
+      LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}
+    ),
     msg_stats AS (
       SELECT
         packet_hash,
@@ -1002,7 +1011,7 @@ export async function getRecentMessages(
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
       FROM packets
       LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_msgs)
+      WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
@@ -1017,7 +1026,7 @@ export async function getRecentMessages(
         m._representative_rank, m._representative_id,` : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
       mt.tags, mt.confidence AS tag_confidence
-    FROM recent_msgs m
+    FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
     LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])

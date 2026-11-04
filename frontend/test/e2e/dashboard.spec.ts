@@ -167,6 +167,9 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
   await expect(rfToggle).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  }
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('50%');
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('868.000 MHz');
   await expect.poll(
@@ -174,9 +177,6 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     { timeout: 15_000 },
   ).toBe(true);
   await expect(page.getByRole('button', { name: 'Precision' })).toBeVisible({ timeout: 8_000 });
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Close menu' }).click();
-  }
   await page.getByRole('button', { name: 'Precision' }).click();
   await expect(page.getByRole('button', { name: 'Precision' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(
@@ -253,7 +253,9 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   const coverage = page.getByRole('button', { name: 'RF Coverage' }).first();
   await expect(coverage).toHaveAttribute('aria-pressed', 'true');
   await expect(terrain).toHaveAttribute('aria-pressed', 'true');
-  await expect(page).toHaveURL(/layers=[^&]*terrain[^&]*coverage/);
+  await expect.poll(() => new URL(page.url()).searchParams.get('layers')?.split(',')).toEqual(
+    expect.arrayContaining(['terrain', 'coverage']),
+  );
   const tileResponses = [firstTiles.get('terrain')!, firstTiles.get('coverage')!];
   for (const response of tileResponses) {
     expect(response.fromServiceWorker(), 'fixture tile must pass through Playwright routing').toBe(false);

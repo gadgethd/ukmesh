@@ -301,7 +301,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
          WHERE nss.time > NOW() - INTERVAL '15 minutes'
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${networkClause}
-         ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
+         ORDER BY nss.node_id, nss.time DESC`,
         params,
       );
       res.json(result.rows

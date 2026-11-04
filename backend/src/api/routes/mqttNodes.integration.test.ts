@@ -107,15 +107,15 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
     const response = await fetch(`http://127.0.0.1:${port}/mqtt-nodes${scope}`);
     assert.equal(response.status, 200);
     const rows = await response.json();
-    const before = await client.query(beforeSql, actualParams);
+    const before = await client.query(beforeSql.replace('COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC', 'nss.time DESC'), actualParams);
     assert.deepEqual(rows, json(before.rows.filter((row) => Number(row.packets_24h) > 0).map(toPublicMqttNodeStatusDTO)));
     return rows as Array<Record<string, unknown>>;
   };
   await t.test('anonymous scope merges receiver aliases and all three production labels', async () => {
     const rows = await read();
     assert.deepEqual(rows.map((row) => [row.node_id, row.packets_24h]), [[key('A'), '7'], [key('B'), '1']]);
-    assert.equal(rows[0]!.battery_mv, 3900, 'uptime takes precedence, then newest time breaks the tie');
-    assert.equal(rows[0]!.uptime_secs, '7200', 'existing PostgreSQL bigint telemetry serialization is retained');
+    assert.equal(rows[0]!.battery_mv, 3500, 'newest measurement wins after a reboot resets uptime');
+    assert.equal(rows[0]!.uptime_secs, '10', 'existing PostgreSQL bigint telemetry serialization is retained');
     assert.equal(rows[1]!.name, null);
     assert.equal(rows[1]!.battery_mv, null);
     assert.equal(rows[1]!.uptime_secs, null);

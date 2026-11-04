@@ -82,6 +82,8 @@ declare -A image_variables=(
   [synthetic-monitor]=BACKEND_IMAGE
   [link-backfill-worker]=BACKEND_IMAGE
   [alert-receiver]=BACKEND_IMAGE
+  [tagger-worker]=TAGGER_WORKER_IMAGE
+  [hopreach]=HOPREACH_IMAGE
   [link-worker]=RF_WORKER_IMAGE
   [viewshed-worker]=RF_WORKER_IMAGE
   [app-ukmesh]=APP_IMAGE
@@ -297,11 +299,27 @@ network_name="$(
     --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
     | head -n 1
 )"
+# Read-only ACL mounts still require the live backend's supplementary groups.
+# Keep its runtime identity when testing the prior image against the schema.
+compat_identity="$(docker inspect "$current_backend_id" \
+  --format '{"user":{{json .Config.User}},"groups":{{json .HostConfig.GroupAdd}}}')"
+compat_identity_flags=()
+compat_user="$(jq -r '.user // empty' <<<"$compat_identity")"
+if [ -n "$compat_user" ]; then
+  compat_identity_flags+=(--user "$compat_user")
+fi
+compat_groups="$(jq -r '.groups // [] | .[]' <<<"$compat_identity")"
+while IFS= read -r compat_group; do
+  if [ -n "$compat_group" ]; then
+    compat_identity_flags+=(--group-add "$compat_group")
+  fi
+done <<<"$compat_groups"
 echo "Testing the prior backend image against the post-migration schema..."
 docker run -d \
   --name "$compat_name" \
   --network "$network_name" \
   --env-file "$compat_env" \
+  "${compat_identity_flags[@]}" \
   --volumes-from "$current_backend_id:ro" \
   -e MQTT_INGEST_ENABLED=false \
   -e OWNER_AUTHORIZATION_MODE=shadow \
@@ -366,13 +384,13 @@ deploy_image() {
   if [ "$image_variable" = "BACKEND_IMAGE" ]; then
     BACKEND_IMAGE="$image" \
       docker compose --project-name "$project_name" up \
-        --detach --no-build --wait --wait-timeout 240 "$service"
+        --detach --no-build --no-deps --wait --wait-timeout 240 "$service"
   else
     env \
       "$image_variable=$image" \
       "BACKEND_IMAGE=$backend_image" \
       docker compose --project-name "$project_name" up \
-        --detach --no-build --wait --wait-timeout 240 "$service"
+        --detach --no-build --no-deps --wait --wait-timeout 240 "$service"
   fi
 }
 

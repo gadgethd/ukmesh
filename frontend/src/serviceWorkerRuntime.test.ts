@@ -323,6 +323,25 @@ test('map worker .mjs files bypass the service-worker asset cache', async () => 
   assert.equal(fixture.runtime.shouldHandle(appAsset), true);
 });
 
+test('session metadata nonces refresh the network while retaining one offline cache entry', async () => {
+  let requests = 0;
+  let offline = false;
+  const fixture = await createRuntimeFixture({
+    fetch: async () => {
+      if (offline) throw new Error('offline');
+      requests += 1;
+      return new Response(`snapshot-${requests}`);
+    },
+  });
+  await fixture.runtime.install();
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=1' })).text(), 'snapshot-1');
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=2' })).text(), 'snapshot-2');
+  const cache = await fixture.cacheStorage.open(String(fixture.runtime.policy['basemapMetadataCache']));
+  assert.deepEqual([...cache.values.keys()], ['https://tiles.openfreemap.org/planet']);
+  offline = true;
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=3' })).text(), 'snapshot-2');
+});
+
 test('a waiting worker activates automatically once the tab is hidden', async () => {
   resetServiceWorkerUpdatesForTests();
   const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');

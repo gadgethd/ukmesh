@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import * as maplibregl from 'maplibre-gl';
+import * as maplibregl from '../components/Map/maplibre.js';
 import 'maplibre-gl/dist/maplibre-gl.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { MAP_STYLE } from '../components/Map/mapConfig.js';

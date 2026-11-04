@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: 22
+      - name: Verify release component coverage
+        run: scripts/check-release-components.sh
       - name: Validate vulnerability waivers
         run: node scripts/check-trivy-waivers.mjs
       - name: Require a clean commit release
@@ -44,6 +46,11 @@ jobs:
             context: .
             file: Dockerfile.backend
             build_args: ''
+          - component: tagger-worker
+            image: meshcore-tagger-worker
+            context: tagger-worker
+            file: tagger-worker/Dockerfile
+            build_args: ''
           - component: combined
             image: meshcore-combined
             context: .
@@ -65,6 +72,19 @@ jobs:
             build_args: |
               VITE_APP_HOSTNAME=app.ukmesh.com
               VITE_SITE=ukmesh
+          - component: website-dev
+            image: meshcore-website-dev
+            context: .
+            file: Dockerfile.website
+            build_args: |
+              VITE_APP_HOSTNAME=test.ukmesh.com
+              VITE_BUILD_TARGET=dev-website
+              VITE_NETWORK=test
+              VITE_SITE=dev
+              VITE_SITE_DISPLAY_NAME=UK Mesh Test
+              VITE_SITE_FOOTER_NAME=UK Mesh Test
+              VITE_SITE_APP_URL=https://test.ukmesh.com
+              VITE_SITE_HOME_URL=https://test.ukmesh.com
           - component: rf-worker
             image: meshcore-rf-worker
             context: viewshed-worker
@@ -74,7 +94,6 @@ jobs:
             image: meshcore-hopreach
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
-            source_revision: 0230702be70a2729c5acc5640401f56ab9d65fd4
             build_args: VERSION=v0.1.32-ukmesh.3
           - component: mosquitto-reloader
             image: meshcore-mosquitto-reloader
@@ -85,11 +104,11 @@ jobs:
             image: meshcore-health-check
             context: .
             file: Dockerfile.mesh-health-check
-            build_args: MESH_HEALTH_CHECK_REF=952eec8e0c55d0749f9abef211c266f992c0bfc7
+            build_args: MESH_HEALTH_CHECK_REF=c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
-      SOURCE_REVISION: ${{ matrix.source_revision || github.sha }}
+      SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
@@ -134,6 +153,14 @@ jobs:
           severity: CRITICAL
           ignore-unfixed: false
           trivyignores: .trivyignore.yaml
+      - name: Retain vulnerability results even when the gate rejects an image
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: scan-${{ github.sha }}-${{ matrix.component }}
+          path: trivy-${{ matrix.component }}.json
+          if-no-files-found: warn
+          retention-days: 90
       - name: Generate SPDX SBOM for exact digest
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
@@ -210,9 +237,11 @@ jobs:
       matrix:
         include:
           - component: backend
+          - component: tagger-worker
           - component: combined
           - component: app
           - component: website
+          - component: website-dev
           - component: rf-worker
           - component: hopreach
           - component: mosquitto-reloader

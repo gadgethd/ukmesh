@@ -656,9 +656,11 @@ rollback() {
       fi
     fi
     if (( credential_created )); then
-      docker exec "$MOSQUITTO_CONTAINER" \
+      docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
         mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
         || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
+      docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd >/dev/null 2>&1 \
+        || true
       docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
         || true
     fi
@@ -710,12 +712,12 @@ else
   password="$(openssl rand -hex 24)"
 
   log 'creating persistent Mosquitto credential'
-  # Mark the transaction as owning this username before invoking the mutating
-  # command. If it changes the passwd file and then exits unsuccessfully, EXIT
-  # rollback must still remove the partial credential.
+  # Mark the transaction before mutating so a partial credential is rolled back.
   credential_created=1
-  docker exec "$MOSQUITTO_CONTAINER" \
+  # Match the broker UID when atomically replacing its password file.
+  docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
     mosquitto_passwd -b /mosquitto/config/passwd "$username" "$password"
+  docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd
   # mosquitto only re-reads password_file on SIGHUP; the reconciler reloads
   # every ~60s but a device may connect before then, so reload immediately.
   docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \

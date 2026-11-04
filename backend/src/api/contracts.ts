@@ -343,6 +343,7 @@ const PUBLIC_GET = [
   '/nodes/map',
   '/nodes/top-adverts',
   '/observer-activity',
+  '/stats/observers/live',
   '/observers/health',
   '/packets/:hash',
   '/packets/recent',

@@ -5,13 +5,53 @@ import {
   BASEMAP_SOURCE_LOAD_TIMEOUT_MS,
   BASEMAP_TILE_ERROR_THRESHOLD,
   createBasemapHealth,
+  basemapWatchdogDelay,
   decideBasemapAction,
+  isSuccessfulBasemapTile,
   noteFallback,
   noteRetryStarted,
   noteSourceData,
   noteStyleLoaded,
   noteTileError,
+  refreshBasemapMetadataUrl,
 } from './basemapHealth.js';
+
+test('only a decoded vector tile proves the basemap works', () => {
+  assert.equal(isSuccessfulBasemapTile({ sourceId: 'openmaptiles' }), false);
+  assert.equal(isSuccessfulBasemapTile({ sourceId: 'openmaptiles', tile: { state: 'errored' } }), false);
+  assert.equal(isSuccessfulBasemapTile({ sourceId: 'openmaptiles', tile: { state: 'loading' } }), false);
+  assert.equal(isSuccessfulBasemapTile({ sourceId: 'terrain-dem', tile: { state: 'loaded' } }), false);
+  assert.equal(isSuccessfulBasemapTile({ sourceId: 'openmaptiles', tile: { state: 'loaded' } }), true);
+});
+
+test('fresh metadata bypasses old service worker caches without busting tile snapshots', () => {
+  assert.equal(refreshBasemapMetadataUrl('https://tiles.openfreemap.org/planet', 42),
+    'https://tiles.openfreemap.org/planet?v=42');
+  assert.equal(refreshBasemapMetadataUrl('https://tiles.openfreemap.org/styles/dark?v=old', 42),
+    'https://tiles.openfreemap.org/styles/dark?v=42');
+  for (const url of [
+    'https://tiles.openfreemap.org/planet/snapshot/11/1017/652.pbf',
+    'https://tiles.openfreemap.org/fonts/Noto%20Sans%20Regular/0-255.pbf',
+    'https://tile.openstreetmap.org/11/1017/652.png',
+    '/basemap/uk-land.geojson',
+  ]) assert.equal(refreshBasemapMetadataUrl(url, 42), url);
+});
+
+test('failed tile completion never marks the map healthy or suppresses recovery', () => {
+  let health = noteStyleLoaded(createBasemapHealth(), 0);
+  const completedFailure = { sourceId: 'openmaptiles', isSourceLoaded: true, tile: { state: 'errored' } };
+  health = noteSourceData(health, completedFailure.sourceId, isSuccessfulBasemapTile(completedFailure), 1_000);
+  assert.equal(health.phase, 'loading');
+  assert.equal(decideBasemapAction(health, BASEMAP_SOURCE_LOAD_TIMEOUT_MS), 'retry');
+});
+
+test('a new viewport can recover when the previous viewport was healthy', () => {
+  let health = noteStyleLoaded(createBasemapHealth(), 0);
+  health = noteSourceData(health, 'openmaptiles', true, 1_000);
+  health = noteStyleLoaded(health, 2_000);
+  assert.equal(health.phase, 'loading');
+  assert.equal(decideBasemapAction(health, 2_000 + BASEMAP_SOURCE_LOAD_TIMEOUT_MS), 'retry');
+});
 
 test('basemap enters healthy state as soon as the vector source reports data', () => {
   let health = createBasemapHealth();
@@ -74,4 +114,13 @@ test('tile errors outside the window do not accumulate', () => {
   }
   assert.equal(decideBasemapAction(health, 60_000), 'retry');
   assert.ok(health.tileErrors.length < BASEMAP_TILE_ERROR_THRESHOLD);
+});
+
+
+test('an early watchdog keeps the remaining retry budget without extending it', () => {
+  const retry = noteRetryStarted(createBasemapHealth(), 1000);
+  assert.equal(decideBasemapAction(retry, 10999), 'none');
+  assert.equal(basemapWatchdogDelay(retry, 10999), 1);
+  assert.equal(decideBasemapAction(retry, 11000), 'fallback');
+  assert.equal(basemapWatchdogDelay(noteFallback(retry), 11000), null);
 });

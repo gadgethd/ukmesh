@@ -10,7 +10,8 @@ import {
   resolvePublicNetworkScope,
 } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
-import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
+import { getRedisPublisherOptions, getRedisUrl } from '../platform/config/redis.js';
+import { RedisPublicationGate, RedisPublicationUnavailableError } from '../queue/publicationGate.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import {
   BoundedAsyncGate,
@@ -167,6 +168,18 @@ function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
 
 let pub: Redis;
 let sub: Redis;
+const publicationGate = new RedisPublicationGate();
+
+function publishLiveMessage(message: WSMessage): void {
+  const payload = JSON.stringify(message);
+  void publicationGate.run(pub, Buffer.byteLength(payload), () => pub.publish(REDIS_CHANNEL, payload))
+    .catch((error: unknown) => {
+      // Live updates are best effort; a fresh snapshot supplies persisted state.
+      // Never retain stale public messages through a privacy-generation change.
+      publicLiveOutcomesTotal.inc({ outcome: error instanceof RedisPublicationUnavailableError
+        ? `redis_${error.reason}` : 'redis_publish_failed' });
+    });
+}
 // Viable links change slowly (based on historical packet accumulation).
 // Keep the scoped link snapshot off the connect path for five minutes per
 // network/observer combination.
@@ -408,8 +421,8 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   privacyRefreshTimer.unref();
   // Two separate clients: one for pub, one for sub
   // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
-  pub = new Redis(getRedisUrl(), getRedisConnectionOptions());
-  sub = new Redis(getRedisUrl(), getRedisConnectionOptions());
+  pub = new Redis(getRedisUrl(), getRedisPublisherOptions());
+  sub = new Redis(getRedisUrl(), { ...getRedisPublisherOptions(), autoResubscribe: false });
 
   pub.on('error', (e: Error) => console.error('[redis/pub] error', e.message));
   sub.on('error', (e: Error) => console.error('[redis/sub] error', e.message));
@@ -729,7 +742,7 @@ export async function closeWebSocketServer(wss: WebSocketServer): Promise<void> 
 export function broadcastPacket(packet: LivePacket): void {
   if (publicPrivacy.packetHasPrivateParticipant(packet)) return;
   const msg: WSMessage = { type: 'packet', data: packet, ts: Date.now() };
-  void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
+  publishLiveMessage(msg);
 }
 
 export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
@@ -745,7 +758,7 @@ export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; o
     },
     ts: Date.now(),
   };
-  void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
+  publishLiveMessage(msg);
 }
 
 export function broadcastNodeUpsert(node: Record<string, unknown>): void {
@@ -759,5 +772,5 @@ export function broadcastNodeUpsert(node: Record<string, unknown>): void {
     public_key:  typeof node['public_key']  === 'string' ? node['public_key'].toLowerCase()  : node['public_key'],
   };
   const msg: WSMessage = { type: 'node_upsert', data: normalised, ts: Date.now() };
-  void pub.publish(REDIS_CHANNEL, JSON.stringify(msg));
+  publishLiveMessage(msg);
 }

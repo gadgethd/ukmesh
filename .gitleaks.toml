@@ -6,6 +6,8 @@ useDefault = true
 [allowlist]
 description = "Reviewed MeshCore public-channel material: the documented public channel key is published by the protocol, is not an application credential, and must not be treated as a leak. Private channel material enters only via MESHCORE_CHANNEL_SECRETS."
 regexes = [
+  # Fixed CI-only health-check channel fixture, with no production authority.
+  '''0123456789abcdef0123456789abcdef''',
   '''8b3387e9c5cdea6ac9e5edbaa115cd72''',
   # MeshCore node public keys used as fixtures in the backend/src/mqtt test
   # suite (commit c0eac55). A node public key is the node's advertised

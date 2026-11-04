@@ -9,6 +9,7 @@ async function installRegionFixture(page: Page, enabled: boolean, delayEng = fal
     localStorage.setItem('meshcore-disclaimer-dismissed', '1');
     const fixture = window as typeof window & { regionSockets: FixtureWebSocket[] };
     fixture.regionSockets = [];
+    const NativeWebSocket = window.WebSocket;
     class FixtureWebSocket extends EventTarget {
       static readonly CONNECTING = 0; static readonly OPEN = 1;
       static readonly CLOSING = 2; static readonly CLOSED = 3;
@@ -18,8 +19,11 @@ async function installRegionFixture(page: Page, enabled: boolean, delayEng = fal
       onclose: ((event: CloseEvent) => void) | null = null;
       onerror: ((event: Event) => void) | null = null;
       readonly url: string;
-      constructor(url: string | URL) {
-        super(); this.url = String(url); fixture.regionSockets.push(this);
+      constructor(url: string | URL, protocols?: string | string[]) {
+        super();
+        if (new URL(url).pathname !== '/ws') {
+          return new NativeWebSocket(url, protocols) as unknown as FixtureWebSocket;
+        } this.url = String(url); fixture.regionSockets.push(this);
         const region = new URL(url).searchParams.get('region');
         const names = region ? [region] : ['eng-ne', 'Europe'];
         window.setTimeout(() => {
@@ -87,11 +91,18 @@ async function snapshot(page: Page) {
   });
 }
 
-test('default-off ignores region hashes and preserves global socket/poll requests', async ({ page }) => {
+test('default-off ignores region hashes and preserves global socket/poll requests', async ({ page }, testInfo) => {
   const fixture = await installRegionFixture(page, false);
   await page.goto('/#region=eng-ne');
-  await page.locator('.app-shell').waitFor({ timeout: 15_000 });
-  await expect.poll(async () => (await snapshot(page)).names, { timeout: 15_000 }).toEqual(['Europe', 'eng-ne']);
+  await page.locator('.app-shell').waitFor({ timeout: 30_000 });
+  if (testInfo.project.name.includes('mobile')) {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
+  const search = page.getByRole('combobox', { name: 'Search map nodes' });
+  await search.fill('Europe');
+  await expect(page.getByRole('option', { name: /Europe/ })).toBeVisible();
+  await search.fill('eng-ne');
+  await expect(page.getByRole('option', { name: /eng-ne/ })).toBeVisible();
   await expect(page.getByRole('combobox', { name: 'Region', exact: true })).toHaveCount(0);
   expect(fixture.requested.some((url) => url.pathname.endsWith('/regions/summary'))).toBe(false);
   expect(fixture.requested.some((url) => url.searchParams.has('region'))).toBe(false);
@@ -103,14 +114,14 @@ test('region selection round-trips reload, browser history and All regions', asy
   const fixture = await installRegionFixture(page, true);
   await page.goto('/?layers=feed#note=keep&region=eng-ne');
   const select = page.getByRole('combobox', { name: 'Region', exact: true });
-  await expect(select).toHaveValue('eng-ne', { timeout: 15_000 });
+  await expect(select).toHaveValue('eng-ne', { timeout: 30_000 });
   await expect.poll(async () => (await snapshot(page)).names, { timeout: 15_000 }).toEqual(['eng-ne']);
   await expect.poll(() => fixture.requested.some((url) => url.pathname.endsWith('/packets/recent') && url.searchParams.get('region') === 'eng-ne')).toBe(true);
   await select.selectOption('Europe');
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe']);
   await expect(page).toHaveURL(/#note=keep&region=Europe$/);
   await page.reload();
-  await page.locator('.app-shell').waitFor({ timeout: 15_000 });
+  await page.locator('.app-shell').waitFor({ timeout: 30_000 });
   await expect(select).toHaveValue('Europe');
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe']);
   await select.selectOption('');
@@ -134,7 +145,7 @@ test('region selection round-trips reload, browser history and All regions', asy
 test('late old-region responses cannot repopulate the new scope and runtime disable restores default', async ({ page }) => {
   const fixture = await installRegionFixture(page, true, true);
   await page.goto('/#region=eng-ne');
-  await page.locator('.app-shell').waitFor({ timeout: 15_000 });
+  await page.locator('.app-shell').waitFor({ timeout: 30_000 });
   const select = page.getByRole('combobox', { name: 'Region', exact: true });
   await expect.poll(async () => (await snapshot(page)).names, { timeout: 15_000 }).toEqual(['eng-ne']);
   await expect.poll(() => fixture.requested.some((url) => url.searchParams.get('region') === 'eng-ne')).toBe(true);

@@ -24,9 +24,11 @@ ENV VITE_SITE_FOOTER_NAME=$VITE_SITE_FOOTER_NAME
 ENV VITE_SITE_APP_URL=$VITE_SITE_APP_URL
 ENV VITE_SITE_HOME_URL=$VITE_SITE_HOME_URL
 ENV VITE_RF_COVERAGE_ENABLED=$VITE_RF_COVERAGE_ENABLED
-RUN npm run build
+RUN npm run build && npm run budget
 
 FROM nginx:alpine@sha256:df221db836e1754089190208cee7eeda94f233197056426eda74a43ab1abeac2
+# Keep the newer pinned base and apply the verified Brotli security update.
+RUN apk add --no-cache --upgrade brotli-libs=1.2.1-r0
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"

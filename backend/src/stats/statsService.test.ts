@@ -97,10 +97,9 @@ test('completed canonical charts are reused while observer-scoped charts are nev
   assert.equal(admittedChartRefreshes, 1);
 });
 
-test('a valid durable chart snapshot serves a cold process without analytical queries', async () => {
-  // Older than the 30-minute in-memory cadence, but still inside the durable
-  // six-hour max age: this is the exact backend-restart regression guard.
-  const generatedAt = new Date(Date.now() - 45 * 60_000).toISOString();
+test('a fresh durable chart snapshot serves a cold process without analytical queries', async () => {
+  // A restart serves a current persisted snapshot without rebuilding it.
+  const generatedAt = new Date(Date.now() - 15 * 60_000).toISOString();
   const durable = {
     snapshot: {
       status: 'complete',
@@ -145,6 +144,31 @@ test('a valid durable chart snapshot serves a cold process without analytical qu
   assert.deepEqual(await service.getCharts('ukmesh', undefined), durable);
   assert.equal(chartCalls, 0);
   assert.equal(saves, 0);
+});
+
+test('live observer presence is independent of historical charts and fenced by scope and privacy generation', async () => {
+  let generation = 1;
+  let calls = 0;
+  const repository = { fetchLiveObserverRegions: async (network: string, observer?: string) => {
+    calls++;
+    return { rows: [{ iata: network === 'test' ? 'TST' : 'EDI', active_observers: observer ? '1' : '2',
+      last_packet_at: '2026-11-01 20:00:00.123+00' }] };
+  } } as unknown as StatsRepository;
+  const service = createStatsService({ statsCache: new Map(), statsCacheTtlMs: 60_000,
+    chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(), repository,
+    getPublicVisibilityGeneration: async () => generation, maskDecodedPathNodes: () => [] });
+  const first = await service.getLiveObserverRegions('ukmesh', undefined) as any;
+  assert.equal(first.regions[0].activeObservers, 2);
+  assert.equal(first.regions[0].lastPacketAt, '2026-11-01T20:00:00.123Z', 'public timestamps follow RFC 3339 across browsers');
+  assert.equal(await service.getLiveObserverRegions('ukmesh', undefined), first);
+  assert.equal(calls, 1);
+  const scoped = await service.getLiveObserverRegions('ukmesh', 'A'.repeat(64)) as any;
+  assert.equal(scoped.regions[0].activeObservers, 1);
+  const isolated = await service.getLiveObserverRegions('test', undefined) as any;
+  assert.equal(isolated.regions[0].iata, 'TST');
+  generation++;
+  assert.notEqual(await service.getLiveObserverRegions('ukmesh', undefined), first);
+  assert.equal(calls, 4);
 });
 
 test('a complete older-generation snapshot is served while one scope refresh runs', async () => {
@@ -312,7 +336,7 @@ test('expired persisted canonical charts are served while one refresh runs in th
     statsCacheTtlMs: 60_000,
     chartsCache,
     chartsCacheTtlMs: 1_000,
-    chartsSnapshotStaleTtlMs: 60_000,
+    chartsSnapshotStaleTtlMs: 6 * 60 * 60_000,
     chartsInflight,
     repository,
     getPublicVisibilityGeneration: async () => 1,
@@ -482,4 +506,27 @@ test('canonical summary cache entries cannot cross a privacy generation change',
   assert.equal(summaryCalls, 2);
   assert.ok(statsCache.has('ukmesh:v1'));
   assert.ok(statsCache.has('ukmesh:v2'));
+});
+
+test('observer activity cache is fenced by privacy generation, including in-flight work', async () => {
+  let generation = 1;
+  let calls = 0;
+  let changeDuringRead = false;
+  const repository = { fetchObserverActivity: async () => {
+    calls += 1;
+    if (changeDuringRead) generation += 1;
+    return { rows: generation === 1 ? [{ node_id: 'revoked-observer', rx_24h: '3', tx_24h: '1' }] : [] };
+  } } as unknown as StatsRepository;
+  const service = createStatsService({
+    statsCache: new Map(), statsCacheTtlMs: 60_000,
+    chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(),
+    repository, getPublicVisibilityGeneration: async () => generation, maskDecodedPathNodes: () => [],
+  });
+  assert.deepEqual(await service.getObserverActivity('ukmesh'), [{ node_id: 'revoked-observer', rx_24h: 3, tx_24h: 1 }]);
+  generation = 2;
+  assert.deepEqual(await service.getObserverActivity('ukmesh'), []);
+  assert.equal(calls, 2);
+  changeDuringRead = true;
+  generation = 3;
+  await assert.rejects(service.getObserverActivity('ukmesh'), /privacy generation changed/);
 });

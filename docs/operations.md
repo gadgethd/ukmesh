@@ -634,3 +634,76 @@ with the merged member key list.
   repeaters (no recent advert/status AND no multibyte-hop evidence) are
   filtered from the map; MQTT repeaters render like normal repeaters.
 - Spam transparency page verified working (live API) and kept.
+
+## MosquittoBacklogOverflow
+
+The qualified profile keeps the 10,000-message per-session ceiling, adds a
+32-MiB queued-byte ceiling and rejects MQTT frames larger than 1 MiB. These
+settings reload with SIGHUP. Debug packet logging is disabled. The October
+measurement was approximately 198 incoming messages/minute and 105 KiB/minute;
+the count ceiling corresponds to about 50 minutes at that observed aggregate
+rate, before bursts or changes in subscription fanout. This is an observation,
+not a guaranteed outage window. An owned 6,000 x 600-byte offline QoS 1 fixture
+replayed completely; a 400 x 128-KiB overflow fixture delivered 256 and exposed
+144 drops through `$SYS/broker/publish/messages/dropped`.
+
+`MosquittoBacklogOverflow` alerts on any increase of the dropped-publication
+counter. Restore the consumer and reconcile persisted observations; a
+publisher PUBACK alone does not establish delivery to every subscriber.
+`MosquittoBacklogHigh` warns at 7,500 aggregate stored messages. Inspect individual
+sessions and byte pressure as well; a few large messages can reach the byte
+ceiling first. Do not claim unlimited replay from finite queues.
+
+## Observation ledger lifecycle
+
+The hot ledger retains at least 60 days of creation-time history. A bounded
+Timescale job examines at most 5,000 earliest rows every five minutes and moves
+eligible metadata atomically into `ingest_observation_archive`. Archives are
+compressed after 14 days in the archive. `ingest_observation_history` is the
+complete sequence/history interface across hot and archived rows. UUID guards
+remain permanent in `ingest_observation_tombstones`, so old and current SQL
+writers both reject archived replays. Never prune that guard or archive as an
+ordinary retention task. The archive job does not delete packet paths,
+aggregates or observation history.
+
+Canonical advert dedupe keys and immutable message classifications remain
+permanent semantic state. They are deliberately not given a blind TTL; a
+replayed advert must not increment its total again, and an immutable message
+hash must retain its classification. Queue dead letters remain until resolved.
+Normal packet/content retention, compression, signed backups and the host disk
+exhaustion forecast continue to apply. Compression reduces retained metadata;
+it does not make an infinite exact identity history occupy bounded disk.
+
+### MqttDeliveryStalled
+
+The ingest connection publishes a non-retained QoS 1 nonce every 30 seconds on
+a reserved system topic under its configured MQTT prefix. The envelope is
+consumed before application parsing and never becomes observer or packet data.
+A probe must return on that same persistent subscriber session within 60 seconds.
+QoS 0 traffic and successful socket keepalives cannot satisfy this check.
+
+A timeout marks `/readyz` unavailable and `/api/health` critical, and reconnects
+the client with its existing client ID and `clean=false`, preserving queued
+messages. Recovery attempts are limited to one per five minutes. Prometheus
+alerts if the delivery probe remains unhealthy for two minutes. Inspect
+`meshcore_mqtt_delivery_probe_healthy`, the last-success timestamp, recovery
+count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
+
+Every reconnect explicitly subscribes again and waits for actual SUBACKs before
+starting the probe. MQTT.js automatic resubscription is disabled so its cached
+empty subscription result cannot be mistaken for an ACL denial. The backend's
+40-second container stop grace allows its 30-second durable drain to finish;
+keep `BACKEND_STOP_GRACE_PERIOD` longer than any custom shutdown deadline.
+
+If the session remains stalled after reconnect, preserve the Mosquitto data
+volume and perform a controlled broker restart. Never clear the persistent
+session or change the ingest client ID to discard the backlog. Confirm that
+QoS 1 acknowledgements resume and status samples advance. Replayed status
+measurements keep their source timestamp; expired samples, offline Wills and
+undated retained status cannot renew observer presence.
+
+Observer activity at `/api/stats/observers/live` is privacy-filtered and scoped
+to the last 15 minutes, with a bounded 60-second cache. The Stats page refreshes
+this independently of historical charts. Charts regenerate every 30 minutes
+in the background; the previous complete snapshot remains available during
+refresh, and the page displays its generation time rather than its fetch time.

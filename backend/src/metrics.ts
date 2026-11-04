@@ -17,6 +17,27 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttDeliveryProbeHealthy = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_healthy',
+  help: 'Whether the ingest session has successfully received its QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeEnabled = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_enabled',
+  help: 'Whether this process owns an active MQTT ingest delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeLastSuccess = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_last_success_timestamp_seconds',
+  help: 'Last successful broker-to-ingest QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeRecoveries = new Counter({
+  name: 'meshcore_mqtt_delivery_probe_recoveries_total',
+  help: 'Persistent ingest session reconnects after a QoS 1 delivery probe timeout.',
+  registers: [metricsRegistry],
+});
+
 export const mqttDeniedPublishesTotal = new Counter({
   name: 'meshcore_mqtt_denied_publishes_total',
   help: 'Denied PUBLISH broker-log observations by bounded topic suffix and scan phase; history may replay at startup.',
@@ -264,8 +285,22 @@ export const packetBatchDedupeTotal = new Counter({
 
 export const mqttIngestAckDuration = new Histogram({
   name: 'meshcore_mqtt_ingest_ack_duration_seconds',
-  help: 'MQTT ingest processing time from receipt to acknowledgement.',
+  help: 'MQTT processing time from dispatch to outcome; excludes intake waiting and wire acknowledgement.',
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30],
+  registers: [metricsRegistry],
+});
+
+export const mqttIntakeQueueWait = new Histogram({
+  name: 'meshcore_mqtt_intake_queue_wait_seconds',
+  help: 'Time from MQTT intake admission to persistence dispatch, including per-topic waiting.',
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300],
+  registers: [metricsRegistry],
+});
+
+export const mqttWireAckDuration = new Histogram({
+  name: 'meshcore_mqtt_wire_ack_duration_seconds',
+  help: 'Time from intake admission to successful QoS 1 PUBACK write, including queue and commit waiting.',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30, 60, 120, 300],
   registers: [metricsRegistry],
 });
 
@@ -510,6 +545,7 @@ const METRIC_CACHES = new Set([
   'path_sticky_nodes',
   'stats_channel',
   'stats_observer',
+  'stats_observer_live',
   'ws_initial_state',
   'ws_viable_links',
 ]);
