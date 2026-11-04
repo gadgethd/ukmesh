@@ -154,11 +154,11 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     SELECT
       (SELECT COUNT(*)::text FROM mesh.packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
-      approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
-      pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
+      approximate_row_count('mesh.packet_paths'::regclass)::text AS approximate_rows,
+      pg_total_relation_size('mesh.packet_paths'::regclass)::text AS total_bytes,
       (SELECT COUNT(*)::text
          FROM timescaledb_information.chunks
-        WHERE hypertable_schema = 'public'
+        WHERE hypertable_schema = 'mesh'
           AND hypertable_name = 'packet_paths'
           AND range_end < NOW() - INTERVAL '15 days'
           AND NOT is_compressed) AS overdue_uncompressed_chunks
@@ -191,11 +191,11 @@ async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
     expired_chunks: string;
     overdue_uncompressed_chunks: string;
   }>(`
-    WITH lifecycle_targets (table_name, retention, compress_after) AS (
+    WITH lifecycle_targets (schema_name, table_name, retention, compress_after) AS (
       VALUES
-        ('packets', INTERVAL '30 days', INTERVAL '15 days'),
-        ('node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
-        ('node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
+        ('mesh', 'packets', INTERVAL '30 days', INTERVAL '15 days'),
+        ('core', 'node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
+        ('core', 'node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
     )
     SELECT target.table_name,
            COUNT(chunk.chunk_name)::text AS chunk_count,
@@ -214,7 +214,7 @@ async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
            )::text AS overdue_uncompressed_chunks
       FROM lifecycle_targets target
       LEFT JOIN timescaledb_information.chunks chunk
-        ON chunk.hypertable_schema = 'public'
+        ON chunk.hypertable_schema = target.schema_name
        AND chunk.hypertable_name = target.table_name
      GROUP BY target.table_name
   `);
@@ -308,11 +308,15 @@ export async function deleteExpiredRows(
   // kept until it is fully expired, so retention can overshoot by one chunk.
   if (lifecyclePolicy(target.table).kind === 'hypertable') {
     try {
+      const qualifiedTable = target.qualifiedTable ?? target.table;
+      const [schemaName, tableName] = qualifiedTable.includes('.')
+        ? qualifiedTable.split('.', 2) as [string, string]
+        : ['public', qualifiedTable] as [string, string];
       // Remove every chunk that is entirely past the retention horizon without
       // decompressing anything.
       await execute(
         'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
-        [target.table, target.retention],
+        [qualifiedTable, target.retention],
       );
       // The boundary chunk can still hold a few expired rows next to retained
       // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
@@ -321,11 +325,12 @@ export async function deleteExpiredRows(
         execute,
         `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
            FROM timescaledb_information.chunks
-          WHERE hypertable_name = $1
-            AND range_end > now() - $2::interval
+          WHERE hypertable_schema = $1
+            AND hypertable_name = $2
+            AND range_end > now() - $3::interval
           ORDER BY range_end ASC
           LIMIT 1`,
-        [target.table, target.retention],
+        [schemaName, tableName, target.retention],
       );
       const chunk = chunks[0];
       if (!chunk) return;
