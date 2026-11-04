@@ -249,6 +249,12 @@ export const packetBatchRetryTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const packetBatchWriterContentionTotal = new Counter({
+  name: 'meshcore_packet_batch_writer_contention_total',
+  help: 'Attempts rejected because another packet-batch writer held the exclusive writer lock.',
+  registers: [metricsRegistry],
+});
+
 export const packetBatchSize = new Histogram({
   name: 'meshcore_packet_batch_size',
   help: 'Packets committed per atomic batch.',

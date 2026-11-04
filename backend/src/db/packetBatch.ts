@@ -7,6 +7,7 @@ import {
   packetBatchQueueWait,
   packetBatchRetryTotal,
   packetBatchSize,
+  packetBatchWriterContentionTotal,
   privacyFilterTotal,
 } from '../metrics.js';
 import {
@@ -453,6 +454,8 @@ export async function persistEntriesCore(
       "SELECT pg_try_advisory_xact_lock(hashtext('meshcore:packet-batch-writer')) AS ok",
     );
     if (lock.rows[0]?.ok !== true) {
+      packetBatchWriterContentionTotal.inc();
+      console.warn('[packet-batch] writer contention: another ingest writer holds the batch lock');
       throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
     }
     const result = await txQuery<PersistRow>(
