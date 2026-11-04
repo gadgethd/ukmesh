@@ -896,6 +896,17 @@ export async function getRecentPackets(
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
       GROUP BY ${packetIdentityKeySql('packets')}
+    ),
+    packet_tags AS (
+      SELECT DISTINCT ON (${packetIdentityKeySql('p2')})
+             ${packetIdentityKeySql('p2')} AS identity_key,
+             mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE p2.time > ${fiveMinAgo}
+         AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM recent_packets)
+         AND mt2.tags IS NOT NULL
+       ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
     )
     SELECT
       rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id,
@@ -911,15 +922,7 @@ export async function getRecentPackets(
       mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
-    LEFT JOIN LATERAL (
-      SELECT mt2.tags, mt2.confidence
-        FROM mesh.packets p2
-        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
-       WHERE ${packetIdentityKeySql('p2')} = rp.identity_key
-         AND mt2.tags IS NOT NULL
-       ORDER BY mt2.tagged_at DESC
-       LIMIT 1
-    ) mt ON TRUE
+    LEFT JOIN packet_tags mt ON mt.identity_key = rp.identity_key
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -998,6 +1001,17 @@ export async function getRecentMessages(
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
       GROUP BY ${packetIdentityKeySql('packets')}
+    ),
+    msg_tags AS (
+      SELECT DISTINCT ON (${packetIdentityKeySql('p2')})
+             ${packetIdentityKeySql('p2')} AS identity_key,
+             mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE p2.time > NOW() - INTERVAL '24 hours'
+         AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM selected_msgs)
+         AND mt2.tags IS NOT NULL
+       ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
     )
     SELECT
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
@@ -1010,15 +1024,7 @@ export async function getRecentMessages(
       mt.tags, mt.confidence AS tag_confidence
     FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
-    LEFT JOIN LATERAL (
-      SELECT mt2.tags, mt2.confidence
-        FROM mesh.packets p2
-        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
-       WHERE ${packetIdentityKeySql('p2')} = m.identity_key
-         AND mt2.tags IS NOT NULL
-       ORDER BY mt2.tagged_at DESC
-       LIMIT 1
-    ) mt ON TRUE
+    LEFT JOIN msg_tags mt ON mt.identity_key = m.identity_key
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
