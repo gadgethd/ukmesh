@@ -86,3 +86,6 @@ terrain-tiles/
 /.env.pre-reconcile-*
 /logging/alert_receiver_token
 /restore-receipt-trust/
+
+# worktree symlink
+backend/node_modules
