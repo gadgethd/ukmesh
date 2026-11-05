@@ -571,7 +571,7 @@ jobs:
             readback="$(
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T timescaledb \
                 psql -U meshcore -d meshcore -Atc \
-                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
+                "SELECT EXISTS(SELECT 1 FROM core.nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_hourly_stats WHERE network = 'test')"
             )"
             if [ "$readback" = "t|t|t|t" ]; then
               break
