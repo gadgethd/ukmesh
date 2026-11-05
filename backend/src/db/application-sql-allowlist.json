@@ -33,6 +33,9 @@
       "node_identity_link_radio_reports"
     ],
     "db/ledgerArchive.integration.test.ts": [],
+    "db/legacyMoveReplay.integration.test.ts": [
+      "schema_migrations"
+    ],
     "db/migrationBootstrap.integration.test.ts": [
       "schema_migration_compatibility",
       "schema_migrations"

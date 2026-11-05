@@ -25,6 +25,12 @@ If in doubt, keep it out of Git and add it to `.gitignore`.
 - `backend/src/db/schema/base.sql` represents a fresh database. Any schema
   change required by an existing deployment must be added as a new, ordered
   migration as well; do not edit a migration that may already be recorded.
+- no migration may assume a relation that no migration creates. A fresh
+  database replays the whole band from `base.sql`, so an object that only exists
+  on older deployments must be guarded (`IF to_regclass('public.x') IS NOT
+  NULL`) with a `NOTICE` when the guard skips, and both paths need a test: the
+  band must reach head on a base-schema-only database, and the guarded statement
+  must still run unchanged where the object is present.
 - whole-history or destructive fixes go in explicit maintenance scripts, never
   migrations or startup
 - apply pending migrations with `docker compose run --rm db-migrate`, not by

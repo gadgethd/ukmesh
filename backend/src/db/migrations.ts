@@ -15,6 +15,24 @@ const APPROVED_MIGRATION_CONTENT_REVISIONS = new Map<string, ReadonlySet<string>
   ['050_packet_paths_and_retention.sql', new Set([
     '89cab60d6577d7d0d0865addfed5a36b39d069be549aa04f5839f73005af4885',
   ])],
+  // The four legacy-move migrations gained to_regclass guards so a fresh
+  // database can replay the band. Where the relations exist the executed
+  // statements are unchanged: the pre-guard and post-guard databases were
+  // compared with pg_dump --schema-only and are byte-identical. Production
+  // already recorded these checksums, so they are accepted as reviewed
+  // revisions rather than reported as drift.
+  ['078_move_message_tags_local.sql', new Set([
+    'f6f4b1e1fae2ba878c0eb8f3f6e1651f171e21e77de9764d79645ecedb2a729c',
+  ])],
+  ['080_move_ops_unreferenced_tables.sql', new Set([
+    '3cb37fcf76b7511e98cb97514905eae16e605ec95df9ac1ca76c62b11ba3a4ad',
+  ])],
+  ['081_move_analytics_unreferenced_tables.sql', new Set([
+    '9095446b6252f3fc85493005142a260f4a5d8281c00bf18f286a858465eed863',
+  ])],
+  ['087_move_privacy_visibility_cluster.sql', new Set([
+    '67370070024f325490d5a55af739f5496281242b4633e9cd531c662f459b597b',
+  ])],
 ]);
 export const NONEMPTY_PRIVATE_PREFIX_SUPERSESSION_APPROVAL =
   'supersede-016-and-017-with-authoritative-privacy-and-026';

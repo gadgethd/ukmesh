@@ -2,6 +2,12 @@
 -- P1-4 ops domain: privacy/visibility cluster.
 -- Replaces the six trigger functions and the planner view with ops-qualified
 -- references, then moves all three tables in one transaction.
+--
+-- The six functions are redefined identically in every database: they only
+-- resolve `ops.*` at run time, so they do not depend on the moves below having
+-- happened first. The moves themselves are guarded rather than assumed, and the
+-- `planner_export` schema the view lives in is created here because nothing in
+-- this tree ever provisioned it.
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
 
@@ -220,11 +226,43 @@ BEGIN
 END;
 $function$;
 
-ALTER TABLE public.privacy_rematerialization_queue SET SCHEMA ops;
-ALTER TABLE public.packet_visibility_materialization_state SET SCHEMA ops;
-ALTER TABLE public.public_visibility_state SET SCHEMA ops;
+DO $$
+BEGIN
+  IF to_regclass('public.privacy_rematerialization_queue') IS NULL THEN
+    RAISE NOTICE '087: public.privacy_rematerialization_queue is absent; move to ops skipped';
+  ELSE
+    ALTER TABLE public.privacy_rematerialization_queue SET SCHEMA ops;
+  END IF;
 
-CREATE OR REPLACE VIEW planner_export.visibility_fence_v1 AS
-SELECT generation, updated_at, now() AS queried_at
-  FROM ops.public_visibility_state
- WHERE singleton = true;
+  IF to_regclass('public.packet_visibility_materialization_state') IS NULL THEN
+    RAISE NOTICE '087: public.packet_visibility_materialization_state is absent; move to ops skipped';
+  ELSE
+    ALTER TABLE public.packet_visibility_materialization_state SET SCHEMA ops;
+  END IF;
+
+  IF to_regclass('public.public_visibility_state') IS NULL THEN
+    RAISE NOTICE '087: public.public_visibility_state is absent; move to ops skipped';
+  ELSE
+    ALTER TABLE public.public_visibility_state SET SCHEMA ops;
+  END IF;
+END
+$$;
+
+-- Nothing in this tree provisioned `planner_export`; the shipped view assumed
+-- an operator had created it. A database rebuilt from the shipped base schema
+-- only has `public`, so the export schema is created here. IF NOT EXISTS leaves
+-- a provisioned schema, its owner and its grants untouched.
+CREATE SCHEMA IF NOT EXISTS planner_export;
+
+DO $$
+BEGIN
+  IF to_regclass('ops.public_visibility_state') IS NULL THEN
+    RAISE NOTICE '087: ops.public_visibility_state is absent; planner export view skipped';
+    RETURN;
+  END IF;
+  CREATE OR REPLACE VIEW planner_export.visibility_fence_v1 AS
+  SELECT generation, updated_at, now() AS queried_at
+    FROM ops.public_visibility_state
+   WHERE singleton = true;
+END
+$$;

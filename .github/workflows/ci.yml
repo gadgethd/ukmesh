@@ -90,6 +90,11 @@ jobs:
         run: |
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
+      - name: Replay the migration band on a fresh base-schema database
+        # Its own gate, ahead of the ingest group: a fresh volume that cannot
+        # reach head is a release blocker, and it must not stay hidden behind an
+        # unrelated suite.
+        run: timeout 300s npm run test:migration-integration
       - run: npm run test:ingest-integration
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
