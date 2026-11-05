@@ -252,6 +252,12 @@ jobs:
     env:
       POSTGRES_USER: meshcore
       POSTGRES_PASSWORD: ci-postgres-password
+      # Owner-auth was consolidated into the primary database (073 creates the
+      # core.owner_* tables); the separate legacy owner database is provisioned
+      # by scripts/newuser.sh on a real deployment and does not exist on an
+      # empty volume. This is read at compose interpolation time, which builds
+      # the backend's OWNER_DATABASE_URL default.
+      OWNER_POSTGRES_DB: meshcore
       ALERT_RECEIVER_TOKEN: ci-alert-receiver-token-0123456789abcdef
       HEALTHCHECK_TEST_CHANNEL_SECRET: 0123456789abcdef0123456789abcdef
       REDIS_PASSWORD: ci-redis-password

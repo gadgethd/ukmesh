@@ -176,11 +176,6 @@ services:
     environment:
       OWNER_AUTHORIZATION_MODE: shadow
       OWNER_ACL_MODE: shadow
-      # Owner-auth was consolidated into the primary database (073 creates the
-      # tables); the separate legacy owner database is provisioned by
-      # `scripts/newuser.sh` on a real deployment and does not exist on an empty
-      # volume, so the smoke stack must read the consolidated tables.
-      OWNER_POSTGRES_DB: ${POSTGRES_DB:-meshcore}
 
   db-migrate:
     # A fresh volume is seeded from `schema/base.sql` by the init hook, so the
