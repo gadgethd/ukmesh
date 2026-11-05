@@ -15,23 +15,40 @@ if (process.env['CI'] && !databaseUrl && !moduleUrl) {
   throw new Error('Owner ACL SQL tests require an explicit test fixture in CI');
 }
 
+// The owner tables were moved into the `core` namespace by P1. Apply the real
+// migration that defines them rather than restating its DDL in a fixture that
+// can drift again. 071 creates the namespace but also depends on the legacy
+// base schema, so the namespace is created directly here.
+const OWNER_TABLES_MIGRATION = '../db/migrations/073_owner_auth_tables.sql';
+
+async function provisionOwnerSchema(
+  db: { exec(sql: string): Promise<unknown> },
+): Promise<void> {
+  await db.exec('CREATE SCHEMA IF NOT EXISTS core');
+  await db.exec(fs.readFileSync(new URL(OWNER_TABLES_MIGRATION, import.meta.url), 'utf8'));
+}
+
 test('real owner ACL artifact SQL preserves certificates only for the same verified bytes', {
   skip: databaseUrl || moduleUrl ? false : 'No owner ACL SQL test fixture is configured',
   timeout: 30_000,
 }, async (t) => {
   const db = databaseUrl ? await (async () => {
-    const client = new pg.Client({ connectionString: databaseUrl });
-    await client.connect();
-    const schema = `owner_acl_artifacts_${randomUUID().replaceAll('-', '')}`;
+    // The artifact queries are schema-qualified, so a throwaway search_path
+    // cannot stand in for the `core` namespace. Provision a dedicated database
+    // instead, matching the other schema-isolating integration fixtures.
+    const admin = new pg.Client({ connectionString: databaseUrl });
+    await admin.connect();
+    const database = `owner_acl_artifacts_${randomUUID().replaceAll('-', '')}`;
+    await admin.query(`CREATE DATABASE "${database}"`);
+    const ownerUrl = new URL(databaseUrl);
+    ownerUrl.pathname = `/${database}`;
+    const client = new pg.Client({ connectionString: ownerUrl.toString() });
     t.after(async () => {
-      try {
-        await client.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-      } finally {
-        await client.end();
-      }
+      await client.end().catch(() => undefined);
+      await admin.query(`DROP DATABASE IF EXISTS "${database}" WITH (FORCE)`);
+      await admin.end();
     });
-    await client.query(`CREATE SCHEMA ${schema}`);
-    await client.query(`SET search_path TO ${schema}`);
+    await client.connect();
     return {
       exec: (sql: string) => client.query(sql),
       query: (sql: string, params?: unknown[]) => client.query(sql, params),
@@ -42,7 +59,7 @@ test('real owner ACL artifact SQL preserves certificates only for the same verif
     t.after(() => fixture.close());
     return fixture;
   })();
-  await db.exec(fs.readFileSync(new URL('../db/owner-auth.sql', import.meta.url), 'utf8'));
+  await provisionOwnerSchema(db);
   const store = createOwnerAclArtifactStore((sql, params) => db.query(sql, params));
   const rendered = renderOwnerAcl('', [{ mqttUsername: 'owner', nodeIds: ['A'.repeat(64)] }], []);
   const artifact: OwnerAclArtifactInput = {
@@ -54,9 +71,9 @@ test('real owner ACL artifact SQL preserves certificates only for the same verif
     assert.equal(await store.getApplied(artifact.generation), null);
     await store.save({ ...artifact, applied: true });
     assert.equal((await store.getApplied(artifact.generation))?.content, artifact.content);
-    const before = await db.query('SELECT applied_at FROM owner_acl_artifacts');
+    const before = await db.query('SELECT applied_at FROM core.owner_acl_artifacts');
     await store.save(artifact);
-    const after = await db.query('SELECT applied_at FROM owner_acl_artifacts');
+    const after = await db.query('SELECT applied_at FROM core.owner_acl_artifacts');
     assert.deepEqual(after.rows, before.rows);
   });
 
@@ -71,7 +88,7 @@ test('real owner ACL artifact SQL preserves certificates only for the same verif
       await store.save({ ...artifact, applied: true });
       await store.save({ ...artifact, ...mutation });
       assert.equal(await store.getApplied(artifact.generation), null);
-      const result = await db.query('SELECT applied_at FROM owner_acl_artifacts');
+      const result = await db.query('SELECT applied_at FROM core.owner_acl_artifacts');
       assert.equal(result.rows[0].applied_at, null);
     }
   });

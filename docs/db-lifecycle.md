@@ -197,6 +197,33 @@ TimescaleDB becomes healthy and before the backend starts. It applies only
 unrecorded files from `backend/src/db/migrations/`; after a successful run it
 exits with no changes on later deploys.
 
+The runner refuses to create `public.schema_migrations` on a non-empty database
+unless the caller supplies the exact bootstrap approval:
+
+```text
+MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL=bootstrap-ledger-from-base-schema
+```
+
+That path exists because a fresh volume is seeded from
+`backend/src/db/schema/base.sql` by the database init hook, so the first runner
+pass legitimately sees a non-empty database with no ledger. The approval is not
+a bypass: the runner also requires the database's relations and schemas to match
+the shipped `base.sql` exactly, and refuses (naming the differences) on any
+missing relation, any extra relation or schema, or when `base.sql` is not
+present in the image. An accepted bootstrap is recorded permanently in
+`schema_migration_compatibility` as `schema/base.sql` / `bootstrap-base-schema`
+together with the file's SHA-256, so the ledger's origin stays auditable.
+`docker-compose.ci.yml` sets it for the empty-volume
+smoke; no deployment sets it. Never add it to a production `.env` — a real
+database that lost its ledger must be restored or reconciled deliberately, not
+bootstrap-approved.
+
+`scripts/bootstrap-backend-roles.sql` and `scripts/bootstrap-reader-roles.sql`
+create the roles that `072_backend_grants.sql` requires. An operator runs both
+before the first migration on a new database; the CI overlay mounts them into
+the same init hook so the empty-volume smoke exercises the real grant path
+instead of skipping it.
+
 Existing production services keep `DATABASE_SKIP_SCHEMA_INIT=true`, so they do
 not repeat base-schema DDL during ordinary startup. For a manual migration run,
 use `docker compose run --rm db-migrate` and inspect its output before starting
