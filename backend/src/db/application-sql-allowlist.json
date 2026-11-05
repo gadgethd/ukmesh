@@ -33,6 +33,10 @@
       "node_identity_link_radio_reports"
     ],
     "db/ledgerArchive.integration.test.ts": [],
+    "db/migrationBootstrap.integration.test.ts": [
+      "schema_migration_compatibility",
+      "schema_migrations"
+    ],
     "db/migrationSupersession.integration.test.ts": [
       "schema_migration_compatibility",
       "schema_migrations"

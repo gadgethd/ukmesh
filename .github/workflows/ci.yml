@@ -19,6 +19,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
@@ -80,7 +81,9 @@ jobs:
           }
           JS
       - run: npm test
-      - run: npm run test:analysis-integration
+      - name: Analysis integration (fails fast when PostgreSQL is absent)
+        timeout-minutes: 5
+        run: npm run test:analysis-integration
       - run: npm run test:owner-acl-integration
       - run: npm run test:vacuum-integration
       - name: Configure bounded RAM Redis fixture

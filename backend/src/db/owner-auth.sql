@@ -1,12 +1,17 @@
-CREATE TABLE IF NOT EXISTS owner_accounts (
+-- Owner-auth tables in their P1 home, the `core` namespace. This file is still
+-- copied into the backend image and included in backups, so it must match the
+-- schema the code queries rather than the pre-move public relations.
+CREATE SCHEMA IF NOT EXISTS core;
+
+CREATE TABLE IF NOT EXISTS core.owner_accounts (
   mqtt_username TEXT PRIMARY KEY,
   is_active     BOOLEAN NOT NULL DEFAULT TRUE,
   created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE IF NOT EXISTS owner_account_nodes (
-  mqtt_username TEXT NOT NULL REFERENCES owner_accounts(mqtt_username) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS core.owner_account_nodes (
+  mqtt_username TEXT NOT NULL REFERENCES core.owner_accounts(mqtt_username) ON DELETE CASCADE,
   node_id       TEXT NOT NULL,
   verification_method TEXT,
   verified_at   TIMESTAMPTZ,
@@ -19,20 +24,20 @@ CREATE TABLE IF NOT EXISTS owner_account_nodes (
   PRIMARY KEY (mqtt_username, node_id)
 );
 
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS verification_method TEXT;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS grant_id TEXT;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS grant_generation TEXT;
-ALTER TABLE owner_account_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS verification_method TEXT;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS grant_id TEXT;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS revoked_at TIMESTAMPTZ;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS revocation_reason TEXT;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS grant_generation TEXT;
+ALTER TABLE core.owner_account_nodes ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
 
 CREATE INDEX IF NOT EXISTS owner_account_nodes_node_idx
-  ON owner_account_nodes(node_id);
+  ON core.owner_account_nodes(node_id);
 
 -- Broker observations are retained for incident review only. They are never
--- authorization evidence and must not be copied into owner_account_nodes.
-CREATE TABLE IF NOT EXISTS mqtt_node_logins (
+-- authorization evidence and must not be copied into core.owner_account_nodes.
+CREATE TABLE IF NOT EXISTS core.mqtt_node_logins (
   mqtt_username     TEXT NOT NULL,
   node_id           TEXT NOT NULL,
   last_connected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -40,9 +45,9 @@ CREATE TABLE IF NOT EXISTS mqtt_node_logins (
 );
 
 CREATE INDEX IF NOT EXISTS mqtt_node_logins_username_idx
-  ON mqtt_node_logins(mqtt_username, last_connected_at DESC);
+  ON core.mqtt_node_logins(mqtt_username, last_connected_at DESC);
 
-CREATE TABLE IF NOT EXISTS owner_grant_audit (
+CREATE TABLE IF NOT EXISTS core.owner_grant_audit (
   event_id       TEXT PRIMARY KEY,
   mqtt_username  TEXT NOT NULL,
   node_id        TEXT NOT NULL,
@@ -56,9 +61,9 @@ CREATE TABLE IF NOT EXISTS owner_grant_audit (
 );
 
 CREATE INDEX IF NOT EXISTS owner_grant_audit_subject_idx
-  ON owner_grant_audit(mqtt_username, node_id, occurred_at DESC);
+  ON core.owner_grant_audit(mqtt_username, node_id, occurred_at DESC);
 
-CREATE TABLE IF NOT EXISTS owner_acl_state (
+CREATE TABLE IF NOT EXISTS core.owner_acl_state (
   singleton            BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
   desired_generation   TEXT,
   rendered_generation  TEXT,
@@ -71,11 +76,11 @@ CREATE TABLE IF NOT EXISTS owner_acl_state (
   updated_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-INSERT INTO owner_acl_state (singleton)
+INSERT INTO core.owner_acl_state (singleton)
 VALUES (TRUE)
 ON CONFLICT (singleton) DO NOTHING;
 
-CREATE TABLE IF NOT EXISTS owner_acl_artifacts (
+CREATE TABLE IF NOT EXISTS core.owner_acl_artifacts (
   generation       TEXT PRIMARY KEY,
   renderer_version TEXT NOT NULL,
   mode             TEXT NOT NULL,
