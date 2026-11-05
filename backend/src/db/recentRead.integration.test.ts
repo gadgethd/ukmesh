@@ -4,7 +4,7 @@ import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { closeDb, getRecentMessages, getRecentPackets } from './index.js';
-import { runMigrations } from './migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { configurePacketBatch, persistEntriesCore, type QueryFn } from './packetBatch.js';
 import { admitPacketToRam, configureRamStore, readPendingEntries } from '../ram/liveStore.js';
 import type { InsertPacketInput } from './packetInput.js';
@@ -25,7 +25,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
   await admin.query(`CREATE DATABASE "${name}"`);
   const ownedURL = new URL(url!);
   ownedURL.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: ownedURL.toString(), max: 3 });
+  const pool = new pg.Pool({ connectionString: ownedURL.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   const redis = new Redis(redisURL!, { lazyConnect: true, enableOfflineQueue: false });
   const oldMode = process.env['MQTT_INGEST_MODE'];
   const oldKey = process.env['MQTT_RAM_STREAM_KEY'];
@@ -46,8 +46,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     if (oldKey === undefined) delete process.env['MQTT_RAM_STREAM_KEY']; else process.env['MQTT_RAM_STREAM_KEY'] = oldKey;
   });
   await redis.connect();
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const query: QueryFn = (sql, params) => pool.query(sql, params);
   const transaction = async <T>(work: (query: QueryFn) => Promise<T>) => {
     const client = await pool.connect();

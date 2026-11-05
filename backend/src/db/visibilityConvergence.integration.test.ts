@@ -12,6 +12,7 @@ import {
   type PrivacyGenerationSnapshot,
 } from '../privacy/generationHealth.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { runMigrations } from './migrations.js';
 
 // These tests create and own a new database. Never take DATABASE_URL from the
@@ -33,7 +34,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
   const readOnlyRole = `privacy_readonly_${process.pid}_${Date.now()}`;
   const url = new URL(databaseUrl!);
   url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 4 });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 4, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
@@ -41,8 +42,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     await admin.end();
   });
   await admin.query(`CREATE DATABASE "${name}"`);
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   // The disposable fixture includes historical rows beyond normal retention.
   await pool.query(`SELECT alter_job(job_id, scheduled => FALSE)
     FROM timescaledb_information.jobs WHERE job_id >= 1000`);

@@ -225,10 +225,14 @@ export async function processNextPrivacyRematerialization(
   if (!row) return false;
   console.log(`[privacy-remat] pass start id=${row.id} target=${row.target} attempt=${row.attempts}`);
   try {
+    // The queue targets are relation names, and the P1 band moves `packets`
+    // and `packet_paths` from public to mesh. Pinning hypertable_schema =
+    // 'public' matched no chunk at all after the move, so the pass completed,
+    // bumped the generation, and left every row unrematerialized.
     const chunks = await pool.query<Chunk>(`
       SELECT range_start, range_end
         FROM timescaledb_information.chunks
-       WHERE hypertable_schema = 'public' AND hypertable_name = $1
+       WHERE hypertable_name = $1
        ORDER BY range_start
     `, [row.target]);
     for (const [index, chunk] of chunks.rows.entries()) {
