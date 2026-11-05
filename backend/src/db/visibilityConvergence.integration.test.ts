@@ -13,7 +13,7 @@ import {
 } from '../privacy/generationHealth.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
-import { runMigrations } from './migrations.js';
+import { loadMigrationFiles, runMigrations } from './migrations.js';
 
 // These tests create and own a new database. Never take DATABASE_URL from the
 // application environment; require the explicit loopback-only test endpoint.
@@ -77,6 +77,103 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     (SELECT jsonb_agg(to_jsonb(q) ORDER BY id) FROM ops.privacy_rematerialization_queue q) AS queue,
     (SELECT to_jsonb(v) FROM ops.public_visibility_state v) AS visibility,
     (SELECT to_jsonb(m) FROM ops.packet_visibility_materialization_state m) AS materialization`)).rows[0];
+
+  // Catalog helpers for the two rollback orderings: which objects depend on
+  // the fence function, and which triggers the registry relation carries.
+  const fenceTriggerDependents = async (): Promise<string[]> => (await pool.query(`
+    SELECT t.tgname
+      FROM pg_depend d
+      JOIN pg_trigger t ON t.oid = d.objid
+     WHERE d.classid = 'pg_trigger'::regclass
+       AND d.refclassid = 'pg_proc'::regclass
+       AND d.refobjid = to_regprocedure('public.bump_visibility_for_changed_prefixes()')
+     ORDER BY 1`)).rows.map((row) => String(row.tgname));
+  const fenceNonTriggerDependents = async (): Promise<number> => Number((await pool.query(`
+    SELECT count(*) AS count
+      FROM pg_depend d
+     WHERE d.refclassid = 'pg_proc'::regclass
+       AND d.refobjid = to_regprocedure('public.bump_visibility_for_changed_prefixes()')
+       AND d.classid <> 'pg_trigger'::regclass`)).rows[0].count);
+  const prefixTriggerNames = async (
+    target: pg.Pool,
+    relation: string,
+  ): Promise<string[]> => (await target.query(`
+    SELECT t.tgname FROM pg_trigger t
+     WHERE t.tgrelid = to_regclass($1) AND NOT t.tgisinternal
+     ORDER BY 1`, [relation])).rows.map((row) => String(row.tgname));
+
+  // 134 re-creates the row fence on core.private_node_prefixes after 113 moved
+  // the registry, so a rollback executed on this database must remove those
+  // triggers itself before it can drop the function they execute.
+  await t.test('066 rollback drops 134 re-attached row fence without CASCADE', async () => {
+    await reset();
+    assert.deepEqual(await fenceTriggerDependents(), [
+      'private_node_prefixes_visibility_delete_rows',
+      'private_node_prefixes_visibility_insert_rows',
+      'private_node_prefixes_visibility_truncate',
+      'private_node_prefixes_visibility_update_rows',
+    ]);
+    // The explicit trigger list is sufficient: no view, default or constraint
+    // depends on the function, so nothing is silently removed by avoiding CASCADE.
+    assert.equal(await fenceNonTriggerDependents(), 0);
+    await pool.query(rollback);
+    assert.equal((await pool.query(
+      `SELECT to_regprocedure('public.bump_visibility_for_changed_prefixes()') AS function`)).rows[0].function,
+    null);
+    assert.deepEqual(await prefixTriggerNames(pool, 'core.private_node_prefixes'),
+      ['private_node_prefixes_visibility_generation']);
+    // Restore 066 so the original-case subtest below starts from the same state
+    // the shipped deployment has.
+    await pool.query("DELETE FROM public.schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
+    assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
+    assert.deepEqual(await prefixTriggerNames(pool, 'core.private_node_prefixes'), [
+      'private_node_prefixes_visibility_delete',
+      'private_node_prefixes_visibility_insert',
+      'private_node_prefixes_visibility_truncate',
+      'private_node_prefixes_visibility_update',
+    ]);
+  });
+
+  // The original ordering: 066 applied and rolled back before 087/113/134 exist,
+  // so the registry is still public.private_node_prefixes.
+  await t.test('066 rollback is unchanged on a pre-move database', async () => {
+    const premoveName = `privacy_premove_${process.pid}_${Date.now()}`;
+    const premoveUrl = new URL(databaseUrl!);
+    premoveUrl.pathname = `/${premoveName}`;
+    await admin.query(`CREATE DATABASE "${premoveName}"`);
+    const premove = new pg.Pool({ connectionString: premoveUrl.toString(), max: 2 });
+    try {
+      const band = loadMigrationFiles()
+        .filter((file) => Number(/^(\d+)/.exec(file.name)?.[1]) <= 66);
+      const applied = await bootstrapBaseSchemaFixture(premove, band);
+      assert.equal(applied.at(-1), '066_prefix_visibility_statement_fence.sql');
+      assert.equal((await premove.query(
+        `SELECT to_regclass('core.private_node_prefixes') AS relation`)).rows[0].relation, null);
+      assert.deepEqual(await prefixTriggerNames(premove, 'public.private_node_prefixes'), [
+        'private_node_prefixes_visibility_delete',
+        'private_node_prefixes_visibility_insert',
+        'private_node_prefixes_visibility_truncate',
+        'private_node_prefixes_visibility_update',
+      ]);
+      await premove.query(rollback);
+      assert.equal((await premove.query(
+        `SELECT to_regprocedure('bump_visibility_for_changed_prefixes()') AS function`)).rows[0].function, null);
+      // Exactly 042's layout: one statement trigger, no row fence.
+      assert.deepEqual(await prefixTriggerNames(premove, 'public.private_node_prefixes'),
+        ['private_node_prefixes_visibility_generation']);
+      // And 042's conservative behavior: an empty FK cascade still invalidates.
+      await premove.query(
+        `INSERT INTO nodes (node_id, name, network) VALUES ($1, 'Fixture public', 'ukmesh')`, [nodeId]);
+      await premove.query(`UPDATE public_visibility_state SET generation = 1, updated_at = NOW() WHERE singleton`);
+      await premove.query('DELETE FROM nodes WHERE node_id = $1', [nodeId]);
+      assert.equal((await premove.query(
+        `SELECT generation::text AS generation FROM public_visibility_state WHERE singleton`)).rows[0].generation, '2');
+      t.diagnostic('PRE-MOVE ROLLBACK: 066 -> rollback leaves only 042 statement trigger and still invalidates');
+    } finally {
+      await premove.end();
+      await admin.query(`DROP DATABASE IF EXISTS "${premoveName}" WITH (FORCE)`);
+    }
+  });
 
   await t.test('reproduces the shipped no-row FK cascade, then proves rollback and reapply', async () => {
     await reset();
@@ -223,6 +320,12 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     // default must succeed, proving that inventory cannot silently mutate.
     await pool.query(`CREATE ROLE ${readOnlyRole} LOGIN PASSWORD 'privacy_test_readonly'`);
     await pool.query(`GRANT CONNECT ON DATABASE "${name}" TO ${readOnlyRole}`);
+    // Read-only inventory resolves the post-move namespaces: USAGE alone on the
+    // old `public` spelling cannot reach ops/core/mesh tables.
+    for (const schema of ['core', 'ops', 'mesh', 'analytics']) {
+      await pool.query(`GRANT USAGE ON SCHEMA ${schema} TO ${readOnlyRole}`);
+      await pool.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${schema} TO ${readOnlyRole}`);
+    }
     await pool.query(`GRANT USAGE ON SCHEMA public TO ${readOnlyRole}`);
     await pool.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${readOnlyRole}`);
     const readOnlyURL = new URL(url); readOnlyURL.username = readOnlyRole; readOnlyURL.password = 'privacy_test_readonly';
@@ -307,7 +410,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
         );
         assert.equal((await reconcile()).reason, 'read_failed', 'a missing relation must fail closed too');
       } finally {
-        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO ops.packet_visibility_materialization_state');
+        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO packet_visibility_materialization_state');
       }
     } finally { await reader.end(); }
   });
@@ -378,7 +481,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const adaptedPool = { async connect() {
       const client = await pool.connect();
       return { query(text: string, values?: unknown[]) {
-        if (text.startsWith('LOCK TABLE nodes')) starting();
+        if (text.includes('LOCK TABLE')) starting();
         return client.query(text, values);
       }, release() { client.release(); } };
     } };
@@ -439,7 +542,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       return {
         async query(text: string, values?: unknown[]) {
           const result = await lockHolder.query(text, values);
-          if (text.startsWith('LOCK TABLE nodes')) { reached(); await paused; }
+          if (text.includes('LOCK TABLE')) { reached(); await paused; }
           return result;
         }, release() {},
       };
