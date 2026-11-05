@@ -3,21 +3,25 @@
 The link worker, Discord bot and CoreScope are separate deployment units.  A
 green backend suite does not prove that their SQL still resolves after a table
 move, so scan their runtime sources before deploying a move.
+
+The checker lives in this tree (not ``scripts/``) because the worker image
+builds from ``viewshed-worker/`` and runs this suite inside the container; see
+``test_checker_shipping.py`` for the guard that keeps it there.
 """
 import os
 import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "scripts"))
+WORKER_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(WORKER_ROOT))
 
 from check_external_consumer_sql import scan_roots, scan_text  # noqa: E402
 
 
 class RelationQualificationTest(unittest.TestCase):
     def test_link_worker_sources_are_qualified(self):
-        violations = scan_roots([ROOT / "viewshed-worker"])
+        violations = scan_roots([WORKER_ROOT])
         self.assertEqual(violations, [], f"unqualified moved relations: {violations}")
 
     def test_scanner_rejects_short_names_and_accepts_schema_qualified_sql(self):
