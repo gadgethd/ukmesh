@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 
 /**
@@ -29,7 +30,31 @@ type State = {
   high_water: string | null;
   last_time: string | null;
   last_observation_id: string | null;
+  last_hash: string | null;
+  last_rx_node_id: string | null;
 };
+
+const RUN_LOCK_KEY = 'meshcore.packet_identity_backfill';
+// Resuming from the start of the checkpointed instant is safe because the
+// update only touches rows whose packet_uid is still NULL.
+const CURSOR_FLOOR = '00000000-0000-0000-0000-000000000000';
+
+/**
+ * Hold one session-level advisory lock for the whole run. A transaction-level
+ * lock is released at every batch COMMIT, which let a second run interleave
+ * between batches.
+ */
+async function acquireRunLock(client: pg.PoolClient): Promise<void> {
+  const result = await client.query<{ locked: boolean }>(
+    'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+    [RUN_LOCK_KEY],
+  );
+  if (!result.rows[0]?.locked) throw new Error('packet identity backfill is already running');
+}
+
+async function releaseRunLock(client: pg.PoolClient): Promise<void> {
+  await client.query('SELECT pg_advisory_unlock(hashtext($1)) AS unlocked', [RUN_LOCK_KEY]);
+}
 
 function canonicalFromRawHex(rawHex: string | null): string | undefined {
   const hex = rawHex?.trim() ?? '';
@@ -92,11 +117,53 @@ async function loadState(client: pg.PoolClient): Promise<State> {
   const result = await client.query<State>(`
     SELECT high_water::text AS high_water,
            last_time::text AS last_time,
-           last_observation_id::text AS last_observation_id
+           last_observation_id::text AS last_observation_id,
+           last_hash,
+           last_rx_node_id
       FROM ops.packet_identity_backfill_state WHERE singleton
   `);
   if (!result.rows[0]) throw new Error('packet identity backfill state row is missing');
   return result.rows[0];
+}
+
+/**
+ * Translate a pre-131 cursor (time, hash, rx_node_id) to the unique
+ * (time, observation_id) cursor instead of refusing to resume. The minimum
+ * observation id at the checkpointed instant cannot skip work: rows already
+ * resolved are excluded by the packet_uid IS NULL filter.
+ */
+async function migrateLegacyCheckpoint(
+  client: pg.PoolClient,
+  state: State,
+  dryRun: boolean,
+): Promise<State> {
+  if (!state.last_time) return state;
+  let observationId = CURSOR_FLOOR;
+  if (state.last_hash) {
+    const legacy = await client.query<{ observation_id: string | null }>(`
+      SELECT observation_id::text AS observation_id
+        FROM mesh.packets
+       WHERE time = $1::timestamptz
+         AND packet_hash = $2
+         AND COALESCE(rx_node_id, '') = $3
+         AND observation_id IS NOT NULL
+       ORDER BY observation_id
+       LIMIT 1
+    `, [state.last_time, state.last_hash, state.last_rx_node_id ?? '']);
+    observationId = legacy.rows[0]?.observation_id ?? CURSOR_FLOOR;
+  }
+  const migrated = { ...state, last_observation_id: observationId };
+  if (!dryRun) {
+    await client.query(`
+      UPDATE ops.packet_identity_backfill_state
+         SET last_observation_id = $1::uuid,
+             last_hash = NULL,
+             last_rx_node_id = NULL,
+             updated_at = NOW()
+       WHERE singleton
+    `, [observationId]);
+  }
+  return migrated;
 }
 
 async function uncompressedChunks(client: pg.PoolClient): Promise<Array<{ schema: string; name: string }>> {
@@ -150,13 +217,16 @@ async function packetBatch(
   return result.rows;
 }
 
-async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean, limit: number, since: string | null) {
+export async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean, limit: number, since: string | null) {
   const client = await pool.connect();
   const total: Counts = { selected: 0, resolved: 0, unresolved: 0, mismatch: 0 };
+  let lockHeld = false;
   try {
+    await acquireRunLock(client);
+    lockHeld = true;
     let state = await loadState(client);
     if (state.last_time && !state.last_observation_id) {
-      throw new Error('legacy checkpoint has no last_observation_id; reset the checkpoint before running');
+      state = await migrateLegacyCheckpoint(client, state, dryRun);
     }
     if (!state.high_water) {
       const highWater = await client.query<{ high_water: string | null }>(`
@@ -179,12 +249,6 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
       while (true) {
         await client.query('BEGIN');
         try {
-          const lock = await client.query<{ locked: boolean }>(
-            `SELECT pg_try_advisory_xact_lock(hashtext('meshcore.packet_identity_backfill')) AS locked`,
-          );
-          if (!lock.rows[0]?.locked) {
-            throw new Error('packet identity backfill is already running');
-          }
           const rows = await packetBatch(client, state, chunk, batchSize, since);
           if (rows.length === 0) {
             await client.query('COMMIT');
@@ -201,7 +265,7 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
             else resolved.push(row);
           }
 
-          let resolvedCount = 0;
+          let resolvedCount = dryRun ? resolved.length : 0;
           if (!dryRun && resolved.length > 0) {
             const update = await client.query<{ ctid: string }>(`
               UPDATE ${quoteIdent(chunk.schema)}.${quoteIdent(chunk.name)} p
@@ -263,7 +327,18 @@ async function backfillPackets(pool: pg.Pool, batchSize: number, dryRun: boolean
     }
     return total;
   } finally {
-    client.release();
+    if (lockHeld) {
+      try {
+        await releaseRunLock(client);
+        client.release();
+      } catch (error) {
+        // Destroying the session is the only guaranteed way to drop a
+        // session-level advisory lock when the unlock query itself fails.
+        client.release(error instanceof Error ? error : true);
+      }
+    } else {
+      client.release();
+    }
   }
 }
 
@@ -279,7 +354,12 @@ async function main() {
   }
 }
 
-main().catch((error) => {
-  console.error(error instanceof Error ? error.message : String(error));
-  process.exitCode = 1;
-});
+const invokedDirectly = process.argv[1] !== undefined
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 1;
+  });
+}
