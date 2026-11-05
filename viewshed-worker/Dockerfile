@@ -14,7 +14,9 @@ ENV LD_PRELOAD=libtcmalloc_minimal.so.4
 COPY requirements.txt .
 RUN pip install --no-cache-dir --require-hashes -r requirements.txt
 
-COPY worker.py worker_metrics.py link_queue_v3.py viewshed_queue_v2.py queue_admin.py backfill_profiles.py dry_run_coverage.py uk_mainland.json ./
+# The external-consumer SQL checker is imported by the test suite below, so it
+# must be in the image; scripts/ is outside this build context.
+COPY worker.py worker_metrics.py link_queue_v3.py viewshed_queue_v2.py queue_admin.py backfill_profiles.py dry_run_coverage.py check_external_consumer_sql.py uk_mainland.json ./
 COPY rf ./rf
 COPY tests ./tests
 
