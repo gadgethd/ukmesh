@@ -107,14 +107,15 @@ CREATE TABLE ops.privacy_rematerialization_queue (target TEXT, status TEXT, node
 INSERT INTO ops.public_visibility_state VALUES (TRUE, 1);
 INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1);
 
--- Mirrors migrations 130 and 131. The legacy last_hash/last_rx_node_id columns
--- are still present in production and are declared here so the pre-fix tool can
--- be run against the same fixture to prove these tests fail when reverted.
+-- Mirrors migrations 130, 131 and 134. The legacy last_hash/last_rx_node_id
+-- columns are still present in production and are declared here so the pre-fix
+-- tool can be run against the same fixture to prove these tests fail when
+-- reverted.
 CREATE TABLE ops.packet_identity_backfill_state (
   singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
   phase TEXT NOT NULL DEFAULT 'packets',
   status TEXT NOT NULL DEFAULT 'idle'
-    CHECK (status IN ('idle', 'running', 'packets_complete', 'complete', 'failed')),
+    CHECK (status IN ('idle', 'running', 'packets_complete', 'packets_partial', 'complete', 'failed')),
   high_water TIMESTAMPTZ,
   last_time TIMESTAMPTZ,
   last_hash TEXT,
@@ -124,6 +125,10 @@ CREATE TABLE ops.packet_identity_backfill_state (
   unresolved BIGINT NOT NULL DEFAULT 0,
   ambiguous BIGINT NOT NULL DEFAULT 0,
   batch_count BIGINT NOT NULL DEFAULT 0,
+  chunk_results JSONB NOT NULL DEFAULT '[]'::jsonb,
+  skipped_compressed INTEGER NOT NULL DEFAULT 0,
+  status_reason TEXT,
+  decompressed_chunks TEXT[] NOT NULL DEFAULT '{}'::text[],
   updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 INSERT INTO ops.packet_identity_backfill_state (singleton) VALUES (TRUE);
@@ -200,6 +205,22 @@ type BackfillSummary = {
   unresolved: number;
   mismatch: number;
 };
+
+/**
+ * The five counters the original assertions pinned. The summary now also
+ * carries per-chunk results and the completion claim; those are asserted by
+ * backfillIdentity.compressed.test.ts.
+ */
+function counters(summary: BackfillSummary | undefined) {
+  assert.ok(summary, 'the CLI must print a summary');
+  return {
+    dryRun: summary.dryRun,
+    selected: summary.selected,
+    resolved: summary.resolved,
+    unresolved: summary.unresolved,
+    mismatch: summary.mismatch,
+  };
+}
 
 type BackfillRun = {
   code: number;
@@ -310,7 +331,7 @@ test(
 
     const run = await runBackfill(['--batch-size', '2']);
     assert.equal(run.code, 0, run.stderr);
-    assert.deepEqual(run.summary, {
+    assert.deepEqual(counters(run.summary), {
       dryRun: false,
       selected: 6,
       resolved: 6,
@@ -392,7 +413,7 @@ test(
 
     const run = await runBackfill(['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
-    assert.deepEqual(run.summary, {
+    assert.deepEqual(counters(run.summary), {
       dryRun: false,
       selected: 5,
       resolved: 2,
@@ -431,7 +452,9 @@ test(
     const status = await pool.query<{ status: string }>(
       `SELECT status FROM ops.packet_identity_backfill_state`,
     );
-    assert.equal(status.rows[0]!.status, 'running', 'a limited run is not a completed phase');
+    // 134 replaced the ambiguous 'running' after a --limit stop with an
+    // explicit partial phase: the process has exited, so nothing is running.
+    assert.equal(status.rows[0]!.status, 'packets_partial', 'a limited run is not a completed phase');
   },
 );
 
