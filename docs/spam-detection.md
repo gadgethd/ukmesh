@@ -27,6 +27,17 @@ spam_message_incidents / spam_message_members   (public_json is pre-sanitized)
 /api/spam/messages/*  →  Spam Watch dashboard (frontend SpamPage)
 ```
 
+The overview map groups similar coarse origin estimates into suspected source
+areas, with one circle and an incident-count label per area. Centres must be on
+the same network, within 15 km of every other centre in the group, and within
+each other's original uncertainty radius. Broad uncertainty circles therefore
+cannot join distant centres or form chains across a region. The strongest
+origin estimate anchors each circle; its radius expands to retain every
+member's uncertainty. A group is red if any member is active. This is a display
+of similar origin estimates, not confirmed sender attribution: incident records,
+counts, details, and individual origin maps remain independent. Redacted sender
+prefixes and sanitized message placeholders are not evidence of a shared source.
+
 Only decoded channel messages are used (MeshCore public/known-key channels where
 `payload.decrypted.message` exists). Direct messages and unknown-key channels stay
 encrypted and are never inspected.
