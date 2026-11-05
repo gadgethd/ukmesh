@@ -27,6 +27,8 @@
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
     "test:analysis-integration": "node --import tsx --test src/analysis/runState.integration.test.ts",
+    "test:schema-fixtures": "timeout 400s node --import tsx --test src/owner/packetShareRepository.integration.test.ts src/spam/repository.integration.test.ts src/db/nodeNameHistory.integration.test.ts",
+    "test:owner-last-hop-integration": "timeout 120s node --import tsx --test src/owner/ownerService.integration.test.ts",
     "test:owner-acl-integration": "node --import tsx --test src/owner/ownerAclArtifacts.integration.test.ts",
     "test:external-consumers": "npm run test:external-consumers:sql && npm run test:external-consumers:views",
     "test:external-consumers:sql": "python3 ../scripts/check_external_consumer_sql.py --root ../backend/src --root ../viewshed-worker",

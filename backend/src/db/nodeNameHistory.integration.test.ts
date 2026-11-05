@@ -16,6 +16,9 @@ import { networkFilters } from '../api/utils/networkFilters.js';
 // Worktree-local PostgreSQL WASM only: no DATABASE_URL or existing service.
 const moduleUrl = process.env['TEST_NODE_HISTORY_PGLITE_MODULE'];
 const key = (c: string) => c.repeat(64);
+if (process.env['CI'] && !moduleUrl) {
+  throw new Error('Node name history SQL tests require an explicit test fixture in CI');
+}
 
 test('name retention and search execute the production write paths, migration, identity view and HTTP route', {
   skip: moduleUrl ? false : 'TEST_NODE_HISTORY_PGLITE_MODULE is not configured',
@@ -25,7 +28,14 @@ test('name retention and search execute the production write paths, migration, i
   const db = await PGlite.create();
   t.after(() => db.close());
   await db.exec(`
-    CREATE TABLE nodes (
+    CREATE SCHEMA core;
+    CREATE SCHEMA mesh;
+    CREATE SCHEMA ops;
+    -- Post-move DDL in the applied migrations is unqualified. Resolve it into
+    -- the core namespace: the write paths and repository SQL are core/mesh
+    -- qualified and a public-only search_path cannot stand in for them.
+    SET search_path = core, mesh, public;
+    CREATE TABLE core.nodes (
       node_id TEXT PRIMARY KEY, name TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION,
       iata TEXT, role INTEGER, hardware_model TEXT, firmware_version TEXT, public_key TEXT,
       last_seen TIMESTAMPTZ, is_online BOOLEAN, network TEXT, advert_count INTEGER DEFAULT 0,
@@ -33,21 +43,38 @@ test('name retention and search execute the production write paths, migration, i
       last_mqtt_observer_seen_at TIMESTAMPTZ, last_predicted_online_at TIMESTAMPTZ,
       last_path_evidence_at TIMESTAMPTZ, last_rx_at TIMESTAMPTZ, last_status_at TIMESTAMPTZ
     );
-    CREATE SCHEMA IF NOT EXISTS ops; CREATE TABLE core.node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
+    CREATE TABLE core.node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
+    CREATE TABLE core.node_coverage (node_id TEXT PRIMARY KEY);
+    CREATE TABLE core.node_map_suppressions (node_id TEXT PRIMARY KEY);
     CREATE TABLE core.node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
-    CREATE TABLE node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
-    CREATE TABLE packets (rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT);
-    CREATE TABLE node_status_samples (
+    CREATE TABLE core.node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
+    CREATE TABLE core.node_status_samples (
       time TIMESTAMPTZ, node_id TEXT, network TEXT, battery_mv INTEGER, uptime_secs BIGINT,
       tx_air_secs DOUBLE PRECISION, rx_air_secs DOUBLE PRECISION,
       channel_utilization DOUBLE PRECISION, air_util_tx DOUBLE PRECISION, stats JSONB, status TEXT
     );
-    INSERT INTO nodes (node_id, name, lat, lon, role, network, last_seen)
+    CREATE TABLE mesh.packets (
+      rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT,
+      is_private BOOLEAN DEFAULT FALSE, visibility_ok BOOLEAN DEFAULT TRUE, path_hashes TEXT[]
+    );
+    -- The public privacy predicate requires a materialised visibility generation.
+    CREATE TABLE ops.public_visibility_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), generation BIGINT NOT NULL DEFAULT 1
+    );
+    INSERT INTO ops.public_visibility_state (singleton) VALUES (TRUE);
+    CREATE TABLE ops.packet_visibility_materialization_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), visibility_generation BIGINT NOT NULL
+    );
+    INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1);
+    CREATE TABLE ops.privacy_rematerialization_queue (target TEXT, status TEXT, node_id TEXT, network TEXT);
+    INSERT INTO core.nodes (node_id, name, lat, lon, role, network, last_seen)
       VALUES ('${key('A')}', 'Original hill', 54.5, -1.5, 2, 'ukmesh', NOW());
   `);
+  // The canonical resolver is core-qualified after the P1 moves.
+  await db.exec(await readFile(new URL('./migrations/111_repair_canonical_node_id.sql', import.meta.url), 'utf8'));
   const identity = await readFile(new URL('./migrations/036_node_identity_merge.sql', import.meta.url), 'utf8');
   await db.exec(identity.slice(
-    identity.indexOf('CREATE OR REPLACE FUNCTION meshcore_canonical_node_id'),
+    identity.indexOf('CREATE VIEW node_identity_nodes AS'),
     identity.indexOf('CREATE VIEW node_identity_status_samples'),
   ));
   const optimizedIdentity = await readFile(new URL('./migrations/037_node_identity_view_perf.sql', import.meta.url), 'utf8');
