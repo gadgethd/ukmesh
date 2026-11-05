@@ -12,8 +12,8 @@ import {
   type PrivacyGenerationSnapshot,
 } from '../privacy/generationHealth.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
-import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { runMigrations } from './migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 
 // These tests create and own a new database. Never take DATABASE_URL from the
 // application environment; require the explicit loopback-only test endpoint.
@@ -42,6 +42,9 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     await admin.end();
   });
   await admin.query(`CREATE DATABASE "${name}"`);
+  // Build the fixture the way a fresh deployment is built: base schema, the
+  // operator roles, then the band replayed under the documented bootstrap
+  // approval (#202 refuses a ledger over an arbitrary non-empty database).
   await bootstrapBaseSchemaFixture(pool);
   // The disposable fixture includes historical rows beyond normal retention.
   await pool.query(`SELECT alter_job(job_id, scheduled => FALSE)
@@ -80,6 +83,14 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
 
   await t.test('reproduces the shipped no-row FK cascade, then proves rollback and reapply', async () => {
     await reset();
+    // At head the prefix fence is two migrations: 066 installs the statement
+    // body, and 134 re-asserts 074's row-level triggers on the post-move
+    // schema. Rolling the fence back therefore removes both, in reverse band
+    // order: 134's row triggers go first, then 066's own rollback SQL (which
+    // drops the statement triggers and the function).
+    await pool.query(`DROP TRIGGER IF EXISTS private_node_prefixes_visibility_insert_rows ON core.private_node_prefixes;
+      DROP TRIGGER IF EXISTS private_node_prefixes_visibility_update_rows ON core.private_node_prefixes;
+      DROP TRIGGER IF EXISTS private_node_prefixes_visibility_delete_rows ON core.private_node_prefixes;`);
     // The rollback is executable SQL, not a description. It restores 042.
     await pool.query(rollback);
     await addNode();
@@ -89,8 +100,12 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.equal((await pool.query('SELECT COUNT(*)::text AS count FROM private_node_prefixes')).rows[0].count, '0');
     t.diagnostic('BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero prefix rows');
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
-    await pool.query("DELETE FROM public.schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
-    assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
+    await pool.query(`DELETE FROM public.schema_migrations WHERE name IN
+      ('066_prefix_visibility_statement_fence.sql', '134_reassert_prefix_visibility_fence.sql')`);
+    assert.deepEqual(await runMigrations(pool), [
+      '066_prefix_visibility_statement_fence.sql',
+      '134_reassert_prefix_visibility_fence.sql',
+    ]);
     assert.deepEqual(await flags('packets'), [{ packet_hash: 'upgrade-preserved', is_private: false, visibility_ok: true }]);
     // Neither migration nor rollback certifies an existing gap.
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '1' });
@@ -104,6 +119,11 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      // Same reverse-order fence removal as above, inside the transaction that
+      // is rolled back: the rollback SQL must be executable at head.
+      await client.query(`DROP TRIGGER IF EXISTS private_node_prefixes_visibility_insert_rows ON core.private_node_prefixes;
+        DROP TRIGGER IF EXISTS private_node_prefixes_visibility_update_rows ON core.private_node_prefixes;
+        DROP TRIGGER IF EXISTS private_node_prefixes_visibility_delete_rows ON core.private_node_prefixes;`);
       await client.query(rollback.replace(/^BEGIN;|^COMMIT;/gm, ''));
       await assert.rejects(client.query(`${migration}\nSELECT 1 / 0;`), /division by zero/);
     } finally { await client.query('ROLLBACK'); client.release(); }
@@ -225,6 +245,11 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     await pool.query(`GRANT CONNECT ON DATABASE "${name}" TO ${readOnlyRole}`);
     await pool.query(`GRANT USAGE ON SCHEMA public TO ${readOnlyRole}`);
     await pool.query(`GRANT SELECT ON ALL TABLES IN SCHEMA public TO ${readOnlyRole}`);
+    // After the P1 move the product tables live in their own namespaces; a
+    // reader granted only `public` sees the compatibility views and cannot
+    // read the tables underneath them.
+    await pool.query(`GRANT USAGE ON SCHEMA mesh, core, analytics, ops TO ${readOnlyRole}`);
+    await pool.query(`GRANT SELECT ON ALL TABLES IN SCHEMA mesh, core, analytics, ops TO ${readOnlyRole}`);
     const readOnlyURL = new URL(url); readOnlyURL.username = readOnlyRole; readOnlyURL.password = 'privacy_test_readonly';
     const cli = await execute(process.execPath, ['--import', 'tsx', 'src/tools/convergePacketVisibility.ts'], {
       cwd: new URL('../../', import.meta.url), env: { ...process.env, DATABASE_URL: readOnlyURL.toString() },
@@ -255,7 +280,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const reader = new pg.Pool({
       connectionString: readOnlyURL.toString(), max: 1, connectionTimeoutMillis: 1_000,
       statement_timeout: 1_000, query_timeout: 1_500,
-      options: '-c default_transaction_read_only=on',
+      options: `${POST_MOVE_SEARCH_PATH} -c default_transaction_read_only=on`,
     });
     const inspect = async () => {
       const before = await snapshot();
@@ -307,7 +332,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
         );
         assert.equal((await reconcile()).reason, 'read_failed', 'a missing relation must fail closed too');
       } finally {
-        await pool.query('ALTER TABLE fixture_missing_materialization RENAME TO ops.packet_visibility_materialization_state');
+        await pool.query('ALTER TABLE ops.fixture_missing_materialization RENAME TO packet_visibility_materialization_state');
       }
     } finally { await reader.end(); }
   });
@@ -378,7 +403,10 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     const adaptedPool = { async connect() {
       const client = await pool.connect();
       return { query(text: string, values?: unknown[]) {
-        if (text.startsWith('LOCK TABLE nodes')) starting();
+        // After the P1 move the maintenance lock names `core.nodes`; match the
+        // statement, not the pre-move spelling, or the writer never commits and
+        // the boundary under test is replaced by a 5s lock timeout.
+        if (text.startsWith('LOCK TABLE')) starting();
         return client.query(text, values);
       }, release() { client.release(); } };
     } };
@@ -439,7 +467,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       return {
         async query(text: string, values?: unknown[]) {
           const result = await lockHolder.query(text, values);
-          if (text.startsWith('LOCK TABLE nodes')) { reached(); await paused; }
+          if (text.startsWith('LOCK TABLE')) { reached(); await paused; }
           return result;
         }, release() {},
       };
