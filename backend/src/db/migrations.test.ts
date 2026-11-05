@@ -129,6 +129,8 @@ test('merged tree re-asserts the prefix fence above 132 against post-move relati
   assert.match(sqlCode, /AFTER INSERT ON core\.private_node_prefixes\s+FOR EACH ROW EXECUTE FUNCTION public\.bump_visibility_for_changed_prefixes\(\)/);
   assert.match(sqlCode, /to_regclass\('core\.private_node_prefixes'\)/);
   assert.match(sqlCode, /state\.prefix_fence_xid IS NULL/);
+});
+
 const shippedBaseSchema = parseBaseSchemaShape(
   readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'),
 );
