@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
-import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
+import { runMigrations } from './migrations.js';
 import { persistEntriesCore, type QueryFn } from './packetBatch.js';
 import { buildPacketBatchInput } from './packetInput.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
@@ -18,9 +18,10 @@ test('recovery migration: atomic forwarding, hypertable capacity, and abandoned 
   const name = `meshcore_recovery_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseUrl!); url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 3 });
   t.after(async () => { await pool.end(); await admin.query(`DROP DATABASE "${name}" WITH (FORCE)`); await admin.end(); });
-  await bootstrapBaseSchemaFixture(pool);
+  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await runMigrations(pool);
   const execute: QueryFn = (sql, params) => pool.query(sql, params);
   const transaction = async <T>(work: (query: QueryFn) => Promise<T>) => {
     const client = await pool.connect();
