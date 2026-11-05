@@ -229,6 +229,15 @@ not repeat base-schema DDL during ordinary startup. For a manual migration run,
 use `docker compose run --rm db-migrate` and inspect its output before starting
 new application containers.
 
+A database that already ran the P1 schema moves does not replay the historical
+row-fence file: `074_prefix_visibility_row_fence.sql` is recorded as
+`superseded-post-move` (with the observed catalog shape in
+`schema_migration_compatibility.evidence`) because `087`/`113` moved its targets
+into `ops`/`core` and `108`/`128` left views at the public names. The run then
+continues to `134_reassert_prefix_visibility_fence.sql`, which installs the same
+fence on the post-move relations. A pre-move database still executes 074. See
+`backend/src/db/migrations/README.md`.
+
 ## Production network-label cutover
 
 The historical `teesside` and `northeast` labels remain read-compatible until a deliberate cutover. Start with a non-mutating audit:

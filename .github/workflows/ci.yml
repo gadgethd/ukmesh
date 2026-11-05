@@ -94,6 +94,8 @@ jobs:
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration
+      - name: Prove 074 is superseded only on post-move databases
+        run: timeout 240s npm run test:migration-supersession
       - name: Qualify broker framing and bounded offline replay
         run: |
           fixture_dir="$(mktemp -d)"

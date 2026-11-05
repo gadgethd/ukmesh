@@ -35,6 +35,120 @@ const EMPTY_DATABASE_SUPERSESSIONS = new Map<string, string>([
   ['016_private_prefixes.sql', '026_private_visibility_schema.sql'],
 ]);
 
+// A migration may only be superseded when the schema it targets has provably
+// moved. Name matching alone is never enough: the same file must still run on a
+// database that has not reached the move, so every requirement below is a fact
+// about the live catalog rather than a filename or a ledger entry. The
+// replacement must also be present in the tree, because the point of skipping
+// the historical file is that the replacement installs the same guarantee.
+export interface PostMoveSupersession {
+  readonly name: string;
+  readonly replacement: string;
+  /** Relations that must exist as real tables (post-move homes). */
+  readonly postMoveTables: readonly string[];
+  /** Relations that must exist only as read-only projections (view or matview). */
+  readonly displacedViews: readonly string[];
+  readonly reason: string;
+}
+
+export const POST_MOVE_SUPERSESSIONS: readonly PostMoveSupersession[] = [
+  {
+    // 074 installed the row-level prefix fence while the privacy cluster still
+    // lived in public. 087/113 moved the tables to ops/core and 108/128 left
+    // read-only views at the old names, so ALTER TABLE and CREATE TRIGGER can
+    // no longer reach them. 134 re-asserts the same fence against the post-move
+    // relations; the run must continue past 074 so it can.
+    name: '074_prefix_visibility_row_fence.sql',
+    replacement: '134_reassert_prefix_visibility_fence.sql',
+    postMoveTables: ['ops.public_visibility_state', 'core.private_node_prefixes'],
+    displacedViews: ['public.public_visibility_state', 'public.private_node_prefixes'],
+    reason: 'privacy cluster moved to ops/core and the public names are compatibility views',
+  },
+];
+
+export type RelationShapes = Readonly<Record<string, string | null>>;
+
+export interface PostMoveObservation {
+  readonly relations: RelationShapes;
+  readonly replacementPresent: boolean;
+}
+
+export interface PostMoveDecision {
+  readonly superseded: boolean;
+  /** Set when the condition matched but the tree cannot deliver the guarantee. */
+  readonly refusal?: string;
+  readonly evidence: Readonly<Record<string, unknown>>;
+}
+
+const TABLE_KINDS: ReadonlySet<string> = new Set(['r', 'p']);
+const VIEW_KINDS: ReadonlySet<string> = new Set(['v', 'm']);
+
+/**
+ * Decide whether a historical migration is provably superseded by its
+ * post-move replacement. Pure: callers pass the observed catalog shapes, so
+ * every branch is covered by a unit test and the runner only records what it
+ * was told.
+ */
+export function decidePostMoveSupersession(
+  spec: PostMoveSupersession,
+  observation: PostMoveObservation,
+): PostMoveDecision {
+  const tables = spec.postMoveTables.map((relation) => ({
+    relation,
+    kind: observation.relations[relation] ?? null,
+  }));
+  const views = spec.displacedViews.map((relation) => ({
+    relation,
+    kind: observation.relations[relation] ?? null,
+  }));
+  const tablesMoved = tables.every(({ kind }) => kind !== null && TABLE_KINDS.has(kind));
+  const namesDisplaced = views.every(({ kind }) => kind !== null && VIEW_KINDS.has(kind));
+  const evidence = {
+    migration: spec.name,
+    replacement: spec.replacement,
+    reason: spec.reason,
+    postMoveTables: tables,
+    displacedViews: views,
+  };
+
+  if (!tablesMoved || !namesDisplaced) {
+    return { superseded: false, evidence };
+  }
+  if (!observation.replacementPresent) {
+    return {
+      superseded: false,
+      refusal: `${spec.name} is pending on a post-move database but its replacement `
+        + `${spec.replacement} is not in the tree; refusing to skip the fence`,
+      evidence,
+    };
+  }
+  return { superseded: true, evidence };
+}
+
+async function observeRelations(
+  client: pg.PoolClient,
+  relations: readonly string[],
+): Promise<RelationShapes> {
+  if (relations.length === 0) return {};
+  const pairs = relations.map((relation) => {
+    const [schema, name] = relation.split('.');
+    return { schema, name };
+  });
+  const result = await client.query<{ schema: string; name: string; kind: string | null }>(
+    `SELECT requested.schema, requested.name, c.relkind::text AS kind
+       FROM unnest($1::text[], $2::text[]) AS requested(schema, name)
+       LEFT JOIN pg_namespace n ON n.nspname = requested.schema
+       LEFT JOIN pg_class c ON c.relnamespace = n.oid AND c.relname = requested.name`,
+    [pairs.map((pair) => pair.schema), pairs.map((pair) => pair.name)],
+  );
+  const shapes: Record<string, string | null> = {};
+  for (const relation of relations) shapes[relation] = null;
+  for (const row of result.rows) {
+    shapes[`${row.schema}.${row.name}`] = row.kind;
+  }
+  return shapes;
+}
+
 // These filenames predate prefix enforcement and have both shipped. They remain
 // explicit so a fresh database and an existing ledger see the same history,
 // while every newly introduced duplicate prefix fails closed.
@@ -334,7 +448,7 @@ async function assertCanonicalLedger(
 export async function runMigrations(
   pool: pg.Pool,
   // Tests drive a deterministic subset; production always uses the shipped tree.
-  migrations: MigrationFile[] = loadMigrationFiles(),
+  migrations: readonly MigrationFile[] = loadMigrationFiles(),
 ): Promise<string[]> {
   if (migrations.length < 1) return [];
 
@@ -371,9 +485,15 @@ export async function runMigrations(
         checksum_sha256 TEXT NOT NULL,
         disposition TEXT NOT NULL,
         replacement_name TEXT,
+        evidence JSONB,
         recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    // Audit rows written by earlier runner versions predate structured evidence.
+    await client.query(
+      `ALTER TABLE ${MIGRATION_COMPATIBILITY_TABLE}
+       ADD COLUMN IF NOT EXISTS evidence JSONB`,
+    );
 
     if (ledgerState === 'initialise-from-base-schema') {
       // Permanent, queryable record of the approved bootstrap: which base.schema
@@ -557,6 +677,64 @@ export async function runMigrations(
         }
         executed.push(`${migration.name} -> ${replacement}`);
         continue;
+      }
+
+      const postMove = POST_MOVE_SUPERSESSIONS.find((spec) => spec.name === migration.name);
+      if (postMove) {
+        const relations = await observeRelations(client, [
+          ...postMove.postMoveTables,
+          ...postMove.displacedViews,
+        ]);
+        const decision = decidePostMoveSupersession(postMove, {
+          relations,
+          replacementPresent: migrations.some(
+            (candidate) => candidate.name === postMove.replacement,
+          ),
+        });
+        if (decision.refusal) throw new Error(decision.refusal);
+        if (decision.superseded) {
+          // The audit row and the ledger row must agree, so both are written in
+          // one transaction: a database can never claim to have skipped the
+          // fence without also recording the schema shape that justified it.
+          await client.query('BEGIN');
+          try {
+            await client.query(
+              `INSERT INTO ${MIGRATIONS_TABLE}
+                (name, checksum_sha256, execution_mode)
+               VALUES ($1, $2, 'superseded-post-move')`,
+              [migration.name, migration.checksumSha256],
+            );
+            await client.query(
+              `INSERT INTO ${MIGRATION_COMPATIBILITY_TABLE}
+                (migration_name, checksum_sha256, disposition, replacement_name, evidence)
+               VALUES ($1, $2, 'superseded-post-move', $3, $4)
+               ON CONFLICT (migration_name) DO UPDATE SET
+                 checksum_sha256 = EXCLUDED.checksum_sha256,
+                 disposition = EXCLUDED.disposition,
+                 replacement_name = EXCLUDED.replacement_name,
+                 evidence = EXCLUDED.evidence,
+                 recorded_at = NOW()`,
+              [
+                migration.name,
+                migration.checksumSha256,
+                postMove.replacement,
+                JSON.stringify(decision.evidence),
+              ],
+            );
+            await client.query('COMMIT');
+          } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+          }
+          console.log(
+            `[db-migrate] ${migration.name} superseded by ${postMove.replacement}: `
+            + `${postMove.reason}`,
+          );
+          executed.push(
+            `${migration.name} -> ${postMove.replacement} (superseded-post-move)`,
+          );
+          continue;
+        }
       }
 
       if (migration.transactional) {

@@ -6,10 +6,14 @@ import test from 'node:test';
 import {
   BASE_SCHEMA_BOOTSTRAP_APPROVAL,
   decideLedgerBootstrap,
+  decidePostMoveSupersession,
   loadMigrationFiles,
   migrationChecksum,
+  POST_MOVE_SUPERSESSIONS,
   parseBaseSchemaShape,
   validateMigrationPrefixes,
+  type PostMoveObservation,
+  type PostMoveSupersession,
 } from './migrations.js';
 
 test('migration checksums are stable and change with file contents', () => {
@@ -62,6 +66,81 @@ test('merged migration tree preserves shipped names and rejects new prefix colli
   assert.throws(() => validateMigrationPrefixes([
     ...names, '062_accidental_collision.sql',
   ]), /duplicate migration prefix 062/);
+});
+
+const FENCE_SPEC: PostMoveSupersession = {
+  name: '074_prefix_visibility_row_fence.sql',
+  replacement: '134_reassert_prefix_visibility_fence.sql',
+  postMoveTables: ['ops.public_visibility_state', 'core.private_node_prefixes'],
+  displacedViews: ['public.public_visibility_state', 'public.private_node_prefixes'],
+  reason: 'test fixture',
+};
+
+const PRE_MOVE: Record<string, string | null> = {
+  'ops.public_visibility_state': null,
+  'core.private_node_prefixes': null,
+  'public.public_visibility_state': 'r',
+  'public.private_node_prefixes': 'r',
+};
+
+const POST_MOVE: Record<string, string | null> = {
+  'ops.public_visibility_state': 'r',
+  'core.private_node_prefixes': 'r',
+  'public.public_visibility_state': 'v',
+  'public.private_node_prefixes': 'v',
+};
+
+const observe = (
+  relations: Record<string, string | null>,
+  replacementPresent = true,
+): PostMoveObservation => ({ relations, replacementPresent });
+
+test('the post-move fence supersession requires the moved catalog, not a filename', () => {
+  // Pre-move: 074's own targets are still tables, so it must run.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe(PRE_MOVE)).superseded, false);
+  // Fully post-move: real tables in ops/core behind read-only public views.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe(POST_MOVE)).superseded, true);
+  // A half move must never be treated as done: either relation still being a
+  // table means 074 can install part of the fence and has to run.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe({
+    ...POST_MOVE, 'core.private_node_prefixes': 'r', 'public.private_node_prefixes': 'r',
+  })).superseded, false);
+  // A missing post-move home is not "moved", however the public name looks.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe({
+    ...POST_MOVE, 'ops.public_visibility_state': null,
+  })).superseded, false);
+  // A materialized view is still a read-only projection, not the fence target.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe({
+    ...POST_MOVE, 'public.private_node_prefixes': 'm',
+  })).superseded, true);
+  // Dropping the target without a real post-move home is not a supersession.
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe({
+    ...POST_MOVE, 'public.private_node_prefixes': null,
+  })).superseded, false);
+});
+
+test('a post-move database never skips 074 without its replacement in the tree', () => {
+  const decision = decidePostMoveSupersession(FENCE_SPEC, observe(POST_MOVE, false));
+  assert.equal(decision.superseded, false);
+  assert.match(decision.refusal ?? '', /refusing to skip the fence/);
+  assert.equal(decidePostMoveSupersession(FENCE_SPEC, observe(PRE_MOVE, false)).refusal, undefined);
+});
+
+test('the reviewed supersession names the shipped fence pair and its evidence', () => {
+  const [spec] = POST_MOVE_SUPERSESSIONS;
+  assert.deepEqual(POST_MOVE_SUPERSESSIONS.map((entry) => entry.name), [
+    '074_prefix_visibility_row_fence.sql',
+  ]);
+  // 074 ships on main and is merged into this branch by the rebase train, so it
+  // is absent here; the replacement must exist, and the pair must sort 074 ->
+  // 134 with every move in between.
+  const names = loadMigrationFiles().map((migration) => migration.name);
+  assert.ok(names.includes(spec!.replacement), `${spec!.replacement} must exist`);
+  const merged = [...names, spec!.name].sort((a, b) => a.localeCompare(b));
+  assert.ok(merged.indexOf(spec!.name) < merged.indexOf(spec!.replacement));
+  const decision = decidePostMoveSupersession(spec!, observe(POST_MOVE));
+  assert.equal(decision.superseded, true);
+  assert.match(String((decision.evidence as { reason: string }).reason), /moved to ops\/core/);
 });
 
 // The fence must survive the P1-4 schema moves. main ships the row fence as 074
