@@ -560,12 +560,14 @@ jobs:
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/packets" \
               -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D42AABBCCDDDEADBEEF"}'
+          # Post-move canonical names (116/123/124/125): the old public names
+          # are compatibility views at best, and some no longer exist at all.
           readback=""
           for _ in $(seq 1 30); do
             readback="$(
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T timescaledb \
                 psql -U meshcore -d meshcore -Atc \
-                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
+                "SELECT EXISTS(SELECT 1 FROM core.nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_hourly_stats WHERE network = 'test')"
             )"
             if [ "$readback" = "t|t|t|t" ]; then
               break
