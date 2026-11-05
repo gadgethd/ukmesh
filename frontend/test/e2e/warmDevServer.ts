@@ -30,7 +30,7 @@ async function warmOne(origin: string, path: string): Promise<string> {
     const response = await fetch(url, { signal: AbortSignal.timeout(180_000) });
     // Drain the body so Vite finishes the transform rather than aborting it.
     await response.arrayBuffer();
-    return `${response.status} ${Date.now() - started}ms ${path}`;
+    return `${response.status} ${Date.now() - started}ms bytes=${response.headers.get('content-length') ?? 'unknown'} type=${response.headers.get('content-type') ?? 'unknown'} ${path}`;
   } catch (error) {
     return `skip ${Date.now() - started}ms ${path} (${(error as Error).message})`;
   }
