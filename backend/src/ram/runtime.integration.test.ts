@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture } from '../db/fixtures/baseSchema.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
 import { admitPacketToRam, configureRamStore } from './liveStore.js';
 import { accountedRamEntryBytes } from './protocol.js';
@@ -54,8 +54,10 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     for(const [name,value] of Object.entries(old)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
   });
   await redis.connect();
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql',import.meta.url),'utf8'));
-  await runMigrations(pool);
+  // Same bootstrap the CI init hook performs: base schema, operator roles,
+  // approved ledger origin. Seeding base.sql and calling runMigrations directly
+  // now trips the ledger precondition.
+  await bootstrapBaseSchemaFixture(pool);
   await pool.query(`CREATE FUNCTION hold_owned_packet() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN PERFORM pg_advisory_xact_lock(918204,17); RETURN NEW; END $$;
     CREATE TRIGGER hold_owned_packet BEFORE INSERT ON packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);
