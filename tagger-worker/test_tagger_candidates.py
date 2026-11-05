@@ -42,19 +42,26 @@ class CandidatePagingTests(unittest.TestCase):
         cls.database = 'audit_tagger_' + uuid4().hex
         with cls.admin.cursor() as cur:
             cur.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(cls.database)))
-        cls.conn = psycopg2.connect(URL, dbname=cls.database)
+        cls.conn = psycopg2.connect(
+            URL, dbname=cls.database,
+            options='-c search_path=mesh,core,analytics,ops,public',
+        )
         cls.conn.autocommit = True
         with cls.conn.cursor() as cur:
-            cur.execute('''CREATE TABLE packets (packet_hash text, time timestamptz, payload jsonb,
+            # Mirror the post-move layout: product SQL names `mesh.packets` /
+            # `mesh.message_tags` unqualified through the search_path and the
+            # tagger queues as `ops.*` in full.
+            cur.execute('''CREATE SCHEMA mesh; CREATE SCHEMA core; CREATE SCHEMA analytics; CREATE SCHEMA ops;
+              CREATE TABLE mesh.packets (packet_hash text, time timestamptz, payload jsonb,
               packet_type int, network text, visibility_ok boolean, is_private boolean, rx_node_id text);
-              CREATE TABLE message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
+              CREATE TABLE mesh.message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
                 model text, latency_ms int, tags jsonb, confidence jsonb);
-              CREATE TABLE tagger_retry (packet_hash text PRIMARY KEY, exhausted boolean);
-              CREATE TABLE privacy_rematerialization_queue (status text);
-              CREATE TABLE public_visibility_state (singleton boolean, generation int);
-              CREATE TABLE packet_visibility_materialization_state (singleton boolean, visibility_generation int);
-              INSERT INTO public_visibility_state VALUES (true, 1);
-              INSERT INTO packet_visibility_materialization_state VALUES (true, 1);''')
+              CREATE TABLE ops.tagger_retry (packet_hash text PRIMARY KEY, exhausted boolean);
+              CREATE TABLE ops.privacy_rematerialization_queue (status text);
+              CREATE TABLE ops.public_visibility_state (singleton boolean, generation int);
+              CREATE TABLE ops.packet_visibility_materialization_state (singleton boolean, visibility_generation int);
+              INSERT INTO ops.public_visibility_state VALUES (true, 1);
+              INSERT INTO ops.packet_visibility_materialization_state VALUES (true, 1);''')
 
     @classmethod
     def tearDownClass(cls):
