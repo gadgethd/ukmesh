@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 import { refreshNodeMapSuppressions } from '../nodes/mapSuppressions.js';
 import { mapSuppressedNodes } from '../metrics.js';
 import { createNodeRepository } from '../repositories/nodes.js';
@@ -23,12 +23,11 @@ test('map visibility, initial payload union, and migration on an isolated scratc
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseURL!);
   url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   const oldDatabaseURL = process.env['DATABASE_URL'];
   let closeDb: (() => Promise<void>) | undefined;
   try {
-    await pool.query(readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
-    await runMigrations(pool);
+    await bootstrapBaseSchemaFixture(pool);
     const migration = readFileSync(new URL('../db/migrations/067_core.node_map_suppressions.sql', import.meta.url), 'utf8');
     const count = async (label: string) => {
       const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM core.node_map_suppressions');

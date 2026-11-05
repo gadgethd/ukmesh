@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
 import { admitPacketToRam, configureRamStore } from './liveStore.js';
 import { accountedRamEntryBytes } from './protocol.js';
@@ -35,7 +35,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
   const name=`meshcore_runtime_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE "${name}"`);
   const url=new URL(pgURL!);url.pathname='/'+name;
-  const pool=new pg.Pool({connectionString:url.toString(),max:3});
+  const pool=new pg.Pool({connectionString:url.toString(),max:3,options:POST_MOVE_SEARCH_PATH});
   const redis=new Redis(redisURL!,{lazyConnect:true,enableOfflineQueue:false});
   const key=`meshcore:acl:runtime:${name}`,group='owned-runtime';
   const files=fs.mkdtempSync(path.join(os.tmpdir(),'meshcore-runtime-'));
@@ -54,8 +54,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     for(const [name,value] of Object.entries(old)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
   });
   await redis.connect();
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql',import.meta.url),'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   await pool.query(`CREATE FUNCTION hold_owned_packet() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN PERFORM pg_advisory_xact_lock(918204,17); RETURN NEW; END $$;
     CREATE TRIGGER hold_owned_packet BEFORE INSERT ON packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);

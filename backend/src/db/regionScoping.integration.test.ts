@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { getNodes, getRecentMessages, getRecentPackets, getRecentPacketEvents, getMultibytePathSegments, getViableLinks } from './index.js';
-import { runMigrations } from './migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { createNodeRepository } from '../repositories/nodes.js';
 import { networkFilters } from '../api/utils/networkFilters.js';
@@ -19,7 +19,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   await admin.query(`CREATE DATABASE "${name}"`);
   const owned = new URL(url!);
   owned.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   // Capture the original method before redirecting application pools to our fixture.
   const query = pool.query.bind(pool);
   const previousMode = process.env['MQTT_INGEST_MODE'];
@@ -31,8 +31,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     if (previousMode === undefined) delete process.env['MQTT_INGEST_MODE'];
     else process.env['MQTT_INGEST_MODE'] = previousMode;
   });
-  await query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const a = 'A'.repeat(64), b = 'B'.repeat(64), c = 'C'.repeat(64), privateId = 'D'.repeat(64);
   await query(`INSERT INTO nodes (node_id, name, network, role, lat, lon, advert_count, last_rx_at)
     VALUES ($1, 'Canonical', 'ukmesh', 1, NULL, NULL, 3, NOW()),

@@ -6,7 +6,7 @@ import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { WebSocket } from 'ws';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 
 const databaseURL = process.env['TEST_REGIONS_DATABASE_URL'];
 const redisURL = process.env['TEST_REGIONS_REDIS_URL'];
@@ -20,14 +20,13 @@ test('real regional sockets isolate snapshots, caches, live packets and node mem
   const name = `meshcore_region_ws_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseURL!); url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const a = 'A'.repeat(64), b = 'B'.repeat(64), c = 'C'.repeat(64);
   await pool.query(`INSERT INTO nodes(node_id, network, name, role, lat, lon)
     VALUES ($1, 'ukmesh', 'Europe relay', 2, 54, -1), ($2, 'ukmesh', 'eng-ne relay', 2, 55, -2)`, [a, b]);
