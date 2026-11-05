@@ -168,9 +168,10 @@ async function prepare(t: TestContext): Promise<Fixture> {
 
   const strays = await pool.query<{ table_schema: string; table_name: string }>(
     `SELECT table_schema, table_name FROM information_schema.tables
-      WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'mesh', 'ops', 'core', 'timescaledb_information')
+      WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'mesh', 'ops', 'core')
         AND table_schema NOT LIKE 'pg\\_%'
-        AND table_schema NOT LIKE '\\_timescaledb%'`,
+        AND table_schema NOT LIKE '\\_timescaledb%'
+        AND table_schema NOT LIKE 'timescaledb\\_%'`,
   );
   assert.equal(strays.rowCount, 0, 'refusing to run: the target database already holds other tables');
 
@@ -454,24 +455,27 @@ test(
     const h2 = 'B2'.repeat(32);
     const observers = ['11'.repeat(32), '22'.repeat(32), '33'.repeat(32)];
 
+    // Insert directly inside the reader's 5-minute window. Updating the
+    // partition key afterwards moved rows between chunks on a hypertable and
+    // tripped the destination chunk's range constraint (23514).
+    const t0 = new Date(Date.now() - 120_000);
+    const at = (offsetMs: number) => new Date(t0.getTime() + offsetMs).toISOString();
     await insertPacket(pool, {
-      time: '2026-11-02 11:00:00+00', hash: h1, uid: identity, rxNodeId: observers[0]!, rawHex: null,
+      time: at(0), hash: h1, uid: identity, rxNodeId: observers[0]!, rawHex: null,
     });
     await insertPacket(pool, {
-      time: '2026-11-02 11:00:01+00', hash: h1, uid: identity, rxNodeId: observers[1]!, rawHex: null,
+      time: at(1_000), hash: h1, uid: identity, rxNodeId: observers[1]!, rawHex: null,
     });
     await insertPacket(pool, {
       // Highest representative rank (advert_count) and latest time.
-      time: '2026-11-02 11:00:02+00', hash: h2, uid: identity, rxNodeId: observers[2]!, rawHex: null,
+      time: at(2_000), hash: h2, uid: identity, rxNodeId: observers[2]!, rawHex: null,
       advertCount: 7,
     });
     await pool.query(
       `INSERT INTO mesh.message_tags (packet_hash, packet_time, tags, confidence)
-       VALUES ($1, '2026-11-02 11:00:00+00', '{"topic":"coverage"}'::jsonb, '{"topic":0.9}'::jsonb)`,
-      [h1],
+       VALUES ($1, $2, '{"topic":"coverage"}'::jsonb, '{"topic":0.9}'::jsonb)`,
+      [h1, at(0)],
     );
-    await pool.query(`UPDATE mesh.packets SET time = NOW() - INTERVAL '2 minutes'`);
-    await pool.query(`UPDATE mesh.message_tags SET packet_time = NOW() - INTERVAL '2 minutes'`);
 
     const readQuery = async <T extends pg.QueryResultRow>(
       text: string,
