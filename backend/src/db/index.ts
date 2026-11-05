@@ -32,7 +32,7 @@ import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
 import { regionMemberIdsSql } from '../regions/filter.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
 import { mapVisiblePredicate, publicMapBasePredicate } from '../nodes/publicMap.js';
-import { packetIdentityKeySql } from './packetIdentityRead.js';
+import { packetIdentityKeySql, packetIdentityReadAuthority } from './packetIdentityRead.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
@@ -834,6 +834,50 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
   return res.rows;
 }
 
+/**
+ * Resolve durable decryption summaries for a bounded set of packet identities.
+ *
+ * `mesh.packet_decryptions` is keyed by the observation `packet_hash` that was
+ * decrypted, which is not necessarily the observation the feed keeps as the
+ * representative of a UID group (decryption backfill runs per stored hash, and
+ * one wire content can be retained under several observation hashes). Joining
+ * the decryption on the representative's exact hash therefore reports a NULL
+ * summary for an identity that *is* decrypted.
+ *
+ * The subquery re-expands each identity to its observation hashes through
+ * `mesh.packets.packet_uid` (indexed by `packets_packet_uid_idx`) and keys the
+ * result with `packetIdentityKeySql`, the same expression the representative,
+ * statistics and tag CTEs group by, so the summary is attributed to the identity
+ * rather than to one arbitrary observation. Rows without a UID keep the hash
+ * fallback identity, and `hash` read authority keeps its one-observation-per-
+ * identity rollback shape untouched.
+ *
+ * Only identities already admitted by the caller's privacy-filtered CTE are
+ * resolved, so this cannot surface a row that the representative scan excluded.
+ */
+function identityDecryptionCteSql(cteName: string, windowSql: string, scopeClause: string): string {
+  // Resolve decryptions set-based over the same bounded window the reader
+  // already uses. An earlier attempt expanded each identity through
+  // mesh.packets.packet_uid, but with no predicate on the packets side the
+  // planner hash-joined the entire hypertable: 3.67M rows and ~3.7 GiB of
+  // buffers per call, 4.3 s p50 against 10 ms for the old exact-hash join.
+  // Reading only the window keeps the packets_time_idx path (~25 ms p50) and
+  // still attributes a sibling observation's decryption to the identity.
+  const authority = packetIdentityReadAuthority();
+  const key = packetIdentityKeySql('p', authority);
+  return `${cteName} AS (
+      SELECT DISTINCT ON (identity_key) identity_key, summary
+        FROM (
+          SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
+            FROM mesh.packets p
+            JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+           WHERE p.time > ${windowSql}
+             ${scopeClause}
+        ) decryption_candidates
+       ORDER BY identity_key, created_at DESC, packet_hash
+    )`;
+}
+
 export async function getRecentPackets(
   limit = 200,
   network?: string,
@@ -856,16 +900,15 @@ export async function getRecentPackets(
                + CASE WHEN p.advert_count IS NOT NULL THEN 4 ELSE 0 END
                + CASE WHEN p.packet_type = 4 THEN 2 ELSE 0 END) AS _representative_rank,` : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
-             p.time, p.packet_hash,
+             p.time, p.packet_hash, p.packet_uid,
              ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
-             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
+             p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
       FROM mesh.packets p
-      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.time > ${fiveMinAgo}
@@ -907,11 +950,12 @@ export async function getRecentPackets(
          AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM recent_packets)
          AND mt2.tags IS NOT NULL
        ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
-    )
+    ),
+    ${identityDecryptionCteSql('identity_decryptions', fiveMinAgo, buildPacketScopeClause(scope, 'p', network))}
     SELECT
       rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id,
       rp.packet_type, rp.hop_count, rp.rssi, rp.snr,
-      rp.summary, rp.advert_count, rp.path_hashes, rp.path_hash_size_bytes,
+      COALESCE(rp.summary, ids.summary) AS summary, rp.advert_count, rp.path_hashes, rp.path_hash_size_bytes,
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
@@ -923,6 +967,7 @@ export async function getRecentPackets(
     FROM recent_packets rp
     LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
     LEFT JOIN packet_tags mt ON mt.identity_key = rp.identity_key
+    LEFT JOIN identity_decryptions ids ON ids.identity_key = rp.identity_key
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -955,17 +1000,16 @@ export async function getRecentMessages(
       SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? 'CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END AS _representative_rank,' : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
-             p.time, p.packet_hash,
+             p.time, p.packet_hash, p.packet_uid,
              ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
+             p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
       FROM mesh.packets p
-      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.packet_type = 5
@@ -1012,11 +1056,12 @@ export async function getRecentMessages(
          AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM selected_msgs)
          AND mt2.tags IS NOT NULL
        ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
-    )
+    ),
+    ${identityDecryptionCteSql('message_decryptions', "NOW() - INTERVAL '24 hours'", buildPacketScopeClause(scope, 'p', network))}
     SELECT
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
-      m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      COALESCE(m.summary, md.summary) AS summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
       ${includeObservationIds ? `ms._observation_ids, m.network AS _policy_network,
         (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
         m._representative_rank, m._representative_id,` : ''}
@@ -1025,6 +1070,7 @@ export async function getRecentMessages(
     FROM selected_msgs m
     LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
     LEFT JOIN msg_tags mt ON mt.identity_key = m.identity_key
+    LEFT JOIN message_decryptions md ON md.identity_key = m.identity_key
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
