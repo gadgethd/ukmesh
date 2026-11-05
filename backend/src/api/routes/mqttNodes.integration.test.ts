@@ -25,6 +25,9 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
   const schema = `mqtt_nodes_${process.pid}_${Date.now()}`;
   await client.query(`CREATE SCHEMA ${schema}; SET LOCAL search_path = ${schema}, public`);
   await client.query(`
+    -- The node alias table is core-qualified, and this fixture must not depend
+    -- on an earlier suite having created the core namespace in this database.
+    CREATE SCHEMA IF NOT EXISTS core;
     CREATE TABLE core.node_identity_aliases (source_node_id text PRIMARY KEY, canonical_node_id text);
     CREATE TABLE node_identity_nodes (node_id text PRIMARY KEY, name text);
     CREATE TABLE node_status_samples (
@@ -34,12 +37,22 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
     );
     CREATE TABLE packets (time timestamptz, rx_node_id text, network text, packet_hash text);
   `);
+  // The canonical resolver is core-qualified after the P1 moves; use the real
+  // repair migration instead of the pre-move definition whose fixed
+  // search_path could not see core.node_identity_aliases.
+  await client.query(await readFile(new URL('../../db/migrations/111_repair_canonical_node_id.sql', import.meta.url), 'utf8'));
   const migration = await readFile(new URL('../../db/migrations/036_node_identity_merge.sql', import.meta.url), 'utf8');
-  const functionStart = migration.indexOf('CREATE OR REPLACE FUNCTION meshcore_canonical_node_id');
-  const functionEnd = migration.indexOf('$$;', functionStart) + 3;
-  await client.query(migration.slice(functionStart, functionEnd).replace('SET search_path = public', `SET search_path = ${schema}`));
   const viewStart = migration.indexOf('CREATE VIEW node_identity_status_samples AS');
   await client.query(migration.slice(viewStart, migration.indexOf(';', viewStart) + 1));
+  // The route SQL is core/mesh-qualified after the P1 moves. Keep this fixture's
+  // unqualified local relations authoritative and expose them under their
+  // post-move names so the suite does not depend on another suite's leftovers.
+  await client.query(`
+    CREATE SCHEMA IF NOT EXISTS mesh;
+    CREATE VIEW core.node_identity_nodes AS SELECT node_id, name FROM node_identity_nodes;
+    CREATE VIEW core.node_identity_status_samples AS SELECT * FROM node_identity_status_samples;
+    CREATE VIEW mesh.packets AS SELECT * FROM packets;
+  `);
   await client.query(`
     INSERT INTO core.node_identity_aliases VALUES ($1, $3), ($2, $3);
   `, [key('F'), key('E'), key('A')]);

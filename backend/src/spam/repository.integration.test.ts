@@ -12,6 +12,9 @@ import type { MessageRecord } from './types.js';
 // Same opt-in module pattern as the repository's cleanup integration tests.
 const moduleUrl = process.env['TEST_SPAM_PGLITE_MODULE'];
 const options = { skip: moduleUrl ? false : 'TEST_SPAM_PGLITE_MODULE is not configured' };
+if (process.env['CI'] && !moduleUrl) {
+  throw new Error('Spam SQL tests require an explicit test fixture in CI');
+}
 const MIN = 60_000;
 
 async function fixture(t: TestContext) {
@@ -19,17 +22,39 @@ async function fixture(t: TestContext) {
   const db = await PGlite.create();
   t.after(() => db.close());
   await db.exec(`
-    CREATE TABLE nodes (node_id TEXT PRIMARY KEY, name TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
-    CREATE TABLE path_history_cache (id INTEGER);
-    CREATE TABLE packets (
+    -- The repository reads the post-move namespaces; a public-only fixture
+    -- cannot stand in for core/mesh/analytics/ops.
+    CREATE SCHEMA core;
+    CREATE SCHEMA mesh;
+    CREATE SCHEMA analytics;
+    CREATE SCHEMA ops;
+    CREATE TABLE core.nodes (node_id TEXT PRIMARY KEY, name TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
+    CREATE TABLE mesh.packets (
       packet_hash TEXT, time TIMESTAMPTZ, network TEXT, packet_type INTEGER,
       payload JSONB, rx_node_id TEXT, src_node_id TEXT, is_private BOOLEAN DEFAULT FALSE,
+      visibility_ok BOOLEAN DEFAULT TRUE, path_hashes TEXT[],
       hop_count INTEGER, rssi DOUBLE PRECISION, snr DOUBLE PRECISION
     );
+    -- Public packet reads require a materialised visibility generation that
+    -- matches the current privacy generation.
+    CREATE TABLE ops.public_visibility_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), generation BIGINT NOT NULL DEFAULT 1
+    );
+    INSERT INTO ops.public_visibility_state (singleton) VALUES (TRUE);
+    CREATE TABLE ops.packet_visibility_materialization_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), visibility_generation BIGINT NOT NULL
+    );
+    INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1);
+    CREATE TABLE ops.privacy_rematerialization_queue (target TEXT, status TEXT, node_id TEXT, network TEXT);
+    SET search_path = analytics, public;
+    -- Public incident reads re-check every persisted member against the packet
+    -- privacy predicate, so the fixture must contain the member packets too.
+    INSERT INTO mesh.packets (packet_hash, time, network, packet_type, visibility_ok)
+      SELECT 'fixture-' || i, NOW(), 'ukmesh', 5, TRUE FROM generate_series(0, 24) i;
   `);
   for (const migration of [
     '005_spam_message_incidents.sql', '012_analysis_run_protocol.sql',
-    '015_public_visibility_generation.sql', '024_analysis_run_leases.sql',
+    '024_analysis_run_leases.sql',
   ]) {
     await db.exec(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
@@ -50,7 +75,7 @@ async function fixture(t: TestContext) {
   let failMemberInsert = false;
   let releases = 0;
   const query = async (sql: string, params?: unknown[]) => {
-    if (failMemberInsert && sql.includes('INSERT INTO spam_message_members')) throw new Error('synthetic member failure');
+    if (failMemberInsert && sql.includes('INSERT INTO analytics.spam_message_members')) throw new Error('synthetic member failure');
     const result = await db.query(sql, params);
     return { rows: result.rows, rowCount: result.affectedRows ?? result.rows.length };
   };
@@ -78,7 +103,7 @@ test('PostgreSQL publishes one merged campaign and serves row/JSON/timeline agre
   const fresh = burst(8, now, 17);
   const items = buildIncidents([...old, ...fresh], now, CFG);
   assert.deepEqual(await persistIncidents(items, CFG, f.run), { upserted: 1, active: 1, removed: 0, lifecycleExpired: 0 });
-  const rows = await f.db.query('SELECT * FROM spam_message_incidents');
+  const rows = await f.db.query('SELECT * FROM analytics.spam_message_incidents');
   assert.equal(rows.rows.length, 1);
   const row = rows.rows[0];
   assert.equal(row.message_count, 25);
@@ -96,7 +121,7 @@ test('PostgreSQL publishes one merged campaign and serves row/JSON/timeline agre
 
   // A later rolling/bounded window may no longer contain the oldest burst.
   await persistIncidents(buildIncidents(fresh, now, CFG), CFG, f.run);
-  const rolled = (await f.db.query('SELECT first_seen, public_json FROM spam_message_incidents')).rows[0];
+  const rolled = (await f.db.query('SELECT first_seen, public_json FROM analytics.spam_message_incidents')).rows[0];
   assert.equal(rolled.first_seen.getTime(), old[0]!.observedAt);
   assert.equal(Date.parse(rolled.public_json.firstSeen), rolled.first_seen.getTime());
   assert.equal(rolled.public_json.lastSeen, new Date(now).toISOString());
@@ -116,7 +141,7 @@ test('PostgreSQL ignores older closed snapshots without replacing newer campaign
   assert.deepEqual(await persistIncidents(stale, CFG, f.run), { upserted: 0, active: 0, removed: 0, lifecycleExpired: 0 });
   assert.deepEqual(await getPublicIncident(items[0]!.incident.key), before);
 
-  await f.db.query(`UPDATE spam_message_incidents SET last_seen = NOW() - INTERVAL '1 hour'`);
+  await f.db.query(`UPDATE analytics.spam_message_incidents SET last_seen = NOW() - INTERVAL '1 hour'`);
   const expired = await persistIncidents([], CFG, f.run);
   assert.equal(expired.lifecycleExpired, 1);
   assert.equal((await getPublicIncident(items[0]!.incident.key))!.status, 'closed');
@@ -147,7 +172,7 @@ test('PostgreSQL rolls back row/member changes and still enforces the publicatio
   f.failMembers();
   await assert.rejects(persistIncidents(buildIncidents(burst(9, now + MIN, 0), now + MIN, CFG), CFG, f.run), /synthetic member failure/);
   assert.deepEqual(await getPublicIncident(items[0]!.incident.key), before);
-  await f.db.query(`UPDATE analysis_workload_state SET active_lease_token = 'replaced-lease'`);
+  await f.db.query(`UPDATE analytics.analysis_workload_state SET active_lease_token = 'replaced-lease'`);
   await assert.rejects(persistIncidents(items, CFG, f.run), /analysis publication fence rejected/);
   assert.deepEqual(await getPublicIncident(items[0]!.incident.key), before);
   assert.equal(f.releases(), 3);
@@ -156,12 +181,12 @@ test('PostgreSQL rolls back row/member changes and still enforces the publicatio
 test('PostgreSQL loader retains a rotating burst on a busy day and reports cap reductions', options, async (t) => {
   const f = await fixture(t);
   await f.db.exec(`
-    INSERT INTO packets (packet_hash, time, network, packet_type, payload)
+    INSERT INTO mesh.packets (packet_hash, time, network, packet_type, payload)
       SELECT 'noise-' || i, NOW() - INTERVAL '1 hour', 'ukmesh', 5,
              jsonb_build_object('decrypted', jsonb_build_object('sender', 'FixtureTester', 'message', 'test'),
                                 '_summary', '[test] synthetic connectivity traffic', 'channelHash', '81')
         FROM generate_series(1, 2900) i;
-    INSERT INTO packets (packet_hash, time, network, packet_type, payload)
+    INSERT INTO mesh.packets (packet_hash, time, network, packet_type, payload)
       SELECT 'rotating-' || i, NOW() - INTERVAL '2 minutes' + i * INTERVAL '10 seconds', 'ukmesh', 5,
              jsonb_build_object('decrypted', jsonb_build_object(
                'sender', (ARRAY['R7K2X9PM', '5BQ8T3NW', 'Z6D4V1CK', '8JF2G9SL', 'N1X8R4BT', '6WK3P9DZ', 'T9L5B2CQ'])[i],
