@@ -188,6 +188,18 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
     await pool.query("DELETE FROM public.schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
     assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
+    // 134 was still recorded as applied when the rollback removed its row
+    // triggers. Reapply it explicitly too, or this fixture would leave the
+    // database unlike a normally migrated head and later tests would miss the
+    // post-move fence.
+    await pool.query("DELETE FROM public.schema_migrations WHERE name = '134_reassert_prefix_visibility_fence.sql'");
+    assert.deepEqual(await runMigrations(pool), ['134_reassert_prefix_visibility_fence.sql']);
+    assert.deepEqual(await prefixTriggerNames(pool, 'core.private_node_prefixes'), [
+      'private_node_prefixes_visibility_delete_rows',
+      'private_node_prefixes_visibility_insert_rows',
+      'private_node_prefixes_visibility_truncate',
+      'private_node_prefixes_visibility_update_rows',
+    ]);
     assert.deepEqual(await flags('packets'), [{ packet_hash: 'upgrade-preserved', is_private: false, visibility_ok: true }]);
     // Neither migration nor rollback certifies an existing gap.
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '1' });

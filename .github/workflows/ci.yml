@@ -99,6 +99,12 @@ jobs:
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration
+      - name: Run the isolated initial-map visibility integration
+        run: |
+          TEST_MAP_DATABASE_URL="$(node --input-type=module -e 'const url = new URL(process.env.TEST_INGEST_DATABASE_URL); url.pathname = "/map_stale_dedup_scratch"; process.stdout.write(url.href)')"
+          export TEST_MAP_DATABASE_URL
+          node --input-type=module -e 'import pg from "pg"; const url = new URL(process.env.TEST_MAP_DATABASE_URL); url.pathname = "/postgres"; const admin = new pg.Pool({ connectionString: url.href, max: 1 }); try { const found = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", ["map_stale_dedup_scratch"]); if (!found.rowCount) await admin.query("CREATE DATABASE map_stale_dedup_scratch"); } finally { await admin.end(); }'
+          node --import tsx --test src/ws/initialStateNodes.integration.test.ts
       - name: Prove 074 is superseded only on post-move databases
         run: timeout 240s npm run test:migration-supersession
       - name: Qualify broker framing and bounded offline replay

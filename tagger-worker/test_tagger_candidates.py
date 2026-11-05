@@ -45,11 +45,9 @@ class CandidatePagingTests(unittest.TestCase):
         cls.conn = psycopg2.connect(URL, dbname=cls.database)
         cls.conn.autocommit = True
         with cls.conn.cursor() as cur:
-            # The worker reads the privacy/retry state through their post-move
-            # `ops` names (087/108/128), so the fixture has to live there too.
-            # `packets` and `message_tags` stay unqualified: the worker's own
-            # statements resolve those through the connection search_path, which
-            # is what the deployed P1 search_path provides.
+            # The worker uses public compatibility names for packets/tags on
+            # its current default search_path; privacy/retry state is read from
+            # the post-move `ops` schema by fully qualified name.
             cur.execute('''CREATE SCHEMA IF NOT EXISTS ops;
               CREATE TABLE packets (packet_hash text, time timestamptz, payload jsonb,
               packet_type int, network text, visibility_ok boolean, is_private boolean, rx_node_id text);
