@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { runMigrations } from './migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { persistEntriesCore, type PacketBatchInput, type TransactionRunner } from './packetBatch.js';
 
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
@@ -14,14 +13,13 @@ test('one batch keeps the maximum for every network and UTC day, including repla
   const database = `meshcore_daily_${process.pid}_${Date.now()}`;
   const url = new URL(databaseUrl!); url.pathname = `/${database}`;
   await admin.query(`CREATE DATABASE "${database}"`);
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   // Public reads must also work when the optional tagger has never started.
   const db = await import('./index.js');
   try {

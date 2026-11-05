@@ -20,6 +20,7 @@ test('node-scoped privacy completion preserves unrelated generation gaps and re-
     await admin.end();
   });
   await pool.query(`CREATE EXTENSION IF NOT EXISTS timescaledb;
+    CREATE SCHEMA IF NOT EXISTS ops;
     CREATE TABLE ops.public_visibility_state(singleton boolean PRIMARY KEY, generation bigint, updated_at timestamptz);
     CREATE TABLE ops.packet_visibility_materialization_state(singleton boolean PRIMARY KEY, visibility_generation bigint, updated_at timestamptz);
     CREATE TABLE ops.privacy_rematerialization_queue(id bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,

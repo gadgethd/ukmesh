@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { WebSocket } from 'ws';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 
 const databaseURL = process.env['TEST_INGEST_DATABASE_URL'];
 const redisURL = process.env['TEST_REDIS_URL'];
@@ -20,9 +19,8 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
   const name = `meshcore_ws_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseURL!); url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
+  await bootstrapBaseSchemaFixture(pool);
   const observer = 'AA'.repeat(32), source = 'CC'.repeat(32);
   await pool.query(`INSERT INTO nodes(node_id, public_key, network, name) VALUES
     ($1, $1, 'teesside', 'Observer'), ($2, $2, 'teesside', 'Relay')`, [observer, 'BB'.repeat(32)]);

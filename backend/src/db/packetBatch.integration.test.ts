@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
@@ -23,6 +22,13 @@ import {
   type PacketBatchInput,
   type QueryFn,
 } from './packetBatch.js';
+import {
+  applyBaseSchema,
+  approveBaseSchemaBootstrap,
+  bootstrapBaseSchemaFixture,
+  POST_MOVE_SEARCH_PATH,
+  provisionOperatorRoles,
+} from './fixtures/baseSchema.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 import { admitPacketToRam, configureRamStore } from '../ram/liveStore.js';
@@ -79,10 +85,16 @@ test('base schema and every migration apply to a brand-new database', {
   freshPool = new Pool({
     connectionString: freshUrl.toString(),
     application_name: 'meshcore-fresh-migrations-test',
+    options: POST_MOVE_SEARCH_PATH,
     max: 1,
   });
-  const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
-  await freshPool.query(baseSql);
+  // A fresh deployment is seeded from `base.sql` by the init hook with the
+  // operator roles already provisioned; the runner only accepts that bootstrap
+  // when the shape matches, which is what this test then replays over.
+  await applyBaseSchema(freshPool);
+  await provisionOperatorRoles(freshPool);
+  const restoreApproval = approveBaseSchemaBootstrap();
+  t.after(() => restoreApproval());
 
   // 050 used to COMMIT inside the runner transaction. Inject a failure at its
   // ledger insert and prove the table plus policies are now rolled back.
@@ -177,50 +189,56 @@ test('base schema and every migration apply to a brand-new database', {
   });
 
   const hypertables = await freshPool.query<{
+    hypertable_schema: string;
     hypertable_name: string;
     time_interval: string;
     compression_enabled: boolean;
   }>(`
-    SELECT hypertable.hypertable_name,
+    SELECT hypertable.hypertable_schema,
+           hypertable.hypertable_name,
            dimension.time_interval::text,
            hypertable.compression_enabled
       FROM timescaledb_information.hypertables hypertable
       JOIN timescaledb_information.dimensions dimension
         USING (hypertable_schema, hypertable_name)
-     WHERE hypertable.hypertable_schema = 'public'
+     WHERE hypertable.hypertable_schema IN ('core', 'mesh')
        AND dimension.dimension_number = 1
-     ORDER BY hypertable.hypertable_name
+     ORDER BY hypertable.hypertable_schema, hypertable.hypertable_name
   `);
+  // The P1 band moves every hypertable out of public; the band must land them
+  // in their domain namespace with the reviewed chunk interval intact.
   assert.deepEqual(hypertables.rows, [
-    { hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'packets', time_interval: '1 day', compression_enabled: true },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', time_interval: '1 day', compression_enabled: true },
   ]);
 
   const jobs = await freshPool.query<{
+    hypertable_schema: string;
     hypertable_name: string;
     proc_name: string;
     interval_value: string;
   }>(`
-    SELECT hypertable_name,
+    SELECT hypertable_schema,
+           hypertable_name,
            proc_name,
            COALESCE(config->>'compress_after', config->>'drop_after') AS interval_value
       FROM timescaledb_information.jobs
-     WHERE hypertable_schema = 'public'
+     WHERE hypertable_schema IN ('core', 'mesh')
        AND proc_name IN ('policy_compression', 'policy_retention')
-     ORDER BY hypertable_name, proc_name
+     ORDER BY hypertable_schema, hypertable_name, proc_name
   `);
   assert.deepEqual(jobs.rows, [
-    { hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
-    { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
-    { hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'node_status_samples', proc_name: 'policy_retention', interval_value: '180 days' },
-    { hypertable_name: 'packet_paths', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'packets', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'packets', proc_name: 'policy_retention', interval_value: '30 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', proc_name: 'policy_retention', interval_value: '180 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packet_paths', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', proc_name: 'policy_retention', interval_value: '30 days' },
   ]);
   assert.equal(jobs.rows.some(
     (job) => job.hypertable_name === 'packet_paths' && job.proc_name === 'policy_retention',
@@ -229,19 +247,19 @@ test('base schema and every migration apply to a brand-new database', {
   const matviews = await freshPool.query<{ matviewname: string; ispopulated: boolean }>(`
     SELECT matviewname, ispopulated
       FROM pg_matviews
-     WHERE schemaname = 'public'
-       AND matviewname IN ('core.node_identity_links', 'core.node_identity_sightings')
+     WHERE schemaname = 'core'
+       AND matviewname IN ('node_identity_links', 'node_identity_sightings')
      ORDER BY matviewname
   `);
   assert.deepEqual(matviews.rows, [
-    { matviewname: 'core.node_identity_links', ispopulated: true },
-    { matviewname: 'core.node_identity_sightings', ispopulated: true },
+    { matviewname: 'node_identity_links', ispopulated: true },
+    { matviewname: 'node_identity_sightings', ispopulated: true },
   ]);
   const identityIndexes = await freshPool.query<{ indexname: string }>(`
     SELECT indexname
       FROM pg_indexes
-     WHERE schemaname = 'public'
-       AND tablename IN ('core.node_identity_links', 'core.node_identity_sightings')
+     WHERE schemaname = 'core'
+       AND tablename IN ('node_identity_links', 'node_identity_sightings')
      ORDER BY indexname
   `);
   assert.deepEqual(identityIndexes.rows.map((row) => row.indexname), [
@@ -263,17 +281,17 @@ test('base schema and every migration apply to a brand-new database', {
     SELECT
       (SELECT is_nullable = 'YES'
          FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'packet_paths'
+        WHERE table_schema = 'mesh' AND table_name = 'packet_paths'
           AND column_name = 'rx_node_id') AS nullable_observer,
-      to_regclass('public.packet_paths_observation_key_uidx') IS NOT NULL AS unique_key,
+      to_regclass('mesh.packet_paths_observation_key_uidx') IS NOT NULL AS unique_key,
       (SELECT COUNT(*)::text FROM pg_indexes
-        WHERE schemaname = 'public' AND tablename = 'packet_paths'
+        WHERE schemaname = 'mesh' AND tablename = 'packet_paths'
           AND indexname IN (
             'packet_paths_rx_privacy_idx',
             'packet_paths_src_privacy_idx',
             'packet_paths_path_prefix_privacy_idx'
           )) AS privacy_indexes,
-      to_regclass('public.packet_decryptions_created_at_idx')::text AS decryption_index
+      to_regclass('mesh.packet_decryptions_created_at_idx')::text AS decryption_index
   `);
   assert.deepEqual(packetPathSchema.rows[0], {
     nullable_observer: true,
@@ -317,7 +335,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   const redis = new Redis(redisUrl!, { lazyConnect: true, enableOfflineQueue: false });
   const previousMode = process.env['MQTT_INGEST_MODE'];
   const previousKey = process.env['MQTT_RAM_STREAM_KEY'];
@@ -340,8 +358,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   });
   await redis.connect();
   configureRamStore(redis);
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   configurePacketBatch((sql, params) => pool.query(sql, params), testTransaction(pool));
   const input = { packetHash: '60'.repeat(32), rxNodeId: null,
     topic: 'meshcore/ZZZ/handoff/packets', rawHex: '00', network: 'ukmesh', packetType: 5 };
@@ -403,13 +420,16 @@ test('F07 historical and compressed observations enter the complete ledger atomi
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await applyBaseSchema(pool);
+  await provisionOperatorRoles(pool);
+  const restoreF07Approval = approveBaseSchemaBootstrap();
+  t.after(() => restoreF07Approval());
   const oldTime = new Date(Date.now() - 20 * 86_400_000);
   let seeded = false;
   const interrupted = {
@@ -502,14 +522,13 @@ test('F02 contended lock and replay never change historical tables', {
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const network = `f02_${process.pid}`;
   const observer = 'A'.repeat(64);
   const source = 'B'.repeat(64);
@@ -602,9 +621,8 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
   });
 
   await adminPool.query(`CREATE DATABASE ${databaseIdentifier}`);
-  pool = new Pool({ connectionString: url.toString(), max: 2 });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  pool = new Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
+  await bootstrapBaseSchemaFixture(pool);
 
   const nodeId = 'F'.repeat(64);
   await pool.query(`INSERT INTO nodes (node_id, name, network) VALUES ($1, 'incident public', 'ukmesh')
@@ -760,6 +778,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   const pool = new Pool({
     connectionString: ownedUrl.toString(),
     application_name: 'meshcore-ingest-integration-test',
+    options: POST_MOVE_SEARCH_PATH,
     max: 2,
   });
   t.after(async () => {
@@ -768,8 +787,10 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await admin.end();
   });
 
-  const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
-  await pool.query(baseSql);
+  // This fixture owns its ledger, so the base-schema bootstrap approval stays
+  // out of it, but 072_backend_grants.sql still requires the operator roles.
+  await applyBaseSchema(pool);
+  await provisionOperatorRoles(pool);
   await pool.query(`
     CREATE TABLE path_history_cache (
       packet_hash TEXT PRIMARY KEY
@@ -777,6 +798,17 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     CREATE TABLE public.schema_migrations (
       name TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    -- The ledger below records 016_stale_mqtt_observer_cleanup.sql as already
+    -- applied, so the table that migration creates has to exist for
+    -- 089_move_ops_maintenance_tables.sql to move it.
+    CREATE TABLE public.maintenance_removed_records (
+      archive_id   BIGSERIAL PRIMARY KEY,
+      batch_id     TEXT NOT NULL,
+      source_table TEXT NOT NULL,
+      record_data  JSONB NOT NULL,
+      reason       TEXT NOT NULL,
+      archived_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     INSERT INTO public.schema_migrations (name)
     VALUES ('011_invalidate_pre_visibility_path_cache.sql'),
@@ -1308,7 +1340,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
           NOW() - INTERVAL '366 days', NOW() - INTERVAL '366 days')`,
       [`E${registrationPrefix.slice(1)}`, `F${registrationPrefix.slice(1)}`],
     );
-    await executeRetention(retentionTarget('core.observer_registration_requests'));
+    await executeRetention(retentionTarget('observer_registration_requests'));
     const registrationRetention = await pool.query<{ status: string }>(
       `SELECT status FROM core.observer_registration_requests
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')
@@ -1324,7 +1356,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
          ('integration', 'test', 'reset', $3, $4, 'succeeded', NOW() - INTERVAL '729 days')`,
       [suffix, `expired-audit-${suffix}`, `${suffix}-retained`, `retained-audit-${suffix}`],
     );
-    await executeRetention(retentionTarget('ops.operator_audit_events'));
+    await executeRetention(retentionTarget('operator_audit_events'));
     const auditRetention = await pool.query<{ idempotency_key: string }>(
       `SELECT idempotency_key FROM ops.operator_audit_events
         WHERE idempotency_key = ANY($1::text[]) ORDER BY idempotency_key`,
