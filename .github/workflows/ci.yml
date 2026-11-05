@@ -121,6 +121,100 @@ jobs:
       - run: npm run build
       - run: npm run test:ram-operational
 
+  db-audit:
+    # The three `*.audit.test.ts` files added in #195 are real PostgreSQL
+    # regressions that skip themselves when no fixture database is supplied, so
+    # they need a job that fails when they skip instead of passing quietly.
+    # Plain PostgreSQL 16 is deliberate: the audit-high fixture refuses any
+    # database where the timescaledb extension is installed, because the
+    # extension's own `timescaledb_experimental.policies` view trips its
+    # stray-table guard.
+    name: Database Audit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a
+        env:
+          POSTGRES_PASSWORD: audit-fixture-password
+        ports:
+          - 55434:5432
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_INGEST_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
+      TEST_BACKFILL_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
+      AUDIT_TEST_FILES: >-
+        src/db/identity-decryptions.audit.test.ts
+        src/tools/backfillIdentity.audit.test.ts
+        src/tools/backfillIdentity.audit-high.test.ts
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Verify the audit fixture database is reachable
+        run: |
+          node --input-type=module <<'JS'
+          import pg from 'pg';
+          for (const name of ['TEST_INGEST_DATABASE_URL', 'TEST_BACKFILL_DATABASE_URL']) {
+            const value = process.env[name];
+            if (!value) throw new Error(`${name} is not set for the audit job`);
+            const url = new URL(value);
+            if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)) {
+              throw new Error(`${name} must point at the loopback fixture database`);
+            }
+            const pool = new pg.Pool({ connectionString: value, max: 1 });
+            try {
+              const { rows } = await pool.query('SHOW server_version');
+              // Host, port and database only: the fixture password is never printed.
+              console.log(`${name} -> ${url.hostname}:${url.port}${url.pathname} PostgreSQL ${rows[0].server_version}`);
+            } finally {
+              await pool.end();
+            }
+          }
+          JS
+      - name: Run the database-backed audit tests
+        run: |
+          missing=0
+          for file in $AUDIT_TEST_FILES; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::audit test is missing — it lands with PR #195"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          failed=0
+          for file in $AUDIT_TEST_FILES; do
+            label="$(basename "$file" .ts)"
+            if ! node --import tsx --test --test-reporter=tap "$file" | tee "audit-${label}.tap"; then
+              failed=1
+            fi
+            # A skipped audit test means the fixture database was not usable;
+            # treat that as a failure rather than a green run.
+            node scripts/assert-audit-tests-ran.mjs "audit-${label}.tap" "$file" || failed=1
+          done
+          exit "$failed"
+      - name: Preserve audit test output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: db-audit-tap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/audit-*.tap
+          if-no-files-found: ignore
+          retention-days: 7
+
   frontend:
     if: github.event_name != 'schedule'
     name: Frontend
