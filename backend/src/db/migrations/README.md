@@ -24,3 +24,28 @@ is also intentionally not run; request filtering derives the legacy topic
 prefix from `packets.topic` when the materialized prefix is empty. The runner
 never silently skips the migration. The resulting disposition for both 016
 files, 017, and 018 is recorded in `schema_migration_compatibility`.
+
+## Post-move supersession
+
+`074_prefix_visibility_row_fence.sql` ships on `main` and is merged into the
+schema-split branch, where the privacy cluster has already moved: `087` moved
+`public_visibility_state` to `ops`, `113` moved `private_node_prefixes` to
+`core`, and `108`/`128` left read-only views at the old public names. On such a
+database the historical file cannot execute (`ALTER TABLE` and `CREATE TRIGGER`
+against a view both fail), while `134_reassert_prefix_visibility_fence.sql`
+installs the same fence on the post-move relations.
+
+The runner therefore records `superseded-post-move` for 074 — but only when the
+catalog proves the move happened: `ops.public_visibility_state` and
+`core.private_node_prefixes` are tables, and `public.public_visibility_state` /
+`public.private_node_prefixes` exist as views. A pre-move database (the public
+names are still the real tables) still runs 074 exactly as shipped, and a
+half-moved database runs it too rather than assuming the fence is in place. If
+the post-move shape is present but 134 is absent from the tree, the run fails
+closed instead of skipping the fence.
+
+Why it was skipped is stored in
+`schema_migration_compatibility.evidence` (reason, observed relation kinds,
+replacement), next to the `superseded-post-move` ledger row written in the same
+transaction. `src/db/migrationSupersession.integration.test.ts` proves both
+paths against a real database.
