@@ -855,32 +855,25 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
  * Only identities already admitted by the caller's privacy-filtered CTE are
  * resolved, so this cannot surface a row that the representative scan excluded.
  */
-function identityDecryptionCteSql(cteName: string, sourceCte: string): string {
+function identityDecryptionCteSql(cteName: string, windowSql: string, scopeClause: string): string {
+  // Resolve decryptions set-based over the same bounded window the reader
+  // already uses. An earlier attempt expanded each identity through
+  // mesh.packets.packet_uid, but with no predicate on the packets side the
+  // planner hash-joined the entire hypertable: 3.67M rows and ~3.7 GiB of
+  // buffers per call, 4.3 s p50 against 10 ms for the old exact-hash join.
+  // Reading only the window keeps the packets_time_idx path (~25 ms p50) and
+  // still attributes a sibling observation's decryption to the identity.
   const authority = packetIdentityReadAuthority();
-  const key = packetIdentityKeySql('dp', authority);
-  const legacyOnly = `SELECT DISTINCT packet_hash FROM ${sourceCte}`;
-  const uidlessOnly = `SELECT DISTINCT packet_hash FROM ${sourceCte}
-                WHERE packet_uid IS NULL`;
-  const uidIdentities = `SELECT DISTINCT packet_uid FROM ${sourceCte}
-                WHERE packet_uid IS NOT NULL`;
-  const candidates = authority === 'uid'
-    ? `SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
-         FROM (${uidIdentities}) uid_identity
-         JOIN mesh.packets dp ON dp.packet_uid = uid_identity.packet_uid
-         JOIN mesh.packet_decryptions pd ON pd.packet_hash = dp.packet_hash
-        UNION ALL
-        -- Legacy rows without a UID are their own identity (hash fallback).
-        SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
-          FROM (${uidlessOnly}) legacy_identity
-          JOIN mesh.packets dp ON dp.packet_hash = legacy_identity.packet_hash
-          JOIN mesh.packet_decryptions pd ON pd.packet_hash = dp.packet_hash`
-    : `SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
-         FROM (${legacyOnly}) legacy_identity
-         JOIN mesh.packets dp ON dp.packet_hash = legacy_identity.packet_hash
-         JOIN mesh.packet_decryptions pd ON pd.packet_hash = dp.packet_hash`;
+  const key = packetIdentityKeySql('p', authority);
   return `${cteName} AS (
       SELECT DISTINCT ON (identity_key) identity_key, summary
-        FROM (${candidates}) decryption_candidates
+        FROM (
+          SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
+            FROM mesh.packets p
+            JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+           WHERE p.time > ${windowSql}
+             ${scopeClause}
+        ) decryption_candidates
        ORDER BY identity_key, created_at DESC, packet_hash
     )`;
 }
@@ -958,7 +951,7 @@ export async function getRecentPackets(
          AND mt2.tags IS NOT NULL
        ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
     ),
-    ${identityDecryptionCteSql('identity_decryptions', 'recent_packets')}
+    ${identityDecryptionCteSql('identity_decryptions', fiveMinAgo, buildPacketScopeClause(scope, 'p', network))}
     SELECT
       rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id,
       rp.packet_type, rp.hop_count, rp.rssi, rp.snr,
@@ -1064,7 +1057,7 @@ export async function getRecentMessages(
          AND mt2.tags IS NOT NULL
        ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
     ),
-    ${identityDecryptionCteSql('message_decryptions', 'selected_msgs')}
+    ${identityDecryptionCteSql('message_decryptions', "NOW() - INTERVAL '24 hours'", buildPacketScopeClause(scope, 'p', network))}
     SELECT
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,

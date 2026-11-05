@@ -216,16 +216,19 @@ test('recent readers join packet_decryptions on the packet identity key', async 
     await getRecentPackets(5, 'ukmesh', undefined, 'full', undefined, capture);
     const packetsSql = captured.at(-1)!;
     assert.match(packetsSql, /mesh\.packet_decryptions/, 'recent packets still read durable decryptions');
-    assert.match(packetsSql, /encode\(dp\.packet_uid, 'hex'\)/,
-      'decryptions must be resolved through the packet UID, not the representative hash');
-    assert.doesNotMatch(packetsSql, /pd\.packet_hash = p\.packet_hash/,
-      'an exact representative-hash join reintroduces the NULL-summary defect');
+    assert.match(packetsSql, /JOIN mesh\.packet_decryptions pd ON pd\.packet_hash = p\.packet_hash/,
+      'decryptions are resolved over the bounded window, not one representative row');
+    assert.match(packetsSql, /DISTINCT ON \(identity_key\) identity_key, summary/,
+      'decryptions must be keyed by the packet identity');
+    assert.doesNotMatch(packetsSql, /pd\.packet_hash = rp\.packet_hash/,
+      'joining the decryption to the representative row reintroduces the NULL-summary defect');
 
     await getRecentMessages(5, 'ukmesh', undefined, undefined, capture);
     const messagesSql = captured.at(-1)!;
     assert.match(messagesSql, /mesh\.packet_decryptions/);
-    assert.match(messagesSql, /encode\(dp\.packet_uid, 'hex'\)/);
-    assert.doesNotMatch(messagesSql, /pd\.packet_hash = p\.packet_hash/);
+    assert.match(messagesSql, /JOIN mesh\.packet_decryptions pd ON pd\.packet_hash = p\.packet_hash/);
+    assert.match(messagesSql, /DISTINCT ON \(identity_key\) identity_key, summary/);
+    assert.doesNotMatch(messagesSql, /pd\.packet_hash = m\.packet_hash/);
 
     // Rollback authority keeps the pre-P2-10 one-observation-per-identity shape.
     process.env['PACKET_IDENTITY_READ_AUTHORITY'] = 'hash';
@@ -233,7 +236,7 @@ test('recent readers join packet_decryptions on the packet identity key', async 
     const rollbackSql = captured.at(-1)!;
     assert.doesNotMatch(rollbackSql, /dp\.packet_uid/,
       'hash authority must not expand observations by UID');
-    assert.match(rollbackSql, /SELECT dp\.packet_hash AS identity_key/,
+    assert.match(rollbackSql, /SELECT p\.packet_hash AS identity_key/,
       'hash authority resolves decryptions against the exact stored hash only');
   } finally {
     if (previous === undefined) delete process.env['PACKET_IDENTITY_READ_AUTHORITY'];
