@@ -60,7 +60,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
   await bootstrapBaseSchemaFixture(pool);
   await pool.query(`CREATE FUNCTION hold_owned_packet() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN PERFORM pg_advisory_xact_lock(918204,17); RETURN NEW; END $$;
-    CREATE TRIGGER hold_owned_packet BEFORE INSERT ON packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);
+    CREATE TRIGGER hold_owned_packet BEFORE INSERT ON mesh.packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);
   holder=await pool.connect();await holder.query('BEGIN');await holder.query('SELECT pg_advisory_xact_lock(918204,17)');
   process.env['MQTT_INGEST_MODE']='ram';process.env['MQTT_RAM_STREAM_KEY']=key;
   process.env['MQTT_RAM_QUEUE_MAX_BYTES']=String(1048576);
@@ -99,7 +99,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     return {child,done,output:()=>output,httpPort,metricsPort,applicationName};
   };
   const counts=async()=>(await pool.query(`SELECT
-    (SELECT COUNT(*)::int FROM packets WHERE network=$1) packets,
+    (SELECT COUNT(*)::int FROM mesh.packets WHERE network=$1) packets,
     (SELECT COUNT(*)::int FROM ingest_observation_ledger WHERE network=$1) ledger,
     (SELECT COUNT(*)::int FROM packet_paths WHERE network=$1) paths,
     (SELECT COALESCE(SUM(packet_count),0)::int FROM packet_hourly_stats WHERE network=$1) hourly,
@@ -137,7 +137,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
   assert.equal(success.code,0,recovered.output());assert.match(recovered.output(),/graceful shutdown complete/);
   const expected={packets:1,ledger:1,paths:1,hourly:1,daily:1,regions:1};
   assert.deepEqual(await counts(),expected);
-  assert.equal((await pool.query('SELECT observation_id::text FROM packets WHERE network=$1',[name])).rows[0].observation_id,accepted.observationId);
+  assert.equal((await pool.query('SELECT observation_id::text FROM mesh.packets WHERE network=$1',[name])).rows[0].observation_id,accepted.observationId);
   assert.equal((await redis.xpending(key,group))[0],0);
   assert.equal(await redis.xlen(key),1,'committed overlap remains reserved until expiry');
   assert.equal(Number(await redis.get(key+':bytes')),bytes);
