@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import {
+  BASE_SCHEMA_BOOTSTRAP_APPROVAL,
+  decideLedgerBootstrap,
   loadMigrationFiles,
   migrationChecksum,
+  parseBaseSchemaShape,
   validateMigrationPrefixes,
 } from './migrations.js';
 
@@ -59,4 +62,111 @@ test('merged migration tree preserves shipped names and rejects new prefix colli
   assert.throws(() => validateMigrationPrefixes([
     ...names, '062_accidental_collision.sql',
   ]), /duplicate migration prefix 062/);
+});
+
+const shippedBaseSchema = parseBaseSchemaShape(
+  readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'),
+);
+
+test('base schema parsing reads only the relations the init hook actually creates', () => {
+  assert.equal(shippedBaseSchema.relations.size, 33);
+  for (const relation of ['public.nodes', 'public.packets', 'public.packet_hourly_stats']) {
+    assert.ok(shippedBaseSchema.relations.has(relation), `${relation} missing from base.sql`);
+  }
+  // Indexes and hypertable calls are not relations and must not leak in.
+  assert.ok(!shippedBaseSchema.relations.has('public.packets_hash_idx'));
+  assert.ok(!shippedBaseSchema.relations.has('public.schema_migrations'));
+  assert.deepEqual([...shippedBaseSchema.schemas], ['public']);
+});
+
+test('a database seeded from the shipped base schema still needs the explicit bootstrap approval', () => {
+  const database = { schemas: new Set(['public']), relations: shippedBaseSchema.relations };
+  assert.deepEqual(
+    decideLedgerBootstrap({ approval: '', baseSchema: shippedBaseSchema, database }),
+    {
+      action: 'refuse',
+      reason: 'public.schema_migrations is missing on a non-empty database; '
+        + 'refusing to create a new ledger or replay historical migrations '
+        + '(only a deliberate, documented base-schema bootstrap via '
+        + 'MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL may initialise one)',
+    },
+  );
+  assert.equal(
+    decideLedgerBootstrap({ approval: 'true', baseSchema: shippedBaseSchema, database }).action,
+    'refuse',
+  );
+  assert.equal(
+    decideLedgerBootstrap({ approval: 'BOOTSTRAP-LEDGER-FROM-BASE-SCHEMA', baseSchema: shippedBaseSchema, database }).action,
+    'refuse',
+  );
+  assert.deepEqual(
+    decideLedgerBootstrap({
+      approval: BASE_SCHEMA_BOOTSTRAP_APPROVAL,
+      baseSchema: shippedBaseSchema,
+      database,
+    }),
+    { action: 'initialise-from-base-schema' },
+  );
+});
+
+test('the bootstrap approval never covers a database that drifted from the base schema', () => {
+  const approval = BASE_SCHEMA_BOOTSTRAP_APPROVAL;
+  const driftedRelations = new Set([...shippedBaseSchema.relations, 'public.ml_gold_paths']);
+  const drifted = decideLedgerBootstrap({
+    approval,
+    baseSchema: shippedBaseSchema,
+    database: { schemas: new Set(['public']), relations: driftedRelations },
+  });
+  assert.equal(drifted.action, 'refuse');
+  assert.match(
+    drifted.action === 'refuse' ? drifted.reason : '',
+    /does not match the shipped base schema \(unexpected public\.ml_gold_paths\)/,
+  );
+
+  const partialRelations = new Set([...shippedBaseSchema.relations].filter((name) => name !== 'public.nodes'));
+  const partial = decideLedgerBootstrap({
+    approval,
+    baseSchema: shippedBaseSchema,
+    database: { schemas: new Set(['public']), relations: partialRelations },
+  });
+  assert.equal(partial.action, 'refuse');
+  assert.match(
+    partial.action === 'refuse' ? partial.reason : '',
+    /missing public\.nodes/,
+  );
+
+  const extraSchema = decideLedgerBootstrap({
+    approval,
+    baseSchema: shippedBaseSchema,
+    database: {
+      schemas: new Set(['public', 'core']),
+      relations: shippedBaseSchema.relations,
+    },
+  });
+  assert.equal(extraSchema.action, 'refuse');
+  assert.match(
+    extraSchema.action === 'refuse' ? extraSchema.reason : '',
+    /unexpected schema\(s\) core/,
+  );
+});
+
+test('an empty database needs no approval, and an unverifiable bootstrap is refused', () => {
+  assert.deepEqual(
+    decideLedgerBootstrap({
+      approval: '',
+      baseSchema: shippedBaseSchema,
+      database: { schemas: new Set(['public']), relations: new Set() },
+    }),
+    { action: 'initialise-empty' },
+  );
+  const unverifiable = decideLedgerBootstrap({
+    approval: BASE_SCHEMA_BOOTSTRAP_APPROVAL,
+    baseSchema: null,
+    database: { schemas: new Set(['public']), relations: shippedBaseSchema.relations },
+  });
+  assert.equal(unverifiable.action, 'refuse');
+  assert.match(
+    unverifiable.action === 'refuse' ? unverifiable.reason : '',
+    /base schema is unavailable in this image/,
+  );
 });
