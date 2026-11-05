@@ -143,15 +143,29 @@ async function installChunkCatalog(pool: Fixture): Promise<void> {
   );
   if (existing.rowCount === 0) {
     // Plain PostgreSQL: stand in for the TimescaleDB catalogue view the tool
-    // reads. This is the table shape the tool depends on, not a mock of it.
+    // reads. This is the table shape the tool depends on, not a mock of it:
+    // the columns, types and nullability track `timescaledb_information.chunks`
+    // for the ones the query names (chunk_schema, chunk_name, hypertable_schema,
+    // hypertable_name, is_compressed, range_start, range_end). One stand-in
+    // chunk holds the whole timeline, so its range must enclose every row a
+    // test inserts — the tool filters batches and pending counts by
+    // `time >= range_start AND time < range_end`, exactly as it does against a
+    // real chunk.
     await pool.query(`
       CREATE SCHEMA timescaledb_information;
       CREATE TABLE timescaledb_information.chunks (
-        chunk_schema TEXT, chunk_name TEXT, hypertable_schema TEXT, hypertable_name TEXT,
-        is_compressed BOOLEAN, range_start TIMESTAMPTZ
+        chunk_schema TEXT NOT NULL,
+        chunk_name TEXT NOT NULL,
+        hypertable_schema TEXT NOT NULL,
+        hypertable_name TEXT NOT NULL,
+        is_compressed BOOLEAN NOT NULL,
+        range_start TIMESTAMPTZ NOT NULL,
+        range_end TIMESTAMPTZ NOT NULL
       );
       INSERT INTO timescaledb_information.chunks
-        VALUES ('mesh', 'packets', 'mesh', 'packets', FALSE, '2026-01-01T00:00:00Z');
+        (chunk_schema, chunk_name, hypertable_schema, hypertable_name, is_compressed, range_start, range_end)
+      VALUES ('mesh', 'packets', 'mesh', 'packets', FALSE,
+              '2000-01-01T00:00:00Z', '2100-01-01T00:00:00Z');
     `);
     return;
   }
