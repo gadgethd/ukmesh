@@ -99,6 +99,12 @@ jobs:
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration
+      - name: Run the isolated initial-map visibility integration
+        run: |
+          TEST_MAP_DATABASE_URL="$(node --input-type=module -e 'const url = new URL(process.env.TEST_INGEST_DATABASE_URL); url.pathname = "/map_stale_dedup_scratch"; process.stdout.write(url.href)')"
+          export TEST_MAP_DATABASE_URL
+          node --input-type=module -e 'import pg from "pg"; const url = new URL(process.env.TEST_MAP_DATABASE_URL); url.pathname = "/postgres"; const admin = new pg.Pool({ connectionString: url.href, max: 1 }); try { const found = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", ["map_stale_dedup_scratch"]); if (!found.rowCount) await admin.query("CREATE DATABASE map_stale_dedup_scratch"); } finally { await admin.end(); }'
+          node --import tsx --test src/ws/initialStateNodes.integration.test.ts
       - name: Prove 074 is superseded only on post-move databases
         run: timeout 240s npm run test:migration-supersession
       - name: Qualify broker framing and bounded offline replay
@@ -252,12 +258,6 @@ jobs:
     env:
       POSTGRES_USER: meshcore
       POSTGRES_PASSWORD: ci-postgres-password
-      # Owner-auth was consolidated into the primary database (073 creates the
-      # core.owner_* tables); the separate legacy owner database is provisioned
-      # by scripts/newuser.sh on a real deployment and does not exist on an
-      # empty volume. This is read at compose interpolation time, which builds
-      # the backend's OWNER_DATABASE_URL default.
-      OWNER_POSTGRES_DB: meshcore
       ALERT_RECEIVER_TOKEN: ci-alert-receiver-token-0123456789abcdef
       HEALTHCHECK_TEST_CHANNEL_SECRET: 0123456789abcdef0123456789abcdef
       REDIS_PASSWORD: ci-redis-password
@@ -566,6 +566,8 @@ jobs:
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/packets" \
               -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D42AABBCCDDDEADBEEF"}'
+          # Post-move canonical names (116/123/124/125): the old public names
+          # are compatibility views at best, and some no longer exist at all.
           readback=""
           for _ in $(seq 1 30); do
             readback="$(

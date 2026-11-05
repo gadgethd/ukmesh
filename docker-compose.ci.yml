@@ -85,6 +85,11 @@ services:
       # operator scripts a real deployment runs, rather than skipping the check.
       - ./scripts/bootstrap-backend-roles.sql:/docker-entrypoint-initdb.d/002_backend_roles.sql:ro
       - ./scripts/bootstrap-reader-roles.sql:/docker-entrypoint-initdb.d/003_reader_roles.sql:ro
+      # The backend connects to a second database for owner auth; a fresh volume
+      # never creates it. owner-auth.sql is mounted outside initdb so it is not
+      # applied to the main database.
+      - ./backend/src/db/owner-auth.sql:/opt/bootstrap/owner-auth.sql:ro
+      - ./scripts/bootstrap-owner-db.sh:/docker-entrypoint-initdb.d/004_owner_db.sh:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meshcore} -d ${POSTGRES_DB:-meshcore}"]
       interval: 30s

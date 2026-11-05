@@ -42,19 +42,16 @@ class CandidatePagingTests(unittest.TestCase):
         cls.database = 'audit_tagger_' + uuid4().hex
         with cls.admin.cursor() as cur:
             cur.execute(sql.SQL('CREATE DATABASE {}').format(sql.Identifier(cls.database)))
-        cls.conn = psycopg2.connect(
-            URL, dbname=cls.database,
-            options='-c search_path=mesh,core,analytics,ops,public',
-        )
+        cls.conn = psycopg2.connect(URL, dbname=cls.database)
         cls.conn.autocommit = True
         with cls.conn.cursor() as cur:
-            # Mirror the post-move layout: product SQL names `mesh.packets` /
-            # `mesh.message_tags` unqualified through the search_path and the
-            # tagger queues as `ops.*` in full.
-            cur.execute('''CREATE SCHEMA mesh; CREATE SCHEMA core; CREATE SCHEMA analytics; CREATE SCHEMA ops;
-              CREATE TABLE mesh.packets (packet_hash text, time timestamptz, payload jsonb,
+            # The worker uses public compatibility names for packets/tags on
+            # its current default search_path; privacy/retry state is read from
+            # the post-move `ops` schema by fully qualified name.
+            cur.execute('''CREATE SCHEMA IF NOT EXISTS ops;
+              CREATE TABLE packets (packet_hash text, time timestamptz, payload jsonb,
               packet_type int, network text, visibility_ok boolean, is_private boolean, rx_node_id text);
-              CREATE TABLE mesh.message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
+              CREATE TABLE message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
                 model text, latency_ms int, tags jsonb, confidence jsonb);
               CREATE TABLE ops.tagger_retry (packet_hash text PRIMARY KEY, exhausted boolean);
               CREATE TABLE ops.privacy_rematerialization_queue (status text);
@@ -73,7 +70,7 @@ class CandidatePagingTests(unittest.TestCase):
     def setUp(self):
         self.cursor_time = datetime.now(timezone.utc) - timedelta(seconds=5)
         with self.conn.cursor() as cur:
-            cur.execute('TRUNCATE packets, message_tags, tagger_retry, privacy_rematerialization_queue; UPDATE public_visibility_state SET generation=1; UPDATE packet_visibility_materialization_state SET visibility_generation=1')
+            cur.execute('TRUNCATE packets, message_tags, ops.tagger_retry, ops.privacy_rematerialization_queue; UPDATE ops.public_visibility_state SET generation=1; UPDATE ops.packet_visibility_materialization_state SET visibility_generation=1')
 
     def add(self, packet_hash, time, receiver=None):
         with self.conn.cursor() as cur:
@@ -99,7 +96,7 @@ class CandidatePagingTests(unittest.TestCase):
         for key, exhausted in [('retrying', False), ('exhausted', True)]:
             self.add(key, self.cursor_time + timedelta(seconds=1))
             with self.conn.cursor() as cur:
-                cur.execute('INSERT INTO tagger_retry VALUES (%s,%s)', (key, exhausted))
+                cur.execute('INSERT INTO ops.tagger_retry VALUES (%s,%s)', (key, exhausted))
         self.assertEqual(self.candidates(), [])
 
 
@@ -122,7 +119,7 @@ class CandidatePagingTests(unittest.TestCase):
     def test_unavailable_policy_keeps_retry_retryable(self):
         self.add('blocked-retry', self.cursor_time)
         with self.conn.cursor() as cur:
-            cur.execute('UPDATE packet_visibility_materialization_state SET visibility_generation=2')
+            cur.execute('UPDATE ops.packet_visibility_materialization_state SET visibility_generation=2')
             module = self.worker()
             with patch.object(module, 'api_tag', return_value=({'answers': {}}, 1)) as classifier:
                 with self.assertRaisesRegex(RuntimeError, 'visibility'):
@@ -169,9 +166,9 @@ class CandidatePagingTests(unittest.TestCase):
         with self.conn.cursor() as cur:
             self.assertEqual(module.public_packet_keys(cur, 'queued-retry', self.cursor_time),
                              ('queued-retry', self.cursor_time, None, 'ukmesh'))
-            cur.execute("INSERT INTO privacy_rematerialization_queue VALUES ('processing')")
+            cur.execute("INSERT INTO ops.privacy_rematerialization_queue VALUES ('processing')")
             with self.assertRaisesRegex(RuntimeError, 'visibility'):
                 module.public_packet_keys(cur, 'queued-retry', self.cursor_time)
-            cur.execute('TRUNCATE privacy_rematerialization_queue')
+            cur.execute('TRUNCATE ops.privacy_rematerialization_queue')
             cur.execute('UPDATE packets SET is_private=true, visibility_ok=false')
             self.assertIsNone(module.public_packet_keys(cur, 'queued-retry', self.cursor_time))

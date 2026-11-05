@@ -28,7 +28,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
   let closeDb: (() => Promise<void>) | undefined;
   try {
     await bootstrapBaseSchemaFixture(pool);
-    const migration = readFileSync(new URL('../db/migrations/067_core.node_map_suppressions.sql', import.meta.url), 'utf8');
+    const migration = readFileSync(new URL('../db/migrations/067_node_map_suppressions.sql', import.meta.url), 'utf8');
     const count = async (label: string) => {
       const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM core.node_map_suppressions');
       console.log(`[scratch ${name}] ${label}: SELECT count(*) FROM core.node_map_suppressions; => ${result.rows[0]!.count}`);
@@ -88,7 +88,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       const rows = await repository.listPublicMapRows(['node_id'], networkFilters('ukmesh'),
         new Date().toISOString(), null, 100);
       assert.deepEqual(rows.map((row) => row['node_id']).sort(), expectedMap);
-      assert.deepEqual(ids(await db.getNodes('ukmesh', undefined, 'slim', undefined, { mapVisible: true })), expectedMap);
+      assert.deepEqual(ids(await db.getNodes('ukmesh', undefined, 'slim', undefined, undefined, { mapVisible: true })), expectedMap);
     });
 
     await t.test('privacy index and inferred-path callers retain suppressed and expired nodes', async () => {
@@ -98,19 +98,20 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       for (const retained of [suppressed, otherSuppressed, expired]) assert.ok(inferred.includes(retained));
     });
 
-    await t.test('WS payload excludes suppressed nodes and restores packet/link endpoints outside the window', async () => {
+    await t.test('WS payload restores public packet endpoints outside the map window, not link-only endpoints', async () => {
       const nodes = await loadInitialMapNodes(db.getNodes, 'ukmesh', undefined, [
         { src_node_id: packetEndpoint.toLowerCase(), rx_node_id: fresh.toLowerCase() },
         { src_node_id: privateNode }, { src_node_id: crossNetwork }, { src_node_id: nullIsland },
-      ], [{ node_a_id: linkEndpoint, node_b_id: fresh }]);
-      assert.deepEqual(ids(nodes), [...expectedMap, packetEndpoint, linkEndpoint].sort());
+      ]);
+      assert.deepEqual(ids(nodes), [...expectedMap, packetEndpoint].sort());
       assert.ok(!ids(nodes).includes(suppressed));
       assert.ok(!ids(nodes).includes(otherSuppressed));
+      assert.ok(!ids(nodes).includes(linkEndpoint), 'a viable link alone is not current map visibility evidence');
     });
 
     await t.test('explicit initial references take precedence over suppression without bypassing privacy or scope', async () => {
       assert.deepEqual(ids(await loadInitialMapNodes(db.getNodes, 'ukmesh', undefined,
-        [{ src_node_id: suppressed }, { src_node_id: privateNode }, { src_node_id: crossNetwork }], [])),
+        [{ src_node_id: suppressed }, { src_node_id: privateNode }, { src_node_id: crossNetwork }])),
       [...expectedMap, suppressed].sort());
     });
 
