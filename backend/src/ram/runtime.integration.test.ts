@@ -100,11 +100,11 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
   };
   const counts=async()=>(await pool.query(`SELECT
     (SELECT COUNT(*)::int FROM mesh.packets WHERE network=$1) packets,
-    (SELECT COUNT(*)::int FROM ingest_observation_ledger WHERE network=$1) ledger,
-    (SELECT COUNT(*)::int FROM packet_paths WHERE network=$1) paths,
-    (SELECT COALESCE(SUM(packet_count),0)::int FROM packet_hourly_stats WHERE network=$1) hourly,
-    (SELECT COUNT(*)::int FROM packet_daily_stats WHERE network=$1) daily,
-    (SELECT COUNT(*)::int FROM observer_region_packet_sightings WHERE network=$1) regions`,[name])).rows[0];
+    (SELECT COUNT(*)::int FROM mesh.ingest_observation_ledger WHERE network=$1) ledger,
+    (SELECT COUNT(*)::int FROM mesh.packet_paths WHERE network=$1) paths,
+    (SELECT COALESCE(SUM(packet_count),0)::int FROM mesh.packet_hourly_stats WHERE network=$1) hourly,
+    (SELECT COUNT(*)::int FROM mesh.packet_daily_stats WHERE network=$1) daily,
+    (SELECT COUNT(*)::int FROM core.observer_region_packet_sightings WHERE network=$1) regions`,[name])).rows[0];
   // Packet persistence runs on the dedicated ingest pool, not the general pool.
   const blocked=async(applicationName:string)=>Number((await pool.query(`SELECT COUNT(*) n FROM pg_stat_activity
     WHERE datname=$1 AND application_name=$2 AND wait_event='advisory'`,[name,`${applicationName}-ingest`])).rows[0].n)>0;
