@@ -64,6 +64,73 @@ test('merged migration tree preserves shipped names and rejects new prefix colli
   ]), /duplicate migration prefix 062/);
 });
 
+// The fence must survive the P1-4 schema moves. main ships the row fence as 074
+// (renamed from 071), 087 replaces its function with the statement body, 113
+// moves the prefix registry to core and 108/128 leave read-only views at the
+// old public names. This test pins the merged ordering and the post-move
+// relation names that make the re-assert apply on top of all of them.
+test('merged tree re-asserts the prefix fence above 132 against post-move relations', () => {
+  const migrations = loadMigrationFiles();
+  const names = migrations.map((migration) => migration.name);
+  const fenceName = '134_reassert_prefix_visibility_fence.sql';
+  const fence = migrations.find((migration) => migration.name === fenceName)
+    ?? assert.fail(`${fenceName} is missing`);
+
+  const prefixOf = (name: string): number => Number(/^(\d+)_/.exec(name)?.[1]);
+  assert.ok(prefixOf(fenceName) > prefixOf('132_restore_reader_schema_usage.sql'),
+    'the re-assert must run after 132');
+  // Later migrations may legitimately sit above the re-assert (135 does);
+  // only its ordering against the P1-4 moves is a durable invariant.
+  assert.ok(prefixOf(fenceName) > prefixOf('128_corescope_privacy_compat.sql'));
+
+  // Simulate the merged tree: main's 074 joins this branch's files with no
+  // duplicate prefix, sorts before the moves, and the re-assert sorts last.
+  const mergedNames = [...names, '074_prefix_visibility_row_fence.sql']
+    .sort((a, b) => a.localeCompare(b));
+  assert.doesNotThrow(() => validateMigrationPrefixes(mergedNames));
+  assert.ok(!names.includes('074_prefix_visibility_row_fence.sql'),
+    '074 comes from main and must not be re-added here');
+  for (const earlier of [
+    '074_prefix_visibility_row_fence.sql',
+    '087_move_privacy_visibility_cluster.sql',
+    '108_compat_visibility_views.sql',
+    '113_move_core_private_node_prefixes.sql',
+    '128_corescope_privacy_compat.sql',
+    '132_restore_reader_schema_usage.sql',
+  ]) {
+    assert.ok(
+      mergedNames.indexOf(earlier) < mergedNames.indexOf(fenceName),
+      `${earlier} must sort before ${fenceName}`,
+    );
+  }
+
+  // Post-move relations only: the public names are read-only compat views and
+  // ALTER/CREATE TRIGGER against them fails (the original 074 failure). Prose
+  // that records the history is stripped so only executable SQL is checked.
+  const sqlCode = fence.sql.replace(/^\s*--.*$/gm, '');
+  assert.match(sqlCode, /core\.private_node_prefixes/);
+  assert.match(sqlCode, /ops\.public_visibility_state/);
+  assert.doesNotMatch(
+    sqlCode,
+    /public\.(?:private_node_prefixes|public_visibility_state|packet_visibility_materialization_state)\b/,
+  );
+  assert.doesNotMatch(
+    sqlCode,
+    /(?:FROM|JOIN|INTO|UPDATE|TABLE|ON)\s+(?:private_node_prefixes|public_visibility_state|packet_visibility_materialization_state)\b/,
+  );
+  assert.doesNotMatch(sqlCode, /new_prefix_rows|old_prefix_rows/,
+    'a ROW trigger cannot use transition tables');
+
+  // Idempotent re-assert: replace in place, drop before create, and only stamp
+  // the marker when it is still unset.
+  assert.match(sqlCode, /CREATE OR REPLACE FUNCTION public\.bump_visibility_for_changed_prefixes\(\)/);
+  assert.match(sqlCode, /ADD COLUMN IF NOT EXISTS prefix_fence_xid/);
+  assert.match(sqlCode, /DROP TRIGGER IF EXISTS private_node_prefixes_visibility_insert_rows\s+ON core\.private_node_prefixes/);
+  assert.match(sqlCode, /AFTER INSERT ON core\.private_node_prefixes\s+FOR EACH ROW EXECUTE FUNCTION public\.bump_visibility_for_changed_prefixes\(\)/);
+  assert.match(sqlCode, /to_regclass\('core\.private_node_prefixes'\)/);
+  assert.match(sqlCode, /state\.prefix_fence_xid IS NULL/);
+});
+
 const shippedBaseSchema = parseBaseSchemaShape(
   readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'),
 );
