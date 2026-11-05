@@ -1,4 +1,4 @@
--- 134_packet_identity_backfill_chunks.sql
+-- 135_packet_identity_backfill_chunks.sql
 -- P2-5 follow-up: record per-chunk work and an honest completion claim.
 --
 -- The backfill now visits compressed chunks too, so the state row has to say

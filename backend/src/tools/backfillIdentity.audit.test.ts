@@ -490,8 +490,8 @@ test('migration 133 declares and loads the unique (time, observation_id) index',
   assert.equal(new Set(migrations.map((entry) => entry.name)).size, migrations.length);
 });
 
-test('migration 134 widens the status check and adds the per-chunk columns', () => {
-  const name = '134_packet_identity_backfill_chunks.sql';
+test('migration 135 widens the status check and adds the per-chunk columns', () => {
+  const name = '135_packet_identity_backfill_chunks.sql';
   const sql = readFileSync(new URL(`../db/migrations/${name}`, import.meta.url), 'utf8');
   const migrations = loadMigrationFiles();
   const migration = migrations.find((entry) => entry.name === name);
