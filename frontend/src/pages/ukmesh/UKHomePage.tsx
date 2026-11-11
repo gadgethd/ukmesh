@@ -2,13 +2,17 @@ import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { LiveStatsSection } from '../../components/LiveStatsSection.js';
 import { getCurrentSite } from '../../config/site.js';
+import { withScopeParams } from '../../utils/api.js';
 
 export const UKHomePage: React.FC = () => {
   const site = getCurrentSite();
   const [recent, setRecent] = useState<Array<{ packet_hash: string; time: string; summary?: string | null; packet_type?: number | null }>>([]);
   useEffect(() => {
     const controller = new AbortController();
-    void fetch('/api/packets/recent?network=ukmesh&limit=5', { signal: controller.signal })
+    void fetch(withScopeParams('/api/packets/recent?limit=5', {
+      network: site.networkFilter,
+      observer: site.observerId,
+    }), { signal: controller.signal })
       .then((response) => response.json())
       .then((packets) => setRecent(Array.isArray(packets) ? packets : []))
       .catch(() => {});

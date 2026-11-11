@@ -22,7 +22,6 @@ export function watchEntryHref(entry: WatchEntry): string {
     target.pathname = '/spam';
     target.searchParams.set('incident', entry.id);
   }
-  target.searchParams.set('network', entry.scope);
   return target.toString();
 }
 
