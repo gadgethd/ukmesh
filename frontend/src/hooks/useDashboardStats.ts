@@ -1,3 +1,4 @@
+import { PACKET_OBSERVED_EVENT } from '../utils/appEvents.js';
 import { useEffect, useRef, useState } from 'react';
 
 export type DashboardStats = {
@@ -54,9 +55,9 @@ export function useDashboardStats(
       if (document.hidden) return;
       setLocalPacketsDay((n) => n + packetObservedCount(event));
     };
-    window.addEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
+    window.addEventListener(PACKET_OBSERVED_EVENT, handlePacketObserved as EventListener);
     return () => {
-      window.removeEventListener('meshcore:packet-observed', handlePacketObserved as EventListener);
+      window.removeEventListener(PACKET_OBSERVED_EVENT, handlePacketObserved as EventListener);
     };
   }, []);
 

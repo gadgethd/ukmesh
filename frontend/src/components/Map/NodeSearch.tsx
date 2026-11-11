@@ -4,6 +4,7 @@ import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../types/domain.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
+import { FOCUS_SEARCH_EVENT } from '../../utils/appEvents.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
@@ -63,8 +64,8 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
       inputRef.current?.focus();
       setOpen(true);
     };
-    window.addEventListener('meshcore:focus-search', focusSearch);
-    return () => window.removeEventListener('meshcore:focus-search', focusSearch);
+    window.addEventListener(FOCUS_SEARCH_EVENT, focusSearch);
+    return () => window.removeEventListener(FOCUS_SEARCH_EVENT, focusSearch);
   }, []);
 
   useEffect(() => {
