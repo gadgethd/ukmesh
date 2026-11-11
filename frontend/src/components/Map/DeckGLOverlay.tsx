@@ -11,7 +11,7 @@ import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layer
 import { HeatmapLayer } from '@deck.gl/aggregation-layers';
 import type { Layer } from '@deck.gl/core';
 import * as maplibregl from 'maplibre-gl';
-import { PACKET_ARC_TTL_MS, type PacketArc } from '../../hooks/useNodes.js';
+import { PACKET_ARC_TTL_MS, type PacketArc } from '../../types/domain.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
 import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';

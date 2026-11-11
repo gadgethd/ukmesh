@@ -5,12 +5,9 @@ import {
   NODE_HIDE_AFTER_MS,
   NODE_STALE_AFTER_MS,
 } from '../components/Map/mapConfig.js';
-import {
-  PACKET_ARC_TTL_MS,
-  canonicalNodeId,
-  nodeStore,
-  type MeshNode,
-} from './useNodes.js';
+import { PACKET_ARC_TTL_MS, type MeshNode } from '../types/domain.js';
+import { canonicalNodeId } from '../utils/nodeIds.js';
+import { nodeStore } from './useNodes.js';
 
 const NODE_ID = 'A1'.repeat(32);
 const OTHER_NODE_ID = 'B2'.repeat(32);

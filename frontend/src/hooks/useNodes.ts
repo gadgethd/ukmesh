@@ -8,8 +8,6 @@ import {
   mergePackets,
   packetInfoScore,
   type RecentPacketRow,
-  type MessageTags,
-  type TagConfidence,
   FEED_MAX_MESSAGES,
   FEED_MAX_PACKETS,
 } from './packetFeed.js';
@@ -18,75 +16,16 @@ import {
   canonicalNodeId,
   canonicalOptionalNodeId,
 } from '../utils/nodeIds.js';
-export { canonicalNodeId } from '../utils/nodeIds.js';
-
-export interface MeshNode {
-  node_id:        string;
-  name?:          string;
-  lat?:           number;
-  lon?:           number;
-  iata?:          string;
-  role?:          number;  // 1=ChatNode, 2=Repeater, 3=RoomServer, 4=Sensor
-  last_seen:      string;
-  is_online:      boolean;
-  hardware_model?: string;
-  public_key?:    string;
-  advert_count?:  number;
-  elevation_m?:   number;
-}
-
-export interface LivePacketData {
-  id:           string;
-  packetHash:   string;
-  rxNodeId?:    string;
-  srcNodeId?:   string;
-  topic:        string;
-  iata?:        string;
-  packetType?:  number;
-  hopCount?:    number;
-  pathHashSizeBytes?: number;
-  direction?:   string;
-  summary?:     string;
-  payload?:     Record<string, unknown>;
-  path?:        string[];
-  advertCount?: number;
-  ts:           number;
-}
-
-export interface AggregatedPacket {
-  id:           string;
-  packetHash:   string;
-  packetType?:  number;
-  firstSeenTs?: number;
-  rxNodeId?:    string;
-  observerIds:  string[];
-  observerIatas: string[];
-  srcNodeId?:   string;
-  topic?:       string;
-  summary?:     string;
-  hopCount?:    number;
-  pathHashSizeBytes?: number;
-  path?:        string[];
-  rxCount:      number;
-  txCount:      number;
-  ts:           number;
-  advertCount?: number;
-  tags?:        MessageTags;
-  tagConfidence?: TagConfidence;
-  taggedAt?:    string;
-}
-
-export interface PacketArc {
-  id:         string;
-  from:       [number, number];
-  to:         [number, number];
-  hopCount:   number;
-  ts:         number;
-  packetHash: string;
-}
-
-export const PACKET_ARC_TTL_MS = 5_000;
-export const PACKET_ARC_MAX = 200;
+import {
+  PACKET_ARC_MAX,
+  PACKET_ARC_TTL_MS,
+  type AggregatedPacket,
+  type LivePacketData,
+  type MeshNode,
+  type MessageTags,
+  type PacketArc,
+  type TagConfidence,
+} from '../types/domain.js';
 
 type NodeStoreState = {
   scopeKey: string | null;

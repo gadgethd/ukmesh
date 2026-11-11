@@ -3,7 +3,7 @@ import { useMessages, useNodeMap } from '../hooks/useNodes.js';
 import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../hooks/packetFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
-import type { AggregatedPacket } from '../hooks/useNodes.js';
+import type { AggregatedPacket } from '../types/domain.js';
 
 const TYPE_LABELS: Record<number, string> = {
   0:  'REQ',

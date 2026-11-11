@@ -1,5 +1,5 @@
-import type { AggregatedPacket, MeshNode } from '../../hooks/useNodes.js';
-import type { MessageTags, TagConfidence } from '../../hooks/packetFeed.js';
+import type { AggregatedPacket, MeshNode } from '../../types/domain.js';
+import type { MessageTags, TagConfidence } from '../../types/domain.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import type { LazyPathNode, LazyPathResult } from './PacketDetailPanel.js';
 

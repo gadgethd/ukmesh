@@ -1,5 +1,5 @@
 import React from 'react';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import { Dialog, DialogTitle } from '../../components/ui/Dialog.js';
 import { PacketDetailPanel, type LazyPathResult } from './PacketDetailPanel.js';
 import { FeedMapPanel, PacketPathTree } from './FeedPathViews.js';

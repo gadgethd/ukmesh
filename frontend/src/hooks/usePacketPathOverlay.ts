@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import type { AggregatedPacket } from './useNodes.js';
+import type { AggregatedPacket } from '../types/domain.js';
 import { useNodeMap, useMessages, usePackets } from './useNodes.js';
 import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
 import { fetchPathResolution } from '../utils/pathResolutionRequest.js';

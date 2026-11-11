@@ -1,4 +1,4 @@
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
   buildHiddenCoordMask,

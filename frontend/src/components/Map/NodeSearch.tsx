@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { isValidMapCoord } from '../../utils/pathing.js';

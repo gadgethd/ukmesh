@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import { PathMap, type LazyPath, type LazyPathNode, type LazyPathResult } from './PacketDetailPanel.js';
 import type { PathTreeStatus } from './feedState.js';
 import type { FeedPacket, PathTreeBranchNode } from './feedModel.js';

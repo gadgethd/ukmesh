@@ -1,4 +1,4 @@
-import type { AggregatedPacket, MeshNode } from './useNodes.js';
+import type { AggregatedPacket, MeshNode } from '../types/domain.js';
 import { buildHiddenCoordMask, hasCoords, maskNodePoint, resolvePathWaypoints } from '../utils/pathing.js';
 
 export type ResolveMode = 'resolved' | 'none';

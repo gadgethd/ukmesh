@@ -11,7 +11,7 @@
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import * as maplibregl from './maplibre.js';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import { nodeStore } from '../../hooks/useNodes.js';
 import { linkStateStore } from '../../hooks/useLinkState.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';

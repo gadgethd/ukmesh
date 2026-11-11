@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LazyPathResult } from '../pages/ukmesh/PacketDetailPanel.js';
 import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
-import type { MessageTags, TagConfidence } from './packetFeed.js';
+import type { MessageTags, TagConfidence } from '../types/domain.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { ApiResponseError, checkedJson, fetchJson, withScopeParams } from '../utils/api.js';
 import { fetchPathResolution } from '../utils/pathResolutionRequest.js';
