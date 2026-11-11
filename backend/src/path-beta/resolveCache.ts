@@ -32,6 +32,34 @@ function packetHashFromKey(key: string): string {
   return key.split('|')[1]?.trim() ?? '';
 }
 
+/** Last visibility generation observed by the API read path. Background
+ *  warmers have no repository dependency of their own, so they build keys from
+ *  this value; if no API read has happened yet their entries are simply never
+ *  served, which is safe. */
+let observedVisibilityGeneration = 1;
+
+export function noteVisibilityGeneration(generation: number): void {
+  if (Number.isSafeInteger(generation) && generation > 0) {
+    observedVisibilityGeneration = generation;
+  }
+}
+
+/** The one cache-key format for every reader and writer.
+ *
+ * Keys embed the public-visibility generation so a privacy rematerialization
+ * cannot serve a result computed under the previous policy. */
+export function resolveCacheKey(
+  kind: 'single' | 'multi',
+  packetHash: string,
+  network: string,
+  visibilityGeneration: number = observedVisibilityGeneration,
+  observer?: string | null,
+): string {
+  const prefix = kind === 'single' ? 'r' : 'm';
+  const scope = observer ? `${observer}|` : '';
+  return `${prefix}|${packetHash}|${network}|${scope}v${visibilityGeneration}`;
+}
+
 export function getResolveCache(key: string): unknown | undefined {
   const entry = cache.get(key);
   if (!entry) return undefined;

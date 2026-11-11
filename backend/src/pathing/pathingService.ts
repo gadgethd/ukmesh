@@ -1,5 +1,5 @@
 import type { PathingRepository } from './pathingRepository.js';
-import type { HeldPathEntry } from '../path-beta/resolveCache.js';
+import { noteVisibilityGeneration, resolveCacheKey, type HeldPathEntry } from '../path-beta/resolveCache.js';
 import { pathingConfig } from '../platform/config/pathing.js';
 import {
   toPublicBetaResultDto,
@@ -124,7 +124,8 @@ export function createPathingService(deps: PathingServiceDeps) {
 
   async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<PublicBetaResultDto> {
     const visibilityGeneration = await repository.fetchVisibilityGeneration();
-    const cacheKey = `r|${packetHash}|${network}|${observer ?? ''}|v${visibilityGeneration}`;
+    noteVisibilityGeneration(visibilityGeneration);
+    const cacheKey = resolveCacheKey('single', packetHash, network, visibilityGeneration, observer);
     const cached = getResolveCache(cacheKey);
     if (cached) return toPublicBetaResultDto(cached);
     const inflight = resolveInflightSingle.get(cacheKey);
@@ -164,7 +165,8 @@ export function createPathingService(deps: PathingServiceDeps) {
 
   async function resolvePacketMulti(packetHash: string, network: string): Promise<PublicMultiObserverDto> {
     const visibilityGeneration = await repository.fetchVisibilityGeneration();
-    const cacheKey = `m|${packetHash}|${network}|v${visibilityGeneration}`;
+    noteVisibilityGeneration(visibilityGeneration);
+    const cacheKey = resolveCacheKey('multi', packetHash, network, visibilityGeneration);
     const cached = getResolveCache(cacheKey);
     if (cached) return toPublicMultiObserverDto(cached);
     const inflight = resolveInflightMulti.get(cacheKey);
