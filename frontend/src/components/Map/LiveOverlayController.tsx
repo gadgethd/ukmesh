@@ -3,6 +3,7 @@ import type * as maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
 import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
+import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import { packetObserverIds } from '../../hooks/packetPathOverlayUtils.js';
 import type { ResolvedPathRoute } from '../../hooks/packetPathOverlayUtils.js';
@@ -80,7 +81,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const nodes = useNodeMap();
   const arcs = useArcs();
   const nodeCoordinateKey = useMemo(() => Array.from(nodes.values())
-    .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.name?.includes('🚫') ? 1 : 0}`)
+    .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.name?.includes(PROHIBITED_NODE_MARKER) ? 1 : 0}`)
     .sort()
     .join('|'), [nodes]);
   const nodeElevationKey = useMemo(() => Array.from(nodes.values())
