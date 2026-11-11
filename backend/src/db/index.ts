@@ -637,7 +637,6 @@ export async function insertPacket(p: InsertPacketInput): Promise<PacketBatchRes
   return enqueuePacket(buildPacketBatchInput(p));
 }
 
-export { observerRegionFromTopic, buildPacketBatchInput } from './packetInput.js';
 
 
 export async function insertNodeStatusSample(sample: {

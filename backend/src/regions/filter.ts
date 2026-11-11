@@ -1,4 +1,4 @@
-import { ApiInputError } from '../api/errors.js';
+import { ApiInputError } from '../platform/apiInputError.js';
 import { envFlagEnabled } from '../features.js';
 
 /** Phase A stores bare, case-sensitive member names and #prefixed packet scopes. */

@@ -26,7 +26,7 @@ import {
   decodeRamStreamValue,
   accountedRamEntryBytes,
   encodePendingEntry,
-  entryFieldName,
+  RAM_ENTRY_FIELD,
   getRamAdmissionKey,
   getRamCommittedKey,
   getRamConsumerGroup,
@@ -313,7 +313,7 @@ export async function admitPacketToRam(
     // capacity check.
     const runAdmission = () => client.eval(
       ADMIT_SCRIPT, 3, key, getRamQueueBytesKey(), getRamAdmissionKey(deliveryKey),
-      maxPackets, maxBytes, entryBytes, entryFieldName(), value,
+      maxPackets, maxBytes, entryBytes, RAM_ENTRY_FIELD, value,
       delivery?.redelivered ? 1 : 0,
       RAM_REDIS_HEADROOM_BYTES,
     );

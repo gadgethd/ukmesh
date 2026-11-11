@@ -117,11 +117,7 @@ export type RamStreamValue =
   | { kind: 'commit'; marker: RamCommitMarker }
   | null;
 
-const ENTRY_FIELD = 'e';
-
-export function entryFieldName(): string {
-  return ENTRY_FIELD;
-}
+export const RAM_ENTRY_FIELD = 'e';
 
 export function encodePendingEntry(entry: RamPendingEntry): string {
   return JSON.stringify({
