@@ -242,7 +242,6 @@ done
 configuration_members="$(tar -tzf "$payload_dir/configuration.tgz")"
 for required_configuration in \
   .env docker-compose.yml docker-compose.live.yml docker-compose.ci.yml \
-  docker-compose.infra-client.yml compose.phase4.yml \
   Dockerfile.backend Dockerfile.mosquitto-reloader \
   anubis/botPolicy.yaml logging/prometheus.yml logging/alertmanager.yml \
   backend/src/db/schema/base.sql scripts/backup.sh scripts/restore-drill.sh scripts/sync-latest.sh \

@@ -13,7 +13,7 @@ docker compose -f docker-compose.yml -f docker-compose.live.yml \
 ```
 
 The overlay treats that bridge as external and reserves
-`172.18.30.10`–`172.18.30.30` for the analytics proxies and tunnel. This keeps
+`172.30.0.10`–`172.30.0.30` for the analytics proxies and tunnel. This keeps
 the backend trusted-proxy allowlist exact without attempting to delete or
 renumber unrelated endpoints. It also publishes this stack's Prometheus on
 `127.0.0.1:9092` because the host's independent isolated-network Prometheus
