@@ -1,10 +1,10 @@
+import { haversineKm } from '../platform/geo.js';
 import type pg from 'pg';
 import { mapSuppressedNodes } from '../metrics.js';
 import { nodeEffectiveLastSeenSql } from './presence.js';
 import { mapVisiblePredicate } from './publicMap.js';
 
 const DAY_MS = 86_400_000;
-const EARTH_RADIUS_M = 6_371_000;
 
 export type MapSuppressionConfig = {
   radiusM: number;
@@ -56,12 +56,7 @@ export function mapSuppressionConfig(
 }
 
 function distanceMeters(a: MapSuppressionNode, b: MapSuppressionNode): number {
-  const radians = Math.PI / 180;
-  const dLat = (b.lat! - a.lat!) * radians;
-  const dLon = (b.lon! - a.lon!) * radians;
-  const haversine = Math.sin(dLat / 2) ** 2
-    + Math.cos(a.lat! * radians) * Math.cos(b.lat! * radians) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(Math.min(1, haversine)));
+  return haversineKm(a.lat!, a.lon!, b.lat!, b.lon!) * 1_000;
 }
 
 /** Each stale node is compared directly with its freshest in-radius neighbour.

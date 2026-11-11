@@ -13,6 +13,7 @@
 // within RADIUS_KM, then clusters closer than that radius are merged. A cluster
 // is only reported once it holds MIN_PACKETS packets, so a handful of
 // one-off receptions never becomes a shape on the map.
+import { haversineKm } from '../platform/geo.js';
 
 export type LocatedNode = {
   nodeId: string;
@@ -67,23 +68,6 @@ export const DEFAULT_CLUSTER_RADIUS_KM = 60;
 export const DEFAULT_CLUSTER_MIN_PACKETS = 10;
 export const DEFAULT_CLUSTER_MAX_TOP_NODES = 5;
 
-const EARTH_RADIUS_KM = 6371.0088;
-
-/** Great-circle distance in kilometres. */
-export function haversineKm(
-  aLat: number,
-  aLon: number,
-  bLat: number,
-  bLon: number,
-): number {
-  const toRadians = Math.PI / 180;
-  const dLat = (bLat - aLat) * toRadians;
-  const dLon = (bLon - aLon) * toRadians;
-  const lat1 = aLat * toRadians;
-  const lat2 = bLat * toRadians;
-  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-  return 2 * EARTH_RADIUS_KM * Math.asin(Math.min(1, Math.sqrt(h)));
-}
 
 interface WorkingCluster {
   latSum: number;

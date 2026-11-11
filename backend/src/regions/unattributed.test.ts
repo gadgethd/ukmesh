@@ -3,10 +3,10 @@ import test from 'node:test';
 import {
   clusterUnattributedPackets,
   DEFAULT_CLUSTER_MIN_PACKETS,
-  haversineKm,
   type LocatedNode,
   type UnattributedPacket,
 } from './unattributed.js';
+import { haversineKm } from '../platform/geo.js';
 
 const BRISTOL: LocatedNode = { nodeId: 'A1'.repeat(32), lat: 51.4545, lon: -2.5879, name: 'Bristol relay' };
 const BATH: LocatedNode = { nodeId: 'A2'.repeat(32), lat: 51.3811, lon: -2.3590, name: 'Bath relay' };
