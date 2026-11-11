@@ -1,3 +1,5 @@
+import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
+
 export type StatusTelemetrySample = {
   observedAt?: string;
   status?: string;
@@ -81,8 +83,8 @@ export async function persistStatusWrites(
   for (const result of results) {
     if (result.status !== 'rejected') continue;
     const error: unknown = result.reason;
-    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
-    if (typeof code === 'string' && /^22[A-Z0-9]{3}$/.test(code)) {
+    if (isPermanentPersistenceError(error)) {
+      const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : 'UNKNOWN';
       onRejected(code);
     } else {
       failures.push(error);

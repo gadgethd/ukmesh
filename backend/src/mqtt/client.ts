@@ -15,7 +15,8 @@ import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from './chan
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from './identityBinding.js';
 import { extractNeighborNodes } from './neighborPayload.js';
 import { parseMqttTopic } from './topic.js';
-import { validPacketIntegers, isPermanentDataError } from './envelopeSafety.js';
+import { validPacketIntegers } from './envelopeSafety.js';
+import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
 import { installDurableMqttIntake } from './durableIntake.js';
 import { waitForInFlightPacket } from './dedupeRegistry.js';
 import { admitPacketToRam } from '../ram/liveStore.js';
@@ -396,7 +397,7 @@ function handleIncomingMqttPacket(packet: { topic: string; payload: Buffer | str
   mqttIngestActive.set(activeMqttIngests);
   return handleMessage(packet.topic, rawPayload, packet.dup === true, packet.messageId, packet.qos ?? 1, packet.retain === true)
     .catch(async (error: unknown) => {
-      if (!isPermanentDataError(error)) throw error;
+      if (!isPermanentPersistenceError(error)) throw error;
       // Quarantine evidence must commit before this delivery can be acknowledged.
       await query(`INSERT INTO ingest_rejections (message_hash, topic, reason, payload_bytes)
         VALUES ($1, $2, $3, $4) ON CONFLICT (message_hash) DO UPDATE

@@ -20,6 +20,7 @@
  * (own '0' reads + XAUTOCLAIM).
  */
 import { createHash } from 'node:crypto';
+import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
 import {
   isRetryableDatabaseError,
   retryDelay,
@@ -141,10 +142,7 @@ const RECLAIM_INTERVAL_MS = 5_000;
 const RECLAIM_PAGE_SIZE = 500;
 const RECLAIM_PAGES_PER_PASS = 4;
 
-function isPermanentPacketError(error: unknown): boolean {
-  const code = (error as { code?: unknown } | null)?.code;
-  return typeof code === 'string' && new Set(['22001', '22003', '22P02', '23502', '23514']).has(code);
-}
+
 
 // Deletion and accounting form one Redis command. A retry cannot release the
 // same bytes twice: only a successful XDEL decrements the budget. The commit
@@ -433,7 +431,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
     try {
       insertedCount = await persistWithRetry(persistBatch);
     } catch (error) {
-      if (isPermanentPacketError(error)) {
+      if (isPermanentPersistenceError(error)) {
         // A batch-level constraint error may identify one poison row. Retry
         // each distinct observation independently so valid work behind it
         // can commit. Quarantine is durable before any poison row is acked.
@@ -454,7 +452,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
               deps.log('[ram] post-commit hook failed', hookError);
             }
           } catch (rowError) {
-            if (!isPermanentPacketError(rowError)) {
+            if (!isPermanentPersistenceError(rowError)) {
               unresolved = true;
               deps.log('[ram] isolated row failed transiently; left in PEL', rowError);
               continue;

@@ -15,7 +15,7 @@ import {
   type PacketPrivacyInput,
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
-import { isPermanentDataError } from '../mqtt/envelopeSafety.js';
+import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
 import { observationIdentityKey } from '../mqtt/observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
@@ -772,7 +772,7 @@ async function writeBatchWithRetry(batch: PendingPacket[]): Promise<void> {
       );
       return;
     } catch (error) {
-      if (batch.length > 1 && isPermanentDataError(error)) {
+      if (batch.length > 1 && isPermanentPersistenceError(error)) {
         // Isolate bad rows from valid neighbours in the rolled-back batch.
         await Promise.allSettled(batch.map((item) => writeBatchWithRetry([item])));
         return;

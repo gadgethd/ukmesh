@@ -60,6 +60,18 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
     cacheBytes.set({ cache: this.metricName }, this.totalWeight);
   }
 
+  override has(key: K): boolean {
+    if (!super.has(key)) return false;
+    const now = this.options.now?.() ?? Date.now();
+    if (now - (this.insertedAt.get(key) ?? 0) >= this.options.ttlMs) {
+      this.expiries += 1;
+      this.recordMetric('expired');
+      this.delete(key);
+      return false;
+    }
+    return true;
+  }
+
   override get(key: K): V | undefined {
     if (!super.has(key)) {
       this.misses += 1;
