@@ -39,7 +39,12 @@ BEGIN
   END LOOP;
 END
 $fence_deps$;
-DROP FUNCTION IF EXISTS bump_visibility_for_changed_prefixes();
+-- The fence function follows the registry: it is created in public and only ever
+-- referenced from the relations above, so name every schema that can own a copy
+-- rather than relying on the caller's search_path.
+DROP FUNCTION IF EXISTS public.bump_visibility_for_changed_prefixes();
+DROP FUNCTION IF EXISTS core.bump_visibility_for_changed_prefixes();
+DROP FUNCTION IF EXISTS ops.bump_visibility_for_changed_prefixes();
 
 CREATE OR REPLACE FUNCTION bump_visibility_for_identity_table()
 RETURNS TRIGGER

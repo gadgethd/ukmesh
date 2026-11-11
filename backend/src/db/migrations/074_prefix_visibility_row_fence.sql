@@ -5,7 +5,7 @@ SET LOCAL statement_timeout = '30s';
 -- cannot fire for the empty FK DELETE that a public-node deletion generates.
 -- The xid8 marker coalesces bulk/multi-statement edits in one transaction and
 -- rolls back with the invalidation, including at savepoints.
-ALTER TABLE public_visibility_state ADD COLUMN prefix_fence_xid XID8;
+ALTER TABLE public_visibility_state ADD COLUMN IF NOT EXISTS prefix_fence_xid XID8;
 
 CREATE OR REPLACE FUNCTION bump_visibility_for_changed_prefixes()
 RETURNS TRIGGER

@@ -212,9 +212,11 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       + "'066_prefix_visibility_statement_fence.sql',"
       + "'074_prefix_visibility_row_fence.sql',"
       + "'134_reassert_prefix_visibility_fence.sql')");
+    // On a post-move database 074 is superseded by the 134 re-assert, which is
+    // exactly what the migration runner reports; 066 still replays in place.
     assert.deepEqual(await runMigrations(pool), [
       '066_prefix_visibility_statement_fence.sql',
-      '074_prefix_visibility_row_fence.sql',
+      '074_prefix_visibility_row_fence.sql -> 134_reassert_prefix_visibility_fence.sql (superseded-post-move)',
       '134_reassert_prefix_visibility_fence.sql',
     ]);
     assert.deepEqual(await prefixTriggerNames(pool, 'core.private_node_prefixes'), [
