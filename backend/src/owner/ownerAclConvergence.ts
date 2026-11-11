@@ -3,7 +3,7 @@ import {
   validateRenderedOwnerAcl,
   type OwnerAclRenderResult,
 } from '../mqtt/aclManager.js';
-import type { OwnerAclStateUpdate } from '../db/ownerAuth.js';
+import type { OwnerAclStateUpdate } from './ownerAuth.js';
 import type { OwnerAclGenerationState } from './ownerInventoryBaseline.js';
 import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
 import { isOwnerAclGenerationSettled } from './ownerInventoryReadiness.js';

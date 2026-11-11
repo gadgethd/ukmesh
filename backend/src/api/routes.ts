@@ -71,7 +71,7 @@ import {
   revokeOwnerSession,
   revokeOwnerSessionsForUsername,
   touchOwnerSession,
-} from '../db/ownerAuth.js';
+} from '../owner/ownerAuth.js';
 import { registerPathingRoutes } from './routes/pathing.js';
 import { registerStatsRoutes } from './routes/stats.js';
 import { registerTelemetryRoutes } from './routes/telemetry.js';

@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import pg from 'pg';
-import { closeOwnerAuthDb, getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
+import { closeOwnerAuthDb, getOwnerNodeIdsForUsername } from '../owner/ownerAuth.js';
 import { databaseConfig } from '../platform/config/database.js';
 import { packetShareCredentials } from '../owner/packetShareAuth.js';
 import { destinationConfigured, type PacketShareDestinationRow } from '../owner/packetShareConfig.js';
