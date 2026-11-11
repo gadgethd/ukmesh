@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
+import fs from 'node:fs';
 import test from 'node:test';
 import { OWNER_ACL_RENDERER_VERSION, renderOwnerAcl, type OwnerAclGrant } from '../mqtt/aclManager.js';
-import { buildOwnerInventoryBaseline, validateOwnerInventoryBaseline } from './ownerInventoryBaseline.js';
+import { buildOwnerInventoryBaseline, loadOwnerInventoryBaseline, validateOwnerInventoryBaseline } from './ownerInventoryBaseline.js';
 import {
   classifyRenderedOwnerAclDelta,
   validateOwnerInventoryReadiness,
@@ -22,7 +23,7 @@ function fixture(options: { feedRead?: boolean; systemRead?: boolean; nodeIds?: 
   }];
   const rendered = renderOwnerAcl(options.existing ?? '', grants, ['unmanaged'], [USER], options.systemRead ? [USER] : []);
   assert.equal(rendered.validation.ok, true);
-  const inventory = buildOwnerInventoryBaseline({
+  const baselineInput = {
     accounts: [{
       mqttUsername: USER, isActive: true, nodeId: NODE,
       verificationMethod: 'operator-database', verifiedAt: '2026-10-01', revokedAt: null,
@@ -35,14 +36,15 @@ function fixture(options: { feedRead?: boolean; systemRead?: boolean; nodeIds?: 
       appliedGeneration: rendered.generation,
       lastError: null,
     },
-  });
+  };
+  const inventory = buildOwnerInventoryBaseline(baselineInput);
   const artifact: AppliedOwnerAclArtifact = {
     generation: rendered.generation,
     rendererVersion: OWNER_ACL_RENDERER_VERSION,
     content: rendered.content,
     contentSha256: rendered.contentSha256,
   };
-  return { inventory, artifact };
+  return { inventory, artifact, baselineInput };
 }
 
 function check(previous: ReturnType<typeof fixture>, current: ReturnType<typeof fixture>) {
@@ -65,6 +67,91 @@ test('feed enable and disable pass readiness while strict inventory comparison s
       ok: true, mismatches: [], reason: 'only-public-feed-read-grants-changed',
     });
   }
+});
+
+test('a checksummed baseline can retain the missing historical applied certificate', async () => {
+  const previous = fixture();
+  const current = fixture({ feedRead: true });
+  const baseline = buildOwnerInventoryBaseline({ ...previous.baselineInput, appliedAclArtifact: previous.artifact });
+  const result = await validateOwnerInventoryReadiness(baseline, current.inventory, {
+    aclContent: current.artifact.content,
+    loadAppliedArtifact: async (generation) => generation === current.artifact.generation ? current.artifact : null,
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, 'only-public-feed-read-grants-changed');
+});
+
+test('legacy missing-history repair is deterministic and does not open readiness', async () => {
+  const previous = fixture();
+  const current = fixture({ feedRead: true });
+  const result = await validateOwnerInventoryReadiness(previous.inventory, current.inventory, {
+    aclContent: current.artifact.content,
+    loadAppliedArtifact: async (generation) => generation === current.artifact.generation ? current.artifact : null,
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, 'applied-acl-artifact-missing');
+  assert.deepEqual(result.repair, {
+    kind: 'restore-owner-acl-history', generation: previous.artifact.generation,
+    baselineSha256: previous.inventory.contentSha256,
+    currentGeneration: current.artifact.generation, reviewRequired: true,
+  });
+});
+
+test('retained history cannot hide corrupt live evidence, unsafe deltas or baseline tampering', async () => {
+  const previous = fixture();
+  const baseline = buildOwnerInventoryBaseline({ ...previous.baselineInput, appliedAclArtifact: previous.artifact });
+  const current = fixture({ feedRead: true });
+  const check = (snapshot = baseline, latest = current.artifact, historical: AppliedOwnerAclArtifact | null = null) =>
+    validateOwnerInventoryReadiness(snapshot, current.inventory, {
+      aclContent: current.artifact.content,
+      loadAppliedArtifact: async (generation) => generation === current.artifact.generation ? latest : historical,
+    });
+  assert.equal((await check({ ...baseline, contentSha256: '0'.repeat(64) })).reason, 'owner-baseline-evidence-invalid');
+  assert.equal((await check(baseline, { ...current.artifact, contentSha256: 'bad' })).ok, false);
+  assert.equal((await check(baseline, current.artifact, { ...previous.artifact, contentSha256: 'bad' })).ok, false);
+  for (const artifact of [
+    { ...previous.artifact, generation: 'wrong' },
+    { ...previous.artifact, contentSha256: 'bad' },
+    { ...previous.artifact, rendererVersion: 'older-renderer' },
+  ]) {
+    const { contentSha256: _checksum, ...content } = baseline;
+    const changed = { ...content, appliedAclArtifact: artifact };
+    const snapshot = { ...changed, contentSha256: createHash('sha256').update(JSON.stringify(changed)).digest('hex') };
+    assert.equal((await check(snapshot)).ok, false);
+  }
+  assert.equal((await validateOwnerInventoryReadiness(baseline, current.inventory, {
+    aclContent: current.artifact.content, loadAppliedArtifact: async () => null,
+  })).ok, false);
+  const nonFeed = fixture({ feedRead: true, systemRead: true });
+  const changed = await validateOwnerInventoryReadiness(baseline, nonFeed.inventory, {
+    aclContent: nonFeed.artifact.content,
+    loadAppliedArtifact: async (generation) => generation === nonFeed.artifact.generation ? nonFeed.artifact : null,
+  });
+  assert.equal(changed.ok, false);
+  assert.equal(changed.reason, 'non-feed-user-directive-changed');
+});
+
+test('baseline export rejects unverified bytes and its file checksum protects retained evidence', (t) => {
+  const previous = fixture();
+  for (const artifact of [
+    { ...previous.artifact, generation: 'wrong' },
+    { ...previous.artifact, contentSha256: 'wrong' },
+    { ...previous.artifact, rendererVersion: 'unverified-renderer' },
+    { ...previous.artifact, content: 'not-the-applied-file' },
+  ]) assert.throws(() => buildOwnerInventoryBaseline({ ...previous.baselineInput, appliedAclArtifact: artifact }),
+    /OWNER_INVENTORY_APPLIED_ARTIFACT_INVALID/);
+  assert.throws(() => buildOwnerInventoryBaseline({
+    ...previous.baselineInput, aclState: { ...previous.baselineInput.aclState, lastError: 'apply pending' },
+    appliedAclArtifact: previous.artifact,
+  }), /OWNER_INVENTORY_APPLIED_ARTIFACT_INVALID/);
+  const baseline = buildOwnerInventoryBaseline({ ...previous.baselineInput, appliedAclArtifact: previous.artifact });
+  let serialized = JSON.stringify(baseline);
+  t.mock.method(fs, 'readFileSync', () => serialized);
+  assert.deepEqual(loadOwnerInventoryBaseline('in-memory-fixture'), baseline);
+  serialized = JSON.stringify({ ...baseline, appliedAclArtifact: { ...previous.artifact, content: 'tampered' } });
+  assert.throws(() => loadOwnerInventoryBaseline('in-memory-fixture'), /CHECKSUM_INVALID/);
+  serialized = JSON.stringify(previous.inventory);
+  assert.deepEqual(loadOwnerInventoryBaseline('in-memory-fixture'), previous.inventory);
 });
 
 test('an empty delta passes without requiring historical artifacts', async () => {

@@ -22,8 +22,9 @@ const local = databaseUrl && ['127.0.0.1', 'localhost', '[::1]'].includes(new UR
 const execute = promisify(execFile);
 const nodeId = 'AABBCC' + 'AA'.repeat(29);
 const otherId = 'BB'.repeat(32);
-const migration = fs.readFileSync(new URL('./migrations/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
+const migration = fs.readFileSync(new URL('./migrations/074_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
 const rollback = fs.readFileSync(new URL('./rollback/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
+const rowRollback = fs.readFileSync(new URL('./rollback/074_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
 
 test('local TimescaleDB visibility-fence reproduction, regression and convergence', {
   skip: local ? false : 'explicit loopback TEST_PRIVACY_DATABASE_URL or TEST_INGEST_DATABASE_URL required',
@@ -52,6 +53,9 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
       FROM ops.public_visibility_state p LEFT JOIN ops.packet_visibility_materialization_state m USING (singleton)
       WHERE p.singleton
   `)).rows[0];
+  const health = () => createPrivacyGenerationReconciler(
+    () => pool.query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL), () => {},
+  )();
   const reset = async () => {
     await pool.query(`TRUNCATE nodes, private_node_prefixes, core.node_identity_aliases,
       ops.privacy_rematerialization_queue, packets, packet_paths CASCADE;
@@ -177,23 +181,42 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
 
   await t.test('reproduces the shipped no-row FK cascade, then proves rollback and reapply', async () => {
     await reset();
+    await pool.query(rowRollback);
     // The rollback is executable SQL, not a description. It restores 042.
     await pool.query(rollback);
     await addNode();
+    await pool.query(`CREATE TABLE fixture_prefix_delete_depth(depth INTEGER, affected INTEGER);
+      CREATE FUNCTION fixture_record_prefix_delete() RETURNS TRIGGER LANGUAGE plpgsql AS $$
+      BEGIN INSERT INTO fixture_prefix_delete_depth
+        SELECT pg_trigger_depth(), COUNT(*) FROM deleted_rows; RETURN NULL; END; $$;
+      CREATE TRIGGER fixture_record_prefix_delete AFTER DELETE ON private_node_prefixes
+        REFERENCING OLD TABLE AS deleted_rows FOR EACH STATEMENT
+        EXECUTE FUNCTION fixture_record_prefix_delete()`);
     assert.deepEqual(await pair(), { generation: '1', materialized_generation: '1' });
     await pool.query('DELETE FROM nodes WHERE node_id = $1', [nodeId]);
+    assert.ok((await pool.query('SELECT * FROM fixture_prefix_delete_depth')).rows
+      .some((row) => row.depth === 1 && row.affected === 0), 'FK statement trigger fires at depth 1 with no prefix rows');
+    await pool.query(`DROP TRIGGER fixture_record_prefix_delete ON private_node_prefixes;
+      DROP FUNCTION fixture_record_prefix_delete(); DROP TABLE fixture_prefix_delete_depth`);
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '1' });
     assert.equal((await pool.query('SELECT COUNT(*)::text AS count FROM private_node_prefixes')).rows[0].count, '0');
+    const stuck = await health();
+    assert.equal(stuck.reason, 'desired_ahead');
+    assert.equal(stuck.queueActive, false, 'the empty-queue latch must be observable');
+    assert.equal(stuck.appliedGeneration, null, 'the public gate is closed');
     t.diagnostic('BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero prefix rows');
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
-    await pool.query("DELETE FROM public.schema_migrations WHERE name = '066_prefix_visibility_statement_fence.sql'");
-    assert.deepEqual(await runMigrations(pool), ['066_prefix_visibility_statement_fence.sql']);
-    // 134 was still recorded as applied when the rollback removed its row
-    // triggers. Reapply it explicitly too, or this fixture would leave the
-    // database unlike a normally migrated head and later tests would miss the
-    // post-move fence.
-    await pool.query("DELETE FROM public.schema_migrations WHERE name = '134_reassert_prefix_visibility_fence.sql'");
-    assert.deepEqual(await runMigrations(pool), ['134_reassert_prefix_visibility_fence.sql']);
+    // Re-apply the full fence chain in migration order: the statement fence
+    // (066), main's row-level fence (074), and the post-move reassertion (134).
+    await pool.query("DELETE FROM public.schema_migrations WHERE name IN ("
+      + "'066_prefix_visibility_statement_fence.sql',"
+      + "'074_prefix_visibility_row_fence.sql',"
+      + "'134_reassert_prefix_visibility_fence.sql')");
+    assert.deepEqual(await runMigrations(pool), [
+      '066_prefix_visibility_statement_fence.sql',
+      '074_prefix_visibility_row_fence.sql',
+      '134_reassert_prefix_visibility_fence.sql',
+    ]);
     assert.deepEqual(await prefixTriggerNames(pool, 'core.private_node_prefixes'), [
       'private_node_prefixes_visibility_delete_rows',
       'private_node_prefixes_visibility_insert_rows',
@@ -207,18 +230,110 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     await addNode();
     await pool.query('DELETE FROM nodes WHERE node_id = $1', [nodeId]);
     assert.deepEqual(await pair(), { generation: '1', materialized_generation: '1' });
+    assert.equal((await health()).healthy, true);
     await runMigrations(pool); // checksum verification and normal idempotent runner
     // Also prove the SQL is transactional: a failed migration transaction
     // cannot leave half of the trigger replacement installed.
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(rollback.replace(/^BEGIN;|^COMMIT;/gm, ''));
+      await client.query(rowRollback.replace(/^BEGIN;|^COMMIT;/gm, ''));
       await assert.rejects(client.query(`${migration}\nSELECT 1 / 0;`), /division by zero/);
     } finally { await client.query('ROLLBACK'); client.release(); }
     await addNode();
     await pool.query('DELETE FROM nodes WHERE node_id = $1', [nodeId]);
     assert.deepEqual(await pair(), { generation: '1', materialized_generation: '1' });
+  });
+
+  await t.test('074 replaces 066 value-identical UPDATE invalidation without certifying an existing gap', async () => {
+    await reset(); await addNode(nodeId, true);
+    await repair();
+    const before = await pair();
+    await pool.query(rowRollback);
+    await pool.query('UPDATE private_node_prefixes SET prefix = prefix, updated_at = NOW()');
+    const stale = await pair();
+    assert.equal(BigInt(stale.generation), BigInt(before.generation) + 1n);
+    assert.equal((await health()).reason, 'desired_ahead');
+    await pool.query(migration);
+    assert.deepEqual(await pair(), stale, 'installing 074 never stamps a stale certificate');
+    await repair();
+    const settled = await pair();
+    await pool.query('UPDATE private_node_prefixes SET prefix = prefix, updated_at = NOW()');
+    await pool.query(`INSERT INTO private_node_prefixes(node_id,network,prefix_size_bytes,prefix)
+      SELECT node_id,network,prefix_size_bytes,prefix FROM private_node_prefixes
+      ON CONFLICT (node_id,network,prefix_size_bytes) DO UPDATE SET prefix = EXCLUDED.prefix, updated_at = NOW()`);
+    assert.deepEqual(await pair(), settled);
+    assert.equal((await health()).healthy, true);
+  });
+
+  await t.test('bulk prefix edits deduplicate per transaction, roll back with savepoints and invalidate again after certification', async () => {
+    await reset(); await addNode(); await addNode(otherId);
+    const client = await pool.connect();
+    const readPair = async () => (await client.query(`SELECT generation::text,
+      (SELECT visibility_generation::text FROM packet_visibility_materialization_state) AS materialized
+      FROM public_visibility_state`)).rows[0];
+    try {
+      await client.query('BEGIN');
+      await client.query('SAVEPOINT before_edit');
+      await client.query(`INSERT INTO private_node_prefixes(node_id,network,prefix_size_bytes,prefix)
+        SELECT id, 'ukmesh', size, LEFT(id, size * 2)
+        FROM unnest($1::text[]) id CROSS JOIN generate_series(1,3) size`, [[nodeId, otherId]]);
+      assert.deepEqual(await readPair(), { generation: '2', materialized: '1' });
+      await client.query('ROLLBACK TO before_edit');
+      assert.deepEqual(await readPair(), { generation: '1', materialized: '1' });
+      await client.query(`INSERT INTO private_node_prefixes(node_id,network,prefix_size_bytes,prefix)
+        SELECT id, 'ukmesh', size, LEFT(id, size * 2)
+        FROM unnest($1::text[]) id CROSS JOIN generate_series(1,3) size`, [[nodeId, otherId]]);
+      await client.query("UPDATE private_node_prefixes SET prefix = 'FF'");
+      await client.query('DELETE FROM private_node_prefixes');
+      await client.query('TRUNCATE private_node_prefixes');
+      assert.deepEqual(await readPair(), { generation: '2', materialized: '1' });
+      // A fixture certification models a complete repair inside this same
+      // transaction. Deduplication must never admit a later policy change.
+      await client.query('UPDATE packet_visibility_materialization_state SET visibility_generation = 2');
+      await client.query(`INSERT INTO private_node_prefixes(node_id,network,prefix_size_bytes,prefix)
+        VALUES ($1,'ukmesh',1,'AA')`, [nodeId]);
+      assert.deepEqual(await readPair(), { generation: '3', materialized: '2' });
+      await client.query('COMMIT');
+      await client.query("UPDATE private_node_prefixes SET prefix = 'AB'");
+      assert.deepEqual(await readPair(), { generation: '4', materialized: '2' });
+    } finally { await client.query('ROLLBACK'); client.release(); }
+    await repair();
+  });
+
+  await t.test('concurrent prefix transactions each invalidate and a full rollback leaves no dedup marker', async () => {
+    await reset(); await addNode(); await addNode(otherId);
+    const first = await pool.connect();
+    const second = await pool.connect();
+    const secondPid = (await second.query('SELECT pg_backend_pid() AS pid')).rows[0].pid;
+    const insert = `INSERT INTO private_node_prefixes(node_id,network,prefix_size_bytes,prefix)
+      VALUES ($1,'ukmesh',1,'AA')`;
+    try {
+      await first.query('BEGIN');
+      await first.query(insert, [nodeId]);
+      await first.query('ROLLBACK');
+      assert.deepEqual(await pair(), { generation: '1', materialized_generation: '1' });
+      await first.query('BEGIN');
+      await first.query(insert, [nodeId]);
+      // The first writer holds visibility's row lock until commit. The second
+      // transaction starts while it is held and must publish its own bump.
+      const next = second.query(insert, [otherId]);
+      let blocked = false;
+      for (let attempt = 0; attempt < 100; attempt++) {
+        blocked = (await pool.query(`SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+          WHERE pid = $1 AND wait_event_type = 'Lock') AS blocked`, [secondPid])).rows[0].blocked;
+        if (blocked) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await first.query('COMMIT');
+      await next;
+      assert.equal(blocked, true, 'the second transaction must actually overlap the first writer');
+      assert.deepEqual(await pair(), { generation: '3', materialized_generation: '1' });
+      assert.equal((await health()).queueActive, false);
+    } finally {
+      await first.query('ROLLBACK'); first.release(); second.release();
+    }
+    await repair();
   });
 
   await t.test('empty direct INSERT, UPDATE, DELETE and public multi-node cascades do not invalidate', async () => {

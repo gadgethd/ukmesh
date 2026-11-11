@@ -64,11 +64,8 @@ import { createPacketShareRepository } from './owner/packetShareRepository.js';
 import { createForwardingOutbox } from './owner/forwardingOutbox.js';
 import { createPublicFeedForwarder } from './owner/publicFeedForwarder.js';
 import { createPublicFeedRepository } from './owner/publicFeedRepository.js';
-import {
-  buildOwnerInventoryBaseline,
-  loadOwnerInventoryBaseline,
-} from './owner/ownerInventoryBaseline.js';
-import { validateOwnerInventoryReadiness } from './owner/ownerInventoryReadiness.js';
+import { loadOwnerInventoryBaseline } from './owner/ownerInventoryBaseline.js';
+import { createOwnerAuthorizationReadiness, publicReadinessPayload } from './owner/ownerReadiness.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -373,10 +370,25 @@ async function main() {
 
   app.use(express.json({ limit: '50kb' }));
 
+  const readOwnerAuthorizationReadiness = createOwnerAuthorizationReadiness({
+    config: () => ({
+      mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
+      aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
+      baselinePath: String(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '').trim(),
+      configuredGrants: parseOwnerGrantConfig(String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? '')),
+    }),
+    readState: getConvergedOwnerAclReadiness,
+    readInventory: getOwnerAuthorizationInventory,
+    readAcl: readAclFile,
+    readBaseline: loadOwnerInventoryBaseline,
+    loadAppliedArtifact: getAppliedOwnerAclArtifact,
+  });
+
   // Local-only backend/operator site.
   app.use('/', createBackendSiteRoutes({
     query,
     getHealthOverview: getWorkerHealthOverview,
+    getOwnerAuthorizationReadiness: readOwnerAuthorizationReadiness,
   }));
 
   // Defaults to 120 requests / IP / minute. Isolated load environments may
@@ -415,33 +427,9 @@ async function main() {
     try {
       await query('SELECT 1');
       checks.database = true;
-      const aclState = await getConvergedOwnerAclReadiness();
-      Object.assign(checks.ownerAuthorization, aclState);
-      const ownerBaselinePath = String(
-        process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '',
-      ).trim();
-      if (ownerBaselinePath) {
-        const databaseInventory = await getOwnerAuthorizationInventory();
-        const aclContent = readAclFile();
-        const current = buildOwnerInventoryBaseline({
-          accounts: databaseInventory.accounts,
-          configuredGrants: parseOwnerGrantConfig(
-            String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''),
-          ),
-          aclContent,
-          aclState,
-        });
-        const validation = await validateOwnerInventoryReadiness(
-          loadOwnerInventoryBaseline(ownerBaselinePath),
-          current,
-          { aclContent, loadAppliedArtifact: getAppliedOwnerAclArtifact },
-        );
-        console.log('[readyz] owner inventory baseline', validation);
-        checks.ownerAuthorization.inventoryBaseline = {
-          required: true,
-          ...validation,
-        };
-      }
+      const ownerReadiness = await readOwnerAuthorizationReadiness();
+      Object.assign(checks.ownerAuthorization, ownerReadiness.ownerAuthorization);
+      console.log('[readyz] owner inventory baseline', checks.ownerAuthorization.inventoryBaseline);
       checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
@@ -461,16 +449,9 @@ async function main() {
       && (!MQTT_INGEST_ENABLED || (checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'));
     // Public readiness is a documented coarse projection. Owner-authorization
     // generations, reconciliation errors and workload identity stay on the
-    // local-only operator surface (/local-api/health) - they are not needed by
+    // local-only operator surface (/local-api/owner-authorization) - they are not needed by
     // an anonymous probe and leak control-plane state.
-    res.status(ready ? 200 : 503).json({
-      status: ready ? 'ready' : 'degraded',
-      checks: {
-        database: checks.database,
-        mqtt: { state: checks.mqtt.state },
-      },
-      ts: Date.now(),
-    });
+    res.status(ready ? 200 : 503).json(publicReadinessPayload(ready, checks.database, checks.mqtt.state));
   });
   app.use(apiErrorMiddleware);
 

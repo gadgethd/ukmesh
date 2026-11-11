@@ -7,6 +7,7 @@ import {
   getOwnerAclReadiness,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
+  getAppliedOwnerAclArtifact,
 } from '../db/ownerAuth.js';
 import { parseAcl, readAclFile, renderOwnerAcl } from '../mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from '../owner/ownerGrantConfig.js';
@@ -20,6 +21,7 @@ import {
   validateOwnerInventoryBaseline,
   writeOwnerInventoryBaseline,
 } from '../owner/ownerInventoryBaseline.js';
+import { validateOwnerInventoryReadiness } from '../owner/ownerInventoryReadiness.js';
 
 function argValue(name: string): string | undefined {
   const prefix = `${name}=`;
@@ -27,6 +29,11 @@ function argValue(name: string): string | undefined {
 }
 
 async function main(): Promise<void> {
+  const repairPlanRequested = process.argv.includes('--repair-plan');
+  const baselinePath = argValue('--baseline');
+  if (repairPlanRequested && (!baselinePath || argValue('--export'))) {
+    throw new Error('repair plan requires --baseline=PATH and cannot be combined with --export');
+  }
   const [database, snapshot, aclState] = await Promise.all([
     getOwnerAuthorizationInventory(),
     getOwnerAuthorizationSnapshot(),
@@ -97,21 +104,38 @@ async function main(): Promise<void> {
   const proposedBackfill = legacyAclGrants.filter((grant) =>
     !configKeys.has(`${grant.mqttUsername}\0${grant.nodeId}`)
       && !unmanagedUsers.includes(grant.mqttUsername));
+  const appliedAclArtifact = aclState.appliedGeneration
+    ? await getAppliedOwnerAclArtifact(aclState.appliedGeneration) : null;
   const inventoryBaseline = buildOwnerInventoryBaseline({
     accounts: database.accounts,
     configuredGrants: configured,
     aclContent,
     aclState,
+    ...(appliedAclArtifact ? { appliedAclArtifact } : {}),
   });
   const exportPath = argValue('--export');
   if (exportPath) writeOwnerInventoryBaseline(exportPath, inventoryBaseline);
-  const baselinePath = argValue('--baseline');
+  const baseline = baselinePath ? loadOwnerInventoryBaseline(baselinePath) : null;
   const baselineValidation = baselinePath
     ? validateOwnerInventoryBaseline(
-        loadOwnerInventoryBaseline(baselinePath),
+        baseline!,
         inventoryBaseline,
       )
     : null;
+  const readinessValidation = repairPlanRequested && baseline
+    ? await validateOwnerInventoryReadiness(baseline, inventoryBaseline, {
+        aclContent, loadAppliedArtifact: getAppliedOwnerAclArtifact,
+      }) : null;
+  const repairPlan = readinessValidation?.repair ? {
+    ...readinessValidation.repair,
+    baselinePath,
+    steps: [
+      'Restore the referenced applied artifact from a trusted backup; retain the baseline unchanged.',
+      'If no backup exists, review the complete current ACL (--show-details) and obtain explicit approval to establish a new baseline.',
+      'After approval, export to a NEW path with --export=PATH; keep the original baseline and compare scope, generation and checksums before selecting the replacement.',
+      'Never copy generation values or synthesize a historical applied certificate.',
+    ],
+  } : null;
 
   const report = {
     generatedAt: new Date().toISOString(),
@@ -133,6 +157,8 @@ async function main(): Promise<void> {
     proposedBackfill,
     inventoryBaseline,
     baselineValidation,
+    readinessValidation,
+    repairPlan,
     warning: 'proposedBackfill is inventory only; review each owner/node pair before adding it to operator configuration',
   };
   if (process.argv.includes('--show-details')) {
@@ -149,6 +175,8 @@ async function main(): Promise<void> {
       exportPath: exportPath ?? null,
       baselinePath: baselinePath ?? null,
       baselineValidation,
+      readinessValidation,
+      repairPlan,
     }, null, 2)}\n`);
   }
   if (process.argv.includes('--require-complete')

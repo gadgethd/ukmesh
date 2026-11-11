@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
 import { parseAcl } from '../mqtt/aclManager.js';
+import { validAppliedOwnerAclArtifact } from './ownerAclArtifacts.js';
 import {
   validateOwnerInventoryBaseline,
+  verifyOwnerInventoryBaselineIntegrity,
   type OwnerAclGenerationState,
   type OwnerInventoryBaseline,
 } from './ownerInventoryBaseline.js';
@@ -68,14 +69,18 @@ export function isOwnerAclGenerationSettled(state: OwnerAclGenerationState): boo
     && state.lastError === null;
 }
 
-function validArtifact(artifact: AppliedOwnerAclArtifact, generation: string): boolean {
-  const markers = artifact.content.split('\n')
-    .filter((line) => line.startsWith('# BEGIN MESHCORE OWNER ACL'));
-  return artifact.generation === generation
-    && createHash('sha256').update(artifact.content).digest('hex') === artifact.contentSha256
-    && markers.length === 1
-    && markers[0] === `# BEGIN MESHCORE OWNER ACL v1 generation=${generation}`;
-}
+export type OwnerInventoryReadinessResult = {
+  ok: boolean;
+  mismatches: string[];
+  reason: string;
+  repair?: {
+    kind: 'restore-owner-acl-history';
+    generation: string;
+    baselineSha256: string;
+    currentGeneration: string;
+    reviewRequired: true;
+  };
+};
 
 /** Proven identical/feed-only policies converge readiness; inventory exports stay strict. */
 export async function validateOwnerInventoryReadiness(
@@ -85,7 +90,7 @@ export async function validateOwnerInventoryReadiness(
     aclContent: string;
     loadAppliedArtifact: (generation: string) => Promise<AppliedOwnerAclArtifact | null>;
   },
-): Promise<{ ok: boolean; mismatches: string[]; reason: string }> {
+): Promise<OwnerInventoryReadinessResult> {
   const validation = validateOwnerInventoryBaseline(baseline, current);
   const reject = (reason: string) => ({ ...validation, reason });
   if (validation.ok) return { ...validation, reason: 'owner-baseline-current' };
@@ -106,15 +111,29 @@ export async function validateOwnerInventoryReadiness(
   } catch {
     return reject('applied-acl-artifact-unavailable');
   }
-  const [previous, latest] = artifacts;
-  if (!previous || !latest) return reject('applied-acl-artifact-missing');
-  if (!validArtifact(previous, previousGeneration) || !validArtifact(latest, currentGeneration)) {
+  const [persistedPrevious, latest] = artifacts;
+  if (!latest) return reject('applied-acl-artifact-missing');
+  if (!validAppliedOwnerAclArtifact(latest, currentGeneration)) {
     return reject('applied-acl-artifact-invalid');
   }
+  if (latest.content !== input.aclContent) return reject('applied-acl-readback-mismatch');
+  let previous = persistedPrevious;
+  if (!previous && baseline.appliedAclArtifact) {
+    try { verifyOwnerInventoryBaselineIntegrity(baseline); }
+    catch { return reject('owner-baseline-evidence-invalid'); }
+    previous = baseline.appliedAclArtifact;
+  }
+  if (!previous) return {
+    ...reject('applied-acl-artifact-missing'),
+    repair: {
+      kind: 'restore-owner-acl-history', generation: previousGeneration,
+      baselineSha256: baseline.contentSha256, currentGeneration, reviewRequired: true,
+    },
+  };
+  if (!validAppliedOwnerAclArtifact(previous, previousGeneration)) return reject('applied-acl-artifact-invalid');
   if (previous.rendererVersion !== latest.rendererVersion) {
     return reject('owner-acl-renderer-changed');
   }
-  if (latest.content !== input.aclContent) return reject('applied-acl-readback-mismatch');
   const delta = classifyRenderedOwnerAclDelta(previous.content, latest.content);
   if (delta.kind === 'other') return reject(delta.reason);
   return { ok: true, mismatches: [], reason: delta.reason };

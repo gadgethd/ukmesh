@@ -1,3 +1,5 @@
+import { OWNER_READINESS_FORMAT } from './ownerReadiness.js';
+
 export type AutoRebaselineDecision = {
   action: 'skip' | 'rebaseline' | 'abort';
   reason: string;
@@ -16,19 +18,29 @@ function abort(reason: string, mismatches: string[] = []): AutoRebaselineDecisio
   return { action: 'abort', reason, mismatches };
 }
 
-/** Decide whether /readyz describes a settled owner ACL generation drift. */
+/** Public readiness is coarse; owner evidence comes only from authenticated diagnostics. */
 export function decideOwnerBaselineAction(
   httpStatus: number,
   payload: unknown,
+  diagnostics?: unknown,
 ): AutoRebaselineDecision {
   if (httpStatus !== 200 && httpStatus !== 503) {
     return abort(`unexpected-readyz-http-status-${httpStatus}`);
   }
-  if (!isRecord(payload) || !isRecord(payload['checks'])) {
+  if (!isRecord(payload) || !isRecord(payload['checks'])
+    || payload['status'] !== (httpStatus === 200 ? 'ready' : 'degraded')) {
     return abort('readyz-payload-invalid');
   }
 
-  const ownerAuthorization = payload['checks']['ownerAuthorization'];
+  if (diagnostics === undefined) {
+    return httpStatus === 200
+      ? { action: 'skip', reason: 'backend-ready', mismatches: [] }
+      : abort('owner-baseline-diagnostics-required');
+  }
+  if (!isRecord(diagnostics) || diagnostics['format'] !== OWNER_READINESS_FORMAT) {
+    return abort('owner-baseline-diagnostics-invalid');
+  }
+  const ownerAuthorization = diagnostics['ownerAuthorization'];
   if (!isRecord(ownerAuthorization) || !isRecord(ownerAuthorization['inventoryBaseline'])) {
     return abort('owner-baseline-readiness-missing');
   }
@@ -42,6 +54,9 @@ export function decideOwnerBaselineAction(
   }
 
   const mismatches = baseline['mismatches'] as string[];
+  if (baseline['repair'] !== undefined) {
+    return abort('owner-baseline-history-repair-required', mismatches);
+  }
   if (baseline['ok'] === true) {
     return mismatches.length === 0
       ? { action: 'skip', reason: 'owner-baseline-current', mismatches }
@@ -75,6 +90,26 @@ export function decideOwnerBaselineAction(
   }
 
   return { action: 'rebaseline', reason: 'settled-owner-acl-generation-drift', mismatches };
+}
+
+/** Never send the operator token to /readyz or follow a credentialed redirect. */
+export async function readOwnerBaselineDecision(
+  readyzUrl: string,
+  operatorToken: string | undefined,
+  request: typeof fetch = fetch,
+): Promise<AutoRebaselineDecision> {
+  const readiness = await request(readyzUrl, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+  const payload: unknown = await readiness.json();
+  const coarse = decideOwnerBaselineAction(readiness.status, payload);
+  if (coarse.reason !== 'owner-baseline-diagnostics-required') return coarse;
+  if (!operatorToken || operatorToken.length < 32) return abort('owner-baseline-operator-token-required');
+  const endpoint = new URL('/local-api/owner-authorization', readyzUrl);
+  const diagnostics = await request(endpoint, {
+    headers: { authorization: `Bearer ${operatorToken}` },
+    redirect: 'error', signal: AbortSignal.timeout(10_000),
+  });
+  if (!diagnostics.ok) return abort(`owner-baseline-diagnostics-http-${diagnostics.status}`);
+  return decideOwnerBaselineAction(readiness.status, payload, await diagnostics.json());
 }
 
 /** Extract the machine-readable summary emitted by refresh-owner-baseline.sh. */

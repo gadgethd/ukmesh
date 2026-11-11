@@ -41,6 +41,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 type BackendSiteDeps = {
   query: QueryFn;
   getHealthOverview?: () => Promise<unknown>;
+  getOwnerAuthorizationReadiness?: () => Promise<unknown>;
 };
 
 function loadBackendSiteTemplate(name: string): string {
@@ -434,6 +435,13 @@ export function createBackendSiteRoutes(deps: BackendSiteDeps): Router {
     router.get('/local-api/health', localOnly(async (_req, res) => {
       res.setHeader('Cache-Control', 'no-store');
       res.json(await deps.getHealthOverview!());
+    }));
+  }
+
+  if (deps.getOwnerAuthorizationReadiness) {
+    router.get('/local-api/owner-authorization', localOnly(async (_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(await deps.getOwnerAuthorizationReadiness!());
     }));
   }
 

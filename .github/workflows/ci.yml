@@ -468,11 +468,16 @@ jobs:
             build \
               backend app-ukmesh website-ukmesh website-dev mesh-health-check \
               mosquitto-reloader link-worker hopreach tagger-worker
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+          scripts/test-ci-db-readiness.sh
+          if ! docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \
             up --detach --no-build --scale link-backfill-worker=0 --scale tagger-worker=0 \
-              --wait --wait-timeout 360
+              --wait --wait-timeout 360; then
+            docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+              --project-name "$project" logs --no-color --tail=200 timescaledb db-migrate
+            exit 1
+          fi
           # Exercise real tagger SQL against the owned database without an external classifier.
           database_container="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps -q timescaledb)"
           docker run --rm --network "container:$database_container" \
@@ -639,7 +644,7 @@ jobs:
 
       - name: Preserve browser failure diagnostics
         if: failure()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         with:
           name: browser-failure-${{ github.run_id }}-${{ github.run_attempt }}
           path: frontend/test-results

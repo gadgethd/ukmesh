@@ -4,7 +4,7 @@ import test from 'node:test';
 import {
   OWNER_ACL_RENDERER_VERSION, renderOwnerAcl, type OwnerAclGrant,
 } from '../mqtt/aclManager.js';
-import { convergeOwnerAcl, createOwnerAclReadinessRecovery, type OwnerAclConvergencePorts } from './ownerAclConvergence.js';
+import { convergeOwnerAcl, createOwnerAclReadinessRecovery, createOwnerAclReconciliation, type OwnerAclConvergencePorts } from './ownerAclConvergence.js';
 import { buildOwnerInventoryBaseline, validateOwnerInventoryBaseline, type OwnerAclGenerationState } from './ownerInventoryBaseline.js';
 import { isOwnerAclGenerationSettled, validateOwnerInventoryReadiness, type AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
 
@@ -69,6 +69,83 @@ test('repeated authoritative passes leave a verified policy, artifacts and broke
   assert.deepEqual(f.calls, { state: 0, save: 0, write: 0, shadow: 0, reload: 0 });
   assert.equal(f.content, f.initial.content);
   assert.equal(validateOwnerInventoryBaseline(baseline, f.inventory()).ok, true);
+});
+
+test('a toggle after input capture waits for a trailing pass that observes the new membership', async () => {
+  const f = fixture();
+  let enabled = true;
+  let passes = 0;
+  let entered!: () => void;
+  let release!: () => void;
+  const captured = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  f.ports.reload = async () => { f.calls.reload++; if (passes === 1) { entered(); await blocked; } };
+  const reconciler = createOwnerAclReconciliation(async () => {
+    passes++;
+    // This dependency read models the repository's committed reader query.
+    f.grants = [{ mqttUsername: USER, nodeIds: [NODE], ...(enabled ? { publicFeedRead: true } : {}) }];
+    await f.run();
+  });
+  const older = reconciler.reconcile();
+  await captured;
+  enabled = false;
+  let acknowledged = false;
+  const afterWrite = reconciler.reconcile().then(() => { acknowledged = true; });
+  await Promise.resolve();
+  assert.equal(acknowledged, false);
+  release();
+  await Promise.all([older, afterWrite]);
+  assert.equal(passes, 2);
+  assert.doesNotMatch(f.content, /topic read public\/\+\/\+\/packets/);
+  assert.equal(isOwnerAclGenerationSettled(f.state), true);
+  await reconciler.waitForIdle();
+});
+
+test('bursts coalesce, writes during a trailing pass cause another pass, and failed drains retry', async () => {
+  let passes = 0;
+  let release!: () => void;
+  let entered!: () => void;
+  let fail = false;
+  const captured = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  const reconciler = createOwnerAclReconciliation(async () => {
+    passes++;
+    if (passes === 1) { entered(); await blocked; }
+    if (passes === 2) void reconciler.reconcile();
+    if (fail) throw new Error('apply unavailable');
+  });
+  const first = reconciler.reconcile();
+  const beforeCapture = reconciler.reconcile();
+  await captured;
+  assert.equal(passes, 1);
+  const duringCapture = reconciler.reconcile();
+  release();
+  await Promise.all([first, beforeCapture, duringCapture]);
+  assert.equal(passes, 3);
+  fail = true;
+  await assert.rejects(reconciler.reconcile(), /apply unavailable/);
+  fail = false;
+  await reconciler.reconcile();
+  assert.equal(passes, 5);
+  await reconciler.waitForIdle();
+});
+
+test('a failed trailing pass never acknowledges the write that requested it', async () => {
+  let entered!: () => void;
+  let release!: () => void;
+  const captured = new Promise<void>((resolve) => { entered = resolve; });
+  const blocked = new Promise<void>((resolve) => { release = resolve; });
+  let passes = 0;
+  const reconciler = createOwnerAclReconciliation(async () => {
+    if (++passes === 1) { entered(); await blocked; }
+    else throw new Error('trailing apply failed');
+  });
+  const first = reconciler.reconcile();
+  await captured;
+  const postWrite = reconciler.reconcile();
+  const rejected = [assert.rejects(first, /trailing apply failed/), assert.rejects(postWrite, /trailing apply failed/)];
+  release();
+  await Promise.all(rejected);
 });
 
 test('an out-of-band desired/rendered bump closes the gate, self-heals and stays converged', async (t) => {
