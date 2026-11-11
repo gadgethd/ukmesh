@@ -5,7 +5,8 @@ import { useWebSocket } from '../../hooks/useWebSocket.js';
 import {
   nodeStore,
   useMessages,
-  useNodes,
+  useNodeMap,
+  usePackets,
 } from '../../hooks/useNodes.js';
 import { mapMessageRows, type RecentPacketRow } from '../../hooks/packetFeed.js';
 import { useAppMessageHandler } from '../../hooks/useAppMessageHandler.js';
@@ -92,10 +93,8 @@ export const UKFeedPage: React.FC = () => {
   const packetListRef = useRef<HTMLDivElement>(null);
   const historyRequestRef = useRef<AbortController | null>(null);
 
-  const {
-    nodes: nodeMap,
-    packets: packetsList,
-  } = useNodes();
+  const nodeMap = useNodeMap();
+  const packetsList = usePackets();
   const messagesList = useMessages();
 
   const handleWSMessage = useAppMessageHandler({

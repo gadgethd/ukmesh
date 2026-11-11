@@ -35,7 +35,6 @@ type NodeStoreState = {
   messages: AggregatedPacket[]; // type=5 GRP only, protected from ADV eviction
   arcs: PacketArc[];
   arcCollectionEnabled: boolean;
-  activeNodes: Set<string>;
 };
 
 let state: NodeStoreState = {
@@ -46,7 +45,6 @@ let state: NodeStoreState = {
   messages: [],
   arcs: [],
   arcCollectionEnabled: false,
-  activeNodes: new Set(),
 };
 
 function normalizeNode<T extends Partial<MeshNode> & { node_id: string }>(
@@ -130,8 +128,7 @@ function reset(scopeKey: string): number {
     messages: [],
     arcs: [],
     arcCollectionEnabled: state.arcCollectionEnabled,
-    activeNodes: new Set(),
-  });
+    });
   return epoch;
 }
 
@@ -210,8 +207,7 @@ function handleInitialState(
     packets: serverPackets,
     messages: serverMessages,
     arcs: [],
-    activeNodes: new Set(),
-  });
+    });
 }
 
 /** Patch tags onto cached rows as the tagger finishes them (tags are produced a
@@ -511,22 +507,3 @@ export function useArcs(): PacketArc[] {
   return useSyncExternalStore(subscribe, () => state.arcs);
 }
 
-export function useActiveNodes(): Set<string> {
-  return useSyncExternalStore(subscribe, () => state.activeNodes);
-}
-
-export function useNodes() {
-  return {
-    nodes: useNodeMap(),
-    packets: usePackets(),
-    arcs: useArcs(),
-    activeNodes: useActiveNodes(),
-    handleInitialState,
-    replaceRecentPackets,
-    handlePacket,
-    handleNodeUpdate,
-    handleNodeUpdateBatch,
-    handleNodeUpsert,
-    handleNodeUpsertBatch,
-  };
-}
