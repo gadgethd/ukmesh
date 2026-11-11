@@ -35,7 +35,6 @@ export const FeedMapPanel: React.FC<{
   }
   return (
     <PathMap
-      results={[]}
       observerPositions={observerPositions}
       lazyPaths={(cachedLazyPath?.paths ?? []) as LazyPath[]}
       pathScopeId={packet.packet_hash}
