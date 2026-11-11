@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../types/domain.js';
-import { PathMap, type LazyPath, type LazyPathNode, type LazyPathResult } from './PacketDetailPanel.js';
+import { PathMap } from './PacketPathMap.js';
 import type { PathTreeStatus } from './feedState.js';
-import type { FeedPacket, PathTreeBranchNode } from './feedModel.js';
+import type { FeedPacket, LazyPath, LazyPathNode, LazyPathResult, PathTreeBranchNode } from './feedModel.js';
 
 export const FeedMapPanel: React.FC<{
   packet: FeedPacket | null;

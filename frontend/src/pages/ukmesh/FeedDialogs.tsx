@@ -1,7 +1,8 @@
 import React from 'react';
 import type { MeshNode } from '../../types/domain.js';
 import { Dialog, DialogTitle } from '../../components/ui/Dialog.js';
-import { PacketDetailPanel, type LazyPathResult } from './PacketDetailPanel.js';
+import { PacketDetailPanel } from './PacketDetailPanel.js';
+import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel, PacketPathTree } from './FeedPathViews.js';
 import type { FeedPacket } from './feedModel.js';
 import type { PathTreeStatus } from './feedState.js';

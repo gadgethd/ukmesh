@@ -20,7 +20,7 @@ import {
 } from '../../utils/api.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
-import type { LazyPathResult } from './PacketDetailPanel.js';
+import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
 import {
@@ -52,8 +52,6 @@ import {
   type PathTreeStatus,
 } from './feedState.js';
 
-export type { FeedPacket } from './feedModel.js';
-export { FEED_PATH_MAX_CONCURRENCY } from './feedModel.js';
 export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const { privacyGeneration } = useRuntimeFeatures();

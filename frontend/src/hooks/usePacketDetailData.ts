@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { LazyPathResult } from '../pages/ukmesh/PacketDetailPanel.js';
+import type { LazyPathResult } from '../pages/ukmesh/feedModel.js';
 import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
 import type { MessageTags, TagConfidence } from '../types/domain.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
