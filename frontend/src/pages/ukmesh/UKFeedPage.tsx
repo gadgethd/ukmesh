@@ -24,13 +24,13 @@ import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
 import { timeAgo } from '../../utils/time.js';
+import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
 import {
   MESSAGE_SCOPE_CHANNELS,
   FEED_PATH_MAX_CONCURRENCY,
   LAZY_SETTLE_MS,
   MAX_PACKETS,
   PATH_REQUEST_TIMEOUT_MS,
-  TYPE_LABELS,
   aggregatedPacketToFeedPacket,
   feedPathCache,
   feedPathCacheKey,
@@ -507,7 +507,7 @@ export const UKFeedPage: React.FC = () => {
     const topTypes = (Object.entries(typeCounts) as [string, number][])
       .sort(([, a], [, b]) => b - a)
       .slice(0, 5)
-      .map(([type, count]) => ({ type: Number(type), label: TYPE_LABELS[Number(type)] ?? `T${type}`, count }));
+      .map(([type, count]) => ({ type: Number(type), label: PACKET_TYPE_LABELS[Number(type)] ?? `T${type}`, count }));
     return { packetsLastMin, activeSenderCount: activeSenders.size, topTypes };
   }, [packets, now]);
 
@@ -613,7 +613,7 @@ export const UKFeedPage: React.FC = () => {
                   window.history.replaceState(null, '', url);
                 }}
               >
-                Type {TYPE_LABELS[Number(selectedPacketType)] ?? selectedPacketType} ×
+                Type {PACKET_TYPE_LABELS[Number(selectedPacketType)] ?? selectedPacketType} ×
               </button>
             )}
             {selectedMessageScope !== 'all' && (
@@ -654,7 +654,7 @@ export const UKFeedPage: React.FC = () => {
                   >
                     <div className="uk-feed-packet-row__meta">
                       <span>{formatFeedTimestamp(packet.time)}</span>
-                      <span>{packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
+                      <span>{packet.packet_type != null ? (PACKET_TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
                       <span className="uk-feed-packet-row__hops">{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
                       <span className="uk-feed-packet-row__hash dev-status-mono">{packet.packet_hash}</span>
                       <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
@@ -694,7 +694,7 @@ export const UKFeedPage: React.FC = () => {
                   <code className="feed-detail__hash">{selectedPacket.packet_hash}</code>
                   <span className="feed-detail__badge">
                     {selectedPacket.packet_type != null
-                      ? (TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`)
+                      ? (PACKET_TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`)
                       : '—'}
                   </span>
                   {selectedPacket.hop_count != null && (
@@ -759,7 +759,7 @@ export const UKFeedPage: React.FC = () => {
                 <div className="uk-feed-stats__selected-meta">
                   <code className="feed-detail__hash">{selectedPacket.packet_hash}</code>
                   <span className="feed-detail__badge">
-                    {selectedPacket.packet_type != null ? (TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`) : '—'}
+                    {selectedPacket.packet_type != null ? (PACKET_TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`) : '—'}
                   </span>
                   {selectedPacket.hop_count != null && (
                     <span className="feed-detail__badge feed-detail__badge--muted">

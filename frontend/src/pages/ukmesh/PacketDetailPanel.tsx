@@ -5,6 +5,7 @@ import type { FeedPacket, LazyPathResult } from './feedModel.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
 import type { MessageTags, TagConfidence } from '../../types/domain.js';
 import { PathMap } from './PacketPathMap.js';
+import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -151,11 +152,6 @@ function formatRadio(radio: RadioState): string {
 
 // ── Main panel ────────────────────────────────────────────────────────────────
 
-const TYPE_LABELS: Record<number, string> = {
-  0: 'REQ', 1: 'RSP', 2: 'DM', 3: 'ACK', 4: 'ADV', 5: 'GRP',
-  6: 'DAT', 7: 'ANON', 8: 'PATH', 9: 'TRC', 11: 'CTL',
-};
-
 
 export const PacketDetailPanel: React.FC<{
   packet: FeedPacket;
@@ -231,7 +227,7 @@ export const PacketDetailPanel: React.FC<{
   }, [detail?.rawHex]);
 
   const routeLabel = detail?.routeType != null ? (ROUTE_NAMES[detail.routeType] ?? `Type${detail.routeType}`) : '—';
-  const typeLabel = packet.packet_type != null ? (TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—';
+  const typeLabel = packet.packet_type != null ? (PACKET_TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—';
   const heardAt = new Date(packet.time).toLocaleString();
   const observerCount = detail?.observations?.length ?? packet.rx_count ?? 1;
 
