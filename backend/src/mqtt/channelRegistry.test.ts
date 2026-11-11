@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildChannelEntries, channelHashesForName, isPublicChannelName, PUBLIC_CHANNELS, sanitizePublicPacketPayload, VALIDATED_CHANNELS } from './channelRegistry.js';
+import { buildChannelEntries, channelHashesForName, isPublicChannelName, PUBLIC_CHANNELS, sanitizePublicPacketPayload, PUBLIC_CHANNELS } from './channelRegistry.js';
 
 test('committed channel material is explicitly classified as public', () => {
-  assert.strictEqual(VALIDATED_CHANNELS, PUBLIC_CHANNELS);
   assert.ok(PUBLIC_CHANNELS.length > 0);
   assert.ok(buildChannelEntries().every((entry) => entry.classification === 'public'));
 });

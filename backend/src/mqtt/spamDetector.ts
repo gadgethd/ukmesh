@@ -1,6 +1,5 @@
 import { haversineKm } from '../platform/geo.js';
 import { query } from '../db/index.js';
-import type { SpamSuspectRow } from '../db/index.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -148,11 +147,7 @@ interface KeyRotationStats {
 const identityByName = new Map<string, IdentityNameStats>();
 const keyRotationByPublicKey = new Map<string, KeyRotationStats>();
 
-// Coalesce repeated verdicts for the same identity until the MQTT packet batch
-// commits. The latest evaluation wins, avoiding one spam UPSERT per advert.
-const bufferedSpamSuspects = new Map<string, SpamSuspectRow>();
 const SPAM_RUNTIME_TRACKER_MAX = 10_000;
-const SPAM_BUFFERED_SUSPECTS_MAX = 1_000;
 const SPAM_NAMES_PER_NODE_MAX = 64;
 
 function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
@@ -160,30 +155,6 @@ function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
     const oldest = map.keys().next().value as K | undefined;
     if (oldest === undefined) break;
     map.delete(oldest);
-  }
-}
-
-export function bufferSpamSuspect(suspect: SpamSuspectRow): void {
-  if (!bufferedSpamSuspects.has(`${suspect.network}:${suspect.srcNodeId}`)) {
-    evictOldest(bufferedSpamSuspects, SPAM_BUFFERED_SUSPECTS_MAX);
-  }
-  bufferedSpamSuspects.set(`${suspect.network}:${suspect.srcNodeId}`, suspect);
-}
-
-export function hasBufferedSpamSuspects(): boolean {
-  return bufferedSpamSuspects.size > 0;
-}
-
-export function drainBufferedSpamSuspects(): SpamSuspectRow[] {
-  const suspects = Array.from(bufferedSpamSuspects.values());
-  bufferedSpamSuspects.clear();
-  return suspects;
-}
-
-export function requeueBufferedSpamSuspects(suspects: readonly SpamSuspectRow[]): void {
-  for (const suspect of suspects) {
-    const key = `${suspect.network}:${suspect.srcNodeId}`;
-    if (!bufferedSpamSuspects.has(key)) bufferedSpamSuspects.set(key, suspect);
   }
 }
 
