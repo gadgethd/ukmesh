@@ -86,3 +86,15 @@ CREATE TABLE IF NOT EXISTS owner_acl_artifacts (
   created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   applied_at       TIMESTAMPTZ
 );
+
+CREATE TABLE IF NOT EXISTS owner_sessions (
+  session_id    TEXT PRIMARY KEY,
+  mqtt_username TEXT NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  last_seen_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at    TIMESTAMPTZ NOT NULL,
+  revoked_at    TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS owner_sessions_active_idx
+  ON owner_sessions(mqtt_username, revoked_at, expires_at);

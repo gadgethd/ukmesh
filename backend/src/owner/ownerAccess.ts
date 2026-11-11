@@ -2,7 +2,7 @@ import mqtt from 'mqtt';
 import { randomBytes } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
-import { getOwnerNodeIdsForUsername } from '../db/ownerAuth.js';
+import { getOwnerNodeIdsForUsername, revokeOwnerSessionsForUsername } from '../db/ownerAuth.js';
 import { query } from '../db/index.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { reconcileOwnerAuthorization } from './ownerAclReconciler.js';
@@ -152,10 +152,12 @@ export async function getOwnerCredentialGeneration(mqttUsername: string): Promis
  * unless revocation was recorded.
  */
 export async function bumpOwnerCredentialGeneration(mqttUsername: string): Promise<void> {
+  const normalized = mqttUsername.trim();
   const redis = getCredGenRedis();
-  const key = OWNER_CRED_GEN_KEY(mqttUsername);
+  const key = OWNER_CRED_GEN_KEY(normalized);
   await redis.incr(key);
   await redis.pexpire(key, OWNER_CRED_GEN_TTL_MS);
+  await revokeOwnerSessionsForUsername(normalized);
 }
 
 export async function closeOwnerCredentialGenerationClient(): Promise<void> {
