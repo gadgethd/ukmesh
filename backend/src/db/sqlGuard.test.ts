@@ -5,7 +5,7 @@ import { loadMigrationFiles } from './migrations.js';
 // Trigger DDL grammar (`AFTER UPDATE ON <table>`, `UPDATE OF <column>`) puts a
 // keyword where a DML target would sit; these are never table names.
 const TARGET_QUALIFIER = /^(?:public|core|mesh|analytics|archive|ops|pg_catalog|information_schema|timescaledb_information|timescaledb_experimental|_timescaledb|unnest|pg_|(?:new|old)_[a-z0-9_]+$|node_identity_nodes$|LATERAL$|SET$|NEW$|OLD$|ON$|OF$)/i;
-const DML_TARGET = /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+([a-z_][a-z0-9_]*)/gi;
+const DML_TARGET = /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?!ROW\s*\()(?!OR\b)([a-z_][a-z0-9_]*)/gi;
 
 function unqualifiedTargets(sql: string): string[] {
   const body = sql

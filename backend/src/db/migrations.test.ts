@@ -189,13 +189,12 @@ test('merged tree re-asserts the prefix fence above 132 against post-move relati
   // only its ordering against the P1-4 moves is a durable invariant.
   assert.ok(prefixOf(fenceName) > prefixOf('128_corescope_privacy_compat.sql'));
 
-  // Simulate the merged tree: main's 074 joins this branch's files with no
-  // duplicate prefix, sorts before the moves, and the re-assert sorts last.
-  const mergedNames = [...names, '074_prefix_visibility_row_fence.sql']
-    .sort((a, b) => a.localeCompare(b));
+  // main's 074 is now merged in: it joins this branch's files with no duplicate
+  // prefix, sorts before the moves, and the re-assert sorts last.
+  const mergedNames = [...names].sort((a, b) => a.localeCompare(b));
   assert.doesNotThrow(() => validateMigrationPrefixes(mergedNames));
-  assert.ok(!names.includes('074_prefix_visibility_row_fence.sql'),
-    '074 comes from main and must not be re-added here');
+  assert.ok(names.includes('074_prefix_visibility_row_fence.sql'),
+    'main ships 074 and it must be present in the merged tree');
   for (const earlier of [
     '074_prefix_visibility_row_fence.sql',
     '087_move_privacy_visibility_cluster.sql',
