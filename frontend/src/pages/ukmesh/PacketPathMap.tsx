@@ -84,13 +84,13 @@ export function buildAerialPaths(
 }
 
 export const PathMap: React.FC<{
-  results: MultiObserverBetaResponse[];
+  results?: MultiObserverBetaResponse[];
   observerPositions?: [number, number][];
   lazyPaths?: LazyPath[];
   pathScopeId?: string;
   nodeMap?: Map<string, MeshNode>;
   isLoading?: boolean;
-}> = ({ results, observerPositions = [], lazyPaths = [], pathScopeId = 'detail', nodeMap, isLoading = false }) => {
+}> = ({ results = [], observerPositions = [], lazyPaths = [], pathScopeId = 'detail', nodeMap, isLoading = false }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const maplibreRef = useRef<Pick<typeof maplibregl, 'Map' | 'LngLatBounds' | 'Popup'> | null>(null);
