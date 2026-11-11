@@ -6,7 +6,7 @@ import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import { packetObserverIds } from '../../hooks/packetPathOverlayUtils.js';
 import type { ResolvedPathRoute } from '../../hooks/packetPathOverlayUtils.js';
-import type { Filters } from '../FilterPanel/FilterPanel.js';
+import type { Filters } from '../../types/filters.js';
 import { buildHiddenCoordMask, hasCoords, maskNodePoint, maskPoint } from '../../utils/pathing.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
 

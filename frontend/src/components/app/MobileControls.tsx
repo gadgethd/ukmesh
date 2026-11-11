@@ -1,7 +1,8 @@
 import React, { useEffect, useRef, useState } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
-import { visibleFilterRows, type Filters } from '../FilterPanel/FilterPanel.js';
+import { visibleFilterRows } from '../FilterPanel/FilterPanel.js';
+import type { Filters } from '../../types/filters.js';
 import type { MapMode } from '../../config/mapModes.js';
 import { MapModeSelector } from './MapModeSelector.js';
 import { WatchlistPanel } from './WatchlistPanel.js';
