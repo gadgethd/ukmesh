@@ -78,26 +78,6 @@ export function parseHexIdentifier(
   })!;
 }
 
-export function parseCoordinate(
-  value: unknown,
-  options: { name: string; min: number; max: number },
-): number {
-  const raw = singleString(value, options.name);
-  if (raw === undefined || raw.trim() === '') {
-    throw new ApiInputError(`${options.name} is required`);
-  }
-  if (!/^-?(?:0|[1-9]\d*)(?:\.\d+)?$/.test(raw)) {
-    throw new ApiInputError(`${options.name} must be a finite decimal`);
-  }
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || parsed < options.min || parsed > options.max) {
-    throw new ApiInputError(
-      `${options.name} must be between ${options.min} and ${options.max}`,
-    );
-  }
-  return parsed;
-}
-
 export function parseBoundedFloat(
   value: unknown,
   options: {
@@ -149,15 +129,4 @@ export function parseEnum<T extends string>(
   throw new ApiInputError(
     `${options.name} must be one of ${options.values.join(', ')}`,
   );
-}
-
-export function parseCursor(
-  value: unknown,
-  options: { name: string; maxLength?: number } = { name: 'cursor' },
-): string | undefined {
-  return parseBoundedString(value, {
-    name: options.name,
-    maxLength: options.maxLength ?? 1024,
-    pattern: /^[A-Za-z0-9_-]+$/,
-  });
 }
