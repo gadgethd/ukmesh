@@ -45,7 +45,9 @@
     "typecheck": "tsc --noEmit",
     "contract:generate": "tsx src/tools/generateOpenApi.ts",
     "contract:check": "tsx src/tools/generateOpenApi.ts --check",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "sample:load": "tsx src/tools/loadSampleDataset.ts",
+    "sample:replay": "tsx src/tools/replaySampleMqtt.ts"
   },
   "dependencies": {
     "@michaelhart/meshcore-decoder": "^0.3.0",
@@ -65,7 +67,9 @@
     "@types/express": "^5.0.6",
     "@types/node": "^26.6.6",
     "@types/pg": "^8.23.1",
+    "@types/pg-copy-streams": "^1.2.5",
     "@types/ws": "^8.18.2",
+    "pg-copy-streams": "^7.0.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
   }
