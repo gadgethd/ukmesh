@@ -6,7 +6,7 @@ import { getNodes, getRecentMessages, getRecentPackets, getRecentPacketEvents, g
 import { runMigrations } from './migrations.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { createNodeRepository } from '../repositories/nodes.js';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 
 const url = process.env['TEST_REGIONS_DATABASE_URL'];
 const local = url && ['localhost', '127.0.0.1'].includes(new URL(url).hostname);

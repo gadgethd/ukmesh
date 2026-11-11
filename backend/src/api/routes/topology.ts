@@ -2,7 +2,7 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
 import { isPrivateNode } from '../utils/privateNode.js';
 import {

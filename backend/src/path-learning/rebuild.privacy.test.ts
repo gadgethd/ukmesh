@@ -7,7 +7,7 @@ import {
   pathLearningNetworksSql,
   pathLearningTrainingPacketsSql,
 } from './rebuild.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import {
   createPathingRepository,
   privatePrefixPathFilterSql,

@@ -3,7 +3,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import express, { Router, type RequestHandler } from 'express';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { registerRfValidationRoutes, RF_VALIDATION_REQUEST_TIMEOUT_MS } from './rfValidation.js';
 
 const passThroughLimiter: RequestHandler = (_req, _res, next) => next();

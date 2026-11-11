@@ -1,7 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
 import { parseRegionFilter } from '../../regions/filter.js';

@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import express, { Router, type RequestHandler } from 'express';
 import { apiErrorMiddleware } from '../errors.js';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { createNodeRepository } from '../../repositories/nodes.js';
 import { registerMiscRoutes } from './misc.js';
 import { registerNodeRoutes } from './nodes.js';

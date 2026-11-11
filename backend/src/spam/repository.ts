@@ -6,7 +6,7 @@ import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, Orig
 import type { PublicIncident } from './sanitize.js';
 import type { SpamMessageConfig } from './config.js';
 import { reportSpamAnalysisTruncation } from './limits.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import {
   assertAnalysisPublicationLease,
   type AnalysisPublicationHandle,

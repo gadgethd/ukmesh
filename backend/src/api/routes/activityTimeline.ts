@@ -1,7 +1,7 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;

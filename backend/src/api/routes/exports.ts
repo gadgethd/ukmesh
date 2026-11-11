@@ -2,7 +2,7 @@ import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { createHash } from 'node:crypto';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { csvRow } from '../utils/csv.js';

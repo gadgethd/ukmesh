@@ -1,5 +1,5 @@
 import { pool, query } from '../db/index.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 
 const PUBLIC_PACKET_PRIVACY_SQL = publicPacketPrivacySql('p');
 

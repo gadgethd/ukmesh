@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { nodeAliasArraySql, type NetworkFilters } from '../api/utils/networkFilters.js';
+import { nodeAliasArraySql, type NetworkFilters } from '../platform/query/networkFilters.js';
 import { mapVisiblePredicate } from '../nodes/publicMap.js';
 import {
   nodeEffectiveLastSeenSql,

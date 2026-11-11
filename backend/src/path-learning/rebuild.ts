@@ -17,7 +17,7 @@ import {
   normalizePathHash,
 } from '../path-hash/utils.js';
 import { expandResolverScope } from '../networks.js';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import {
   PATH_LEARNING_DELTA_DEFINITIONS,
   publishPathLearningDelta,

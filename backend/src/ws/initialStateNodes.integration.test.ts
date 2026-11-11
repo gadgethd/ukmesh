@@ -6,7 +6,7 @@ import { runMigrations } from '../db/migrations.js';
 import { refreshNodeMapSuppressions } from '../nodes/mapSuppressions.js';
 import { mapSuppressedNodes } from '../metrics.js';
 import { createNodeRepository } from '../repositories/nodes.js';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import { loadInitialMapNodes } from './initialStateNodes.js';
 
 const databaseURL = process.env['TEST_MAP_DATABASE_URL'];

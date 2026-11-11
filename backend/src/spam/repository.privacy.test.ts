@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { QueryResultRow } from 'pg';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { DEFAULT_SPAM_MESSAGE_CONFIG as CFG } from './config.js';
 import {
   getPublicIncident,

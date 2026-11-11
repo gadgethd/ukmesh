@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { request as httpRequest } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import express, { Router, type RequestHandler } from 'express';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { csvCell, registerExportRoutes } from './exports.js';
 
 test('csvCell escapes delimiters, quotes, and newlines', () => {

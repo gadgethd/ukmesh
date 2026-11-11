@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { getNodes, getRecentPackets, getRecentMessages, getRecentPacketEvents } from './index.js';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 
 test('region SQL scopes representatives, counts and nodes with parameterized indexed predicates', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];

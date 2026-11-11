@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { QueryResultRow } from 'pg';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import { rfValidationRows, queryRfValidation, rfValidationPool, RF_VALIDATION_DB_TIMEOUT_MS } from './networkAnalysis.js';
 
 test('RF validation scopes endpoints without joining both identity-node projections', async () => {

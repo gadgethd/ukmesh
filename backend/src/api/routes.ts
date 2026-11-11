@@ -78,7 +78,7 @@ import { registerRfValidationRoutes } from './routes/rfValidation.js';
 import { registerExportRoutes } from './routes/exports.js';
 import { registerProductFeatureRoutes } from './routes/productFeatures.js';
 import { requireLocalOnly } from './utils/localOnly.js';
-import { networkFilters } from './utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from './utils/observer.js';
 import {
   PublicAllScopeForbiddenError,

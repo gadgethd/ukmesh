@@ -1,7 +1,7 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
 import { queryRfValidation, rfValidationRows } from '../../repositories/networkAnalysis.js';
 export { RF_VALIDATION_DB_TIMEOUT_MS } from '../../repositories/networkAnalysis.js';

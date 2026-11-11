@@ -13,7 +13,7 @@ import {
   type PacketBatchResult,
   type QueryFn,
 } from './packetBatch.js';
-import { nodeAliasArraySql, publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { nodeAliasArraySql, publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import {
   dbQueriesTotal,
   dbQueryDuration,

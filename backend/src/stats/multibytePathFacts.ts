@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { publicPacketPathPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPathPrivacySql } from '../platform/query/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,

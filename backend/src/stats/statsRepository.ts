@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import type { NetworkFilters } from '../api/utils/networkFilters.js';
+import type { NetworkFilters } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import {
   publicMapBasePredicate,
