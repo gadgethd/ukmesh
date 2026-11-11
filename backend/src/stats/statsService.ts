@@ -6,22 +6,7 @@ import {
   validateChartSnapshotPayload,
 } from './chartSnapshot.js';
 
-type MaskDecodedPathNodesFn = (
-  rawNodes: Array<{
-    ord: number;
-    node_id: string | null;
-    name: string | null;
-    lat: number | null;
-    lon: number | null;
-    last_seen?: string | null;
-  }> | null | undefined,
-) => Array<{
-  ord: number;
-  node_id: string | null;
-  name: string | null;
-  lat: number | null;
-  lon: number | null;
-}>;
+import type { MaskDecodedPathNodesFn } from './maskDecodedPathNodes.js';
 
 type StatsServiceDeps = {
   statsCache: Map<string, { ts: number; data: unknown }>;
