@@ -1,0 +1,7 @@
+# Local-only ACL used when running the backend against the sample database.
+# The backend's owner-ACL reconciler reads this file even in shadow mode.
+user backend
+topic readwrite #
+
+user meshcore
+topic readwrite #
