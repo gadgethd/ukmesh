@@ -11,7 +11,7 @@ import { upsertNode, insertNodeStatusSample } from './index.js';
 import { persistStatusTelemetrySample } from '../mqtt/statusTelemetry.js';
 import { createNodeRepository } from '../repositories/nodes.js';
 import { registerNodeRoutes } from '../api/routes/nodes.js';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 
 // Worktree-local PostgreSQL WASM only: no DATABASE_URL or existing service.
 const moduleUrl = process.env['TEST_NODE_HISTORY_PGLITE_MODULE'];

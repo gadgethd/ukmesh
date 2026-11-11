@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import { promisify } from 'node:util';
 import pg from 'pg';
-import { publicPacketPrivacySql } from '../api/utils/networkFilters.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
 import {
   createPrivacyGenerationReconciler,

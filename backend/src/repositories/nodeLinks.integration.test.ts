@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import test from 'node:test';
 import { promisify } from 'node:util';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import { createNodeRepository } from './nodes.js';
 
 // Opt-in PostgreSQL fixture execution: SELECT only, with all production

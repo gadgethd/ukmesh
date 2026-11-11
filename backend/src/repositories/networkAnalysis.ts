@@ -1,6 +1,6 @@
 import pg, { type QueryResultRow } from 'pg';
 import { databaseConfig } from '../platform/config/database.js';
-import type { NetworkFilters } from '../api/utils/networkFilters.js';
+import type { NetworkFilters } from '../platform/query/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,

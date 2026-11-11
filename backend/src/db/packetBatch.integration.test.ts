@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import {
   deleteExpiredRows,
   RETENTION_TARGETS,

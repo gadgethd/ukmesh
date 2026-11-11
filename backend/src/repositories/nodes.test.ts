@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import type { QueryResultRow } from 'pg';
 import { createNodeRepository, type NodeLinkRow } from './nodes.js';
 

@@ -9,7 +9,7 @@ import pg, { type QueryResultRow } from 'pg';
 import express, { Router, type RequestHandler } from 'express';
 import { getNodeHistory } from '../../db/index.js';
 import { rfValidationRows } from '../../repositories/networkAnalysis.js';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { registerExportRoutes } from './exports.js';
 
 const perfTest = process.env['AUDITWAVE_PERF_TESTS'] === '1' ? test : test.skip;

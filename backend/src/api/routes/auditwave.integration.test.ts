@@ -8,7 +8,7 @@ import pg, { type QueryResultRow } from 'pg';
 import express, { Router, type RequestHandler } from 'express';
 import { getNodeHistory } from '../../db/index.js';
 import { rfValidationRows } from '../../repositories/networkAnalysis.js';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { registerExportRoutes } from './exports.js';
 
 // Real PostgreSQL evaluation of application SQL, with every application

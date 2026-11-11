@@ -1,7 +1,10 @@
 import { UKMESH_NETWORKS } from '../../networks.js';
-import type { VisibilityScope } from '../../http/requestScope.js';
 import { regionMemberIdsSql } from '../../regions/filter.js';
 import { regionNodeSourceSql } from '../../regions/nodeSource.js';
+
+/** The caller-supplied network/observer scope, structurally satisfied by the
+ * HTTP visibility scope without this query layer depending on HTTP types. */
+export type NetworkFilterScope = { network?: string; observer?: string };
 
 export type NetworkFilters = {
   params: unknown[];
@@ -246,6 +249,6 @@ export function networkFilters(
   };
 }
 
-export function publicNetworkFilters(scope: VisibilityScope): NetworkFilters {
+export function publicNetworkFilters(scope: NetworkFilterScope): NetworkFilters {
   return networkFilters(scope.network, scope.observer);
 }

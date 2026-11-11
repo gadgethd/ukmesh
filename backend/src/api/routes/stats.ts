@@ -2,7 +2,7 @@ import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createStatsRepository } from '../../stats/statsRepository.js';
 import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsService.js';
-import type { NetworkFilters } from '../utils/networkFilters.js';
+import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
 import { createDeferredOnce } from '../../lifecycle/deferredOnce.js';

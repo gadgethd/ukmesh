@@ -1,5 +1,5 @@
 import { pool } from '../db/index.js';
-import { networkFilters } from '../api/utils/networkFilters.js';
+import { networkFilters } from '../platform/query/networkFilters.js';
 import {
   combinedTopologyRows,
   standaloneTopologyRows,

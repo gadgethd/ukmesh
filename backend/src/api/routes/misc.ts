@@ -3,7 +3,7 @@ import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { getPublicRuntimeFeatureConfig } from '../../features.js';
 import { isPublicChannelName } from '../../mqtt/channelRegistry.js';
 import {

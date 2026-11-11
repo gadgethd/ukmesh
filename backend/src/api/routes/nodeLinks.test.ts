@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import test from 'node:test';
 import express, { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
-import { networkFilters } from '../utils/networkFilters.js';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import { createNodeRepository, type NodeLinkRow } from '../../repositories/nodes.js';
 import { registerNodeRoutes } from './nodes.js';
 
