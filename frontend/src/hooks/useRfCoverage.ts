@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { fetchJson } from '../utils/api.js';
 
 export type RfCoverageTierName = 'standard' | 'precision';
 
@@ -135,15 +136,10 @@ export function availableRfCoverageTiers(meta: RfCoverageMeta | null): RfCoverag
   });
 }
 
-async function fetchJson<T>(path: string, signal: AbortSignal): Promise<T> {
-  const response = await fetch(path, {
-    cache: 'no-store',
-    credentials: 'same-origin',
-    headers: { Accept: 'application/json' },
-    signal,
+function fetchRfJson<T>(path: string, signal: AbortSignal): Promise<T> {
+  return fetchJson<T>(path, { cache: 'no-store', credentials: 'same-origin', signal }, {
+    maxBytes: 4 * 1024 * 1024,
   });
-  if (!response.ok) throw new Error(`${path} returned ${response.status}`);
-  return response.json() as Promise<T>;
 }
 
 /**
@@ -187,8 +183,8 @@ export function useRfCoverage(enabled: boolean): {
       const signal = controller.signal;
       const stamp = Date.now();
       const [nextMeta, nextProgress] = await Promise.allSettled([
-        fetchJson<RfCoverageMeta>(`/rf-coverage/meta.json?poll=${stamp}`, signal),
-        fetchJson<RfCoverageProgress>(`/rf-coverage/progress.json?poll=${stamp}`, signal),
+        fetchRfJson<RfCoverageMeta>(`/rf-coverage/meta.json?poll=${stamp}`, signal),
+        fetchRfJson<RfCoverageProgress>(`/rf-coverage/progress.json?poll=${stamp}`, signal),
       ]);
       if (stopped || signal.aborted) return;
       if (nextMeta.status === 'fulfilled' && typeof nextMeta.value?.generated_at === 'string') {
