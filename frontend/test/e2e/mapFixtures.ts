@@ -20,6 +20,10 @@ const FLAT_TERRAIN_TILE = readFileSync(new URL('./fixtures/flat-terrain.png', im
 export const RF_COVERAGE_TILE = readFileSync(new URL('./fixtures/rf-coverage.png', import.meta.url));
 
 export async function installMapRoutes(page: Page, delayPlanetMetadata = false) {
+  await page.route(/^https:\/\/(?:[abc]\.)?tile\.openstreetmap\.org\//, (route) => route.fulfill({
+    contentType: 'image/png',
+    body: FLAT_TERRAIN_TILE,
+  }));
   await page.route('https://tiles.openfreemap.org/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/styles/dark' || pathname === '/styles/positron') {

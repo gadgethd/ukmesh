@@ -51,6 +51,38 @@ export type RegionRepeatersPayload = {
   repeaters: RegionRepeater[];
 };
 
+export type UnattributedClusterNode = {
+  nodeId: string;
+  name: string | null;
+  lat: number;
+  lon: number;
+  packets: number;
+};
+
+/**
+ * A footprint of scoped packets that no public region name explains. It has no
+ * `name` on purpose: private regions derive their key from stored material, so
+ * the name is not recoverable from traffic. The map shows where the traffic is
+ * heard, not a guessed label.
+ */
+export type UnattributedCluster = {
+  id: string;
+  lat: number;
+  lon: number;
+  packets: number;
+  nodeCount: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  topNodes: UnattributedClusterNode[];
+};
+
+export type UnattributedPayload = {
+  generatedAt: string | null;
+  windowDays: number | null;
+  clusters: UnattributedCluster[];
+  totals: { clusters: number; packets: number; nodes: number };
+};
+
 const REGION_PALETTE = [
   '#22d3ee', '#a78bfa', '#34d399', '#fbbf24', '#f472b6', '#60a5fa',
   '#f87171', '#4ade80', '#facc15', '#c084fc', '#38bdf8', '#fb923c',
@@ -155,6 +187,33 @@ export function regionRing(region: RegionSummary): Coordinate[] | null {
 /** Node ids of a region's resolved relay members, for map filtering. */
 export function memberIdSet(region: RegionSummary): Set<string> {
   return new Set(region.members.map((member) => member.nodeId));
+}
+
+/**
+ * Footprint radius for an unattributed cluster: a 10 km floor so a cluster is
+ * visible at country zoom, growing with the square root of its packet count and
+ * capped well below the clustering radius (60 km) so neighbouring clusters stay
+ * distinguishable.
+ */
+export function unattributedRadiusKm(packets: number): number {
+  return Math.min(48, 10 + Math.sqrt(Math.max(0, packets)) * 1.1);
+}
+
+/** Closed GeoJSON ring (lon/lat) approximating a cluster footprint. */
+export function unattributedRing(cluster: UnattributedCluster, segments = 48): Coordinate[] {
+  const radiusKm = unattributedRadiusKm(cluster.packets);
+  const dLat = radiusKm / 111.32;
+  const dLon = radiusKm / (111.32 * Math.max(0.2, Math.cos((cluster.lat * Math.PI) / 180)));
+  const ring: Coordinate[] = [];
+  for (let index = 0; index < segments; index += 1) {
+    const angle = (index / segments) * Math.PI * 2;
+    ring.push([
+      Number((cluster.lon + Math.cos(angle) * dLon).toFixed(5)),
+      Number((cluster.lat + Math.sin(angle) * dLat).toFixed(5)),
+    ]);
+  }
+  ring.push(ring[0]!);
+  return ring;
 }
 
 export function formatGeneratedAt(value: string | null): string | null {

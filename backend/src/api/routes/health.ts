@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { HEALTH_CACHE_TTL_MS, healthSnapshot } from '../bootstrap/caches.js';
 import { toPublicHealthOverview } from '../../health/status.js';
+import { getMqttRuntimeStatus } from '../../mqtt/client.js';
+import { withMqttDeliveryHealth } from '../../health/mqttDelivery.js';
 
 const router = Router();
 const refreshTimer = setInterval(() => {
@@ -25,7 +27,7 @@ router.get('/health', (_req, res) => {
     return;
   }
   res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-  res.json(toPublicHealthOverview(current.data));
+  res.json(withMqttDeliveryHealth(toPublicHealthOverview(current.data), getMqttRuntimeStatus().delivery));
 });
 
 export default router;

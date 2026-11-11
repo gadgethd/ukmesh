@@ -1,0 +1,13 @@
+# Qualified 31 October 2026; the live broker uses these values directly.
+# Requalify the required outage window when traffic or subscriptions change.
+# MQTT_MAX_PAYLOAD_BYTES defaults to 256 KiB; leave room for topic/protocol bytes.
+max_packet_size 1048576
+max_queued_messages 10000
+max_queued_bytes 33554432
+# Avoid per-packet debug logging on the normal ingest path.
+log_type error
+log_type warning
+log_type notice
+log_type information
+# A full session backlog drops queued work. Monitor the broker's dropped-message
+# counter; these finite limits do not establish an unlimited replay guarantee.

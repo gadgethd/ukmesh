@@ -1,4 +1,5 @@
 export type StatusTelemetrySample = {
+  observedAt?: string;
   status?: string;
   batteryMv?: number;
   uptimeSecs?: number;
@@ -18,11 +19,15 @@ type StatusSampleOptions = {
   nodeId: string;
   network: string;
   allowRawStatsOnly?: boolean;
+  retained?: boolean;
+  nowMs?: number;
 };
 
 type StatusSampleWriter = (sample: NodeStatusSampleInput) => Promise<void>;
 
 const OWNER_STATUS_STATS_KEYS = new Set([
+  'batteryMv', 'uptime_secs', 'uptimeSecs', 'uptime_ms', 'uptimeMs',
+  'tx_air_secs', 'txAirSecs', 'rx_air_secs', 'rxAirSecs',
   'battery_mv', 'solar_mv', 'board_temp_c', 'wifi_rssi', 'wifi_ssid', 'wifi_uptime_ms',
   'ntp_synced', 'ntp_sync_age_ms', 'boot_count', 'reset_reason', 'max_loop_ms',
   'max_loop_at_ms', 'nodes_heard_24h', 'channel_utilization', 'air_util_tx', 'air_util_rx',
@@ -55,10 +60,62 @@ function readNum(obj: Record<string, unknown> | undefined, ...keys: string[]): n
   return undefined;
 }
 
+function wholeCounter(value: number | undefined, max = Number.MAX_SAFE_INTEGER): number | undefined {
+  if (value == null || value < 0 || value > max) return undefined;
+  const whole = Math.trunc(value);
+  return Number.isSafeInteger(whole) ? whole : undefined;
+}
+
+/**
+ * Only a deterministic PostgreSQL data exception may be acknowledged without
+ * storing a status write. Connection failures, timeouts and schema errors must
+ * still reach the durable handler so it can retry without losing observations.
+ * Wait for every write before returning, including when one of them fails.
+ */
+export async function persistStatusWrites(
+  writes: Promise<unknown>[],
+  onRejected: (code: string) => void,
+): Promise<void> {
+  const results = await Promise.allSettled(writes);
+  const failures: unknown[] = [];
+  for (const result of results) {
+    if (result.status !== 'rejected') continue;
+    const error: unknown = result.reason;
+    const code = error && typeof error === 'object' && 'code' in error ? error.code : undefined;
+    if (typeof code === 'string' && /^22[A-Z0-9]{3}$/.test(code)) {
+      onRejected(code);
+    } else {
+      failures.push(error);
+    }
+  }
+  if (failures.length > 0) throw failures[0];
+}
+
 function envelopeStatus(json: Record<string, unknown>): string | undefined {
   if (typeof json['status'] !== 'string') return undefined;
   const status = json['status'].trim();
   return status || undefined;
+}
+
+/** Preserve measurement time when a persistent session replays a backlog. */
+export function statusObservationTime(
+  json: Record<string, unknown>,
+  options: { retained?: boolean; nowMs?: number } = {},
+): string | null {
+  const now = options.nowMs ?? Date.now();
+  if (envelopeStatus(json)?.toLowerCase() === 'offline') return null;
+  const raw = json['timestamp'];
+  const numeric = typeof raw === 'number' ? raw
+    : typeof raw === 'string' && /^\d+(\.\d+)?$/.test(raw) ? Number(raw) : undefined;
+  const parsed = numeric != null
+    ? (numeric < 100_000_000_000 ? numeric * 1000 : numeric)
+    : typeof raw === 'string' ? Date.parse(raw) : Number.NaN;
+  if (!Number.isFinite(parsed) || parsed > now + 300_000 || parsed <= 0) {
+    return options.retained ? null : new Date(now).toISOString();
+  }
+  // Expired samples must not be reintroduced into the 30-day history window.
+  if (parsed < now - 30 * 86_400_000) return null;
+  return new Date(Math.min(parsed, now)).toISOString();
 }
 
 export function extractStatusTelemetry(
@@ -78,16 +135,19 @@ export function extractStatusTelemetry(
       || toRecord(stats['mqtt'])
     ),
   );
-  const batteryMv = readNum(stats, 'battery_mv', 'batteryMv');
+  // These columns are INTEGER/BIGINT. Some firmware reports fractional
+  // airtime seconds: keep whole seconds here and preserve full precision in
+  // stats. Unrepresentable counters become NULL rather than poisoning MQTT.
+  const batteryMv = wholeCounter(readNum(stats, 'battery_mv', 'batteryMv'), 2_147_483_647);
   const uptimeSecs = (() => {
-    const direct = readNum(stats, 'uptime_secs', 'uptimeSecs');
+    const direct = wholeCounter(readNum(stats, 'uptime_secs', 'uptimeSecs'));
     if (direct != null) return direct;
     const uptimeMs = readNum(stats, 'uptime_ms', 'uptimeMs');
     if (uptimeMs == null) return undefined;
-    return Math.floor(uptimeMs / 1000);
+    return wholeCounter(uptimeMs / 1000);
   })();
-  const txAirSecs = readNum(stats, 'tx_air_secs', 'txAirSecs');
-  const rxAirSecs = readNum(stats, 'rx_air_secs', 'rxAirSecs');
+  const txAirSecs = wholeCounter(readNum(stats, 'tx_air_secs', 'txAirSecs'));
+  const rxAirSecs = wholeCounter(readNum(stats, 'rx_air_secs', 'rxAirSecs'));
   const channelUtilization = readNum(
     stats,
     'channel_utilization',
@@ -149,11 +209,14 @@ export async function persistStatusTelemetrySample(
     allowRawStatsOnly: options.allowRawStatsOnly,
   });
   if (!telemetry) return false;
+  const observedAt = statusObservationTime(json, options);
+  if (!observedAt) return false;
 
   await writeSample({
     nodeId: options.nodeId,
     network: options.network,
     ...telemetry,
+    observedAt,
   });
   return true;
 }

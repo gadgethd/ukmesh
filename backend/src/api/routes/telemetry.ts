@@ -15,6 +15,7 @@ type TelemetryRouteDeps = {
 export function registerTelemetryRoutes(router: Router, deps: TelemetryRouteDeps): void {
   const { query } = deps;
 
+  // This strict independent limit also applies to rejected/malformed reports.
   router.post('/telemetry/frontend-error', TELEMETRY_LIMITER, async (req, res) => {
     try {
       const body = req.body as {

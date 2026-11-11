@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIncidents } from './analyzer.js';
+import { buildIncidents, buildIncidentsWithPaths } from './analyzer.js';
 import { normalizeMessage } from './normalize.js';
 import { DEFAULT_SPAM_MESSAGE_CONFIG as CFG } from './config.js';
 import type { MessageRecord, ObserverObservation } from './types.js';
@@ -63,4 +63,29 @@ test('the same flood, gone quiet for over the cooldown, is reported closed', () 
   const items = buildIncidents(records, now, CFG);
   assert.equal(items.length, 1);
   assert.equal(items[0]!.status, 'closed');
+});
+
+test('one campaign exposes newest activity and all burst evidence in both analyzer paths', async () => {
+  const now = Date.now();
+  const text = 'Synthetic repeating promotion at https://community.example.org';
+  const records = [
+    ...Array.from({ length: 17 }, (_, i) => rec(text, 'FixtureRelay', now - (180 - i) * MIN, [])),
+    ...Array.from({ length: 8 }, (_, i) => rec(text, 'FixtureRelay', now - (7 - i) * MIN, [])),
+  ];
+  const items = buildIncidents(records, now, CFG);
+  assert.equal(items.length, 1);
+  const item = items[0]!;
+  assert.equal(item.status, 'active');
+  assert.equal(item.publicJson.status, 'active');
+  assert.equal(item.publicJson.messageCount, 25);
+  assert.equal(item.publicJson.lastSeen, new Date(now).toISOString());
+  assert.equal(item.publicJson.firstSeen, new Date(records[0]!.observedAt).toISOString());
+  let queries = 0;
+  const pathItems = await buildIncidentsWithPaths(records, now, async () => {
+    queries += 1;
+    return { rows: [] };
+  }, CFG);
+  assert.ok(queries > 0, 'exercise path resolution with its observer fallback');
+  assert.deepEqual(pathItems, items);
+  assert.equal(buildIncidents(records, now + CFG.ongoingWindowMs + 1, CFG)[0]!.status, 'closed');
 });

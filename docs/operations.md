@@ -64,6 +64,14 @@ the environment and run `scripts/bootstrap-mosquitto.sh`. The helper creates a
 backend-only read ACL and password file, refuses partial or symlinked state, and
 does not replace an existing credential set.
 
+## Public packet visibility recovery
+
+Use the [privacy convergence runbook](privacy-convergence.md) when public and
+materialized generations differ or privacy work remains pending/failed. The
+`privacy:converge` command defaults to a read-only inventory. Its explicit apply
+mode locks policy/data writers and reclassifies both retained packet stores
+before publishing a verified generation; it requires a maintenance window.
+
 ## Legacy schema-16 compatibility cutover
 
 An existing database that has `016_stale_mqtt_observer_cleanup.sql` but not
@@ -302,6 +310,24 @@ Read `/readyz` and act on the named dependency. Check PostgreSQL, Redis, and
 Mosquitto before restarting the API. Liveness remaining green is expected
 during a dependency outage.
 
+`checks.mqttConnectionMonitor` reports broker-log read and audit-write failures
+when MQTT ingest is enabled. `init:EACCES` or `poll:EACCES` means the backend
+cannot read `MOSQUITTO_LOG_PATH`; inspect that mount's ownership and permissions.
+`audit:<code>` means an observation could not be persisted. Idle log polls do
+not clear that failure; a later successful audit write does. Logs remain
+audit-only and never grant node ownership. An inaccessible/missing log degrades
+readiness and reaches the existing two-minute `BackendNotReady` alert.
+
+Ingest SQL uses a separate two-connection pool with a 10-second server statement
+timeout. `MQTT_INGEST_STATEMENT_TIMEOUT_MS` accepts 100–30000 ms; the general
+`DATABASE_STATEMENT_TIMEOUT_MS` cannot disable or extend this ingest bound.
+`[ingest-db] query timed out` and
+`meshcore_db_queries_total{pool="ingest",outcome="timed_out"}` identify cancelled
+statements without exposing SQL or packet contents. The client read fallback
+has one second of grace; transaction sockets that hit it are discarded.
+Failed durable packet writes remain unacknowledged, and failed RAM-writer
+commits remain pending for retry.
+
 ### SyntheticProbeFailed
 
 Compare the failing blackbox target with direct localhost liveness, stats, and
@@ -323,15 +349,26 @@ change.
 
 ### Denied PUBLISH on `/raw` (#269 / #213)
 
-**Disposition:** keep these denials. They are expected log noise from publishers
-using a topic outside the supported observer contract; the evidence does not
-show a packet-ingest gap.
+**Disposition:** `/raw` is an unsupported secondary publication. Keep the
+restricted ACL and fix the publisher. The separate `meshmonitor-observer` EXT
+family published supported `/packets` and `/status` topics: its historical
+denials were an onboarding/grant gap. The earlier version of this runbook
+incorrectly called that family `/raw` noise.
 
-The B4 review brief reports about 233 Mosquitto `Denied PUBLISH` lines from
-`ESP32_a806F8` for `meshcore/LBA/8CA23B78…/raw`, associated with a granted node,
-plus a separate `meshmonitor-observer EXT` `/raw` family. The count and client
-identities above come from that supplied log review; they were not re-counted
-against the live broker during this code change.
+The [2026-10-23 evidence review](reviews/20261023-ukmesh-broker.md) records exact
+keys, clients, commands, windows, and counts. Four retained broker archives
+contain **2,356** `/raw` denials from `ESP32_a806F8`, on
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/raw`.
+The current-log snapshot contains zero further denials from that client.
+Accepted `/packets` messages for the same key are present in the archive.
+
+The current `meshmonitor-observer-nevrg6ol` authenticates as `nick`. It has
+**zero denied publishes** in the retained files and accepted packets on
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5/packets`.
+The live ACL already grants this key's packet/status/neighbor topics. Historical
+broker output preserved in shared memory shows `meshmonitor-observer-qy92lten`
+denied on this key's `/status` and `/packets` topics; it does not establish a
+current fault. `EXT` is a valid IATA covered by the ACL's `+` segment.
 
 The renderer in `backend/src/mqtt/aclManager.ts` grants owner writes to
 `packets`, `status`, `neighbors`, and `neighbours`. `backend/src/mqtt/topic.ts`
@@ -340,9 +377,51 @@ accepts those suffixes and rejects `/raw`. Packet bytes are carried in the
 `backend/src/mqtt/client.ts`; there is no `/raw` topic consumer. Granting the
 extra suffix would authorize a broker topic that the backend does not ingest.
 
-Reopen this ruling if a supported publisher is denied on `/packets`, or if the
-ingest contract is deliberately extended with a `/raw` consumer. The topic
-parser test keeps the current rejection explicit.
+**Mick / ESP32 operator:** disable the secondary send to the exact `/raw` topic
+above in the publisher's topic configuration. Keep
+`meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/packets`
+and its existing JSON envelope, including the `raw` hex field, and retain status
+and neighbor publication. If the firmware has no per-topic switch, ask its
+maintainer to remove the secondary `/raw` send; a firmware-specific switch has
+not been verified. Do not send a bare hex payload to `/packets`. Check fresh
+broker logs after the change: accepted packets should continue and `/raw`
+denials for this client should cease. No credential or owner grant change is
+needed for this optional, unused output.
+
+**Nick / meshmonitor operator:** retain username `nick` and base topic
+`meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5`;
+publish the normal JSON envelopes on `/packets` and `/status`. The current
+evidence requires no client change. If supported topics become denied again,
+confirm the actual device key and username, then have an operator review the
+existing owner grant and [approved registration/provisioning workflow](runbook-srtm-alerts-observers.md#observer-registration).
+The reviewed grant must cover that exact key; broker connection success alone
+does not grant publish permission. Verify the reconciler's rendered ACL and
+fresh accepted messages after any approved correction. Avoid duplicate
+accounts, automatic grants from logs, and edits to the managed ACL.
+
+**Visibility:** the backend connection monitor reads the broker log's existing
+read-only mount. Every parsed denial increments
+`meshcore_mqtt_denied_publishes_total{kind,phase}`. `kind` is one of `raw`,
+`packets`, `status`, `neighbors`, `neighbours`, or `other`; `phase` is `history`
+or `live`. Client IDs, usernames, and topics appear only in the backend's
+`[conn-monitor] denied publish` JSON log records, with a per-scan occurrence
+count. Repeated client/topic/username groups coalesce within a scan. At most 64
+groups are logged per scan; excess occurrences are reported as
+`denied publish details omitted` and still counted by the metric. Detail fields
+are capped at 512 characters with `truncated=true`; use the broker source log
+for full longer values. Missing or expired connection context gives a null
+username and does not suppress telemetry. These observations cannot grant
+ownership or change the ACL.
+
+Use `sum by (kind) (increase(meshcore_mqtt_denied_publishes_total{phase="live"}[10m]))`
+to inspect recent recurrence, then find the exact client and topic in backend
+logs. History scans replay at startup (at most the last 50 MB); exclude
+`phase="history"` from live recurrence queries. These are counts of log
+observations, not durable, lifetime broker totals. The monitor polls every two
+seconds by default and depends on readable broker logs with denial logging
+enabled. Supported-topic denials need grant/configuration investigation;
+`/raw` needs the publisher correction above. Reopen the `/raw` policy only if
+the ingest contract deliberately adds a consumer for it.
 
 ### MeshIngestSilent
 
@@ -388,6 +467,15 @@ heartbeat as the higher-priority symptom.
 
 ### ActiveQueueWorkerHeartbeatStale
 
+The link worker publishes a Unix timestamp to Redis every ten seconds with a
+45-second TTL, independently of ITM output (which can have roughly 50-minute
+gaps). Each metrics scrape reads that key; an expired, unreadable or invalid
+heartbeat exports `-1`. With queued work on the same `job`/`instance`, an age
+above 45 seconds or `-1` must persist for three minutes to page. With 15-second
+scrapes and rule evaluations, a stopped publisher should page within about
+four minutes of its last heartbeat. A brief read failure resets on recovery;
+an idle queue does not page. Do not raise this limit to match ITM publication.
+
 Stop new optional work, confirm the queue retains its leased payloads, and
 restart the affected link worker. Allow lease recovery to requeue;
 do not manually duplicate the job.
@@ -428,6 +516,11 @@ the optional writer and check replica/backup capacity. A short known migration
 burst may be observed; sustained unexplained WAL is an incident.
 
 ### HostDiskSpaceLow
+
+The existing node-exporter rule includes the data filesystem and fires at
+90% usage (10% available or less) sustained for ten minutes. Configured-volume
+health separately warns at 80% of a directory budget and is critical at 90%;
+that budget measurement is not the host filesystem's free-space measurement.
 
 Stop optional RF/backfill work and identify the mount from the alert. Preserve
 databases and signed backups. Prune only explicitly identified unused build
@@ -541,3 +634,76 @@ with the merged member key list.
   repeaters (no recent advert/status AND no multibyte-hop evidence) are
   filtered from the map; MQTT repeaters render like normal repeaters.
 - Spam transparency page verified working (live API) and kept.
+
+## MosquittoBacklogOverflow
+
+The qualified profile keeps the 10,000-message per-session ceiling, adds a
+32-MiB queued-byte ceiling and rejects MQTT frames larger than 1 MiB. These
+settings reload with SIGHUP. Debug packet logging is disabled. The October
+measurement was approximately 198 incoming messages/minute and 105 KiB/minute;
+the count ceiling corresponds to about 50 minutes at that observed aggregate
+rate, before bursts or changes in subscription fanout. This is an observation,
+not a guaranteed outage window. An owned 6,000 x 600-byte offline QoS 1 fixture
+replayed completely; a 400 x 128-KiB overflow fixture delivered 256 and exposed
+144 drops through `$SYS/broker/publish/messages/dropped`.
+
+`MosquittoBacklogOverflow` alerts on any increase of the dropped-publication
+counter. Restore the consumer and reconcile persisted observations; a
+publisher PUBACK alone does not establish delivery to every subscriber.
+`MosquittoBacklogHigh` warns at 7,500 aggregate stored messages. Inspect individual
+sessions and byte pressure as well; a few large messages can reach the byte
+ceiling first. Do not claim unlimited replay from finite queues.
+
+## Observation ledger lifecycle
+
+The hot ledger retains at least 60 days of creation-time history. A bounded
+Timescale job examines at most 5,000 earliest rows every five minutes and moves
+eligible metadata atomically into `ingest_observation_archive`. Archives are
+compressed after 14 days in the archive. `ingest_observation_history` is the
+complete sequence/history interface across hot and archived rows. UUID guards
+remain permanent in `ingest_observation_tombstones`, so old and current SQL
+writers both reject archived replays. Never prune that guard or archive as an
+ordinary retention task. The archive job does not delete packet paths,
+aggregates or observation history.
+
+Canonical advert dedupe keys and immutable message classifications remain
+permanent semantic state. They are deliberately not given a blind TTL; a
+replayed advert must not increment its total again, and an immutable message
+hash must retain its classification. Queue dead letters remain until resolved.
+Normal packet/content retention, compression, signed backups and the host disk
+exhaustion forecast continue to apply. Compression reduces retained metadata;
+it does not make an infinite exact identity history occupy bounded disk.
+
+### MqttDeliveryStalled
+
+The ingest connection publishes a non-retained QoS 1 nonce every 30 seconds on
+a reserved system topic under its configured MQTT prefix. The envelope is
+consumed before application parsing and never becomes observer or packet data.
+A probe must return on that same persistent subscriber session within 60 seconds.
+QoS 0 traffic and successful socket keepalives cannot satisfy this check.
+
+A timeout marks `/readyz` unavailable and `/api/health` critical, and reconnects
+the client with its existing client ID and `clean=false`, preserving queued
+messages. Recovery attempts are limited to one per five minutes. Prometheus
+alerts if the delivery probe remains unhealthy for two minutes. Inspect
+`meshcore_mqtt_delivery_probe_healthy`, the last-success timestamp, recovery
+count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
+
+Every reconnect explicitly subscribes again and waits for actual SUBACKs before
+starting the probe. MQTT.js automatic resubscription is disabled so its cached
+empty subscription result cannot be mistaken for an ACL denial. The backend's
+40-second container stop grace allows its 30-second durable drain to finish;
+keep `BACKEND_STOP_GRACE_PERIOD` longer than any custom shutdown deadline.
+
+If the session remains stalled after reconnect, preserve the Mosquitto data
+volume and perform a controlled broker restart. Never clear the persistent
+session or change the ingest client ID to discard the backlog. Confirm that
+QoS 1 acknowledgements resume and status samples advance. Replayed status
+measurements keep their source timestamp; expired samples, offline Wills and
+undated retained status cannot renew observer presence.
+
+Observer activity at `/api/stats/observers/live` is privacy-filtered and scoped
+to the last 15 minutes, with a bounded 60-second cache. The Stats page refreshes
+this independently of historical charts. Charts regenerate every 30 minutes
+in the background; the previous complete snapshot remains available during
+refresh, and the page displays its generation time rather than its fetch time.

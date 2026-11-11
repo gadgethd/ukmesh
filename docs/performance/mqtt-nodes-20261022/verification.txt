@@ -1,0 +1,32 @@
+final-tests.txt
+# tests 560
+# pass 557
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+# duration_ms 91463.570492
+Synthetic firing and recovery reached the bounded test receiver.
+
+route-tests.txt
+# tests 3
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 1408.629899
+
+sql-tests.txt
+# tests 5
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 4444.817746
+
+typecheck: passed
+build: passed
+strict test-file typecheck: passed
+OpenAPI contract current: 71 API and 11 operator routes

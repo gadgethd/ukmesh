@@ -55,6 +55,7 @@ export type IdentityRefreshResult = {
   ambiguousPairs: number;
   canonicalGroups: number;
   aliasRewriteSkipped: boolean;
+  reusedRecentRefresh?: boolean;
 };
 
 const MAX_NAME_DISTANCE_METERS = 3_000;
@@ -479,6 +480,7 @@ export function buildIdentityGroups(
   const assessments: IdentityPairAssessment[] = [];
   const edges: IdentityEdge[] = [];
   for (const bucketNodes of byBucket.values()) {
+    const activeId = uniqueActiveRepeaterId(bucketNodes);
     for (let left = 0; left < bucketNodes.length; left += 1) {
       for (let right = left + 1; right < bucketNodes.length; right += 1) {
         const a = bucketNodes[left]!;
@@ -539,7 +541,6 @@ export function buildIdentityGroups(
           pairFirstAt: null,
           pairLastAt: null,
         };
-        const activeId = uniqueActiveRepeaterId(bucketNodes);
         const assessment = assessIdentityPair(a, b, evidenceA, evidenceB, pair, {
           uniqueActiveRepeaterId: activeId,
         });
@@ -626,17 +627,44 @@ export function buildIdentityGroups(
 
 type DbClient = {
   query<T extends pg.QueryResultRow = pg.QueryResultRow>(text: string, values?: unknown[]): Promise<{ rows: T[]; rowCount: number | null }>;
-  release(): void;
+  release(destroy?: boolean): void;
 };
 
 export async function refreshNodeIdentityAliases(
   pool: { connect(): Promise<DbClient> },
+  options: { maxAgeMs?: number } = {},
 ): Promise<IdentityRefreshResult> {
   const client = await pool.connect();
   const refreshStartedAt = new Date();
+  let transactionOpen = false;
+  let locked = false;
+  let destroyClient = false;
   try {
-    await client.query('BEGIN');
-    await client.query(`SELECT pg_advisory_xact_lock(hashtext('meshcore-node-identity-refresh'))`);
+    // Serialize refreshers across processes without holding a write transaction
+    // while reading evidence or running the grouping algorithm.
+    await client.query(`SELECT pg_advisory_lock(hashtext('meshcore-node-identity-refresh'))`);
+    locked = true;
+    await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
+    transactionOpen = true;
+    const generation = (await client.query<{ generation: string }>(
+      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE',
+    )).rows[0]?.generation;
+    if (!generation) throw new Error('Identity refresh requires a visibility generation');
+    const maxAgeMs = options.maxAgeMs ?? 0;
+    if (maxAgeMs > 0) {
+      const cached = (await client.query<{ result: IdentityRefreshResult }>(
+        `SELECT result FROM node_identity_refresh_state
+          WHERE singleton = TRUE AND algorithm_version = 1
+            AND visibility_generation = $1::bigint
+            AND completed_at > NOW() - ($2::double precision * INTERVAL '1 millisecond')`,
+        [generation, maxAgeMs],
+      )).rows[0];
+      if (cached) {
+        await client.query('COMMIT');
+        transactionOpen = false;
+        return { ...cached.result, aliasesWritten: 0, aliasRewriteSkipped: true, reusedRecentRefresh: true };
+      }
+    }
 
     const nodesResult = await client.query<IdentityNode>(
       `SELECT node_id, name, lat, lon, role, advert_count, last_seen,
@@ -765,7 +793,25 @@ export async function refreshNodeIdentityAliases(
       }
     }
 
+    // A consistent evidence snapshot is complete. Release its relation locks
+    // before CPU work, then validate privacy again at atomic publication.
+    await client.query('COMMIT');
+    transactionOpen = false;
     const grouped = buildIdentityGroups(nodes, { statuses, selfAdverts, pairs });
+
+    await client.query('BEGIN');
+    transactionOpen = true;
+    await client.query("SET LOCAL lock_timeout = '5s'");
+    await client.query("SET LOCAL statement_timeout = '30s'");
+    // Manual writers take this relation lock before their visibility trigger;
+    // use the same order so their decisions cannot be overwritten or deadlock.
+    await client.query('LOCK TABLE node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
+    const currentGeneration = (await client.query<{ generation: string }>(
+      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE FOR UPDATE',
+    )).rows[0]?.generation;
+    if (currentGeneration !== generation) {
+      throw new Error('Identity refresh visibility changed; discard stale evidence and retry');
+    }
 
     const storedAliases = await client.query<StoredIdentityAlias>(
       `SELECT source_node_id, canonical_node_id, confidence, reason, evidence, source_kind
@@ -861,8 +907,7 @@ export async function refreshNodeIdentityAliases(
       }
     }
 
-    await client.query('COMMIT');
-    return {
+    const result: IdentityRefreshResult = {
       nodesConsidered: nodes.length,
       candidatePairs: candidatePairs.length,
       acceptedPairs: grouped.assessments.filter((assessment) => assessment.accepted).length,
@@ -871,10 +916,30 @@ export async function refreshNodeIdentityAliases(
       canonicalGroups: grouped.groups.length,
       aliasRewriteSkipped,
     };
+    await client.query(
+      `INSERT INTO node_identity_refresh_state
+         (singleton, algorithm_version, visibility_generation, completed_at, result)
+       SELECT TRUE, 1, generation, clock_timestamp(), $1::jsonb
+         FROM public_visibility_state WHERE singleton = TRUE
+       ON CONFLICT (singleton) DO UPDATE SET
+         algorithm_version = EXCLUDED.algorithm_version,
+         visibility_generation = EXCLUDED.visibility_generation,
+         completed_at = EXCLUDED.completed_at, result = EXCLUDED.result`,
+      [JSON.stringify(result)],
+    );
+    await client.query('COMMIT');
+    transactionOpen = false;
+    return result;
   } catch (error) {
-    await client.query('ROLLBACK');
+    if (transactionOpen) {
+      try { await client.query('ROLLBACK'); } catch { destroyClient = true; }
+    }
     throw error;
   } finally {
-    client.release();
+    if (locked && !destroyClient) {
+      try { await client.query(`SELECT pg_advisory_unlock(hashtext('meshcore-node-identity-refresh'))`); }
+      catch { destroyClient = true; }
+    }
+    client.release(destroyClient);
   }
 }

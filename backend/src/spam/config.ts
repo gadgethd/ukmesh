@@ -45,7 +45,7 @@ export interface SpamMessageConfig {
   usernameSimThreshold: number;
   /** Two messages can only join the same incident if seen within this gap (ms). */
   joinWindowMs: number;
-  /** A cluster must contain at least this many distinct transmissions to be an incident. */
+  /** Ordinary clusters must contain at least this many distinct transmissions. */
   minTransmissions: number;
   /** ...and at least this many must fall inside one burst window. */
   burstWindowMs: number;
@@ -67,6 +67,8 @@ export interface SpamMessageConfig {
    *  automated flood, not broad human participation. Minimum distinct senders
    *  before the rotating-identity path can apply. */
   rotatingMinSenders: number;
+  /** Lower transmission floor, used only when the full rotating-ID profile holds. */
+  rotatingMinTransmissions: number;
   /** ...share of those senders that must appear exactly once in the analysis
    *  window (a one-shot identity, not an established member). */
   rotatingSingleShotShare: number;
@@ -123,7 +125,7 @@ export function loadSpamMessageConfig(): SpamMessageConfig {
     analyzerIntervalMs: envNum('SPAM_MESSAGE_INTERVAL_MS', 5 * 60 * 1000),
     analyzerEnabled: envBool('SPAM_MESSAGE_ANALYZER_ENABLED', true),
     maxCandidatePacketRows: Math.min(50_000, Math.max(100, envNum('SPAM_MESSAGE_MAX_CANDIDATE_ROWS', 10_000))),
-    maxMessagesPerRun: Math.min(10_000, Math.max(100, envNum('SPAM_MESSAGE_MAX_MESSAGES', 2_000))),
+    maxMessagesPerRun: Math.min(10_000, Math.max(100, envNum('SPAM_MESSAGE_MAX_MESSAGES', 5_000))),
     maxObserversPerMessage: Math.min(256, Math.max(1, envNum('SPAM_MESSAGE_MAX_OBSERVERS', 32))),
     maxNormalizedChars: Math.min(4_096, Math.max(64, envNum('SPAM_MESSAGE_MAX_NORMALIZED_CHARS', 512))),
     maxIncidentsPerRun: Math.min(1_000, Math.max(1, envNum('SPAM_MESSAGE_MAX_INCIDENTS', 100))),
@@ -145,8 +147,9 @@ export function loadSpamMessageConfig(): SpamMessageConfig {
     dominantSenderShare: envNum('SPAM_MESSAGE_DOMINANT_SENDER_SHARE', 0.6),
     floodMinMessages: envNum('SPAM_MESSAGE_FLOOD_MIN_MESSAGES', 25),
     rotatingMinSenders: envNum('SPAM_MESSAGE_ROTATING_MIN_SENDERS', 5),
+    rotatingMinTransmissions: envNum('SPAM_MESSAGE_ROTATING_MIN_TRANSMISSIONS', 6),
     rotatingSingleShotShare: envNum('SPAM_MESSAGE_ROTATING_SINGLE_SHOT_SHARE', 0.8),
-    rotatingMachineNameShare: envNum('SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE', 0.5),
+    rotatingMachineNameShare: envNum('SPAM_MESSAGE_ROTATING_MACHINE_NAME_SHARE', 0.3),
     rotatingMinBurstSenders: envNum('SPAM_MESSAGE_ROTATING_MIN_BURST_SENDERS', 3),
     excludeChannels: (process.env['SPAM_MESSAGE_EXCLUDE_CHANNELS'] ?? 'test')
       .split(',')

@@ -38,6 +38,8 @@ import { decodePacketCompat } from '../mqtt/decodePacket.js';
 import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.js';
 import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
 import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
+import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
+import { isPrivateNode } from '../api/utils/privateNode.js';
 
 const { Pool } = pg;
 
@@ -52,11 +54,15 @@ interface ScopedPacketRow {
   t1: Date;
   raw: string | null;
   elems: string[] | null;
+  observers: string[] | null;
 }
 
 interface NodeMetaRow {
   node_id: string;
   role: number | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
 }
 
 interface UnscopedElementRow {
@@ -114,7 +120,8 @@ async function main(): Promise<void> {
               max(p.time) AS t1,
               (array_agg(p.raw_hex ORDER BY p.time DESC)
                  FILTER (WHERE p.route_type IN (0, 3) AND p.raw_hex <> ''))[1] AS raw,
-              (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems
+              (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems,
+              (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
          FROM packets p
          LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
         WHERE p.route_type IN (0, 3)
@@ -129,6 +136,7 @@ async function main(): Promise<void> {
     const regionFirstSeen = new Map<string, Date>();
     const regionLastSeen = new Map<string, Date>();
     const packetRegion = new Map<string, string | null>();
+    const unattributedRows: ScopedPacketRow[] = [];
     let decodedCount = 0;
     for (const row of scopedRows) {
       let region: string | null = null;
@@ -145,6 +153,7 @@ async function main(): Promise<void> {
         }
       }
       packetRegion.set(row.packet_hash, region);
+      if (!region) unattributedRows.push(row);
       if (region) {
         decodedCount += 1;
         regionTotals.set(region, (regionTotals.get(region) ?? 0) + 1);
@@ -159,7 +168,9 @@ async function main(): Promise<void> {
     if (decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
-      'SELECT node_id, role FROM nodes',
+      `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
+         FROM nodes
+        ORDER BY node_id, last_seen DESC NULLS LAST`,
     );
     const nodeRoles = new Map<string, number | null>();
     const prefixIndex = new Map<string, string[]>();
@@ -174,6 +185,54 @@ async function main(): Promise<void> {
         else prefixIndex.set(key, [nodeId]);
       }
     }
+
+    // Unattributed packets still carry real traffic: group them by where they
+    // were heard (observers plus resolved relays) so the dashboard can show the
+    // gap geographically without inventing a region name. Nodes that opted out
+    // of public display are dropped here, so no cluster geometry is derived
+    // from them.
+    const nodeInfo = new Map<string, { lat: number; lon: number; name: string | null }>();
+    for (const row of nodeRows) {
+      const nodeId = (row.node_id ?? '').trim().toUpperCase();
+      if (!nodeId || isPrivateNode(row.name)) continue;
+      const lat = row.lat == null ? Number.NaN : Number(row.lat);
+      const lon = row.lon == null ? Number.NaN : Number(row.lon);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
+      nodeInfo.set(nodeId, { lat, lon, name: row.name ?? null });
+    }
+
+    const unattributedPackets: UnattributedPacket[] = [];
+    for (const row of unattributedRows) {
+      const nodes: NonNullable<UnattributedPacket['nodes']>[number][] = [];
+      const seen = new Set<string>();
+      const add = (nodeId: string): void => {
+        if (!nodeId || seen.has(nodeId)) return;
+        const info = nodeInfo.get(nodeId);
+        if (!info) return;
+        seen.add(nodeId);
+        nodes.push({ nodeId, lat: info.lat, lon: info.lon, name: info.name });
+      };
+      for (const element of row.elems ?? []) {
+        const resolved = resolveElement(prefixIndex, element);
+        if (resolved) add(resolved);
+      }
+      for (const observer of row.observers ?? []) add(observer.trim().toUpperCase());
+      unattributedPackets.push({
+        hash: row.packet_hash,
+        nodes,
+        firstSeen: row.t0,
+        lastSeen: row.t1,
+      });
+    }
+    const unattributedClusters = clusterUnattributedPackets(unattributedPackets, {
+      radiusKm: 60,
+      minPackets: 10,
+    });
+    console.log(`[regions] unattributed: ${unattributedRows.length} packets -> ` +
+      `${unattributedClusters.clusters.length} clusters ` +
+      `(${unattributedClusters.clusteredPackets} clustered, ` +
+      `${unattributedClusters.discardedPackets} below floor, ` +
+      `${unattributedClusters.unlocatedPackets} unlocated)`);
 
     const scopedByNode = new Map<string, Map<string, Set<string>>>();
     const scopedTotal = new Map<string, Set<string>>();
@@ -308,6 +367,8 @@ async function main(): Promise<void> {
         regions: regionTotals.size,
         members: members.length,
         classification: classification.length,
+        unattributedPackets: unattributedRows.length,
+        unattributedClusters: unattributedClusters.clusters.length,
       }));
       return;
     }
@@ -318,6 +379,7 @@ async function main(): Promise<void> {
       await client.query('DELETE FROM region_scope_members');
       await client.query('DELETE FROM region_scope_stats');
       await client.query('DELETE FROM repeater_scope_status');
+      await client.query('DELETE FROM region_scope_unattributed');
       await client.query('DELETE FROM region_scope_run');
 
       const regionNames = [...regionTotals.keys()];
@@ -372,6 +434,28 @@ async function main(): Promise<void> {
         );
       }
 
+      const clusters = unattributedClusters.clusters;
+      if (clusters.length > 0) {
+        await client.query(
+          `INSERT INTO region_scope_unattributed
+             (cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes)
+           SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes::jsonb
+             FROM unnest($1::text[], $2::float8[], $3::float8[], $4::int[], $5::int[],
+                         $6::timestamptz[], $7::timestamptz[], $8::text[])
+               AS t(cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes)`,
+          [
+            clusters.map((cluster) => cluster.id),
+            clusters.map((cluster) => cluster.lat),
+            clusters.map((cluster) => cluster.lon),
+            clusters.map((cluster) => cluster.packets),
+            clusters.map((cluster) => cluster.nodeCount),
+            clusters.map((cluster) => cluster.firstSeen),
+            clusters.map((cluster) => cluster.lastSeen),
+            clusters.map((cluster) => JSON.stringify(cluster.topNodes)),
+          ],
+        );
+      }
+
       await client.query(
         `INSERT INTO region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
          VALUES (TRUE, now(), $1, $2, $3)`,
@@ -392,6 +476,8 @@ async function main(): Promise<void> {
       regions: regionTotals.size,
       members: members.length,
       classification: classification.length,
+      unattributedPackets: unattributedRows.length,
+      unattributedClusters: unattributedClusters.clusters.length,
       elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
     }));
   } finally {

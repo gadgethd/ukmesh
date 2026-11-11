@@ -85,6 +85,7 @@ export interface MapLibreMapProps {
   mapLight: boolean;
   network?: string;
   observer?: string;
+  region?: string;
   privacyGeneration: number;
   /** Hide dashboard-only search, legend, and planning controls for embedded maps. */
   showMapChrome?: boolean;

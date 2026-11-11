@@ -1,5 +1,10 @@
-import { readFileSync } from 'node:fs';
-import { verify } from 'node:crypto';
+import { createHash, createPublicKey, verify } from 'node:crypto';
+import { readFileSync, realpathSync } from 'node:fs';
+import path from 'node:path';
+
+/** Out-of-band pin for the restore receipt verify key. The key must be
+ * provisioned as its own secret and never travel with the receipt it verifies. */
+export const RESTORE_RECEIPT_VERIFY_KEY_SHA256_ENV = 'DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256';
 
 export const REQUIRED_BACKUP_DATASETS = Object.freeze([
   'analytics',
@@ -118,23 +123,85 @@ export function parseRestoreReceipt(value: unknown): VerifiedRestoreReceipt {
   });
 }
 
+/** Fingerprint over the DER SubjectPublicKeyInfo, so a PEM re-wrap cannot
+ * change it and `openssl pkey -pubin -outform DER | sha256sum` agrees. */
+export function restoreReceiptKeyFingerprint(publicKey: Buffer | string): string {
+  const der = createPublicKey(publicKey).export({ type: 'spki', format: 'der' });
+  return `sha256:${createHash('sha256').update(der).digest('hex')}`;
+}
+
+function normalizeFingerprint(value: string, source: string): string {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    throw new Error(`${source} is required: pin the restore receipt verify key fingerprint outside the receipt directory`);
+  }
+  const bare = trimmed.startsWith('sha256:') ? trimmed.slice('sha256:'.length) : trimmed;
+  if (!/^[a-f0-9]{64}$/.test(bare)) {
+    throw new Error(`${source} must be a sha256 fingerprint of 64 hex characters`);
+  }
+  return `sha256:${bare}`;
+}
+
+function resolveForComparison(target: string): string {
+  try {
+    return realpathSync(target);
+  } catch {
+    return path.resolve(target);
+  }
+}
+
+/** A receipt, its signature, and its verify key must never be published
+ * together: whoever can replace the receipt could otherwise supply the key
+ * that blesses it. The key is a separately provisioned secret. */
+function assertVerifyKeyIsSeparatelyProvisioned(receiptPath: string, verifyKeyPath: string): void {
+  const receiptDirectory = path.dirname(resolveForComparison(receiptPath));
+  const keyDirectory = path.dirname(resolveForComparison(verifyKeyPath));
+  const relative = path.relative(receiptDirectory, keyDirectory);
+  if (relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative))) {
+    throw new Error(
+      'restore receipt verify key must be provisioned outside the receipt directory',
+    );
+  }
+}
+
 export function loadVerifiedRestoreReceipt(options: {
   receiptPath: string | undefined;
   signaturePath?: string | undefined;
   verifyKeyPath: string | undefined;
+  verifyKeySha256?: string | undefined;
 }): VerifiedRestoreReceipt {
   const receiptPath = String(options.receiptPath ?? '').trim();
   const verifyKeyPath = String(options.verifyKeyPath ?? '').trim();
   if (!receiptPath) throw new Error('DATA_LIFECYCLE_RESTORE_RECEIPT_PATH is required');
   if (!verifyKeyPath) throw new Error('DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH is required');
+  const pinned = normalizeFingerprint(
+    String(options.verifyKeySha256 ?? process.env[RESTORE_RECEIPT_VERIFY_KEY_SHA256_ENV] ?? ''),
+    RESTORE_RECEIPT_VERIFY_KEY_SHA256_ENV,
+  );
+  assertVerifyKeyIsSeparatelyProvisioned(receiptPath, verifyKeyPath);
   const signaturePath = String(options.signaturePath ?? `${receiptPath}.sig`).trim();
   const receiptBytes = readFileSync(receiptPath);
   const signature = readFileSync(signaturePath);
-  const verifyKey = readFileSync(verifyKeyPath);
+  let verifyKey: Buffer;
+  try {
+    verifyKey = readFileSync(verifyKeyPath);
+  } catch {
+    throw new Error(`restore receipt verify key is not readable at ${verifyKeyPath}`);
+  }
+  if (restoreReceiptKeyFingerprint(verifyKey) !== pinned) {
+    throw new Error('restore receipt verify key does not match the pinned fingerprint');
+  }
   if (!verify('sha256', receiptBytes, verifyKey, signature)) {
     throw new Error('restore receipt signature verification failed');
   }
-  return parseRestoreReceipt(JSON.parse(receiptBytes.toString('utf8')) as unknown);
+  const parsed = JSON.parse(receiptBytes.toString('utf8')) as unknown;
+  const claimed = isRecord(parsed) && typeof parsed['verify_key_sha256'] === 'string'
+    ? normalizeFingerprint(parsed['verify_key_sha256'], 'verify_key_sha256')
+    : undefined;
+  if (claimed !== undefined && claimed !== pinned) {
+    throw new Error('restore receipt was signed by a key that does not match the pinned fingerprint');
+  }
+  return parseRestoreReceipt(parsed);
 }
 
 export function assertFreshRestoreReceipt(

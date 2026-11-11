@@ -11,4 +11,7 @@ the live deployment remains the schema of record.
 - Why deferred: the live database (60-row ledger) does **not** have this migration applied and the
   `node_status_samples.status` column does not exist. Including it at 057 would have collided with
   `057_region_scope_participation.sql` and changed the schema on the next deploy.
-- Re-introduction: as a new migration numbered after 060, with explicit approval, in Stage 2.
+- Reconciliation 2026-10-25: the identical SQL is present as
+  `061_node_status_sample_status.sql`; the live read-only ledger confirms 061
+  is already applied with its repository checksum. Keep this historical copy
+  outside the runtime chain. See `docs/reviews/20261025-merge-ledger.md`.

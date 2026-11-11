@@ -9,9 +9,21 @@ import {
   parsePublicMapFields,
   parsePublicMapCursor,
   parsePublicMapLimit,
+  parsePublicMapQuery,
   parsePublicMapSnapshot,
   publicMapFreshPredicate,
+  mapVisiblePredicate,
+  PUBLIC_MAP_FRESH_WINDOW_DAYS,
 } from './publicMap.js';
+
+test('public map search accepts literal names and rejects ambiguous or unbounded queries', () => {
+  assert.equal(parsePublicMapQuery(undefined), undefined);
+  assert.equal(parsePublicMapQuery('  '), undefined);
+  assert.equal(parsePublicMapQuery(' Old_100% '), 'Old_100%');
+  for (const value of [['one', 'two'], {}, 'x'.repeat(161), 'nul\u0000name']) {
+    assert.throws(() => parsePublicMapQuery(value), PublicMapInputError);
+  }
+});
 
 test('public map field selection rejects ambiguous or unknown projections', () => {
   assert.deepEqual(parsePublicMapFields('name,lat'), ['node_id', 'name', 'lat']);
@@ -21,6 +33,8 @@ test('public map field selection rejects ambiguous or unknown projections', () =
 
 test('public map predicate is the single role, coordinate, privacy, and freshness contract', () => {
   const sql = publicMapFreshPredicate('n', '$2::timestamptz');
+  assert.equal(PUBLIC_MAP_FRESH_WINDOW_DAYS, 28);
+  assert.equal(sql, mapVisiblePredicate('n', '$2::timestamptz'));
   assert.match(sql, /n\.lat BETWEEN -90 AND 90/);
   assert.match(sql, /n\.lon BETWEEN -180 AND 180/);
   assert.match(sql, /NOT \(ABS\(n\.lat\) < 5 AND ABS\(n\.lon\) < 5\)/);

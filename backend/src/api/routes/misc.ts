@@ -19,6 +19,7 @@ import {
 } from '../../repositories/plannedNodes.js';
 import { toPublicMqttNodeStatusDTO } from '../publicStatus.js';
 import { readRecentWithPending } from '../../ram/liveRead.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -33,6 +34,7 @@ type GetRecentPacketsFn = (
   signal?: AbortSignal,
   readQuery?: QueryFn,
   overlapHashes?: string[],
+  region?: string,
 ) => Promise<unknown>;
 type GetRecentPacketEventsFn = (
   limit: number,
@@ -41,15 +43,6 @@ type GetRecentPacketEventsFn = (
   region?: string,
 ) => Promise<unknown>;
 
-// Region scope filter (e.g. 'eng-ne' / '#eng-ne' -> stored form '#eng-ne').
-const REGION_SCOPE_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/;
-
-function normalizeRegionScope(value: unknown): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const bare = value.trim().toLowerCase().replace(/^#/, '');
-  if (!REGION_SCOPE_PATTERN.test(bare)) return undefined;
-  return `#${bare}`;
-}
 type GetPacketDetailFn = (hash: string, network?: string) => Promise<unknown>;
 type GetChannelMessageHistoryFn = (
   channel: string,
@@ -102,7 +95,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
       max: 1000,
     });
     const raw = parseBoolean(req.query['raw'], { name: 'raw' });
-    const region = normalizeRegionScope(req.query['region']);
+    const region = parseRegionFilter(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -116,8 +109,9 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         : await readRecentWithPending(
             (overlapHashes) => getRecentPackets(
               limit, network, observer, fields, AbortSignal.timeout(30_000), undefined, overlapHashes,
+              ...(region ? [region] : []),
             ) as Promise<Record<string, unknown>[]>,
-            { limit, network, observer, fields },
+            { limit, network, observer, fields, ...(region ? { region } : {}) },
           );
       res.json(packets);
     } catch (err) {
@@ -290,17 +284,24 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
          FROM node_identity_status_samples nss
          LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
          LEFT JOIN (
-           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id, COUNT(*) AS packet_count
-           FROM packets
-           WHERE time > NOW() - INTERVAL '24 hours'
-             AND rx_node_id IS NOT NULL
-             ${packetNetworkClause}
+           -- Canonicalize per receiver, not per observation. Keep COUNT's bigint
+           -- result type: SUM(bigint) otherwise becomes numeric in PostgreSQL.
+           SELECT meshcore_canonical_node_id(rx_node_id) AS rx_node_id,
+                  SUM(packet_count)::bigint AS packet_count
+           FROM (
+             SELECT rx_node_id, COUNT(*) AS packet_count
+             FROM packets
+             WHERE time > NOW() - INTERVAL '24 hours'
+               AND rx_node_id IS NOT NULL
+               ${packetNetworkClause}
+             GROUP BY rx_node_id
+           ) raw_counts
            GROUP BY meshcore_canonical_node_id(rx_node_id)
          ) pc ON pc.rx_node_id = nss.node_id
          WHERE nss.time > NOW() - INTERVAL '15 minutes'
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${networkClause}
-         ORDER BY nss.node_id, COALESCE(nss.uptime_secs, 0) DESC, nss.time DESC`,
+         ORDER BY nss.node_id, nss.time DESC`,
         params,
       );
       res.json(result.rows

@@ -5,8 +5,17 @@ import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis
 import {
   configuredLifecycleTargets,
   dataLifecycleConfigurationStatus,
+  lifecyclePolicy,
 } from '../db/dataLifecycle.js';
 import { INGEST_HEALTH_SQL, PATH_HASH_HEALTH_SQL } from './packetDiagnostics.js';
+import { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
+import {
+  createPrivacyGenerationReconciler,
+  PRIVACY_GENERATION_HEALTH_SQL,
+  type PrivacyGenerationHealth,
+  type PrivacyGenerationSnapshot,
+} from '../privacy/generationHealth.js';
+export { DATABASE_MAINTENANCE_SQL } from './vacuumBacklog.js';
 import { linkWorkerHeartbeatCollector, readLinkWorkerHeartbeatAge } from './workerHeartbeat.js';
 import {
   loadVerifiedRestoreReceipt,
@@ -30,7 +39,14 @@ import {
   packetPathsRows30d,
   workerHeartbeatAgeSeconds,
   setWorkerHeartbeatCollector,
+  setPrivacyGenerationHealthCollector,
 } from '../metrics.js';
+
+const reconcilePrivacyGenerations = createPrivacyGenerationReconciler(
+  (signal) => query<PrivacyGenerationSnapshot>(PRIVACY_GENERATION_HEALTH_SQL, undefined, signal),
+);
+// Scrapes observe independently of the slower dashboard/health-worker queries.
+setPrivacyGenerationHealthCollector(async () => (await reconcilePrivacyGenerations()).healthy);
 
 type WorkerSnapshot = {
   worker_name: string;
@@ -132,7 +148,7 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     SELECT
       (SELECT COUNT(*)::text FROM packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
-      hypertable_approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
+      approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
       pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
       (SELECT COUNT(*)::text
          FROM timescaledb_information.chunks
@@ -247,24 +263,98 @@ export function retentionDeleteSql(target: RetentionTarget): string {
   // Identifiers come from the closed RetentionTarget union above. PostgreSQL
   // cannot parameterize identifiers, but the retention interval and batch size
   // remain parameters.
+  // Compressed hypertables reject ctid (transparent decompression only
+  // supports tableoid), so bound the batch by the oldest retained timestamp
+  // instead of physical row identity. A NULL boundary (nothing expired) makes
+  // the DELETE a no-op.
   return `WITH expired AS MATERIALIZED (
-       SELECT tableoid, ctid
-       FROM ${target.table}
-       WHERE ${target.timestampColumn} < NOW() - $1::interval
-         ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
-       ORDER BY ${target.timestampColumn} ASC, tableoid, ctid
-       LIMIT $2
+       SELECT MAX(${target.timestampColumn}) AS boundary
+       FROM (
+         SELECT ${target.timestampColumn}
+         FROM ${target.table}
+         WHERE ${target.timestampColumn} < NOW() - $1::interval
+           ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
+         ORDER BY ${target.timestampColumn} ASC
+         LIMIT $2
+       ) AS oldest
      )
      DELETE FROM ${target.table} AS target
-     USING expired
-     WHERE target.tableoid = expired.tableoid
-       AND target.ctid = expired.ctid`;
+     WHERE target.${target.timestampColumn} <= (SELECT boundary FROM expired)
+       ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
+}
+
+async function rowsOf(
+  execute: (text: string, params?: unknown[]) => Promise<unknown>,
+  text: string,
+  params?: unknown[],
+): Promise<Array<Record<string, unknown>>> {
+  const result = (await execute(text, params)) as { rows?: Array<Record<string, unknown>> } | undefined;
+  return result?.rows ?? [];
 }
 
 export async function deleteExpiredRows(
   target: RetentionTarget,
   execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
 ): Promise<void> {
+  // Row-level DELETE on a compressed hypertable forces transparent
+  // decompression and can exceed TimescaleDB's per-DML decompression limit.
+  // Whole-chunk drops are the supported retention path; the boundary chunk is
+  // kept until it is fully expired, so retention can overshoot by one chunk.
+  if (lifecyclePolicy(target.table).kind === 'hypertable') {
+    try {
+      // Remove every chunk that is entirely past the retention horizon without
+      // decompressing anything.
+      await execute(
+        'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+        [target.table, target.retention],
+      );
+      // The boundary chunk can still hold a few expired rows next to retained
+      // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
+      // decompression limit, so decompress just that chunk, delete, recompress.
+      const chunks = await rowsOf(
+        execute,
+        `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
+           FROM timescaledb_information.chunks
+          WHERE hypertable_name = $1
+            AND range_end > now() - $2::interval
+          ORDER BY range_end ASC
+          LIMIT 1`,
+        [target.table, target.retention],
+      );
+      const chunk = chunks[0];
+      if (!chunk) return;
+      const chunkName = String(chunk['chunk']);
+      const expired = await rowsOf(
+        execute,
+        `SELECT 1 FROM ${chunkName}
+          WHERE ${target.timestampColumn} < now() - $1::interval
+          LIMIT 1`,
+        [target.retention],
+      );
+      if (expired.length === 0) return;
+      await execute('SELECT decompress_chunk($1::regclass, if_compressed => true)', [chunkName]);
+      try {
+        // Delete only inside this chunk. A table-wide boundary can reach into
+        // older compressed chunks that were not decompressed and trip the
+        // per-DML decompression limit again.
+        await execute(
+          `DELETE FROM ${chunkName}
+            WHERE ${target.timestampColumn} < now() - $1::interval
+            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`,
+          [target.retention],
+        );
+      } finally {
+        if (chunk['is_compressed'] === true) {
+          await execute('SELECT compress_chunk($1::regclass, if_not_compressed => true)', [chunkName]);
+        }
+      }
+      return;
+    } catch (error) {
+      // Non-Timescale databases (unit/integration fixtures) have plain tables.
+      const code = (error as { code?: string }).code;
+      if (code !== '42809' && code !== '42883' && code !== '42P01') throw error;
+    }
+  }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
 }
 
@@ -731,29 +821,11 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
   return { rows: await operationalChecksInflight! };
 }
 
-/**
- * Count tables whose dead tuples indicate a vacuum backlog. The absolute
- * branch is intentional: TimescaleDB chunks can report very few live tuples
- * after deletes, so the relative n_live_tup threshold alone misses them.
- */
-export const DATABASE_MAINTENANCE_SQL = `SELECT
-         pg_database_size(current_database())::text AS database_size_bytes,
-         COALESCE(SUM(n_dead_tup), 0)::text AS dead_rows,
-         MIN(last_autovacuum)::text AS oldest_vacuum_at,
-         COUNT(*) FILTER (
-           WHERE (
-             n_live_tup > 10000
-             AND n_dead_tup > GREATEST(10000, n_live_tup * 0.1)
-           )
-           OR n_dead_tup > 50000
-         )::text AS tables_needing_vacuum
-       FROM pg_stat_user_tables`;
-
 export async function getWorkerHealthOverview() {
   // Compute system stats once — cpuUsagePct() diffs against lastCpuSample,
   // so calling it twice in one request gives a garbage near-zero second reading.
   const sysStats = systemStats();
-  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat] = await Promise.all([
+  const [workers, history, errors1h, ingest, pathDiagnostics, operationalChecks, databaseMaintenance, databaseRuntime, redisDurability, privacyRemat, privacyGenerations] = await Promise.all([
     currentWorkerStatuses(sysStats),
     query<{
       ts: string;
@@ -829,6 +901,7 @@ export async function getWorkerHealthOverview() {
                FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
         FROM privacy_rematerialization_queue
     `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
+    reconcilePrivacyGenerations(),
   ]);
 
   const ingestRow = ingest.rows[0];
@@ -910,6 +983,8 @@ export async function getWorkerHealthOverview() {
       ? null : Number(privacyRematRow.oldest_pending_age_seconds),
   });
   if (privacyRematProblem) problems.push(privacyRematProblem);
+  const generationProblem = privacyGenerationProblem(privacyGenerations);
+  if (generationProblem) problems.push(generationProblem);
 
   if (redisDurability.maxmemory_policy !== 'noeviction') {
     problems.push({
@@ -945,6 +1020,7 @@ export async function getWorkerHealthOverview() {
       cache_hit_ratio: Number(databaseRuntime.rows[0]?.cache_hit_ratio ?? 0),
     },
     redis: redisDurability,
+    privacy_visibility: privacyGenerations,
     system: sysStats,
     workers,
     history: history.rows,
@@ -971,12 +1047,20 @@ export type HealthProblem = {
   message: string;
 };
 
+export function privacyGenerationProblem(state: PrivacyGenerationHealth): HealthProblem | null {
+  return state.healthy ? null : {
+    code: 'privacy_generation_unhealthy',
+    severity: 'critical',
+    message: `Privacy generation check failed: ${state.reason}`,
+  };
+}
+
 export function databaseVacuumBacklogProblem(tablesNeedingVacuum: number): HealthProblem | null {
   if (!Number.isFinite(tablesNeedingVacuum) || tablesNeedingVacuum <= 0) return null;
   return {
     code: 'database_vacuum_backlog',
     severity: tablesNeedingVacuum >= 3 ? 'critical' : 'warning',
-    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the dead-row vacuum threshold`,
+    message: `${Math.floor(tablesNeedingVacuum)} database table(s) exceed the configured vacuum trigger (10,000 dead-row minimum)`,
   };
 }
 

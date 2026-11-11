@@ -44,3 +44,22 @@ test('checked JSON rejects HTTP, malformed, oversized, and schema-invalid respon
     { value: 3 },
   );
 });
+
+test('JSON error messages require opt-in and are bounded while preserving the HTTP status', async () => {
+  const response = () => new Response(JSON.stringify({ error: 'The broker denied the default topic root' }), {
+    status: 403, headers: { 'content-type': 'application/json' },
+  });
+  await assert.rejects(checkedJson(response()), /Request failed \(403\)/);
+  await assert.rejects(checkedJson(response(), { readErrorMessage: true }),
+    (error: unknown) => error instanceof ApiResponseError && error.status === 403 && /broker denied/.test(error.message));
+  for (const [body, headers] of [
+    ['<html>proxy error</html>', { 'content-type': 'text/html' }],
+    ['not-json', { 'content-type': 'application/json' }],
+    [JSON.stringify({ error: { nested: 'invalid' } }), { 'content-type': 'application/json' }],
+    [JSON.stringify({ error: 'x'.repeat(2_049) }), { 'content-type': 'application/json' }],
+    [JSON.stringify({ error: 'x'.repeat(9_000) }), { 'content-type': 'application/json' }],
+    [JSON.stringify({ error: 'too big' }), { 'content-type': 'application/json', 'content-length': '9999' }],
+  ] as const) {
+    await assert.rejects(checkedJson(new Response(body, { status: 403, headers }), { readErrorMessage: true }), /Request failed \(403\)/);
+  }
+});

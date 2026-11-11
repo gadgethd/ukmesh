@@ -21,6 +21,25 @@ export type CachePolicyRecord = Readonly<{
  */
 export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze([
   {
+    source: 'src/tools/benchmarkBoundedCacheAudit.ts#cache',
+    disposition: 'request-local-exclusion',
+    scope: 'one benchmark repetition', invalidation: 'cleared and shut down after each repetition',
+    negativeCaching: 'not applicable', singleFlight: 'not applicable',
+  },
+  {
+    source: 'src/mqtt/onboardingDiagnostics.ts#recent',
+    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 4 << 20, ttlMs: 15 * 60_000,
+    scope: 'authenticated MQTT username; diagnostic hints only',
+    invalidation: 'event-time expiry + storage TTL; lost on process restart',
+    negativeCaching: 'none', singleFlight: 'synchronous broker-log observations',
+  },
+  {
+    source: 'src/tools/benchmarkBoundedCache.ts#cache',
+    disposition: 'request-local-exclusion',
+    scope: 'one benchmark repetition', invalidation: 'cleared and shut down after each repetition',
+    negativeCaching: 'not applicable', singleFlight: 'not applicable',
+  },
+  {
     source: 'src/api/hopreachCompatibility.ts#nodeCountCache',
     disposition: 'bounded-cache', maxEntries: 1, maxBytes: 1_024, ttlMs: 30_000,
     scope: 'internal HopReach adapter + public repeater predicate', invalidation: 'TTL',
@@ -84,8 +103,14 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
   {
     source: 'src/stats/statsService.ts#observerActivityCache',
     disposition: 'bounded-cache', maxEntries: 64, maxBytes: 16 << 20, ttlMs: 5 * 60_000,
-    scope: 'network', invalidation: 'TTL/stale-while-revalidate',
+    scope: 'network + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',
     negativeCaching: 'empty completed response', singleFlight: 'observerActivityInflight',
+  },
+  {
+    source: 'src/stats/statsService.ts#liveObserverCache',
+    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 2 << 20, ttlMs: 60_000,
+    scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL',
+    negativeCaching: 'empty completed response', singleFlight: 'liveObserverInflight',
   },
   {
     source: 'src/path-beta/resolveCache.ts#cache',
@@ -168,13 +193,7 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
   {
     source: 'src/api/routes/nodes.ts#topAdvertsCache',
     disposition: 'bounded-cache', maxEntries: 32, maxBytes: 256 << 10, ttlMs: 60 * 60_000,
-    scope: 'network + hours + limit', invalidation: 'TTL',
-    negativeCaching: 'completed rows only', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/tools/benchmarkBoundedCache.ts#cache',
-    disposition: 'request-local-exclusion',
-    scope: 'one standalone benchmark sample', invalidation: 'shutdown after each sample',
-    negativeCaching: 'none', singleFlight: 'synchronous standalone tool',
+    scope: 'network + hours + limit + visibility generation', invalidation: 'generation check + TTL',
+    negativeCaching: 'completed rows only', singleFlight: 'topAdvertsInflight (cap 32)',
   },
 ]);

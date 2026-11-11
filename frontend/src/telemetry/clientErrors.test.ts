@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   classifyErrorEvent,
+  createTelemetryReporter,
   installClientErrorReporting,
   isNoise,
   isTelemetryDisabled,
@@ -21,6 +22,96 @@ test('classifies runtime error events by message', () => {
   const result = classifyErrorEvent({ message: 'boom', error: new Error('boom') });
   assert.equal(result?.kind, 'error');
   assert.equal(result?.message, 'boom');
+});
+
+async function withReporter(
+  run: (report: ReturnType<typeof createTelemetryReporter>, calls: RequestInit[], setTime: (time: number) => void) => Promise<void>,
+  respond: () => Promise<Response> = async () => new Response(null, { status: 202 }),
+) {
+  const restoreWindow = replaceGlobal('window', { location: { search: '', pathname: '/' } });
+  const restoreNavigator = replaceGlobal('navigator', { userAgent: 'test-agent' });
+  let time = 0;
+  const calls: RequestInit[] = [];
+  const report = createTelemetryReporter(async (_input, init) => {
+    calls.push(init!);
+    return respond();
+  }, () => time);
+  try {
+    await run(report, calls, (value) => { time = value; });
+  } finally {
+    restoreWindow();
+    restoreNavigator();
+  }
+}
+
+const settleReports = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+test('telemetry deduplicates fingerprints and throttles distinct errors across all hooks', async () => {
+  await withReporter(async (report, calls, setTime) => {
+    const error = { kind: 'warning' as const, message: 'RF raster dataset is no longer available: dataset-2-z9' };
+    for (let i = 0; i < 100; i += 1) report(error);
+    await settleReports();
+    assert.equal(calls.length, 1);
+    report({ kind: 'error', message: 'different error' });
+    await settleReports();
+    assert.equal(calls.length, 1);
+    setTime(10_000);
+    report({ ...error, message: 'RF raster dataset is no longer available: dataset-3-z9' });
+    await settleReports();
+    assert.equal(calls.length, 1, 'rotating dataset counters share a fingerprint');
+    report({ kind: 'crash', message: 'different error' });
+    await settleReports();
+    assert.equal(calls.length, 2);
+  });
+});
+
+test('telemetry caps distinct reports for the entire page load', async () => {
+  await withReporter(async (report, calls, setTime) => {
+    for (let i = 0; i < 30; i += 1) {
+      setTime(i * 10_000);
+      report({ kind: 'error', message: `distinct error ${i}` });
+      await settleReports();
+    }
+    assert.equal(calls.length, 20);
+  });
+});
+
+test('telemetry stops permanently for this page after a 429', async () => {
+  await withReporter(async (report, calls, setTime) => {
+    report({ kind: 'warning', message: 'first' });
+    await settleReports();
+    setTime(3_600_000);
+    report({ kind: 'error', message: 'new error after an hour' });
+    await settleReports();
+    assert.equal(calls.length, 1);
+  }, async () => new Response(null, { status: 429 }));
+});
+
+test('telemetry backs off exponentially on HTTP and network failures without scheduling retries', async () => {
+  let failures = 0;
+  await withReporter(async (report, calls, setTime) => {
+    report({ kind: 'error', message: 'first' });
+    await settleReports();
+    setTime(19_999);
+    report({ kind: 'error', message: 'too early' });
+    await settleReports();
+    assert.equal(calls.length, 1);
+    setTime(20_000);
+    report({ kind: 'error', message: 'second' });
+    await settleReports();
+    setTime(59_999);
+    report({ kind: 'error', message: 'still too early' });
+    await settleReports();
+    assert.equal(calls.length, 2);
+    setTime(60_000);
+    report({ kind: 'error', message: 'third' });
+    await settleReports();
+    assert.equal(calls.length, 3);
+  }, async () => {
+    failures += 1;
+    if (failures === 1) return new Response(null, { status: 503 });
+    throw new Error('offline');
+  });
 });
 
 test('classifies promise rejections as unhandledrejection', () => {

@@ -2,9 +2,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   observationIdentityKey,
+  fallbackPacketIdentity,
+  ramMqttDeliveryKey,
   packetAlreadyPersisted,
   type ObservationIdentity,
 } from './observationIdentity.js';
+
+test('hashless invalid envelopes retain identity across replay without collapsing different bytes', () => {
+  const raw = Buffer.from('{"type":5,"raw":"invalid","timestamp":1234}');
+  assert.equal(fallbackPacketIdentity(raw), fallbackPacketIdentity(Buffer.from(raw)));
+  assert.notEqual(fallbackPacketIdentity(raw), fallbackPacketIdentity(Buffer.from('{"type":5,"raw":"invalid","timestamp":1235}')));
+  assert.match(fallbackPacketIdentity(raw), /^[A-F0-9]{64}$/);
+});
+
+test('RAM admits QoS 0 without a message ID and preserves stable QoS 1 redelivery claims', () => {
+  const input = { clientId: 'owned-fixture', topic: 'test/packets', payload: Buffer.from('data'), observationKey: 'sighting' };
+  const first = ramMqttDeliveryKey({ ...input, qos: 0 });
+  assert.notEqual(first, ramMqttDeliveryKey({ ...input, qos: 0 }));
+  assert.match(first, /^q0:/);
+  assert.equal(ramMqttDeliveryKey({ ...input, qos: 1, messageId: 7 }), ramMqttDeliveryKey({ ...input, qos: 1, messageId: 7 }));
+  assert.notEqual(ramMqttDeliveryKey({ ...input, qos: 1, messageId: 7 }), ramMqttDeliveryKey({ ...input, qos: 1, messageId: 8 }));
+  for (const messageId of [undefined, 0, -1, 65_536, 1.5]) {
+    assert.throws(() => ramMqttDeliveryKey({ ...input, qos: 1, messageId }), /DELIVERY_ID_MISSING/);
+  }
+});
 
 const base: ObservationIdentity = {
   packetHash: 'ABCDEF',

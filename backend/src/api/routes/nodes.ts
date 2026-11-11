@@ -1,9 +1,12 @@
 import type { Request, Response, Router } from 'express';
+import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../utils/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 import type { NodeRepository } from '../../repositories/nodes.js';
+import type { GetNodesOptions } from '../../db/index.js';
 import {
   PublicMapInputError,
   encodePublicMapCursor,
@@ -11,6 +14,7 @@ import {
   parsePublicMapCursor,
   parsePublicMapFields,
   parsePublicMapLimit,
+  parsePublicMapQuery,
   parsePublicMapSnapshot,
 } from '../../nodes/publicMap.js';
 import {
@@ -31,6 +35,9 @@ type GetNodesFn = (
   network?: string,
   observer?: string,
   fields?: 'full' | 'slim',
+  signal?: AbortSignal,
+  region?: string,
+  options?: GetNodesOptions,
 ) => Promise<NodeRecord[]>;
 type GetNodeHistoryFn = (nodeId: string, hours: number, network: string) => Promise<unknown>;
 type GetNodeAdvertsFn = (publicKey: string, hours: number, limit: number, network: string) => Promise<unknown>;
@@ -39,7 +46,6 @@ type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
 
 /** Top-adverting repeater list is public and changes slowly — 1h in-memory cache. */
 const TOP_ADVERTS_CACHE_TTL_MS = 60 * 60 * 1000;
-const topAdvertsCache = new Map<string, { ts: number; data: unknown[] }>();
 
 type InferredMultibyteNode = {
   node_id: string;
@@ -73,7 +79,7 @@ type NodesRouteDeps = {
   getTopAdvertingRepeaters: GetTopAdvertingRepeatersFn;
   nodeRepository: NodeRepository;
   requireLocalOnly: RequireLocalOnlyFn;
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: (network?: string, observer?: string, opts?: { region?: string }) => NetworkFilters;
   getPublicVisibilityGeneration: () => Promise<number>;
   inferredNodesCache: Map<string, { ts: number; data: unknown }>;
   inferredNodesInflight: Map<string, Promise<unknown>>;
@@ -85,6 +91,10 @@ type NodesRouteDeps = {
 };
 
 export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
+  const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>({
+    maxEntries: 32, maxWeight: 256 << 10, ttlMs: TOP_ADVERTS_CACHE_TTL_MS,
+  });
+  const topAdvertsInflight = new Map<string, Promise<unknown[]>>();
   const {
     getNodes,
     getNodeHistory,
@@ -123,6 +133,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes', nodesLimiter, async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     const fields = parseEnum(req.query['fields'], {
       name: 'fields',
       values: ['slim', 'full'] as const,
@@ -131,7 +142,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const nodes = await getNodes(network, observer, fields);
+      const nodes = region
+        ? await getNodes(network, observer, fields, undefined, region, { mapVisible: true })
+        : await getNodes(network, observer, fields, undefined, undefined, { mapVisible: true });
       res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
@@ -140,20 +153,25 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/map', nodesLimiter, async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const filters = networkFilters(network, observer);
+      const filters = region
+        ? networkFilters(network, observer, { region })
+        : networkFilters(network, observer);
       const fields = parsePublicMapFields(req.query['fields']);
       const limit = parsePublicMapLimit(req.query['limit']);
       const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
       const cursor = parsePublicMapCursor(req.query['cursor']);
+      const search = parsePublicMapQuery(req.query['q']);
       const result = await nodeRepository.listPublicMapRows(
         fields,
         filters,
         snapshot,
         cursor,
         limit,
+        search,
       );
       const hasExtraRow = result.length > limit;
       const fitted = fitPublicMapRowsToByteBudget(result, limit);
@@ -162,7 +180,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const nextCursor = complete || rows.length < 1
         ? null
         : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
-      res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+      res.setHeader('Cache-Control', search ? 'no-store' : 'public, max-age=30, stale-while-revalidate=60');
       res.setHeader('X-Map-Snapshot', snapshot);
       res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
       res.json({
@@ -186,6 +204,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/top-adverts', nodesLimiter, async (req, res) => {
+    // Privacy changes must take effect even when a browser revisits the URL.
+    res.setHeader('Cache-Control', 'no-store');
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const hours = parseBoundedInteger(req.query['hours'], {
@@ -200,24 +220,38 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         max: 25,
         defaultValue: 10,
       })!;
-      const cacheKey = `${network ?? 'all'}:${hours}:${limit}`;
+      const generation = await getPublicVisibilityGeneration();
+      const cacheKey = `${network ?? 'all'}:${hours}:${limit}:v${generation}`;
       const cached = topAdvertsCache.get(cacheKey);
       if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) {
-        res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
         res.json(cached.data);
         return;
       }
-      const rows = await getTopAdvertingRepeaters(hours, limit, network);
-      // COUNT(*) arrives as a string from node-postgres; coerce to number so
-      // the public contract exposes a numeric adverts_in_window.
-      const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
-        ...row,
-        adverts_in_window: Number(row.adverts_in_window ?? 0),
-      }));
-      topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
-      res.setHeader('Cache-Control', 'public, max-age=3600, stale-while-revalidate=600');
-      res.json(normalized);
+      let pending = topAdvertsInflight.get(cacheKey);
+      if (!pending) {
+        if (topAdvertsInflight.size >= 32) {
+          res.status(503).json({ error: 'Top adverts are busy', retryable: true });
+          return;
+        }
+        pending = (async () => {
+          const rows = await getTopAdvertingRepeaters(hours, limit, network);
+          if (await getPublicVisibilityGeneration() !== generation) {
+            throw new Error('TOP_ADVERTS_PRIVACY_CHANGED');
+          }
+          const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
+            ...row, adverts_in_window: Number(row.adverts_in_window ?? 0),
+          }));
+          topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
+          return normalized;
+        })().finally(() => topAdvertsInflight.delete(cacheKey));
+        topAdvertsInflight.set(cacheKey, pending);
+      }
+      res.json(await pending);
     } catch (err) {
+      if (err instanceof Error && err.message === 'TOP_ADVERTS_PRIVACY_CHANGED') {
+        res.status(503).json({ error: 'Public visibility changed; retry the request', retryable: true });
+        return;
+      }
       console.error('[api] GET /nodes/top-adverts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
@@ -432,6 +466,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
   });
 
   router.get('/nodes/:id/links', async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     const id = parseHexIdentifier(req.params['id'], {
       name: 'node ID',
       minLength: 64,
@@ -439,8 +474,8 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const filters = networkFilters(network);
-      const cacheKey = `${network}:${id.toUpperCase()}`;
+      const filters = region ? networkFilters(network, undefined, { region }) : networkFilters(network);
+      const cacheKey = `${network}:${id.toUpperCase()}${region ? `:region-${region}` : ''}`;
       const cached = nodeLinksCache.get(cacheKey);
       if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
         res.json(cached.data);

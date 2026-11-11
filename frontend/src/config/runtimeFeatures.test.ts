@@ -19,6 +19,7 @@ test('runtime feature parser accepts only the bounded versioned DTO', () => {
   }), {
     packetArcs: false,
     heatmap: true,
+    regionScoping: false,
     privacyGeneration: 9,
     refreshAfterSeconds: 15,
   });
@@ -53,4 +54,13 @@ test('runtime feature refresh fails closed on transport and malformed responses'
 
   await refreshRuntimeFeatures(async () => new Response('{}', { status: 200 }));
   assert.deepEqual(getRuntimeFeatureSnapshot(), FAIL_CLOSED_RUNTIME_FEATURES);
+});
+
+test('region scoping requires an explicit boolean true from runtime config', () => {
+  for (const regionScoping of [undefined, false, 'true', 1, true]) {
+    assert.equal(parseRuntimeFeatureConfig({
+      version: 1, packetArcs: false, heatmap: false, privacyGeneration: 0,
+      refreshAfterSeconds: 30, regionScoping,
+    }).regionScoping, regionScoping === true);
+  }
 });

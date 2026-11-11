@@ -1,0 +1,64 @@
+variant=before sample=1
+ Planning Time: 28.240 ms
+ Execution Time: 6893.302 ms
+variant=counts-first sample=1
+ Planning Time: 5.048 ms
+ Execution Time: 203.435 ms
+variant=names-only sample=1
+ Planning Time: 2.174 ms
+ Execution Time: 108.559 ms
+variant=names-only sample=2
+ Planning Time: 1.969 ms
+ Execution Time: 129.520 ms
+variant=counts-first sample=2
+ Planning Time: 12.847 ms
+ Execution Time: 267.048 ms
+variant=before sample=2
+ Planning Time: 3.218 ms
+ Execution Time: 7027.002 ms
+variant=before sample=3
+ Planning Time: 2.728 ms
+ Execution Time: 7703.928 ms
+variant=counts-first sample=3
+ Planning Time: 2.383 ms
+ Execution Time: 183.251 ms
+variant=names-only sample=3
+ Planning Time: 1.915 ms
+ Execution Time: 105.677 ms
+variant=names-only sample=4
+ Planning Time: 2.862 ms
+ Execution Time: 112.795 ms
+variant=counts-first sample=4
+ Planning Time: 2.878 ms
+ Execution Time: 192.778 ms
+variant=before sample=4
+ Planning Time: 2.413 ms
+ Execution Time: 6893.159 ms
+variant=before sample=5
+ Planning Time: 2.854 ms
+ Execution Time: 6566.284 ms
+variant=counts-first sample=5
+ Planning Time: 4.275 ms
+ Execution Time: 300.187 ms
+variant=names-only sample=5
+ Planning Time: 2.765 ms
+ Execution Time: 138.947 ms
+variant=frozen-rollup sample=1
+ Planning Time: 15.033 ms
+ Execution Time: 149.625 ms
+variant=frozen-rollup sample=2
+ Planning Time: 1.842 ms
+ Execution Time: 136.331 ms
+variant=frozen-rollup sample=3
+ Planning Time: 2.030 ms
+ Execution Time: 122.130 ms
+variant=frozen-rollup sample=4
+ Planning Time: 1.624 ms
+ Execution Time: 122.103 ms
+variant=frozen-rollup sample=5
+ Planning Time: 1.611 ms
+ Execution Time: 149.738 ms
+before: n=5 execution_p50_ms=6893.302
+counts-first: n=5 execution_p50_ms=203.435
+names-only: n=5 execution_p50_ms=112.795
+frozen-rollup: n=5 execution_p50_ms=136.331

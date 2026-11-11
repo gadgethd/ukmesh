@@ -355,6 +355,21 @@ test('merged reads append only public, scoped, non-duplicate pending rows', asyn
   assert.equal((withPayload[0]?.['payload'] as Record<string, unknown>)?.['direction'], 'rx');
 });
 
+test('regional pending overlays exclude other and unattributed packets before aggregation', async () => {
+  await loadPublicPrivacyCache();
+  const entries = ['#Europe', '#eng-ne', null].map((regionScope, index) => {
+    const entry = entryFor(String(index + 1).repeat(64));
+    entry.input.regionScope = regionScope;
+    return { id: `${100 + index}-0`, entry };
+  });
+  const regional = await mergePendingPacketsIntoRecentRows([], {
+    limit: 10, network: 'ukmesh', region: 'Europe', pendingSnapshot: entries,
+  });
+  assert.deepEqual(regional.map((row) => (row as Record<string, unknown>)['region_scope']), ['#Europe']);
+  const all = await mergePendingPacketsIntoRecentRows([], { limit: 10, network: 'ukmesh', pendingSnapshot: entries });
+  assert.equal(all.length, 3);
+});
+
 test('pending observations of one hash aggregate into a single row with combined observers', async () => {
   await loadPublicPrivacyCache();
   const fake = new FakeStore();
@@ -372,6 +387,8 @@ test('pending observations of one hash aggregate into a single row with combined
   assert.deepEqual(observers, ['AA'.repeat(32), 'BB'.repeat(32), 'CC'.repeat(32)].sort());
   assert.equal(row['rx_count'], 3);
   assert.equal(row['tx_count'], 0);
+  assert.equal(row['tags'], null);
+  assert.equal(row['tag_confidence'], null);
 });
 
 test('F12 merge deduplicates committed overlap by ID and counts a new same-observer sighting', async () => {
@@ -512,6 +529,7 @@ test('F13 a better pending representative replaces SQL fields and reorders the w
   const rows = [
     { packet_hash: '84'.repeat(32), time: '2026-10-11T13:00:30.000Z', _policy_generation: '7' },
     { packet_hash: hash, time: '2026-10-11T13:00:00.000Z', summary: 'encrypted',
+      tags: { kind: 'chat' }, tag_confidence: { kind: 0.9 },
       rx_node_id: 'cd'.repeat(32), observer_node_ids: ['CD'.repeat(32)], observer_iatas: ['ZZZ'],
       rx_count: 1, tx_count: 0, _observation_ids: ['11111111-1111-1111-1111-111111111111'],
       _policy_generation: '7', _representative_rank: 2 },
@@ -520,6 +538,8 @@ test('F13 a better pending representative replaces SQL fields and reorders the w
     nowMs: Date.parse('2026-10-11T13:01:01Z'), resolveAliases: async () => new Map() });
   assert.equal(merged[0]?.packet_hash, hash, 'augmentation alone must also sort/page');
   assert.equal(merged[0]?.summary, 'decoded');
+  assert.deepEqual(merged[0]?.tags, { kind: 'chat' });
+  assert.deepEqual(merged[0]?.tag_confidence, { kind: 0.9 });
   assert.equal(merged[0]?.rx_node_id, 'AA'.repeat(32));
   assert.deepEqual(merged[0]?.observer_node_ids, ['AA'.repeat(32), 'CD'.repeat(32)]);
   assert.deepEqual(merged[0]?.observer_iatas, ['AAA', 'ZZZ']);

@@ -10,6 +10,7 @@ import {
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
 import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 
 type ResolvePoolFn = {
   run<T>(job:
@@ -28,7 +29,7 @@ type PathingRouteDeps = {
   setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
   getPublicVisibilityGeneration: () => Promise<number>;
-  getMultibytePathSegments: (network?: string, observer?: string) => Promise<{
+  getMultibytePathSegments: (network?: string, observer?: string, region?: string) => Promise<{
     maxCount: number;
     segments: Array<{
       positions: [[number, number], [number, number]];
@@ -127,10 +128,13 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
   });
 
   router.get('/path-beta/multibyte-paths', deps.pathBetaLimiter, async (req, res) => {
+    const region = parseRegionFilter(req.query['region']);
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const { maxCount, segments } = await deps.getMultibytePathSegments(network, observer ?? undefined);
+      const { maxCount, segments } = region
+        ? await deps.getMultibytePathSegments(network, observer ?? undefined, region)
+        : await deps.getMultibytePathSegments(network, observer ?? undefined);
       res.json({
         ok: true,
         scope: network,

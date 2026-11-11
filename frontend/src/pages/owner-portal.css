@@ -525,8 +525,7 @@
   border-collapse: collapse;
   font-size: 11px;
 }
-.owner-neighbors__table th,
-.owner-neighbors__table td {
+.owner-neighbors__table :is(th, td) {
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   text-align: right;
@@ -923,7 +922,6 @@
   .owner-dashboard-grid { grid-template-columns: 1fr; grid-auto-rows: auto; }
   .owner-panel { min-height: 300px; }
   .owner-telemetry-strip { grid-template-columns: 1fr; }
-  .owner-status-groups { grid-template-columns: 1fr; }
   .owner-status-panel__sample { text-align: left; }
 }
 @media (max-width: 640px) {
@@ -936,7 +934,6 @@
   .owner-list__row { grid-template-columns: 1fr; }
   .owner-list__metrics { justify-content: flex-start; }
   .owner-telemetry-strip { grid-template-columns: 1fr; }
-  .owner-status-groups { grid-template-columns: 1fr; }
   .owner-head { flex-direction: column; align-items: flex-start; }
   .owner-node-identity__head { flex-direction: column; gap: 4px; }
   .owner-map { height: 260px; }

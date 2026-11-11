@@ -373,15 +373,20 @@ The bootstrap is idempotent, sets credential files to mode `0640`, refuses
 symlinks or incomplete existing state, and never overwrites live credentials.
 
 Do not create observer passwords manually. Provision every observer with
-`~/bin/newuser`; it installs and verifies the publish ACL before enabling the
-credentials.
+`~/bin/newuser`. Supply one or more full 64-character node public keys when
+known; if omitted, the helper prints the credential and watches fresh broker
+logs for a bounded discovery window. A credential-only account may authenticate
+before it has a publish grant. The helper verifies the owner rows and exact
+per-key publish ACLs before reporting provisioning complete. `--watch` resumes
+first-device discovery and `--link` adds a device for an existing owner.
 
-The host helper at `~/bin/newuser` requires one or more full 64-character node
-public keys. It validates the keys, writes and verifies exact per-key publish
-ACLs, and only then creates the MQTT password. This ordering prevents an account
-from authenticating successfully while all of its publishes are silently denied.
-In MeshCore-HA, keep `{PUBLIC_KEY}` in the topic template; the helper requires the
-actual key only to provision the server-side ACL.
+For built-in MQTT firmware, set IATA and use the complete Topic root
+`meshcore/{IATA}/{PUBLIC_KEY}/packets`. The default `meshcore` is denied even
+when login succeeds. Keep both tokens in the firmware template; the actual full
+key is needed for the server-side grant. See [MQTT onboarding and invisible-device
+troubleshooting](docs/mqtt-onboarding.md) for the exact flasher/serial fix and
+[generic owner linking](docs/designs/generic-owner-linking.md) for the remaining
+automation gap.
 
 ---
 

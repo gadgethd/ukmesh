@@ -133,17 +133,21 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
   }
 
   sweep(now = this.options.now?.() ?? Date.now()): void {
+    // Writes usually arrive far more often than expirations. The earliest
+    // possible expiry lets those writes skip an otherwise full cache scan.
+    // Deleting/overwriting the earliest entry can only make this bound early.
     if (now < this.nextExpiryAt) return;
-    this.nextExpiryAt = Number.POSITIVE_INFINITY;
+    let nextExpiryAt = Number.POSITIVE_INFINITY;
     for (const [key, timestamp] of this.insertedAt) {
       if (now - timestamp >= this.options.ttlMs) {
         this.expiries += 1;
         this.recordMetric('expired');
         this.delete(key);
       } else {
-        this.nextExpiryAt = Math.min(this.nextExpiryAt, timestamp + this.options.ttlMs);
+        nextExpiryAt = Math.min(nextExpiryAt, timestamp + this.options.ttlMs);
       }
     }
+    this.nextExpiryAt = nextExpiryAt;
   }
 
   weight(): number {

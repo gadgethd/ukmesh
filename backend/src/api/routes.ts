@@ -273,6 +273,7 @@ registerExportRoutes(router, {
   query,
   networkFilters,
   exportLimiter: EXPORT_LIMITER,
+  getPublicVisibilityGeneration,
 });
 
 assertUniqueRouteRegistry(router);

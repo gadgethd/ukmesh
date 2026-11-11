@@ -92,3 +92,13 @@ test('owner response guards reject structurally incomplete payloads', () => {
     },
   }), false);
 });
+
+test('owner session guards accept an optional MQTT hint and reject malformed diagnostics', () => {
+  const response = { ok: true, dashboard: { nodes: [] } };
+  const diagnostic = { code: 'MQTT_DEFAULT_TOPIC_ROOT', message: 'Repair the topic root', observedAt: '2026-10-23T12:00:00Z' };
+  assert.equal(isOwnerSessionResponse(response), true);
+  assert.equal(isOwnerSessionResponse({ ...response, dashboard: { nodes: [], mqttDiagnostic: diagnostic } }), true);
+  for (const mqttDiagnostic of [{ ...diagnostic, message: {} }, { ...diagnostic, observedAt: 'invalid' }, { ...diagnostic, code: 'other' }]) {
+    assert.equal(isOwnerSessionResponse({ ...response, dashboard: { nodes: [], mqttDiagnostic } }), false);
+  }
+});

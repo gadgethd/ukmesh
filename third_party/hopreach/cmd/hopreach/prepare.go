@@ -134,14 +134,18 @@ func writeNginxConf(yc yconfig.Config) error {
 }
 
 func writeCronFile(yc yconfig.Config, configPath string) error {
-	content := fmt.Sprintf(
-		"HOPREACH_CONFIG=%s\n"+
-			"%s root /app/hopreach >> /var/log/fetch.log 2>&1\n"+
-			"17 4 * * * root /app/hopreach-shareapi -prune >> /var/log/prune.log 2>&1\n",
-		configPath, yc.Schedule.Cron,
-	)
+	content := renderCronFile(yc, configPath)
 	if err := os.WriteFile(cronFilePath, []byte(content), 0o644); err != nil {
 		return err
 	}
 	return os.Chmod(cronFilePath, 0o644)
+}
+
+func renderCronFile(yc yconfig.Config, configPath string) string {
+	return fmt.Sprintf(
+		"HOPREACH_CONFIG=%s\n"+
+			"%s root /app/hopreach -scheduled >> /var/log/fetch.log 2>&1\n"+
+			"17 4 * * * root /app/hopreach-shareapi -prune >> /var/log/prune.log 2>&1\n",
+		configPath, yc.Schedule.Cron,
+	)
 }

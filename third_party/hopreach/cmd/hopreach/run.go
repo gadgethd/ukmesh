@@ -356,11 +356,20 @@ func run(cfg appConfig) (err error) {
 	cleanStaleGridScratch(cfg.demCacheDir)
 
 	if !cfg.forceRecompute {
-		if last, ok := lastGeneratedAt(cfg.outputDir); ok {
-			if age := time.Since(last); age < time.Duration(cfg.minRecomputeIntervalHours*float64(time.Hour)) {
+		now := time.Now()
+		slot, fixedDaily := mostRecentScheduledSlot(cfg.scheduleCron, now)
+		last, ok := lastGeneratedAt(cfg.outputDir)
+		if cfg.scheduled && fixedDaily {
+			last, ok = lastCompletedAt(cfg.outputDir)
+		}
+		if !recomputeDue(cfg, last, ok, now) {
+			if cfg.scheduled && fixedDaily {
+				log.Printf("coverage: run completed at %s, at or after scheduled slot %s — nothing to do", last.Format(time.RFC3339), slot.Format(time.RFC3339))
+			} else {
+				age := now.Sub(last)
 				log.Printf("coverage: last run finished %s ago, younger than coverage.min_recompute_interval_hours=%.1fh — nothing to do (pass -force to override)", age.Round(time.Second), cfg.minRecomputeIntervalHours)
-				return nil
 			}
+			return nil
 		}
 	}
 	didRun = true
@@ -640,8 +649,9 @@ func run(cfg appConfig) (err error) {
 	// without also meaning "redo every expensive Precision pass that
 	// already ran a few hours ago" — the exact scenario a deploy-time
 	// restart or an /admin/recompute call hits.
+	// Scheduled mode instead reuses only tiers completed since its cron slot.
 	shouldComputeTier := func(existing *coverageMeta) bool {
-		return cfg.forceAllTiers || !tierFreshToday(existing, time.Now())
+		return tierNeedsCompute(cfg, existing, time.Now())
 	}
 
 	if haveBounds {
@@ -993,6 +1003,7 @@ func run(cfg appConfig) (err error) {
 	}
 
 	m.Complete = true
+	m.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := writeMeta(); err != nil {
 		prog.Update("error", 0, 0, err.Error())
 		return fmt.Errorf("writing %s: %w", metaPath, err)

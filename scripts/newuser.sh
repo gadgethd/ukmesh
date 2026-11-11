@@ -27,9 +27,9 @@ readonly DISCOVERY_POLL_SECONDS="${NEWUSER_DISCOVERY_POLL_SECONDS:-5}"
 
 usage() {
   cat <<'EOF'
-Usage: newuser [--timeout <duration>] <username> [key1,key2,...]
-       newuser --watch [--timeout <duration>] <username>
-       newuser --link [--timeout <duration>] <username> [key1,key2,...]
+Usage: newuser [--confirm-owner-grant <NODE_ID>] <username> [key1,key2,...]
+       newuser --watch [--confirm-owner-grant <NODE_ID>] <username>
+       newuser --link [--confirm-owner-grant <NODE_ID>] <username> [key1,key2,...]
 
 Creates one MQTT/owner-dashboard account. A missing username is prompted for.
 Each key must be a 64-character hexadecimal MeshCore public key.
@@ -41,6 +41,13 @@ timeout is 15 minutes; durations accept seconds or an s, m, or h suffix.
 --watch resumes discovery for an existing credential-only user.
 --link adds one or more nodes to an existing owner without changing its password.
 When link keys are omitted, the next node observed for that user is added.
+
+Owner-portal authority is never created automatically. Without an explicit
+--confirm-owner-grant <NODE_ID>, newuser prints the detected fingerprint (the
+64-character public key), writes no owner grant and exits 0. Pass the flag — once
+per node — with the key(s) being granted to write the config map and verified
+owner grant. The flag also supplies the key for --watch/--link, so a
+credential-only user can be granted without replaying log discovery.
 EOF
 }
 
@@ -58,6 +65,54 @@ trim() {
   value="${value#"${value%%[![:space:]]*}"}"
   value="${value%"${value##*[![:space:]]}"}"
   printf '%s' "$value"
+}
+
+# Record one explicit operator confirmation. The value must be a full MeshCore
+# public key; it is the only thing that can authorise the owner-grant write.
+add_confirm_owner_grant() {
+  local raw=$1
+  local key
+  key="$(trim "$raw")"
+  key=${key^^}
+  [[ $key =~ ^[0-9A-F]{64}$ ]] \
+    || die "invalid --confirm-owner-grant public key: ${raw}"
+  if [[ -z ${confirmed_keys[$key]+set} ]]; then
+    confirmed_keys[$key]=1
+    confirm_owner_grants+=("$key")
+  fi
+}
+
+print_owner_grant_fingerprint() {
+  local key
+  printf '\nDetected node fingerprint (MeshCore public key):\n' >&2
+  for key in "$@"; do
+    printf '  %s\n' "$key" >&2
+  done
+  printf 'No owner grant was written. Broker write scope is not owner-portal authority.\n' >&2
+}
+
+# The confirmed set must equal the set of nodes about to be granted: every key
+# confirmed, nothing confirmed that is not being written.
+assert_owner_grants_confirmed() {
+  local -a required=("$@")
+  local -A required_set=()
+  local key
+  for key in "${required[@]}"; do
+    required_set[$key]=1
+  done
+  (( ${#confirm_owner_grants[@]} == ${#required[@]} )) \
+    || die "--confirm-owner-grant mismatch: expected ${#required[@]} key(s), got ${#confirm_owner_grants[@]}"
+  for key in "${confirm_owner_grants[@]}"; do
+    [[ -n ${required_set[$key]+set} ]] \
+      || die "--confirm-owner-grant mismatch: ${key} is not a node being granted"
+  done
+}
+
+join_keys() {
+  local separator=$1
+  shift
+  local IFS=$separator
+  printf '%s' "$*"
 }
 
 duration_seconds() {
@@ -209,6 +264,11 @@ Verify TLS certificates?: y
 Authentication method: username/password
 Username: ${mqtt_username}
 Password: ${mqtt_password}
+
+For built-in MQTT firmware, set IATA to your location code and Topic root to:
+  meshcore/{IATA}/{PUBLIC_KEY}/packets
+Keep the braces; the firmware expands them. The default root "meshcore" is
+denied by this broker even when login succeeds. Apply and read back the settings.
 EOF
 }
 
@@ -353,8 +413,19 @@ main() {
 watch_mode=0
 link_mode=0
 timeout_value=$DEFAULT_DISCOVERY_TIMEOUT_SECONDS
+declare -a confirm_owner_grants=()
+declare -A confirmed_keys=()
 while (( $# > 0 )); do
   case $1 in
+    --confirm-owner-grant)
+      (( $# >= 2 )) || die '--confirm-owner-grant requires a 64-character node public key'
+      add_confirm_owner_grant "$2"
+      shift 2
+      ;;
+    --confirm-owner-grant=*)
+      add_confirm_owner_grant "${1#*=}"
+      shift
+      ;;
     --watch)
       (( ! link_mode )) || die '--watch and --link are mutually exclusive'
       watch_mode=1
@@ -429,6 +500,13 @@ if [[ -n $raw_key_list ]]; then
       keys+=("$key")
     fi
   done
+fi
+# An explicit --confirm-owner-grant is itself an explicit key assertion: it lets
+# an operator grant a credential-only or --watch user without replaying broker
+# log discovery.
+if (( ${#keys[@]} == 0 && ${#confirm_owner_grants[@]} > 0 )); then
+  keys=("${confirm_owner_grants[@]}")
+  for key in "${keys[@]}"; do seen_keys[$key]=1; done
 fi
 discovery_mode=0
 if (( watch_mode )) || (( ${#keys[@]} == 0 )); then
@@ -578,9 +656,11 @@ rollback() {
       fi
     fi
     if (( credential_created )); then
-      docker exec "$MOSQUITTO_CONTAINER" \
+      docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
         mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
         || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
+      docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd >/dev/null 2>&1 \
+        || true
       docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
         || true
     fi
@@ -597,6 +677,21 @@ trap 'rollback $?' ERR
 trap 'rollback 130' INT
 trap 'rollback 143' TERM
 trap 'rollback 1' EXIT
+
+# Grant gate 1 — a brand-new user with explicit keys. Nothing has been mutated
+# yet, so an unconfirmed run stops here: no Mosquitto credential, no config-map
+# entry and no verified owner grant are created. (--watch/--link reuse an
+# existing credential, so they are gated after link filtering instead.)
+if (( ! discovery_mode && ! existing_credential_mode )); then
+  if (( ${#confirm_owner_grants[@]} == 0 )); then
+    print_owner_grant_fingerprint "${keys[@]}"
+    printf 'Grant it with:\n  newuser --confirm-owner-grant %s %s %s\n' \
+      "${keys[0]}" "$username" "$(join_keys ',' "${keys[@]}")" >&2
+    printf 'Repeat --confirm-owner-grant once per key when granting several nodes.\n' >&2
+    trap - ERR INT TERM EXIT
+    exit 0
+  fi
+fi
 
 password=''
 discovery_since=''
@@ -617,12 +712,12 @@ else
   password="$(openssl rand -hex 24)"
 
   log 'creating persistent Mosquitto credential'
-  # Mark the transaction as owning this username before invoking the mutating
-  # command. If it changes the passwd file and then exits unsuccessfully, EXIT
-  # rollback must still remove the partial credential.
+  # Mark the transaction before mutating so a partial credential is rolled back.
   credential_created=1
-  docker exec "$MOSQUITTO_CONTAINER" \
+  # Match the broker UID when atomically replacing its password file.
+  docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
     mosquitto_passwd -b /mosquitto/config/passwd "$username" "$password"
+  docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd
   # mosquitto only re-reads password_file on SIGHUP; the reconciler reloads
   # every ~60s but a device may connect before then, so reload immediately.
   docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
@@ -708,16 +803,42 @@ if (( link_mode )); then
   keys=("${unconfigured_keys[@]}")
 fi
 
+# Grant gate 2 — final key set (discovery, --watch and --link). A fingerprint
+# from broker log output is candidate evidence only: it must never create a
+# grant by itself. Print it, leave the broker credential intact, write nothing
+# and exit 0.
+if (( ${#confirm_owner_grants[@]} == 0 )); then
+  print_owner_grant_fingerprint "${keys[@]}"
+  printf 'Grant it by re-running with the fingerprint above:\n' >&2
+  if (( link_mode )); then
+    printf '  newuser --link --confirm-owner-grant %s %s %s\n' \
+      "${keys[0]}" "$username" "$(join_keys ',' "${keys[@]}")" >&2
+  else
+    printf '  newuser --watch --confirm-owner-grant %s %s\n' "${keys[0]}" "$username" >&2
+  fi
+  printf 'The broker credential remains valid; no owner grant was written.\n' >&2
+  trap - ERR INT TERM EXIT
+  exit 0
+fi
+assert_owner_grants_confirmed "${keys[@]}"
+
 key_pipe="$(IFS='|'; printf '%s' "${keys[*]}")"
 key_csv="$(IFS=','; printf '%s' "${keys[*]}")"
 new_entry="${username}=${key_pipe}"
+
+# Hard invariant: the config map and the verified owner grant are written only
+# for nodes the operator named with --confirm-owner-grant. Reaching this point
+# without one is a bug, not implicit consent.
+(( ${#confirm_owner_grants[@]} > 0 )) \
+  || die 'refusing to write an owner grant without --confirm-owner-grant'
+assert_owner_grants_confirmed "${keys[@]}"
 
 if [[ -n $old_owner_map ]]; then
   new_owner_map="${old_owner_map},${new_entry}"
 else
   new_owner_map=$new_entry
 fi
-log 'adding deduplicated owner grant to OWNER_MQTT_USERNAME_MAP'
+log 'writing confirmed owner grant to OWNER_MQTT_USERNAME_MAP'
 env_changed=1
 replace_owner_map "$new_owner_map"
 
@@ -846,12 +967,15 @@ Current MeshCore MQTT firmware template (credentials are the values above):
   set mqtt.1.username <username-above>
   set mqtt.1.password <password-above>
   set mqtt.1.iata <IATA>
+  set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
   set mqtt.1.retain.status 1
   set mqtt.1.enabled 1
+
+Use the slot number for your UK Mesh broker. Replace <IATA> with your location
+code and keep {IATA}/{PUBLIC_KEY} in Topic root. Apply and read back the settings.
+The default root "meshcore" is denied even when MQTT login succeeds.
+If a full topic is still denied, verify the owner grant for that full public key.
 EOF
-for key in "${keys[@]}"; do
-  printf '  set mqtt.1.topic.root meshcore/<IATA>/%s/packets\n' "$key"
-done
 }
 
 if [[ ${BASH_SOURCE[0]} == "$0" ]]; then

@@ -237,6 +237,22 @@ func main() {
 	http.HandleFunc("/api/analytics", handleAnalytics)
 	http.HandleFunc("/admin/recompute", handleRecompute)
 
+	// On-demand repeater footprints get their own listener when configured.
+	// It is deliberately separate from ListenAddr: this API is reachable
+	// from the app's nginx, while the plan-share and admin surface must
+	// stay loopback-only.
+	if publicAddr := strings.TrimSpace(cfg.Share.PublicListenAddr); publicAddr != "" {
+		publicMux := http.NewServeMux()
+		publicMux.HandleFunc(nodeRequestPrefix, handleNodeRequest)
+		go runNodeQueue()
+		go func() {
+			log.Printf("shareapi: rf node request API listening on %s", publicAddr)
+			if err := http.ListenAndServe(publicAddr, publicMux); err != nil {
+				log.Printf("shareapi: rf node request API stopped: %v", err)
+			}
+		}()
+	}
+
 	recordWebsiteHardwareOnce()
 	go startMemorySampling()
 

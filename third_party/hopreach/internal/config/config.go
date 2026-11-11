@@ -250,6 +250,12 @@ type ShareConfig struct {
 	TTLDays    float64 `yaml:"ttl_days"`
 	StoreDir   string  `yaml:"store_dir"`
 	ListenAddr string  `yaml:"listen_addr"`
+	// PublicListenAddr optionally serves the on-demand repeater-footprint
+	// request API on a second, non-loopback listener. Empty (the default)
+	// disables it. Kept separate from ListenAddr so the plan-share and
+	// admin surface (which is deliberately unauthenticated and therefore
+	// loopback-only) is never reachable from another container.
+	PublicListenAddr string `yaml:"public_listen_addr"`
 }
 
 // RemoteWorkerConfig is cmd/hopreach-shareapi's GPU-broker-side

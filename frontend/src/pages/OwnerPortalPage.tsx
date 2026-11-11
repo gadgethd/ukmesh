@@ -212,6 +212,7 @@ export const OwnerPortalPage: React.FC = () => {
           timeoutMs: 15_000,
           maxBytes: 2 * 1024 * 1024,
           validate: isOwnerSessionResponse,
+          readErrorMessage: true,
         }),
       )
       .then((json) => {
@@ -567,6 +568,14 @@ export const OwnerPortalPage: React.FC = () => {
                   Logout
                 </button>
               </div>
+              {dashboard.mqttDiagnostic ? (
+                <div className="prose-note" role="status">
+                  <strong>Recent MQTT publish denial</strong>
+                  <p>{dashboard.mqttDiagnostic.message}</p>
+                  <p>Last observed: {fmtTs(dashboard.mqttDiagnostic.observedAt)}. This warning expires 15 minutes after the last denial.</p>
+                  <a href="/install#mqtt-observer">MQTT setup and troubleshooting</a>
+                </div>
+              ) : null}
               <div className="owner-node-identities" aria-label="Owned repeater identities">
                 {dashboard.nodes.map((node) => (
                   <article

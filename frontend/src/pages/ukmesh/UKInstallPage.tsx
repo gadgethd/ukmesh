@@ -167,7 +167,7 @@ export const UKInstallPage: React.FC = () => {
         </a>
       </section>
 
-      <section className="prose-section">
+      <section className="prose-section" id="mqtt-observer">
         <h2 className="install-page__heading">
           <span className="prose-step">5</span>
           Add an MQTT observer
@@ -206,6 +206,35 @@ Password: <your password>`}</pre>
           <a href="https://flasher.ukmesh.com" target="_blank" rel="noopener noreferrer">Flasher ↗</a>{' '}
           to flash a firmware build with the MQTT bridge built in directly to your repeater node — no separate Linux device needed.
         </div>
+        <h3>Firmware MQTT settings: change the default topic root</h3>
+        <p>
+          The firmware default <code>meshcore</code> is incomplete for this broker. Your MQTT login may succeed
+          while the broker denies every publish, leaving the device invisible on the dashboard.
+          In the flasher, read the device settings and select the broker slot for <code>mqtt.ukmesh.com</code>.
+          Set <strong>IATA</strong> to your location code and <strong>Topic root</strong> to:
+        </p>
+        <div className="code-block" tabIndex={0} aria-label="Firmware MQTT topic root">
+          <pre>{'meshcore/{IATA}/{PUBLIC_KEY}/packets'}</pre>
+        </div>
+        <p>
+          Keep the braces: the firmware inserts your configured IATA and full node public key.
+          Apply the settings, read them back, and check that MQTT reconnects. For broker slot 1,
+          the equivalent serial commands are below; replace <code>NCL</code> with your location code
+          and use the correct slot number if your UK Mesh broker is elsewhere.
+        </p>
+        <div className="code-block" tabIndex={0} aria-label="Firmware MQTT topic root repair commands">
+          <pre>{`set mqtt.1.iata NCL
+set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets
+get mqtt.1.iata
+get mqtt.1.topic.root`}</pre>
+        </div>
+        <p>
+          Sign in to the <a href="/login">owner dashboard</a> with your MQTT credentials to see recent
+          default-root denials. If the full topic is still denied or no linked node appears,
+          send <strong>sudogadget</strong> your MQTT username, full 64-character public key and IATA code
+          so the owner grant can be checked. Keep passwords and private keys private.
+          A successful MQTT connection alone does not prove that publishing or owner linking works.
+        </p>
         <h3>Request access</h3>
         <p>The API records a provisioning request; MQTT password creation remains operator-controlled so credentials are never exposed by the public site.</p>
         <ObserverRegistrationForm />

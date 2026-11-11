@@ -3,6 +3,7 @@ import test from 'node:test';
 import { chromium, expect } from '@playwright/test';
 
 const browserTest = process.env['AUDITWAVE_BROWSER_TESTS'] === '1' ? test : test.skip;
+const base = process.env['AUDITWAVE_BROWSER_BASE_URL'] ?? 'http://127.0.0.1:3004';
 const topology = {
   generatedAt: '2026-09-07T12:00:00Z', windowDays: 30, limited: false,
   summary: { nodes: 2, links: 1, observations: 12, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
@@ -53,7 +54,7 @@ for (const failure of ['http503', 'timeout'] as const) {
         if (url.pathname.startsWith('/api/')) { await route.fulfill({ status: 200, json: {} }); return; }
         await route.continue();
       });
-      await page.goto('http://127.0.0.1:3004/topology', { waitUntil: 'domcontentloaded' });
+      await page.goto(`${base}/topology`, { waitUntil: 'domcontentloaded' });
       await expect(page.getByRole('heading', { name: 'Predicted versus observed RF' })).toBeVisible();
       await expect(page.locator('.topology-page__workspace')).toBeVisible();
       await expect(page.locator('.topology-page__workspace canvas')).toBeVisible();

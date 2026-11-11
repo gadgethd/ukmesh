@@ -19,6 +19,7 @@ trap cleanup EXIT
   cd "$repo_dir/backend"
   ALERT_RECEIVER_PORT="$port" \
   ALERT_RECEIVER_PATH="$tmp_dir/alerts.jsonl" \
+  ALERT_RECEIVER_TOKEN="test-receiver-token" \
   node --import tsx src/workers/alert-receiver.ts
 ) >"$tmp_dir/receiver.log" 2>&1 &
 receiver_pid="$!"
@@ -48,12 +49,24 @@ node -e '
 
 curl --fail --silent \
   -H 'content-type: application/json' \
+  -H 'authorization: Bearer test-receiver-token' \
   --data '{"kind":"alert","service":"meshcore-analytics","check":"dependency_readiness","detail":"test"}' \
   "http://127.0.0.1:${port}/alerts" >/dev/null
 curl --fail --silent \
   -H 'content-type: application/json' \
+  -H 'authorization: Bearer test-receiver-token' \
   --data '{"kind":"recovery","service":"meshcore-analytics","check":"dependency_readiness","detail":"test"}' \
   "http://127.0.0.1:${port}/alerts" >/dev/null
+
+# Unauthenticated posts must be refused and must not persist a receipt.
+unauth_status="$(curl --silent -o /dev/null -w '%{http_code}' \
+  -H 'content-type: application/json' \
+  --data '{"kind":"alert","service":"forged","check":"x","detail":"forged"}' \
+  "http://127.0.0.1:${port}/alerts")"
+if [ "$unauth_status" != "401" ]; then
+  echo "expected 401 for unauthenticated alert post, got $unauth_status" >&2
+  exit 1
+fi
 
 node -e '
   const fs = require("fs");

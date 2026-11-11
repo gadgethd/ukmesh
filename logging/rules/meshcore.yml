@@ -42,6 +42,23 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#dependencyexporterdown
 
+      - alert: MosquittoBacklogOverflow
+        expr: increase(broker_publish_messages_dropped[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: Mosquitto dropped queued publications
+          description: A persistent subscriber exceeded its finite backlog capacity. Check subscriber availability and reconcile persisted observations before claiming complete replay.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittobacklogoverflow
+      - alert: MosquittoBacklogHigh
+        expr: broker_messages_stored > 7500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Mosquitto stored-message backlog is high
+          description: Inspect per-session consumers before the configured 10000-message or 32-MiB byte limit is reached.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittobacklogoverflow
       - alert: MosquittoUnavailable
         expr: probe_success{job="mosquitto-broker"} == 0
         for: 2m
@@ -53,7 +70,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittounavailable
 
       - alert: MeshIngestSilent
-        expr: (sum(rate(meshcore_mqtt_messages_total[15m])) or vector(0)) == 0
+        expr: (sum(rate(meshcore_mqtt_ingest_outcomes_total{outcome=~"packet_persisted|packet_admitted"}[15m])) or vector(0)) == 0
         for: 15m
         labels:
           severity: warning
@@ -62,9 +79,38 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#meshingestsilent
 
+      - alert: MqttDeliveryStalled
+        expr: (meshcore_mqtt_delivery_probe_healthy == 0) and on(job, instance) (meshcore_mqtt_delivery_probe_enabled == 1)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Persistent MQTT QoS 1 delivery is stalled despite a connected ingest client
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttdeliverystalled
+
   - name: meshcore-queues-and-workers
     interval: 15s
     rules:
+      - alert: MqttIngestQueueDepthHigh
+        expr: meshcore_mqtt_ingest_queue_depth > 800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: The MQTT ingest queue has remained above 800 messages
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuedepthhigh
+
+      - alert: MqttIngestQueueFull
+        expr: rate(meshcore_mqtt_ingest_outcomes_total{outcome="queue_full"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: The MQTT ingest queue is rejecting messages at capacity
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestqueuefull
+
       - alert: QueueAgeHigh
         expr: meshcore_link_queue_oldest_age_seconds > 600
         for: 5m
@@ -105,7 +151,7 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#analysisleaselost
 
       - alert: HealthWorkerHeartbeatStale
-        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 180
+        expr: meshcore_worker_heartbeat_age_seconds{worker="health"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="health"} > 900 or absent(meshcore_worker_heartbeat_age_seconds{worker="health"})
         for: 3m
         labels:
           severity: critical
@@ -125,11 +171,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#workermetricsdown
 
       - alert: ActiveQueueWorkerHeartbeatStale
-        # Redis worker heartbeat: ten-second cadence, 45-second TTL. Missing
-        # heartbeat is unhealthy too; ITM writes may legitimately pause for 15m.
+        # Redis worker heartbeat: ten-second cadence, 45-second TTL. Alert on
+        # expiry (exported as -1) or age beyond that TTL for three minutes.
+        # ITM publication can pause for ~50m; it is not a liveness signal.
         # Compare each reporter's own queue and heartbeat. A failed Redis read
         # on a different exporter must not page for this reporter's healthy queue.
-        expr: meshcore_link_queue_active_jobs > 0 and on(job, instance) (meshcore_worker_heartbeat_age_seconds{worker="link"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="link"} > 180)
+        expr: meshcore_link_queue_active_jobs > 0 and on(job, instance) (meshcore_worker_heartbeat_age_seconds{worker="link"} < 0 or meshcore_worker_heartbeat_age_seconds{worker="link"} > 45)
         for: 3m
         labels:
           severity: critical
@@ -191,12 +238,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#databasewalratehigh
 
       - alert: HostDiskSpaceLow
-        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} < 0.10
+        expr: node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"} / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} <= 0.10
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: Host filesystem {{ $labels.mountpoint }} has less than 10 percent free
+          summary: Host filesystem {{ $labels.mountpoint }} has 10 percent free or less
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#hostdiskspacelow
 
@@ -241,12 +288,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#coretelemetrycompressionoverdue
 
       - alert: PacketPathsGrowthHigh
-        expr: meshcore_packet_paths_rows_30d{role="health"} / 30 > 30000
+        expr: meshcore_packet_paths_rows_30d{role="health"} / 30 > 60000
         for: 30m
         labels:
           severity: warning
         annotations:
-          summary: Durable packet path growth exceeds 30,000 rows per day
+          summary: Durable packet path growth exceeds 60,000 rows per day
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
 
@@ -263,8 +310,25 @@ groups:
   - name: meshcore-data-integrity
     interval: 30s
     rules:
+      - alert: PrivacyGenerationUnhealthy
+        # Every process exports this gauge and reports 0 when it does not own
+        # the collector, so the selector must stay scoped to the health worker.
+        # Unscoped, the rule pages on the 0s from path_learning/synthetic, and
+        # absent() is true forever because the backend never registers the
+        # collector. absent() inherits only the selector's equality matchers
+        # (job, role), which is why the fail-closed test expects those two
+        # labels and no instance.
+        expr: meshcore_privacy_generation_healthy{job="meshcore-workers", role="health"} == 0 or absent(meshcore_privacy_generation_healthy{job="meshcore-workers", role="health"})
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Public privacy generations are divergent or unavailable
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/privacy-convergence.md#generation-health
+
       - alert: BackupReceiptMissing
-        expr: count(meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"}) < 3
+        expr: (count(count by (dataset) (meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"})) or vector(0)) < 3
         for: 10m
         labels:
           severity: critical
@@ -274,12 +338,12 @@ groups:
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupreceiptmissing
 
       - alert: BackupStale
-        expr: meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"} > 86400
+        expr: meshcore_backup_age_seconds{dataset=~"analytics|owner_auth|mosquitto"} > 604800
         for: 10m
         labels:
           severity: critical
         annotations:
-          summary: Verified {{ $labels.dataset }} backup receipt is older than 24 hours
+          summary: Verified {{ $labels.dataset }} restore receipt is older than 7 days
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
 
@@ -292,3 +356,35 @@ groups:
           summary: Packet visibility validation is rejecting elevated telemetry
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#telemetryintegrityfailures
+
+  - name: meshcore-persistence-progress
+    interval: 30s
+    rules:
+      - alert: MeshIngestPersistenceFailures
+        expr: sum(rate(meshcore_mqtt_ingest_outcomes_total{outcome=~"packet_persist_failure|packet_admission_failure|packet_quarantined"}[10m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: Packet persistence is rejecting or failing deliveries
+      - alert: PublicFeedDeliveryStalled
+        expr: meshcore_public_feed_oldest_age_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Public packet forwarding has outstanding deliveries older than five minutes
+      - alert: WorkerTaskFailures
+        expr: sum by (worker, phase) (increase(meshcore_worker_outcomes_total{outcome="failure"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: A background task is repeatedly failing
+      - alert: PacketForwardingDeliveryFailures
+        expr: sum(increase(meshcore_owner_packet_share_outcomes_total{outcome=~"delivery_error|worker_error|queue_error"}[15m])) > 0 or sum(increase(meshcore_public_feed_outcomes_total{outcome=~"delivery_error|worker_error|queue_error"}[15m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Packet forwarding is failing or retrying deliveries

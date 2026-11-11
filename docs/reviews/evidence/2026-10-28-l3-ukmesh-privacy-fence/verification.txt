@@ -1,0 +1,46 @@
+Implementation revision: cf81568c (documentation/evidence commits follow).
+Commands ran from backend/ unless otherwise stated.
+$ TMPDIR="$PWD/.ukmesh-tools/tmp" npm test
+ok 25 - EXPLAIN actual RF repository queries on the live read-only database # SKIP
+ok 26 - EXPLAIN actual history queries for Lyneham, Gadget and an empty id, including maximum window # SKIP
+ok 27 - EXPLAIN actual node export SQL including its 5000-node maximum # SKIP
+1..739
+# tests 739
+# suites 0
+# pass 736
+# fail 0
+# cancelled 0
+# skipped 3
+# todo 0
+# duration_ms 55757.496886
+Synthetic firing and recovery reached the bounded test receiver.
+
+$ TMPDIR="$PWD/.ukmesh-tools/tmp" node --import tsx --test src/owner/ownerAclConvergence.test.ts src/owner/ownerInventoryReadiness.test.ts src/owner/ownerInventoryBaseline.test.ts src/owner/autoRebaseline.test.ts src/mqtt/aclManager.test.ts src/api/routes/ownerPublicFeed.test.ts
+# STATE-ONLY BUMP: gate=false -> automatic recovery -> gate=true; broker reloads=0; repeat=unchanged
+1..49
+# tests 49
+# suites 0
+# pass 49
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2703.910797
+
+$ npm run typecheck
+
+> meshcore-analytics-backend@1.0.0 typecheck
+> tsc --noEmit
+
+
+$ npm run build
+
+> meshcore-analytics-backend@1.0.0 build
+> tsc
+
+
+$ git diff origin/main --check
+(no output; exit 0)
+
+$ TEST_OWNER_ACL_PGLITE_MODULE="file://$PWD/.ukmesh-tools/pglite/node_modules/@electric-sql/pglite/dist/index.js" TMPDIR="$PWD/.ukmesh-tools/tmp" node --import tsx --test src/owner/ownerAclArtifacts.integration.test.ts
+Full output: artifact-sql.tap

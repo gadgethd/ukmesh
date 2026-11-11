@@ -1,6 +1,10 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+
+// Service-worker fetches bypass page.route and can load the public basemap
+// instead of these fixtures. Keep all dashboard tile readiness under routing.
+test.use({ serviceWorkers: 'block' });
 
 test.beforeEach(async ({ page }) => {
   await installMapRoutes(page);
@@ -116,6 +120,43 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test('former node names resolve to the current name in map search', async ({ page }, testInfo) => {
+  test.setTimeout(90_000);
+  const queries: string[] = [];
+  let releaseOld!: () => void;
+  const oldResponse = new Promise<void>(resolve => { releaseOld = resolve; });
+  await page.route('**/api/nodes/map?**', async route => {
+    const params = new URL(route.request().url()).searchParams;
+    const q = params.get('q');
+    expect(params.get('network')).toBe('ukmesh');
+    if (q) queries.push(q);
+    if (q === 'DelayedFormer') await oldResponse;
+    return route.fulfill({ json: {
+      nodes: q === 'HarbourBeacon' || q === 'DelayedFormer' ? [{
+        node_id: 'A'.repeat(64), name: 'Ridge current', lat: 54.5, lon: -1.5,
+        role: 2, last_seen: new Date().toISOString(), is_online: true,
+      }] : [],
+      page: { complete: true, nextCursor: null, snapshot: new Date().toISOString() },
+    } });
+  });
+  try {
+    await page.goto('/');
+    if (testInfo.project.name === 'dashboard-mobile') {
+      await page.getByRole('button', { name: 'Layers' }).first().click();
+    }
+    const input = page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true });
+    await input.fill('HarbourBeacon');
+    await expect(page.getByRole('option', { name: /Ridge current/ })).toBeVisible();
+    expect(queries).toContain('HarbourBeacon');
+    await input.fill('DelayedFormer');
+    await expect.poll(() => queries).toContain('DelayedFormer');
+    await input.fill('NoHistoryMatch');
+    await expect.poll(() => queries).toContain('NoHistoryMatch');
+    releaseOld();
+    await expect(page.getByRole('option', { name: /Ridge current/ })).toHaveCount(0);
+  } finally { releaseOld(); }
+});
+
 test('HopReach tiles arrive progressively while the 4,600-node map remains interactive', async ({ page }, testInfo) => {
   const requests: string[] = [];
   page.on('request', (request) => requests.push(new URL(request.url()).pathname));
@@ -126,6 +167,9 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
   await expect(rfToggle).toHaveAttribute('aria-pressed', 'true', { timeout: 15_000 });
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  }
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('50%');
   await expect(page.getByRole('region', { name: 'RF coverage status' })).toContainText('868.000 MHz');
   await expect.poll(
@@ -133,9 +177,6 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
     { timeout: 15_000 },
   ).toBe(true);
   await expect(page.getByRole('button', { name: 'Precision' })).toBeVisible({ timeout: 8_000 });
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Close menu' }).click();
-  }
   await page.getByRole('button', { name: 'Precision' }).click();
   await expect(page.getByRole('button', { name: 'Precision' })).toHaveAttribute('aria-pressed', 'true');
   await expect.poll(
@@ -180,12 +221,30 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
       tileErrors.push(message.text());
     }
   });
-  const firstTerrainTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/terrain-tiles/'));
-  const firstCoverageTile = page.waitForResponse((response) =>
-    new URL(response.url()).pathname.startsWith('/rf-coverage/tiles/'));
+  // Retain responses without starting promises that can reject while navigation
+  // or a mobile menu action is still running. Assert each loading stage below.
+  const firstTiles = new Map<string, Response>();
+  page.on('response', (response) => {
+    const path = new URL(response.url()).pathname;
+    const kind = path.startsWith('/terrain-tiles/') ? 'terrain'
+      : path.startsWith('/rf-coverage/tiles/') ? 'coverage' : null;
+    if (kind && !firstTiles.has(kind)) firstTiles.set(kind, response);
+  });
   await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
-  await page.getByText('Live Map', { exact: true }).waitFor({ state: 'visible', timeout: 15_000 });
+  // Wait on the resources the test needs before interacting with a busy 3D
+  // canvas. A visible title does not mean the map sources have initialized.
+  await test.step('wait for terrain and RF coverage fixture readiness', async () => {
+    await expect.poll(() => ({
+      terrain: firstTiles.get('terrain')?.status(),
+      coverage: firstTiles.get('coverage')?.status(),
+    }), {
+      message: 'MapLibre must request both terrain and RF coverage fixture tiles',
+      // Share the existing 60s test budget with cold software DEM decoding;
+      // leave the remaining budget for layer assertions and bitmap decoding.
+      timeout: 45_000,
+    }).toEqual({ terrain: 200, coverage: 200 });
+  });
+  await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
   if (testInfo.project.name === 'dashboard-mobile') {
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
@@ -194,9 +253,12 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   const coverage = page.getByRole('button', { name: 'RF Coverage' }).first();
   await expect(coverage).toHaveAttribute('aria-pressed', 'true');
   await expect(terrain).toHaveAttribute('aria-pressed', 'true');
-  await expect(page).toHaveURL(/layers=[^&]*terrain[^&]*coverage/);
-  const tileResponses = await Promise.all([firstTerrainTile, firstCoverageTile]);
+  await expect.poll(() => new URL(page.url()).searchParams.get('layers')?.split(',')).toEqual(
+    expect.arrayContaining(['terrain', 'coverage']),
+  );
+  const tileResponses = [firstTiles.get('terrain')!, firstTiles.get('coverage')!];
   for (const response of tileResponses) {
+    expect(response.fromServiceWorker(), 'fixture tile must pass through Playwright routing').toBe(false);
     expect(response.status()).toBe(200);
     expect(response.headers()['content-type']).toContain('image/png');
   }

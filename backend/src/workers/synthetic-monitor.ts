@@ -1,6 +1,9 @@
 import 'node:process';
 import { WebSocket } from 'ws';
-import { initDb } from '../db/index.js';
+import { pathToFileURL } from 'node:url';
+import path from 'node:path';
+import { DurableAlertQueue, type AlertReceipt } from './alertDeliveryQueue.js';
+import { createSyntheticAlertEvaluator } from './syntheticAlerts.js';
 import { observeSyntheticCheck } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 import {
@@ -8,7 +11,6 @@ import {
   type SyntheticCheckResult as CheckResult,
 } from './syntheticPersistence.js';
 
-type AlertState = { failures: number; alerting: boolean };
 
 const BASE_URL = (process.env['SYNTHETIC_BASE_URL'] ?? 'http://backend:3000').replace(/\/$/, '');
 const WS_URL = process.env['SYNTHETIC_WS_URL'] ?? BASE_URL.replace(/^http/, 'ws');
@@ -30,7 +32,10 @@ const INITIAL_STATE_TIMEOUT_MS = boundedNumber(
 );
 const FAILURE_THRESHOLD = boundedNumber(process.env['SYNTHETIC_FAILURE_THRESHOLD'], 3, 1);
 const ALERT_WEBHOOK_URL = String(process.env['ALERT_WEBHOOK_URL'] ?? '').trim();
-const states = new Map<string, AlertState>();
+const ALERT_RECEIVER_TOKEN = String(process.env['ALERT_RECEIVER_TOKEN'] ?? '').trim();
+const ALERT_DIRECTORY = process.env['SYNTHETIC_ALERT_DIRECTORY'] ?? '/var/lib/meshcore-synthetic';
+let evaluateAlerts: (results: CheckResult[]) => Promise<void>;
+let archival: Promise<void> | null = null;
 
 function elapsedMs(started: number): number {
   return Math.max(0, Math.round(performance.now() - started));
@@ -115,50 +120,32 @@ async function persistResults(results: CheckResult[]): Promise<void> {
   await persistSyntheticCheckResults(results);
 }
 
-async function notify(kind: 'alert' | 'recovery', result: CheckResult): Promise<void> {
-  const payload = {
-    kind,
-    service: 'meshcore-analytics',
-    check: result.name,
-    status: result.status,
-    latency_ms: result.latencyMs,
-    detail: result.detail,
-    timestamp: new Date().toISOString(),
-  };
-  const log = kind === 'alert' ? console.error : console.warn;
-  log(`[synthetic][${kind}] ${result.name}: ${result.detail} (${result.latencyMs}ms)`);
-  if (!ALERT_WEBHOOK_URL) return;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  try {
-    await fetch(ALERT_WEBHOOK_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    console.error('[synthetic] alert webhook failed', (err as Error).message);
-  } finally {
-    clearTimeout(timeout);
-  }
+async function notify(receipt: AlertReceipt): Promise<void> {
+  if (!ALERT_WEBHOOK_URL) throw new Error('ALERT_WEBHOOK_URL is not configured');
+  const response = await fetch(ALERT_WEBHOOK_URL, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ALERT_RECEIVER_TOKEN}` },
+    body: JSON.stringify({ service: 'meshcore-analytics', check: receipt.alert_names[0],
+      kind: receipt.status === 'firing' ? 'alert' : 'recovery', timestamp: receipt.received_at }),
+    signal: AbortSignal.timeout(TIMEOUT_MS),
+  });
+  await response.body?.cancel();
+  if (!response.ok) throw new Error(`alert webhook HTTP ${response.status}`);
 }
 
-async function evaluateAlerts(results: CheckResult[]): Promise<void> {
-  for (const result of results) {
-    const state = states.get(result.name) ?? { failures: 0, alerting: false };
-    if (result.status === 'ok') {
-      if (state.alerting) await notify('recovery', result);
-      states.set(result.name, { failures: 0, alerting: false });
-      continue;
-    }
-    state.failures += 1;
-    if (!state.alerting && state.failures >= FAILURE_THRESHOLD) {
-      state.alerting = true;
-      await notify('alert', result);
-    }
-    states.set(result.name, state);
-  }
+const notifications = new DurableAlertQueue({
+  directory: path.join(ALERT_DIRECTORY, 'outbox'), maxItems: 1_000, maxAttempts: Number.MAX_SAFE_INTEGER,
+  backoffBaseMs: 1_000, backoffCapMs: 60_000, send: notify,
+});
+
+export async function handleCheckResults(results: CheckResult[], deps: {
+  evaluate: (results: CheckResult[]) => Promise<void>;
+  persist: (results: CheckResult[]) => Promise<void>;
+}): Promise<void> {
+  // Alert evaluation cannot be gated on a dependency that is being monitored.
+  await deps.evaluate(results);
+  await deps.persist(results).catch((error: unknown) => {
+    console.error('[synthetic] result archive failed:', error instanceof Error ? error.message : error);
+  });
 }
 
 async function runChecks(fullCanary: boolean): Promise<void> {
@@ -193,8 +180,14 @@ async function runChecks(fullCanary: boolean): Promise<void> {
     };
   });
   for (const result of results) observeSyntheticCheck(result.name, result.status === 'ok');
-  await persistResults(results);
-  await evaluateAlerts(results);
+  await handleCheckResults(results, { evaluate: evaluateAlerts, persist: async (items) => {
+    if (archival) return;
+    archival = persistResults(items).finally(() => { archival = null; });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([archival, new Promise<never>((_resolve, reject) => {
+      timer = setTimeout(() => reject(new Error('result archive timed out')), 2_000);
+    })]); } finally { if (timer) clearTimeout(timer); }
+  } });
   console.log(
     `[synthetic] mode=${fullCanary ? 'full' : 'ping'} `
       + results.map((result) => `${result.name}=${result.status}:${result.latencyMs}ms`).join(' '),
@@ -203,7 +196,13 @@ async function runChecks(fullCanary: boolean): Promise<void> {
 
 async function main(): Promise<void> {
   startWorkerMetrics();
-  await initDb();
+  await notifications.initialize();
+  evaluateAlerts = await createSyntheticAlertEvaluator({ queue: notifications,
+    statePath: path.join(ALERT_DIRECTORY, 'incidents.json'), threshold: FAILURE_THRESHOLD });
+  notifications.start();
+  for (const signal of ['SIGTERM', 'SIGINT'] as const) process.once(signal, () => {
+    void notifications.close().finally(() => process.exit(0));
+  });
   let running = false;
   // Compose's backend healthcheck is deliberately liveness-only. Give MQTT
   // readiness one lightweight cycle to settle before the first full canary.
@@ -227,7 +226,7 @@ async function main(): Promise<void> {
   setInterval(() => void runCycle(), INTERVAL_MS);
 }
 
-main().catch((err) => {
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main().catch((err) => {
   console.error('[synthetic] fatal startup error', err);
   process.exit(1);
 });

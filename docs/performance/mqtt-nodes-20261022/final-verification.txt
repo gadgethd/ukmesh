@@ -1,0 +1,33 @@
+Final continuation audit at 02c2699c5cc886820de246e4e79b36e2dc58bfa1
+
+PASS: frozen original SQL matches base route; measured before and after SQL match their handlers.
+PASS: recorded benchmark percentiles, production scope and query counts match the raw samples.
+PASS: fresh HTTP p50 8557.604 ms -> 514.287 ms; all five uncached after samples below 600 ms.
+PASS: fresh repeatable-read READ ONLY comparison has 23 rows before, 23 after, zero differences.
+PASS: git diff --check bec753b5..HEAD.
+
+final-route-tests.txt
+# tests 3
+# pass 3
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2175.58713
+
+final-sql-tests.txt
+# tests 5
+# pass 5
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 2628.420405
+
+CI push run: https://github.com/gadgethd/ukmesh/actions/runs/39799957604
+HEAD: 02c2699c5cc886820de246e4e79b36e2dc58bfa1
+Backend, Frontend, Workers and Compose, Secret scan: success.
+Backend job 119897510678 confirms the MQTT integration parent and all four subtests passed.
+PR run 39799966252 attempt 1: existing dashboard-desktop 3D terrain/RF coverage test timed out after 60000 ms, including retry.
+Failed job retry requested as run attempt 2; inspect the live PR checks for the current status.
+No application or test source changed during this continuation.

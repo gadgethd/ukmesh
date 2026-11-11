@@ -49,7 +49,7 @@ LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/hopreach" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="AGPL-3.0-only WITH Commons-Clause"
-RUN apt-get update \
+RUN apt-get -o APT::Update::Error-Mode=any update \
   && apt-get install -y --no-install-recommends \
        nginx cron curl libvulkan1 mesa-vulkan-drivers ca-certificates \
   && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default

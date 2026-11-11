@@ -13,6 +13,10 @@ export default defineConfig({
   use: {
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
+    launchOptions: {
+      executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'],
+      args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
+    },
   },
   projects: [
     {
@@ -22,16 +26,19 @@ export default defineConfig({
     },
     {
       name: 'dashboard-desktop',
-      testMatch: /dashboard\.spec\.ts/,
+      testMatch: /(?:dashboard|regions)\.spec\.ts/,
       use: { ...devices['Desktop Chrome'], baseURL: dashboardOrigin },
     },
     {
       name: 'dashboard-mobile',
-      testMatch: /dashboard\.spec\.ts/,
+      testMatch: /(?:dashboard|regions)\.spec\.ts/,
       use: { ...devices['Pixel 7'], baseURL: dashboardOrigin },
     },
     {
       name: 'mobile-regression',
+      // Large software-rendered maps contend for the same CI GPU process.
+      fullyParallel: false,
+      workers: 1,
       testMatch: /mobile\.spec\.ts/,
       use: { ...devices['Desktop Chrome'] },
     },

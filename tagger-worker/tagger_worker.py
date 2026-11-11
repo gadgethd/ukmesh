@@ -105,6 +105,23 @@ CREATE TABLE IF NOT EXISTS tagger_retry (
 
 _running = True
 
+# Public-read privacy predicate, mirroring the backend's publicPacketPrivacySql:
+# a row may leave the database only while its visibility bits were materialised
+# for the live visibility generation. Kept in one place so the poll, the
+# per-message re-read and the retry lookup cannot drift apart.
+PUBLIC_PACKET_PRIVACY_SQL = """
+      AND visibility_ok IS TRUE
+      AND is_private IS NOT TRUE
+      AND EXISTS (
+        SELECT 1
+        FROM packet_visibility_materialization_state cached_visibility
+        JOIN public_visibility_state current_visibility
+          ON current_visibility.singleton = cached_visibility.singleton
+        WHERE cached_visibility.singleton = TRUE
+          AND cached_visibility.visibility_generation = current_visibility.generation
+      )
+"""
+
 
 def _stop(*_a):
     global _running
@@ -146,18 +163,46 @@ def flatten(answers):
     return tags, conf
 
 
-def tag_message(cur, ph, ts):
-    """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err)."""
-    cur.execute("""
-      SELECT payload->'decrypted'->>'sender', payload->'decrypted'->>'message'
-      FROM packets WHERE packet_hash=%s LIMIT 1
-    """, (ph,))
+def load_public_message(cur, ph, ts, rx_node_id, network):
+    """Authorize immediately before each external attempt, including retries."""
+    cur.execute(f"""
+      WITH policy AS (
+        SELECT EXISTS (
+          SELECT 1 FROM packet_visibility_materialization_state cached
+          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
+        ) AND NOT EXISTS (
+          SELECT 1 FROM privacy_rematerialization_queue
+          WHERE status IN ('pending', 'processing', 'failed')
+        ) AS ready
+      )
+      SELECT policy.ready, candidate.sender, candidate.message FROM policy
+      LEFT JOIN LATERAL (
+        SELECT payload->'decrypted'->>'sender' AS sender,
+               payload->'decrypted'->>'message' AS message
+        FROM packets
+        WHERE packet_hash=%s AND time=%s
+          AND rx_node_id IS NOT DISTINCT FROM %s
+          AND network IS NOT DISTINCT FROM %s AND network=ANY(%s::text[])
+          AND packet_type=5 {PUBLIC_PACKET_PRIVACY_SQL}
+          AND payload->'decrypted'->>'message' IS NOT NULL AND policy.ready
+        ORDER BY time DESC LIMIT 1
+      ) candidate ON TRUE
+    """, (ph, ts, rx_node_id, network, NETWORKS))
     row = cur.fetchone()
-    if row is None or row[1] is None:
-        return True, None, None  # nothing taggable (row vanished / no message)
-    sender, message = row
-    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
+    if row is None or row[0] is not True:
+        raise RuntimeError('public visibility is unavailable')
+    return row[1:] if row[2] is not None else None
+
+
+def tag_message(cur, ph, ts, rx_node_id, network):
+    """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err)."""
     for attempt in (1, 2, 3):
+        row = load_public_message(cur, ph, ts, rx_node_id, network)
+        if row is None:
+            return True, None, None  # deleted, private, or no longer taggable
+        sender, message = row
+        state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
         try:
             resp, ms = api_tag(state)
             tags, conf = flatten(resp.get('answers'))
@@ -180,6 +225,37 @@ def tag_message(cur, ph, ts):
     return False, None, err
 
 
+def public_packet_keys(cur, ph, ts):
+    """Resolve the public packet identity for a queued retry.
+
+    Returns None when the packet is no longer public (rematerialised private) or
+    the row is gone. Unavailable policy must retain the retry for a later poll.
+    """
+    cur.execute(f"""
+      WITH policy AS (
+        SELECT EXISTS (
+          SELECT 1 FROM packet_visibility_materialization_state cached
+          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
+        ) AND NOT EXISTS (
+          SELECT 1 FROM privacy_rematerialization_queue
+          WHERE status IN ('pending', 'processing', 'failed')
+        ) AS ready
+      )
+      SELECT policy.ready, candidate.* FROM policy
+      LEFT JOIN LATERAL (
+        SELECT packet_hash, time, rx_node_id, network FROM packets
+        WHERE packet_hash=%s AND time=%s AND network=ANY(%s::text[])
+          {PUBLIC_PACKET_PRIVACY_SQL} AND policy.ready
+        ORDER BY rx_node_id NULLS LAST LIMIT 1
+      ) candidate ON TRUE
+    """, (ph, ts, NETWORKS))
+    row = cur.fetchone()
+    if row is None or row[0] is not True:
+        raise RuntimeError('public visibility is unavailable')
+    return row[1:] if row[1] is not None else None
+
+
 def process_retries(cur):
     """Retry previously failed messages. Returns (ok_count, fail_count, pending)."""
     cur.execute("""
@@ -194,7 +270,12 @@ def process_retries(cur):
         if cur.fetchone():
             cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
             continue
-        good, ms, err = tag_message(cur, ph, ts)
+        keys = public_packet_keys(cur, ph, ts)
+        if keys is None:
+            # Became private (or vanished) after it was queued: never re-egress.
+            cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
+            continue
+        good, ms, err = tag_message(cur, *keys)
         if good:
             cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
             cur.execute("UPDATE tagger_state SET retried=retried+1 WHERE id=1")
@@ -241,10 +322,10 @@ def main():
         try:
             retry_ok, retry_fail, retry_pending = process_retries(cur)
 
-            cur.execute("""
+            cur.execute(f"""
               SELECT * FROM (
                 SELECT DISTINCT ON (packet_hash)
-                       packet_hash, time,
+                       packet_hash, time, rx_node_id, network,
                        payload->'decrypted'->>'sender' AS sender,
                        payload->'decrypted'->>'message' AS message
                 FROM packets
@@ -253,31 +334,32 @@ def main():
                   AND time > %s::timestamptz - make_interval(secs => %s)
                   AND time <= now()
                   AND network = ANY(%s::text[])
-                  AND visibility_ok IS TRUE
-                  AND is_private IS NOT TRUE
-                  AND EXISTS (
-                    SELECT 1
-                    FROM packet_visibility_materialization_state cached_visibility
-                    JOIN public_visibility_state current_visibility
-                      ON current_visibility.singleton = cached_visibility.singleton
-                    WHERE cached_visibility.singleton = TRUE
-                      AND cached_visibility.visibility_generation = current_visibility.generation
-                  )
+                  {PUBLIC_PACKET_PRIVACY_SQL}
+                  AND NOT EXISTS (SELECT 1 FROM message_tags tagged
+                                  WHERE tagged.packet_hash = packets.packet_hash)
+                  AND NOT EXISTS (SELECT 1 FROM tagger_retry retry
+                                  WHERE retry.packet_hash = packets.packet_hash)
                 ORDER BY packet_hash, time DESC
               ) x ORDER BY time ASC LIMIT %s
             """, (cursor, OVERLAP_S, NETWORKS, BATCH_LIMIT))
             rows = cur.fetchall()
             new = errs = 0
             max_t = cursor
-            for ph, ts, sender, message in rows:
+            for ph, ts, rx_node_id, network, sender, message in rows:
                 if ts > max_t:
                     max_t = ts
                 cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
                 if cur.fetchone():
                     continue
-                state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
                 ans, ms, err = None, None, None
+                no_longer_public = False
                 for attempt in (1, 2, 3):
+                    current = load_public_message(cur, ph, ts, rx_node_id, network)
+                    if current is None:
+                        no_longer_public = True
+                        break
+                    sender, message = current
+                    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
                     try:
                         resp, ms = api_tag(state)
                         ans = resp.get('answers')
@@ -292,6 +374,8 @@ def main():
                     except Exception as ex:  # noqa: BLE001
                         err = str(ex)[:200]
                         time.sleep(2 * attempt)
+                if no_longer_public:
+                    continue
                 if ans:
                     tags, conf = flatten(ans)
                     cur.execute("""INSERT INTO message_tags

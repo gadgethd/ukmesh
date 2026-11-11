@@ -14,7 +14,12 @@ import {
 } from './packetShareConfig.js';
 import { hasPacketShareEncryptionKey } from './packetShareCrypto.js';
 import { packetShareCredentials } from './packetShareAuth.js';
-import type { PacketShareDeliveryRow, PacketShareRepository } from './packetShareRepository.js';
+import type {
+  OwnerNodeGrantPredicate,
+  OwnerNodeGrantState,
+  PacketShareDeliveryRow,
+  PacketShareRepository,
+} from './packetShareRepository.js';
 import { packetShareOutcomesTotal, packetShareQueueDepth } from '../metrics.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
@@ -169,6 +174,12 @@ function connectMqttPublisher(
 
 export type PacketShareForwarderDeps = {
   repository: PacketShareRepository;
+  /**
+   * Live owner-node grant predicate. Production wiring passes the same
+   * owner-auth resolution the owner routes use; the repository also receives
+   * it. Both layers check because either one alone is bypassable.
+   */
+  isOwnerNodeGrantActive?: OwnerNodeGrantPredicate;
   publisherFactory?: PacketSharePublisherFactory;
   pollIntervalMs?: number;
   batchSize?: number;
@@ -196,13 +207,37 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
   let processing: Promise<void> | null = null;
   let stopping = false;
 
+  /**
+   * Resolve the live grant for one (owner, node) pair. An owner-auth outage is
+   * not authority to forward, but it is also not proof of revocation: the
+   * caller treats "unknown" as retryable and "inactive" as terminal.
+   */
+  async function ownerGrantState(ownerUsername: string, nodeId: string): Promise<OwnerNodeGrantState> {
+    if (deps.isOwnerNodeGrantActive) {
+      try {
+        return (await deps.isOwnerNodeGrantActive(ownerUsername, nodeId)) ? 'active' : 'inactive';
+      } catch (error) {
+        console.error(
+          '[packet-share] owner grant lookup failed:',
+          error instanceof Error ? error.message : error,
+        );
+        return 'unknown';
+      }
+    }
+    if (typeof deps.repository.ownerGrantState === 'function') {
+      return deps.repository.ownerGrantState(ownerUsername, nodeId);
+    }
+    // No authority source wired: suppress (retryable), never assume grant.
+    return 'unknown';
+  }
+
   async function publisherFor(destination: PacketShareDestinationRow): Promise<PacketSharePublisher> {
     const fingerprint = destinationFingerprint(destination);
     const existing = publishers.get(destination.destination_id);
     if (existing?.fingerprint === fingerprint) return existing.publisher;
     if (existing) {
       publishers.delete(destination.destination_id);
-      await existing.publisher.close().catch(() => undefined);
+      await withTimeout(existing.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
     }
     const created = publisherFactory(destination);
     publishers.set(destination.destination_id, { publisher: created, fingerprint });
@@ -218,6 +253,18 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     if (targets.length < 1) return;
 
     for (const target of targets) {
+      const grantState = await ownerGrantState(target.owner_username, packet.rxNodeId!);
+      if (grantState !== 'active') {
+        if (grantState === 'inactive') {
+          try {
+            await deps.repository.deadLetterOwnerNodeDeliveries?.(target.owner_username, packet.rxNodeId!);
+          } catch (error) {
+            console.error('[packet-share] dead-letter failed:', error instanceof Error ? error.message : error);
+          }
+        }
+        packetShareOutcomesTotal.inc({ outcome: 'blocked' });
+        continue;
+      }
       if (!destinationAllowedForOwner(target, target.owner_username, packet.rxNodeId!)
         || !destinationAcceptsPacket(target, packet, upstreamEnvelope)) continue;
       if (!destinationConfigured(target, hasPacketShareEncryptionKey())) {
@@ -248,12 +295,31 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
       } catch (error) {
         packetShareOutcomesTotal.inc({ outcome: 'queue_error' });
         console.error('[packet-share] queue error:', error instanceof Error ? error.message : error);
+      throw error;
       }
     }
     void processDue();
   }
 
   async function deliver(row: PacketShareDeliveryRow, claimToken: string): Promise<void> {
+    const grantState = await ownerGrantState(row.owner_username, row.node_id);
+    if (grantState === 'inactive') {
+      // Revocation is terminal for everything already queued for this node.
+      try {
+        await deps.repository.deadLetterOwnerNodeDeliveries?.(row.owner_username, row.node_id);
+      } catch (error) {
+        console.error('[packet-share] dead-letter failed:', error instanceof Error ? error.message : error);
+      }
+      packetShareOutcomesTotal.inc({ outcome: 'blocked' });
+      return;
+    }
+    if (grantState === 'unknown') {
+      // No positive grant, so no publish: release the claim on the normal
+      // backoff instead of destroying it on an owner-auth blip.
+      await deps.repository.markFailed(row.id, claimToken, row.attempts, 'owner grant check unavailable');
+      packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
+      return;
+    }
     const destination = await deps.repository.getDestination(row.destination_id);
     if (!destination || !destinationAllowedForOwner(destination, row.owner_username, row.node_id)
       || !destinationConfigured(destination, hasPacketShareEncryptionKey())) {
@@ -275,7 +341,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
       const entry = publishers.get(row.destination_id);
       if (entry) {
         publishers.delete(row.destination_id);
-        await entry.publisher.close().catch(() => undefined);
+        await withTimeout(entry.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
       }
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
@@ -337,7 +403,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     if (processing) await processing.catch(() => undefined);
     const current = [...publishers.values()].map(({ publisher }) => publisher);
     publishers.clear();
-    await Promise.all(current.map((publisher) => publisher.close().catch(() => undefined)));
+    await Promise.all(current.map((publisher) => withTimeout(publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined)));
   }
 
   return { enqueuePacket, processDue, start, stop };

@@ -5,6 +5,20 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   params?: unknown[],
 ) => Promise<{ rows: T[] }>;
 
+/** Private nodes publish 1..3-byte prefixes of their node id, so a stored path
+ * prefix is private when it is a leading substring of any such node id - the
+ * same identity rule the packet privacy predicate enforces. An empty prefix
+ * (the head of a path) carries no identity and is always allowed through. */
+export function privatePrefixPathFilterSql(columnExpr: string, alias = 'private_prefix'): string {
+  return `EXISTS (
+           SELECT 1
+           FROM private_node_prefixes ${alias}
+           WHERE LENGTH(${columnExpr}) > 0
+             AND LEFT(UPPER(${alias}.node_id), LENGTH(${columnExpr}))
+                 = UPPER(${columnExpr})
+         )`;
+}
+
 type PathingRepositoryDeps = {
   getPublicVisibilityGeneration: () => Promise<number>;
   query: QueryFn;
@@ -34,6 +48,8 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
          JOIN nodes n ON n.node_id = pp.node_id
          WHERE pp.network = $1
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
+           AND NOT ${privatePrefixPathFilterSql('pp.prefix')}
+           AND NOT ${privatePrefixPathFilterSql('pp.prev_prefix')}
          ORDER BY pp.count DESC
          LIMIT $2`,
         [network, limit],

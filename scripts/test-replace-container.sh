@@ -73,14 +73,18 @@ case "$command_name" in
           ;;
         config)
           if [ "${2:-}" = "--services" ]; then
-            printf '%s\n' backend db-migrate timescaledb app-ukmesh
+            printf '%s\n' backend db-migrate timescaledb app-ukmesh tagger-worker hopreach
             if [ "${MOCK_ADOPTION_MODE:-valid}" = long_service_list ]; then
               # More than a pipe buffer: an early grep -q exit must not turn
               # Compose's SIGPIPE into an incorrect unknown-service rejection.
               for ((index = 0; index < 10000; index++)); do printf 'fixture-service-%s\n' "$index"; done
             fi
           elif [ "${2:-}" != "-q" ]; then
-            printf 'services: {}\n'
+            if [ "${2:-}" = "--format" ]; then
+              printf '{"services":{}}\n'
+            else
+              printf 'services: {}\n'
+            fi
           fi
           exit 0
           ;;
@@ -137,6 +141,10 @@ case "$command_name" in
     ;;
   pull)
     ;;
+  ps)
+    # No name conflict in the absent-container drill.
+    test "$MOCK_ADOPTION_MODE" = no_container
+    ;;
   image)
     test "${1:-}" = "inspect"
     printf '%s\n' "$MOCK_SOURCE_REVISION"
@@ -173,6 +181,9 @@ case "$command_name" in
           'DATABASE_URL=postgresql://meshcore:fixture@timescaledb:5432/meshcore' \
           'REDIS_URL=redis://redis:6379'
         ;;
+      *'.Config.User'*)
+        printf '{"user":"1000:1000","groups":["1883","2000"]}\n'
+        ;;
       *'.NetworkSettings.Networks'*)
         printf 'meshcore-net\n'
         ;;
@@ -192,6 +203,9 @@ case "$command_name" in
     esac
     ;;
   run)
+    # The live ACL fixture is readable only with its runtime identity/groups.
+    # A compatibility container using just the image defaults would exit.
+    [[ " $* " == *" --user 1000:1000 --group-add 1883 --group-add 2000 "* ]]
     printf 'compat-container-id\n'
     ;;
   exec)
@@ -320,6 +334,11 @@ run_case() {
     fi
     grep -q 'not Compose-adoptable' "${test_root}/stderr.log"
     grep -q "service ${adoption_service} is not Compose-adoptable" "${test_root}/stderr.log"
+    grep -Fq 'up -d --no-deps --no-build' "${test_root}/stderr.log"
+    grep -Fq 'check-compose-adoption.sh' "${test_root}/stderr.log"
+    if [ "$adoption_mode" != no_container ]; then
+      grep -Fq "docker rm -f -- current-${adoption_service}" "${test_root}/stderr.log"
+    fi
     test ! -s "${test_root}/cosign.log"
     if grep -Eq '^(pull |compose .* (up|run) )' "${test_root}/docker.log"; then
       echo 'adoption guard allowed a mutation before rejection' >&2
@@ -354,6 +373,9 @@ run_case() {
       "${test_root}/docker.log" || true
   )"
   test "$up_count" -eq "$expected_up_count"
+  if [ "$up_count" -gt 0 ]; then
+    test "$(grep -Ec '^compose --project-name meshcore-analytics up .*--no-deps' "${test_root}/docker.log")" -eq "$up_count"
+  fi
   grep -Eq -- \
     '^run .* --volumes-from current-backend:ro( |$)' \
     "${test_root}/docker.log"
@@ -402,4 +424,9 @@ run_case long_service_list_remains_adoptable false false stopped 0 keyless long_
 run_case invalid_frontend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh
 run_case valid_frontend_with_invalid_backend_stops_before_mutation true false stopped 0 public-key empty app-ukmesh backend
 
-printf 'replace-container rollback, compatibility and Compose adoption drills passed (16/16)\n'
+for service in tagger-worker hopreach; do
+  run_case "${service}_supports_signed_release_preflight" false false stopped 0 keyless valid "$service"
+done
+
+printf 'replace-container rollback, compatibility and Compose adoption drills passed (18/18)\n'
+bash "${script_dir}/test-check-compose-adoption.sh"

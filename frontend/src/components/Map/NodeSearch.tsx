@@ -3,6 +3,7 @@ import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../hooks/useNodes.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
+import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 import { Combobox, type ComboboxOption } from '../ui/Combobox.js';
@@ -16,6 +17,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
   const nodes = useNodeMap();
   const restoredQuery = new URLSearchParams(window.location.search).get('search')?.trim() ?? '';
   const [query, setQuery] = useState(restoredQuery);
+  const nameMatches = useNodeNameSearch(query);
   const [open, setOpen] = useState(Boolean(restoredQuery));
   const inputRef = useRef<HTMLInputElement>(null);
   const watchlist = useWatchlist();
@@ -47,9 +49,13 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
       || node.public_key?.toLowerCase().startsWith(q),
     );
     const fuzzyMatches = fuse.search(q).map((result) => result.item);
-    return Array.from(new Map([...prefixMatches, ...fuzzyMatches].map((node) => [node.node_id, node])).values())
+    const matches = new Map(nameMatches.map((node) => [node.node_id, node]));
+    for (const node of [...prefixMatches, ...fuzzyMatches]) {
+      if (!matches.has(node.node_id)) matches.set(node.node_id, node);
+    }
+    return Array.from(matches.values())
       .slice(0, 6);
-  }, [fuse, nearbyNodes, query, searchableNodes]);
+  }, [fuse, nearbyNodes, query, searchableNodes, nameMatches]);
 
   useEffect(() => {
     const focusSearch = () => {

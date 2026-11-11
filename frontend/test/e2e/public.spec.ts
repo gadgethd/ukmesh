@@ -1,6 +1,35 @@
 import { expect, test } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
+test('former node names resolve to the current name in repeater search', async ({ page }) => {
+  const current = {
+    node_id: 'A'.repeat(64), name: 'Ridge current', lat: 54.5, lon: -1.5,
+    role: 2, last_seen: new Date().toISOString(), is_online: true,
+  };
+  const queries: string[] = [];
+  await page.route('**/api/**', route => route.fulfill({ json: [] }));
+  await page.route('**/api/nodes/map?**', route => {
+    const params = new URL(route.request().url()).searchParams;
+    expect(params.get('network')).toBe('ukmesh');
+    const q = params.get('q');
+    if (q) queries.push(q);
+    return route.fulfill({ json: {
+      nodes: !q || q === 'HarbourBeacon' ? [current] : [],
+      page: { complete: true, nextCursor: null, snapshot: new Date().toISOString() },
+    } });
+  });
+  await page.goto('/repeater');
+  const input = page.getByRole('combobox', { name: 'Search repeaters' });
+  await input.fill('HarbourBeacon');
+  const result = page.getByRole('option', { name: /Ridge current/ });
+  await expect(result).toBeVisible();
+  await expect(result).toHaveCount(1);
+  expect(queries).toContain('HarbourBeacon');
+  await result.click();
+  await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
+  await expect(page.getByText(`${'A'.repeat(16)}…${'A'.repeat(8)}`, { exact: true })).toBeVisible();
+});
+
 for (const width of [375, 768]) {
   test(`navigation collapses and can be toggled at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 667 });

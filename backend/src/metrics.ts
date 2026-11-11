@@ -17,6 +17,34 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttDeliveryProbeHealthy = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_healthy',
+  help: 'Whether the ingest session has successfully received its QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeEnabled = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_enabled',
+  help: 'Whether this process owns an active MQTT ingest delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeLastSuccess = new Gauge({
+  name: 'meshcore_mqtt_delivery_probe_last_success_timestamp_seconds',
+  help: 'Last successful broker-to-ingest QoS 1 delivery probe.',
+  registers: [metricsRegistry],
+});
+export const mqttDeliveryProbeRecoveries = new Counter({
+  name: 'meshcore_mqtt_delivery_probe_recoveries_total',
+  help: 'Persistent ingest session reconnects after a QoS 1 delivery probe timeout.',
+  registers: [metricsRegistry],
+});
+
+export const mqttDeniedPublishesTotal = new Counter({
+  name: 'meshcore_mqtt_denied_publishes_total',
+  help: 'Denied PUBLISH broker-log observations by bounded topic suffix and scan phase; history may replay at startup.',
+  labelNames: ['kind', 'phase'] as const,
+  registers: [metricsRegistry],
+});
+
 export const ownerAclReloadTotal = new Counter({
   name: 'meshcore_owner_acl_reload_total',
   help: 'Authenticated Mosquitto ACL reload requests by bounded outcome.',
@@ -27,6 +55,12 @@ export const ownerAclReloadTotal = new Counter({
 export const websocketClients = new Gauge({
   name: 'meshcore_websocket_clients',
   help: 'Currently connected WebSocket clients.',
+  registers: [metricsRegistry],
+});
+
+export const mapSuppressedNodes = new Gauge({
+  name: 'meshcore_map_suppressed_nodes',
+  help: 'Stale co-located nodes excluded from the public map at the last refresh.',
   registers: [metricsRegistry],
 });
 
@@ -158,7 +192,19 @@ export const publicFeedOutcomesTotal = new Counter({
 
 export const publicFeedQueueDepth = new Gauge({
   name: 'meshcore_public_feed_queue_depth',
-  help: 'Public MeshCore feed deliveries currently claimed for processing.',
+  help: 'Public MeshCore feed deliveries awaiting completion.',
+  registers: [metricsRegistry],
+});
+
+export const publicFeedOldestAgeSeconds = new Gauge({
+  name: 'meshcore_public_feed_oldest_age_seconds',
+  help: 'Age of the oldest outstanding public feed delivery.',
+  registers: [metricsRegistry],
+});
+
+export const mqttIngestQueueDepth = new Gauge({
+  name: 'meshcore_mqtt_ingest_queue_depth',
+  help: 'Received MQTT messages awaiting a durable outcome, including active writes.',
   registers: [metricsRegistry],
 });
 
@@ -174,6 +220,19 @@ export const dbQueryDuration = new Histogram({
   help: 'Database query duration by pool and bounded outcome.',
   labelNames: ['pool', 'outcome'] as const,
   buckets: [0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 60, 300],
+  registers: [metricsRegistry],
+});
+
+export const mqttConnectionMonitorHealthy = new Gauge({
+  name: 'meshcore_mqtt_connection_monitor_healthy',
+  help: 'Whether the broker-log monitor has completed a read without outstanding read or audit-write failures.',
+  registers: [metricsRegistry],
+});
+
+export const mqttConnectionMonitorErrorsTotal = new Counter({
+  name: 'meshcore_mqtt_connection_monitor_errors_total',
+  help: 'Broker-log monitor failures by bounded phase.',
+  labelNames: ['phase'] as const,
   registers: [metricsRegistry],
 });
 
@@ -226,8 +285,22 @@ export const packetBatchDedupeTotal = new Counter({
 
 export const mqttIngestAckDuration = new Histogram({
   name: 'meshcore_mqtt_ingest_ack_duration_seconds',
-  help: 'MQTT ingest processing time from receipt to acknowledgement.',
+  help: 'MQTT processing time from dispatch to outcome; excludes intake waiting and wire acknowledgement.',
   buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30],
+  registers: [metricsRegistry],
+});
+
+export const mqttIntakeQueueWait = new Histogram({
+  name: 'meshcore_mqtt_intake_queue_wait_seconds',
+  help: 'Time from MQTT intake admission to persistence dispatch, including per-topic waiting.',
+  buckets: [0.001, 0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 15, 30, 60, 120, 300],
+  registers: [metricsRegistry],
+});
+
+export const mqttWireAckDuration = new Histogram({
+  name: 'meshcore_mqtt_wire_ack_duration_seconds',
+  help: 'Time from intake admission to successful QoS 1 PUBACK write, including queue and commit waiting.',
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 15, 30, 60, 120, 300],
   registers: [metricsRegistry],
 });
 
@@ -270,6 +343,13 @@ export const analysisActiveLeases = new Gauge({
   name: 'meshcore_analysis_active_leases',
   help: 'Active analysis leases by bounded workload.',
   labelNames: ['workload'] as const,
+  registers: [metricsRegistry],
+});
+
+export const spamAnalysisTruncationsTotal = new Counter({
+  name: 'meshcore_spam_analysis_truncations_total',
+  help: 'Spam analysis passes that exceeded a bounded candidate, message or incident limit.',
+  labelNames: ['phase'] as const,
   registers: [metricsRegistry],
 });
 
@@ -322,6 +402,25 @@ export const privacyFilterTotal = new Counter({
   help: 'Privacy-filter decisions by bounded operation and outcome.',
   labelNames: ['operation', 'outcome'] as const,
   registers: [metricsRegistry],
+});
+
+let privacyGenerationHealthCollector: (() => Promise<boolean>) | null = null;
+
+export function setPrivacyGenerationHealthCollector(collector: () => Promise<boolean>): void {
+  privacyGenerationHealthCollector = collector;
+}
+
+export const privacyGenerationHealthy = new Gauge({
+  name: 'meshcore_privacy_generation_healthy',
+  help: 'One when desired, materialized and globally admissible privacy generations agree; zero on drift or an unavailable observation.',
+  registers: [metricsRegistry],
+  async collect() {
+    this.set(0);
+    if (privacyGenerationHealthCollector) {
+      try { this.set(await privacyGenerationHealthCollector() ? 1 : 0); }
+      catch { this.set(0); }
+    }
+  },
 });
 
 export const gracefulShutdownTotal = new Counter({
@@ -388,6 +487,7 @@ const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'
 const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);
 const METRIC_WORKERS = new Set([
+  'forwarding_outbox',
   'health',
   'privacy_remat',
   'path_learning',
@@ -396,6 +496,10 @@ const METRIC_WORKERS = new Set([
   'link',
 ]);
 const METRIC_WORKER_PHASES = new Set([
+  'handoff',
+  'poll',
+  'path_capacity',
+  'core_capacity',
   'snapshot',
   'pass',
   'chunk',
@@ -433,6 +537,7 @@ const METRIC_CACHES = new Set([
   'owner_auth',
   'owner_nodes',
   'owner_dashboard',
+  'mqtt_onboarding',
   'owner_last_hop',
   'path_context',
   'path_resolution',
@@ -440,6 +545,7 @@ const METRIC_CACHES = new Set([
   'path_sticky_nodes',
   'stats_channel',
   'stats_observer',
+  'stats_observer_live',
   'ws_initial_state',
   'ws_viable_links',
 ]);
@@ -512,7 +618,7 @@ export function observeHttpRequest(req: Request, res: Response, next: NextFuncti
 }
 
 export function updateDbPoolMetrics(
-  poolName: 'oltp' | 'analytics' | 'owner_auth',
+  poolName: 'oltp' | 'analytics' | 'owner_auth' | 'ingest',
   snapshot: { totalCount: number; idleCount: number; waitingCount: number },
 ): void {
   dbPoolTotal.set({ state: `${poolName}_total` }, snapshot.totalCount);

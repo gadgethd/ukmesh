@@ -59,7 +59,7 @@
 .regions-page__list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .regions-page__list li strong { color: var(--text-primary); font: 11px var(--font-mono); }
 .regions-page__list li i { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; vertical-align: middle; }
-.regions-page__low-tag { margin-left: 6px; padding: 1px 5px; border: 1px solid rgba(148, 163, 184, 0.42); border-radius: var(--radius); color: var(--text-muted); font: 9px/1.4 var(--font-mono); font-style: normal; letter-spacing: 0.08em; text-transform: uppercase; vertical-align: middle; }
+.regions-page__low-tag { margin-left: 6px; padding: 1px 5px; border: 1px solid rgba(148, 163, 184, 0.42); border-radius: var(--radius); color: var(--text-muted); font: 10px/1.4 var(--font-mono); font-style: normal; letter-spacing: 0.08em; text-transform: uppercase; vertical-align: middle; }
 .regions-page__note { margin-top: 4px; color: var(--text-muted); font-size: 10px; }
 .regions-page__error { padding: 14px; border: 1px solid #7f1d1d; border-radius: var(--radius); color: #fca5a5; }
 .regions-page__clear { margin-top: 8px; padding: 7px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-active); color: var(--text-secondary); cursor: pointer; }
@@ -77,3 +77,8 @@
   .regions-page__map { min-height: 430px; height: 62vh; }
   .regions-page__map-legend { right: 10px; bottom: 10px; max-width: calc(100% - 20px); }
 }
+
+/* Unnamed region footprints — scoped traffic whose region name cannot be derived. */
+.regions-page__legend-swatch--unnamed { width: 18px; height: 10px; border-radius: 2px; border: 1px dashed #cbd5e1; background: rgba(148, 163, 184, 0.12); }
+.regions-page__unnamed-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px; margin-bottom: 4px; border: 1px dashed rgba(203, 213, 225, 0.35); border-radius: 4px; }
+.regions-page__unnamed-dot { display: inline-block; width: 8px; height: 8px; margin-right: 7px; border-radius: 50%; border: 1px dashed #cbd5e1; background: rgba(148, 163, 184, 0.25); vertical-align: middle; }

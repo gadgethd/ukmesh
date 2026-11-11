@@ -1,0 +1,96 @@
+BEGIN
+                                                                                                                                                                                                                                                                             QUERY PLAN
+--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+ Unique  (cost=18859.81..19202.24 rows=150 width=116) (actual rows=23 loops=1)
+   Buffers: shared hit=17073 read=3831
+   ->  Incremental Sort  (cost=18859.81..19201.86 rows=150 width=116) (actual rows=159 loops=1)
+         Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))), (COALESCE(s.uptime_secs, '0'::bigint)) DESC, s."time" DESC
+         Presorted Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+         Full-sort Groups: 5  Sort Method: quicksort  Average Memory: 33kB  Peak Memory: 33kB
+         Buffers: shared hit=17073 read=3831
+         ->  Merge Left Join  (cost=18857.55..19195.11 rows=150 width=116) (actual rows=159 loops=1)
+               Merge Cond: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))) = (meshcore_canonical_node_id(raw_counts.rx_node_id)))
+               Buffers: shared hit=17067 read=3831
+               ->  Merge Left Join  (cost=10515.28..10840.85 rows=150 width=198) (actual rows=159 loops=1)
+                     Merge Cond: ((COALESCE(la.canonical_node_id, upper(btrim(s.node_id)))) = (COALESCE(a.canonical_node_id, upper(btrim(n.node_id)))))
+                     Filter: ((n.name IS NULL) OR (n.name !~~ '%🚫%'::text))
+                     Buffers: shared hit=9082 read=20
+                     ->  Sort  (cost=55.74..56.12 rows=151 width=182) (actual rows=159 loops=1)
+                           Sort Key: (COALESCE(la.canonical_node_id, upper(btrim(s.node_id))))
+                           Sort Method: quicksort  Memory: 57kB
+                           Buffers: shared hit=87 read=20
+                           ->  Nested Loop Left Join  (cost=0.57..50.28 rows=151 width=182) (actual rows=159 loops=1)
+                                 Buffers: shared hit=87 read=20
+                                 ->  Custom Scan (ChunkAppend) on node_status_samples s  (cost=0.29..27.08 rows=151 width=117) (actual rows=159 loops=1)
+                                       Chunks excluded during startup: 0
+                                       Buffers: shared hit=41 read=20
+                                       ->  Index Scan using _hyper_2_316_chunk_node_status_samples_time_idx on _hyper_2_316_chunk s_1  (cost=0.29..27.08 rows=151 width=117) (actual rows=159 loops=1)
+                                             Index Cond: ("time" > (now() - '00:15:00'::interval))
+                                             Filter: (network = ANY ('{ukmesh,northeast,teesside}'::text[]))
+                                             Buffers: shared hit=41 read=20
+                                 ->  Memoize  (cost=0.28..0.54 rows=1 width=130) (actual rows=0 loops=159)
+                                       Cache Key: upper(btrim(s.node_id))
+                                       Cache Mode: logical
+                                       Hits: 136  Misses: 23  Evictions: 0  Overflows: 0  Memory Usage: 3kB
+                                       Buffers: shared hit=46
+                                       ->  Index Scan using node_identity_aliases_pkey on node_identity_aliases la  (cost=0.27..0.53 rows=1 width=130) (actual rows=0 loops=23)
+                                             Index Cond: (source_node_id = upper(btrim(s.node_id)))
+                                             Buffers: shared hit=46
+                     ->  Materialize  (cost=10459.54..10685.06 rows=12887 width=48) (actual rows=8321 loops=1)
+                           Buffers: shared hit=8995
+                           ->  Unique  (cost=10459.54..10523.97 rows=12887 width=129) (actual rows=8321 loops=1)
+                                 Buffers: shared hit=8995
+                                 ->  Sort  (cost=10459.54..10491.75 rows=12887 width=129) (actual rows=8417 loops=1)
+                                       Sort Key: (COALESCE(a.canonical_node_id, upper(btrim(n.node_id)))), (CASE WHEN ((n.role = 2) AND (n.lat >= '-90'::double precision) AND (n.lat <= '90'::double precision) AND (n.lon >= '-180'::double precision) AND (n.lon <= '180'::double precision) AND ((abs(n.lat) >= '1e-09'::double precision) OR (abs(n.lon) >= '1e-09'::double precision))) THEN 0 WHEN (n.role = 2) THEN 1 WHEN (COALESCE(n.advert_count, 0) > 0) THEN 2 ELSE 3 END), (COALESCE(n.advert_count, 0)) DESC, n.last_seen DESC NULLS LAST, n.node_id
+                                       Sort Method: quicksort  Memory: 2007kB
+                                       Buffers: shared hit=8995
+                                       ->  Hash Left Join  (cost=30.16..9579.76 rows=12887 width=129) (actual rows=8461 loops=1)
+                                             Hash Cond: (upper(btrim(n.node_id)) = a.source_node_id)
+                                             Buffers: shared hit=8992
+                                             ->  Seq Scan on nodes n  (cost=0.00..9092.87 rows=12887 width=113) (actual rows=8461 loops=1)
+                                                   Buffers: shared hit=8964
+                                             ->  Hash  (cost=28.96..28.96 rows=96 width=130) (actual rows=96 loops=1)
+                                                   Buckets: 1024  Batches: 1  Memory Usage: 24kB
+                                                   Buffers: shared hit=28
+                                                   ->  Seq Scan on node_identity_aliases a  (cost=0.00..28.96 rows=96 width=130) (actual rows=96 loops=1)
+                                                         Buffers: shared hit=28
+               ->  GroupAggregate  (cost=8342.27..8351.54 rows=34 width=40) (actual rows=26 loops=1)
+                     Group Key: (meshcore_canonical_node_id(raw_counts.rx_node_id))
+                     Buffers: shared hit=7985 read=3811
+                     ->  Sort  (cost=8342.27..8342.36 rows=34 width=40) (actual rows=26 loops=1)
+                           Sort Key: (meshcore_canonical_node_id(raw_counts.rx_node_id))
+                           Sort Method: quicksort  Memory: 27kB
+                           Buffers: shared hit=7985 read=3811
+                           ->  Subquery Scan on raw_counts  (cost=8332.57..8341.41 rows=34 width=40) (actual rows=26 loops=1)
+                                 Buffers: shared hit=7985 read=3811
+                                 ->  Finalize HashAggregate  (cost=8332.57..8332.91 rows=34 width=73) (actual rows=26 loops=1)
+                                       Group Key: packets.rx_node_id
+                                       Batches: 1  Memory Usage: 24kB
+                                       Buffers: shared hit=7927 read=3811
+                                       ->  Custom Scan (ChunkAppend) on packets  (cost=0.42..8332.23 rows=68 width=73) (actual rows=51 loops=1)
+                                             Chunks excluded during startup: 0
+                                             Buffers: shared hit=7927 read=3811
+                                             ->  Partial HashAggregate  (cost=4931.20..4931.54 rows=34 width=73) (actual rows=26 loops=1)
+                                                   Group Key: _hyper_1_312_chunk.rx_node_id
+                                                   Batches: 1  Memory Usage: 24kB
+                                                   Buffers: shared hit=6439 read=2053
+                                                   ->  Index Only Scan using _hyper_1_312_chunk_idx_packets_observer_region on _hyper_1_312_chunk  (cost=0.42..4606.13 rows=65013 width=65) (actual rows=67761 loops=1)
+                                                         Index Cond: ((network = ANY ('{ukmesh,northeast,teesside}'::text[])) AND ("time" > (now() - '24:00:00'::interval)) AND (rx_node_id IS NOT NULL))
+                                                         Heap Fetches: 11874
+                                                         Buffers: shared hit=6439 read=2053
+                                             ->  Partial HashAggregate  (cost=3400.35..3400.69 rows=34 width=73) (actual rows=25 loops=1)
+                                                   Group Key: _hyper_1_314_chunk.rx_node_id
+                                                   Batches: 1  Memory Usage: 24kB
+                                                   Buffers: shared hit=1488 read=1758
+                                                   ->  Index Only Scan using _hyper_1_314_chunk_idx_packets_observer_region on _hyper_1_314_chunk  (cost=0.42..3090.11 rows=62047 width=65) (actual rows=62034 loops=1)
+                                                         Index Cond: ((network = ANY ('{ukmesh,northeast,teesside}'::text[])) AND ("time" > (now() - '24:00:00'::interval)) AND (rx_node_id IS NOT NULL))
+                                                         Heap Fetches: 2633
+                                                         Buffers: shared hit=1488 read=1758
+ Settings: max_parallel_workers_per_gather = '0', work_mem = '10076kB', effective_io_concurrency = '256', random_page_cost = '1.1', effective_cache_size = '1475MB', jit = 'off'
+ Planning:
+   Buffers: shared hit=2152 read=14
+ Planning Time: 26.218 ms
+ Execution Time: 231.437 ms
+(90 rows)
+
+ROLLBACK

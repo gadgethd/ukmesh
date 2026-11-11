@@ -1,0 +1,32 @@
+.region-selector {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: var(--text-secondary);
+  font: 11px var(--font-mono);
+}
+.region-selector select {
+  width: clamp(92px, 12vw, 150px);
+  min-height: 32px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  font: inherit;
+}
+.region-selector__status {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  padding: 4px;
+  background: var(--bg-panel);
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .topbar:has(.region-selector) .topbar__logo { display: none; }
+  .region-selector { gap: 3px; font-size: 10px; }
+  .region-selector select { min-height: 36px; }
+}

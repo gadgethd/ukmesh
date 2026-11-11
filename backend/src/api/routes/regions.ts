@@ -58,6 +58,38 @@ export type RegionScopeDto = {
   regions: Array<{ region: string; packets: number }>;
 };
 
+export type UnattributedClusterNodeDto = {
+  nodeId: string;
+  name: string | null;
+  lat: number;
+  lon: number;
+  packets: number;
+};
+
+/**
+ * A geographic footprint of region-scoped packets that no public region name
+ * explains. Deliberately has no `name`: private regions derive their transport
+ * key from stored key material, so the name cannot be recovered from traffic,
+ * and inventing one would be a guess.
+ */
+export type UnattributedClusterDto = {
+  id: string;
+  lat: number;
+  lon: number;
+  packets: number;
+  nodeCount: number;
+  firstSeen: string | null;
+  lastSeen: string | null;
+  topNodes: UnattributedClusterNodeDto[];
+};
+
+export type UnattributedPayload = {
+  generatedAt: string | null;
+  windowDays: number | null;
+  clusters: UnattributedClusterDto[];
+  totals: { clusters: number; packets: number; nodes: number };
+};
+
 /**
  * Evidence tiers for a region's decoded packet count. The 2026-10 audit
  * calibrated the chance-match floor at ~0.2 false hits per candidate name over
@@ -141,6 +173,17 @@ export interface RegionScopeNodeRow extends QueryResultRow {
   role: number | null;
   lat: number | null;
   lon: number | null;
+}
+
+export interface UnattributedClusterRow extends QueryResultRow {
+  cluster_id: string;
+  lat: number;
+  lon: number;
+  packets: number;
+  observers: number;
+  first_seen: Date | string | null;
+  last_seen: Date | string | null;
+  top_nodes: unknown;
 }
 
 interface ScopeMemberRow extends QueryResultRow {
@@ -281,6 +324,53 @@ export function shapeRegionScopePayload(
   };
 }
 
+function parseTopNodes(value: unknown): UnattributedClusterNodeDto[] {
+  if (!Array.isArray(value)) return [];
+  const nodes: UnattributedClusterNodeDto[] = [];
+  for (const entry of value) {
+    if (entry == null || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const name = typeof record['name'] === 'string' ? record['name'] : null;
+    // Opted-out nodes never appear in public cluster detail.
+    if (isPrivateNode(name)) continue;
+    const nodeId = typeof record['nodeId'] === 'string' ? record['nodeId'] : '';
+    const lat = Number(record['lat']);
+    const lon = Number(record['lon']);
+    const packets = Number(record['packets']);
+    if (!nodeId || !Number.isFinite(lat) || !Number.isFinite(lon) || !Number.isFinite(packets)) continue;
+    nodes.push({ nodeId, name, lat, lon, packets });
+  }
+  return nodes;
+}
+
+export function shapeUnattributedPayload(
+  run: RunRow | null,
+  rows: UnattributedClusterRow[],
+): UnattributedPayload {
+  const clusters: UnattributedClusterDto[] = rows
+    .filter((row) => !excludedByLocation(Number(row.lat), Number(row.lon)))
+    .map((row) => ({
+      id: row.cluster_id,
+      lat: Number(row.lat),
+      lon: Number(row.lon),
+      packets: Number(row.packets),
+      nodeCount: Number(row.observers),
+      firstSeen: isoOrNull(row.first_seen),
+      lastSeen: isoOrNull(row.last_seen),
+      topNodes: parseTopNodes(row.top_nodes),
+    }));
+  return {
+    generatedAt: isoOrNull(run?.finished_at),
+    windowDays: run?.window_days == null ? null : Number(run.window_days),
+    clusters,
+    totals: {
+      clusters: clusters.length,
+      packets: clusters.reduce((sum, cluster) => sum + cluster.packets, 0),
+      nodes: clusters.reduce((sum, cluster) => sum + cluster.nodeCount, 0),
+    },
+  };
+}
+
 type RegionsRouteDeps = {
   query: QueryFn;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
@@ -350,6 +440,24 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       res.json(shapeRegionRepeatersPayload(run.rows[0] ?? null, repeaters.rows));
     } catch (err) {
       console.error('[api] GET /regions/repeaters', (err as Error).message);
+      res.status(500).json({ error: 'Internal server error' });
+    }
+  });
+
+  router.get('/regions/unattributed', deps.limiter, async (_req, res) => {
+    try {
+      const [run, clusters] = await Promise.all([
+        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<UnattributedClusterRow>(
+          `SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes
+             FROM region_scope_unattributed
+            ORDER BY packets DESC, cluster_id ASC`,
+        ),
+      ]);
+      res.setHeader('Cache-Control', REGIONS_CACHE_CONTROL);
+      res.json(shapeUnattributedPayload(run.rows[0] ?? null, clusters.rows));
+    } catch (err) {
+      console.error('[api] GET /regions/unattributed', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });

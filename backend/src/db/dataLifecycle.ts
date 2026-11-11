@@ -266,6 +266,7 @@ export function assertDataLifecycleGate(options: {
     receiptPath: env['DATA_LIFECYCLE_RESTORE_RECEIPT_PATH'],
     signaturePath: env['DATA_LIFECYCLE_RESTORE_RECEIPT_SIGNATURE_PATH'],
     verifyKeyPath: env['DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_PATH'],
+    verifyKeySha256: env['DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256'],
   });
   const maximumAgeDays = Number(env['DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS'] ?? 7);
   assertFreshRestoreReceipt(receipt, {

@@ -8,11 +8,16 @@ export type DeniedOwnerPublish = {
   nodeId: string;
 };
 
+export type DeniedPublish = {
+  clientId: string;
+  topic: string;
+};
+
 // Mosquitto 2.x: "New client connected from X as <clientId> (..., u'<username>')."
-const CONNECT_RE = /New client connected from .+ as (\S+) \([^)]*u'([^']+)'\)/;
+const CONNECT_RE = /New client connected from .+ as (.+?) \([^)]*u'([^']+)'\)/;
 
 // Mosquitto 2.x: "Denied PUBLISH from <clientId> (..., '<topic>', ...)"
-const DENIED_PUBLISH_RE = /Denied PUBLISH from (\S+) \([^']*'([^']+)'/;
+const DENIED_PUBLISH_RE = /^(?:\d+: )?Denied PUBLISH from (.+?) \(d[01], q[012], r[01], m\d+, '(.*)', \.\.\. \(\d+ bytes\)\)$/;
 
 // mctomqtt client IDs include a stable public-key prefix.
 const MESHCORE_CLIENT_RE = /^meshcore_(?:client_)?([0-9A-F]{4,64})_\d+$/i;
@@ -46,8 +51,15 @@ export function parseOwnerNodeTopic(topic: string): string | null {
 }
 
 export function parseDeniedOwnerPublish(line: string): DeniedOwnerPublish | null {
+  const denied = parseDeniedPublish(line);
+  const nodeId = denied ? parseOwnerNodeTopic(denied.topic) : null;
+  return denied && nodeId ? { clientId: denied.clientId, nodeId } : null;
+}
+
+/** Observe every denied topic; unsupported suffixes must not disappear here. */
+export function parseDeniedPublish(line: string): DeniedPublish | null {
   const match = DENIED_PUBLISH_RE.exec(line);
   const clientId = match?.[1]?.trim();
-  const nodeId = match?.[2] ? parseOwnerNodeTopic(match[2]) : null;
-  return clientId && nodeId ? { clientId, nodeId } : null;
+  const topic = match?.[2];
+  return clientId && topic ? { clientId, topic } : null;
 }

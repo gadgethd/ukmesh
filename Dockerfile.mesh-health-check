@@ -3,12 +3,15 @@ FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e961522
 ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
 ARG MESH_HEALTH_CHECK_REF
 
+COPY docker/mesh-health-check-package-lock.json /tmp/patched-package-lock.json
+
 WORKDIR /app
 
-RUN apt-get update \
+RUN apt-get -o APT::Update::Error-Mode=any update \
   && apt-get install -y --no-install-recommends ca-certificates git \
-  && rm -rf /var/lib/apt/lists/* \
-  && test -n "$MESH_HEALTH_CHECK_REF" \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN test -n "$MESH_HEALTH_CHECK_REF" \
   && echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$' \
   && git init /tmp/mesh-health-check \
   && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
@@ -18,6 +21,7 @@ RUN apt-get update \
   && cp /tmp/mesh-health-check/package.json /tmp/mesh-health-check/package-lock.json ./ \
   && mkdir -p ./scripts \
   && cp /tmp/mesh-health-check/scripts/patch-meshcore-decoder.js ./scripts/patch-meshcore-decoder.js \
+  && cp /tmp/patched-package-lock.json ./package-lock.json \
   && npm ci --omit=dev --no-audit --fund=false \
   && cp /tmp/mesh-health-check/server.js ./ \
   && cp -a /tmp/mesh-health-check/lib ./lib \
@@ -29,7 +33,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm \
   && rm -f /usr/local/bin/npm /usr/local/bin/npx
 
-FROM node:26-alpine@sha256:0b36e8c136b94cd4fcf02188228e76c31ad5872eef3fec8cbd2eee500cfd9e80
+FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 ARG SOURCE_REVISION=unknown
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"

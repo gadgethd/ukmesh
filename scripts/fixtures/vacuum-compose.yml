@@ -1,0 +1,9 @@
+# Disposable maintenance fixture only. Kept as YAML so the shm guard audits it.
+services:
+  timescaledb:
+    image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
+    shm_size: "1g"
+    environment:
+      POSTGRES_DB: meshcore
+      POSTGRES_USER: meshcore
+      POSTGRES_PASSWORD: fixture-password

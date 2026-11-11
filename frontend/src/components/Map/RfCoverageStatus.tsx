@@ -65,7 +65,9 @@ export function RfCoverageStatus({
       )}
       {nodePublicKey && nodeState === 'pending' && (
         <div className="rf-coverage-progress" role="status">
-          Repeater coverage is pending an on-demand calculation.
+          {nodeEntry?.state === 'computing'
+            ? 'Calculating RF footprint...'
+            : 'Repeater coverage is pending an on-demand calculation.'}
         </div>
       )}
       {failed && (
@@ -118,9 +120,11 @@ export function RfCoverageStatus({
         ) : (
           <p className="rf-coverage-waiting">
             {nodePublicKey
-              ? nodeEntry?.state === 'failed'
-                ? 'Coverage could not be computed for this repeater.'
-                : 'Coverage is pending an on-demand calculation.'
+              ? nodeEntry?.state === 'computing'
+                ? 'Calculating RF footprint...'
+                : nodeEntry?.state === 'failed'
+                  ? 'Coverage could not be computed for this repeater.'
+                  : 'Coverage is pending an on-demand calculation.'
               : 'Standard coverage is being prepared.'}
           </p>
         )}

@@ -76,6 +76,7 @@ async function loadRuntimeModule(): Promise<{
     handleMessage: (message: unknown, source?: { postMessage?: (value: unknown) => void }) => Promise<void>;
     cleanupOldCaches: (force?: boolean) => Promise<void> | undefined;
     snapshot: () => Promise<{ tileCache: { entries: number; bytes: number } }>;
+    shouldHandle: (request: RequestLike & { mode?: string }) => boolean;
   };
 }> {
   return import(runtimeModulePath);
@@ -259,5 +260,128 @@ test('service worker URL follows the hashed Vite entry bundle', () => {
   } finally {
     if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
     else Reflect.deleteProperty(globalThis, 'document');
+  }
+});
+
+test('basemap metadata is revalidated after its TTL instead of pinned', async () => {
+  let currentTime = 0;
+  let fetches = 0;
+  const fixture = await createRuntimeFixture({
+    now: () => currentTime,
+    fetch: async () => {
+      fetches += 1;
+      return new Response(JSON.stringify({ version: fetches }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    policy: { basemapMetadataTtlMs: 1_000 },
+  });
+  await fixture.runtime.install();
+  const request = new Request('https://tiles.openfreemap.org/styles/dark');
+
+  assert.deepEqual(await (await fixture.runtime.handleFetch(request)).json(), { version: 1 });
+  assert.deepEqual(await (await fixture.runtime.handleFetch(request)).json(), { version: 1 });
+  assert.equal(fetches, 1, 'a fresh cached style is served without a network call');
+
+  currentTime += 1_001;
+  assert.deepEqual(await (await fixture.runtime.handleFetch(request)).json(), { version: 2 });
+  assert.equal(fetches, 2, 'an expired style is revalidated');
+});
+
+test('tiles stay cache-first while style/TileJSON/sprites are metadata', async () => {
+  const fixture = await createRuntimeFixture({
+    fetch: async () => new Response('payload', { status: 200 }),
+  });
+  await fixture.runtime.install();
+  const tile = { url: 'https://tiles.openfreemap.org/planet/20261025_080012_pt/6/31/20.pbf' };
+  const tileJson = { url: 'https://tiles.openfreemap.org/planet' };
+  const style = { url: 'https://tiles.openfreemap.org/styles/dark' };
+  const sprite = { url: 'https://tiles.openfreemap.org/sprites/ofm_f384/ofm.json' };
+
+  assert.equal(fixture.runtime.shouldHandle(tile), true);
+  assert.equal(fixture.runtime.shouldHandle(tileJson), true);
+  assert.equal(fixture.runtime.shouldHandle(style), true);
+  assert.equal(fixture.runtime.shouldHandle(sprite), true);
+
+  const tileCacheName = String(fixture.runtime.policy['tileCache']);
+  const basemapCacheName = String(fixture.runtime.policy['basemapMetadataCache']);
+  await fixture.runtime.handleFetch(tile);
+  await fixture.runtime.handleFetch(style);
+  const tileCache = await fixture.cacheStorage.open(tileCacheName);
+  const basemapCache = await fixture.cacheStorage.open(basemapCacheName);
+  assert.ok(tileCache.values.has(tile.url), 'vector tiles live in the tile cache');
+  assert.ok(basemapCache.values.has(style.url), 'the style JSON lives in the metadata cache');
+  assert.ok(!tileCache.values.has(style.url), 'the style must not consume tile-cache budget');
+});
+
+test('map worker .mjs files bypass the service-worker asset cache', async () => {
+  const fixture = await createRuntimeFixture();
+  const worker = { url: 'https://mesh.test/assets/maplibre-gl-worker.mjs' };
+  const appAsset = { url: 'https://mesh.test/assets/index-abc123.js' };
+  assert.equal(fixture.runtime.shouldHandle(worker), false);
+  assert.equal(fixture.runtime.shouldHandle(appAsset), true);
+});
+
+test('session metadata nonces refresh the network while retaining one offline cache entry', async () => {
+  let requests = 0;
+  let offline = false;
+  const fixture = await createRuntimeFixture({
+    fetch: async () => {
+      if (offline) throw new Error('offline');
+      requests += 1;
+      return new Response(`snapshot-${requests}`);
+    },
+  });
+  await fixture.runtime.install();
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=1' })).text(), 'snapshot-1');
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=2' })).text(), 'snapshot-2');
+  const cache = await fixture.cacheStorage.open(String(fixture.runtime.policy['basemapMetadataCache']));
+  assert.deepEqual([...cache.values.keys()], ['https://tiles.openfreemap.org/planet']);
+  offline = true;
+  assert.equal(await (await fixture.runtime.handleFetch({ url: 'https://tiles.openfreemap.org/planet?v=3' })).text(), 'snapshot-2');
+});
+
+test('a waiting worker activates automatically once the tab is hidden', async () => {
+  resetServiceWorkerUpdatesForTests();
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const originalDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const posted: unknown[] = [];
+  const listeners = new Map<string, () => void>();
+  const registration = {
+    waiting: { postMessage: (value: unknown) => posted.push(value) },
+    installing: null,
+    addEventListener: () => {},
+  };
+  Object.defineProperty(globalThis, 'navigator', {
+    configurable: true,
+    value: {
+      serviceWorker: {
+        controller: {},
+        register: async () => registration,
+        addEventListener: () => {},
+      },
+    },
+  });
+  Object.defineProperty(globalThis, 'document', {
+    configurable: true,
+    value: {
+      visibilityState: 'hidden',
+      querySelector: () => null,
+      addEventListener: (name: string, listener: () => void) => listeners.set(name, listener),
+    },
+  });
+  try {
+    registerServiceWorker();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.deepEqual(posted, [{ type: 'ACTIVATE_UPDATE' }], 'hidden tab adopts the new cache policy');
+    assert.equal(typeof listeners.get('visibilitychange'), 'function');
+  } finally {
+    if (originalNavigator) Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    else Reflect.deleteProperty(globalThis, 'navigator');
+    if (originalDocument) Object.defineProperty(globalThis, 'document', originalDocument);
+    else Reflect.deleteProperty(globalThis, 'document');
+    resetServiceWorkerUpdatesForTests();
   }
 });

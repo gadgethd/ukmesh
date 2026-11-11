@@ -3,11 +3,12 @@ import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { closeDb, initDb, pool, query } from './db/index.js';
+import { closeDb, initDb, analyticsPool, pool, query } from './db/index.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
+import { refreshNodeMapSuppressions } from './nodes/mapSuppressions.js';
 import {
   closeOwnerAuthDb,
-  getOwnerAclReadiness,
+  getAppliedOwnerAclArtifact,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
   initOwnerAuthDb,
@@ -16,6 +17,7 @@ import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onP
 import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
 import { getRamIngestMode } from './ram/protocol.js';
 import {
+  getMqttConnectionMonitorStatus,
   startMqttConnectionMonitor,
   stopMqttConnectionMonitor,
 } from './mqtt/connectionMonitor.js';
@@ -31,9 +33,10 @@ import {
 } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
-import { startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { getConvergedOwnerAclReadiness, startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
 import { getRegisteredOwnerService } from './api/routes/owner.js';
+import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
 import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
@@ -58,13 +61,11 @@ import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
 import { createPacketShareForwarder } from './owner/packetShareForwarder.js';
 import { createPacketShareRepository } from './owner/packetShareRepository.js';
+import { createForwardingOutbox } from './owner/forwardingOutbox.js';
 import { createPublicFeedForwarder } from './owner/publicFeedForwarder.js';
 import { createPublicFeedRepository } from './owner/publicFeedRepository.js';
-import {
-  buildOwnerInventoryBaseline,
-  loadOwnerInventoryBaseline,
-  validateOwnerInventoryBaseline,
-} from './owner/ownerInventoryBaseline.js';
+import { loadOwnerInventoryBaseline } from './owner/ownerInventoryBaseline.js';
+import { createOwnerAuthorizationReadiness, publicReadinessPayload } from './owner/ownerReadiness.js';
 
 const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
   .split(',')
@@ -85,12 +86,22 @@ const SHUTDOWN_DEADLINE_MS = Math.min(
 const NODE_IDENTITY_REFRESH_INTERVAL_MS = 30 * 60_000;
 const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_INTERVAL_MS'] ?? 15 * 60_000);
 const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
+const OWNER_LAST_HOP_PREWARM_CONCURRENCY = Number(process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'] ?? 1);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
+/**
+ * Packet-share authority is the same live owner grant the owner routes
+ * evaluate per request — never the persisted rule row on its own.
+ */
+const isOwnerNodeGrantActive = async (ownerUsername: string, nodeId: string): Promise<boolean> => {
+  const grantedNodeIds = await resolveOwnerNodeIds(ownerUsername);
+  return grantedNodeIds.includes(nodeId.trim().toUpperCase());
+};
 const packetShareForwarder = createPacketShareForwarder({
-  repository: createPacketShareRepository(query),
+  repository: createPacketShareRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000)), undefined, { isOwnerNodeGrantActive }),
+  isOwnerNodeGrantActive,
 });
 const publicFeedForwarder = createPublicFeedForwarder({
-  repository: createPublicFeedRepository(query),
+  repository: createPublicFeedRepository((sql, params) => query(sql, params, AbortSignal.timeout(5_000))),
   getOwnerAuthorizationSnapshot,
   // The public namespace is on the same authenticated Mosquitto instance as
   // ingest. Reusing this connection avoids a second credentialed publisher
@@ -100,6 +111,12 @@ const publicFeedForwarder = createPublicFeedForwarder({
     close: async () => undefined,
   }),
 });
+const forwardingOutbox = createForwardingOutbox(async (packet, envelope) => {
+  await Promise.all([
+    packetShareForwarder.enqueuePacket(packet, envelope), publicFeedForwarder.enqueuePacket(packet, envelope),
+  ]);
+});
+lifecycle.register({ name: 'forwarding-outbox', stage: 25, close: forwardingOutbox.stop });
 let shutdownExitCode = 0;
 let shutdownDeadlineAt = 0;
 function shutdownTimeLeft(): number {
@@ -234,13 +251,24 @@ process.on('uncaughtException', (error) => {
 async function main() {
   // 1. Initialise DB schema + retention policy
   await initDb();
-  const identityRefresh = await refreshNodeIdentityAliases(pool);
+  const identityRefresh = await refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS });
   console.log('[node-identity] refreshed', identityRefresh);
+  // Suppression is a display optimisation: a transient failure here must not
+  // stop the API from booting. The 30-minute timer retries.
+  await refreshNodeMapSuppressions(pool).catch((error: unknown) => {
+    console.error(
+      '[node-map] initial suppression refresh failed:',
+      error instanceof Error ? error.message : error,
+    );
+  });
   nodeIdentityRefreshTimer = setInterval(() => {
-    void refreshNodeIdentityAliases(pool)
-      .then((result) => console.log('[node-identity] refreshed', result))
+    void refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS })
+      .then(async (result) => {
+        console.log('[node-identity] refreshed', result);
+        await refreshNodeMapSuppressions(pool);
+      })
       .catch((error: unknown) => {
-        console.error('[node-identity] refresh failed:', error instanceof Error ? error.message : error);
+        console.error('[node-identity/node-map] refresh failed:', error instanceof Error ? error.message : error);
       });
   }, NODE_IDENTITY_REFRESH_INTERVAL_MS);
   nodeIdentityRefreshTimer.unref();
@@ -260,6 +288,7 @@ async function main() {
       ),
       intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
       nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
+      concurrency: OWNER_LAST_HOP_PREWARM_CONCURRENCY,
     });
   } else {
     console.warn('[owner-last-hop-prewarm] owner service is not registered; prewarm disabled');
@@ -273,16 +302,8 @@ async function main() {
   }
 
   // 3. Wire up MQTT → WS broadcast
-  onPacket((packet, upstreamEnvelope) => {
+  onPacket((packet) => {
     broadcastPacket(packet);
-    if (upstreamEnvelope) {
-      void packetShareForwarder.enqueuePacket(packet, upstreamEnvelope).catch((error: unknown) => {
-        console.error('[packet-share] packet handling failed:', error instanceof Error ? error.message : error);
-      });
-      void publicFeedForwarder.enqueuePacket(packet, upstreamEnvelope).catch((error: unknown) => {
-        console.error('[public-feed] packet handling failed:', error instanceof Error ? error.message : error);
-      });
-    }
     // RAM mode defers commit-dependent link admission to the writer's
     // post-commit hook (the link worker reads packet rows from PostgreSQL).
     if (getRamIngestMode() !== 'ram' && packet.path?.length && packet.rxNodeId) {
@@ -349,14 +370,30 @@ async function main() {
 
   app.use(express.json({ limit: '50kb' }));
 
+  const readOwnerAuthorizationReadiness = createOwnerAuthorizationReadiness({
+    config: () => ({
+      mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
+      aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
+      baselinePath: String(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '').trim(),
+      configuredGrants: parseOwnerGrantConfig(String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? '')),
+    }),
+    readState: getConvergedOwnerAclReadiness,
+    readInventory: getOwnerAuthorizationInventory,
+    readAcl: readAclFile,
+    readBaseline: loadOwnerInventoryBaseline,
+    loadAppliedArtifact: getAppliedOwnerAclArtifact,
+  });
+
   // Local-only backend/operator site.
   app.use('/', createBackendSiteRoutes({
     query,
     getHealthOverview: getWorkerHealthOverview,
+    getOwnerAuthorizationReadiness: readOwnerAuthorizationReadiness,
   }));
 
   // Defaults to 120 requests / IP / minute. Isolated load environments may
   // raise the bounded configuration without changing production policy.
+  // Telemetry uses its route budget; dashboard stats have a reserved budget.
   app.use('/api', createGlobalApiLimiter());
 
   // API routes
@@ -369,6 +406,7 @@ async function main() {
     const checks = {
       database: false,
       mqtt: MQTT_INGEST_ENABLED ? getMqttRuntimeStatus() : { state: 'disabled', changedAt: new Date().toISOString() },
+      mqttConnectionMonitor: MQTT_INGEST_ENABLED ? getMqttConnectionMonitorStatus() : { state: 'disabled' },
       ownerAuthorization: {
         mode: String(process.env['OWNER_AUTHORIZATION_MODE'] ?? 'enforce'),
         aclMode: String(process.env['OWNER_ACL_MODE'] ?? 'apply'),
@@ -381,6 +419,7 @@ async function main() {
           required: Boolean(process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH']),
           ok: !process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'],
           mismatches: [] as string[],
+          reason: 'owner-baseline-not-checked',
         },
       },
       analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
@@ -388,30 +427,9 @@ async function main() {
     try {
       await query('SELECT 1');
       checks.database = true;
-      const aclState = await getOwnerAclReadiness();
-      Object.assign(checks.ownerAuthorization, aclState);
-      const ownerBaselinePath = String(
-        process.env['OWNER_AUTH_INVENTORY_BASELINE_PATH'] ?? '',
-      ).trim();
-      if (ownerBaselinePath) {
-        const databaseInventory = await getOwnerAuthorizationInventory();
-        const current = buildOwnerInventoryBaseline({
-          accounts: databaseInventory.accounts,
-          configuredGrants: parseOwnerGrantConfig(
-            String(process.env['OWNER_MQTT_USERNAME_MAP'] ?? ''),
-          ),
-          aclContent: readAclFile(),
-          aclState,
-        });
-        const validation = validateOwnerInventoryBaseline(
-          loadOwnerInventoryBaseline(ownerBaselinePath),
-          current,
-        );
-        checks.ownerAuthorization.inventoryBaseline = {
-          required: true,
-          ...validation,
-        };
-      }
+      const ownerReadiness = await readOwnerAuthorizationReadiness();
+      Object.assign(checks.ownerAuthorization, ownerReadiness.ownerAuthorization);
+      console.log('[readyz] owner inventory baseline', checks.ownerAuthorization.inventoryBaseline);
       checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
@@ -419,6 +437,7 @@ async function main() {
     const ownerAclGenerationReady = checks.ownerAuthorization.aclMode !== 'apply'
       || (
         checks.ownerAuthorization.desiredGeneration !== null
+        && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.renderedGeneration
         && checks.ownerAuthorization.desiredGeneration === checks.ownerAuthorization.appliedGeneration
         && checks.ownerAuthorization.lastError === null
       );
@@ -427,8 +446,12 @@ async function main() {
     const ready = !lifecycle.isDraining
       && checks.database
       && ownerAclReady
-      && (!MQTT_INGEST_ENABLED || checks.mqtt.state === 'connected');
-    res.status(ready ? 200 : 503).json({ status: ready ? 'ready' : 'degraded', checks, ts: Date.now() });
+      && (!MQTT_INGEST_ENABLED || (checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'));
+    // Public readiness is a documented coarse projection. Owner-authorization
+    // generations, reconciliation errors and workload identity stay on the
+    // local-only operator surface (/local-api/owner-authorization) - they are not needed by
+    // an anonymous probe and leak control-plane state.
+    res.status(ready ? 200 : 503).json(publicReadinessPayload(ready, checks.database, checks.mqtt.state));
   });
   app.use(apiErrorMiddleware);
 
@@ -493,6 +516,7 @@ async function main() {
   });
   startMetricsServer(METRICS_PORT);
 
+  forwardingOutbox.start();
   packetShareForwarder.start();
   publicFeedForwarder.start();
   if (getRamIngestMode() === 'ram') {

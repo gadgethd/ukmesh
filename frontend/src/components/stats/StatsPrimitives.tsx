@@ -271,7 +271,7 @@ export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nod
     let cancelled = false;
     let map: maplibregl.Map | null = null;
     void Promise.all([
-      import('maplibre-gl'),
+      import('../Map/maplibre.js'),
       import('maplibre-gl/dist/maplibre-gl.css'),
     ]).then(([maplibreModule]) => {
       if (cancelled || !containerRef.current) return;

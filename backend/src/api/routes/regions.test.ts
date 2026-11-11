@@ -6,6 +6,7 @@ import {
   shapeRegionRepeatersPayload,
   shapeRegionScopePayload,
   shapeRegionSummaryPayload,
+  shapeUnattributedPayload,
   type RegionMemberRow,
   type RegionStatRow,
 } from './regions.js';
@@ -163,4 +164,66 @@ test('shapeRegionSummaryPayload flags universal bridge members at the 12-region 
   const localRegion = payload.regions.find((region) => region.name === 'local-0');
   assert.equal(bridgeRegion?.members[0]?.isBridge, true);
   assert.equal(localRegion?.members[0]?.isBridge, false);
+});
+
+test('shapeUnattributedPayload keeps cluster geometry, totals and drops opted-out nodes', () => {
+  const payload = shapeUnattributedPayload(
+    { finished_at: new Date('2026-10-25T00:00:00.000Z'), window_days: 92 },
+    [
+      {
+        cluster_id: 'u1',
+        lat: 51.45,
+        lon: -2.59,
+        packets: 1455,
+        observers: 12,
+        first_seen: '2026-09-01T00:00:00.000Z',
+        last_seen: '2026-10-01T00:00:00.000Z',
+        top_nodes: [
+          { nodeId: NODE_ID, name: 'Tim Bristol', lat: 51.49, lon: -2.55, packets: 1400 },
+          { nodeId: PRIVATE_ID, name: '\u{1F6AB} Hidden', lat: 51.4, lon: -2.6, packets: 20 },
+          { nodeId: OTHER_ID, name: null, lat: 51.5, lon: -2.5, packets: 35 },
+        ],
+      },
+      {
+        cluster_id: 'u2',
+        lat: 59.2,
+        lon: 9.5,
+        packets: 99,
+        observers: 3,
+        first_seen: null,
+        last_seen: null,
+        top_nodes: [],
+      },
+    ],
+  );
+  assert.equal(payload.generatedAt, '2026-10-25T00:00:00.000Z');
+  assert.equal(payload.windowDays, 92);
+  // The Norwegian cluster is outside the UK display envelope.
+  assert.equal(payload.clusters.length, 1);
+  const cluster = payload.clusters[0]!;
+  assert.equal(cluster.id, 'u1');
+  assert.equal(cluster.packets, 1455);
+  assert.equal(cluster.nodeCount, 12);
+  assert.equal(cluster.topNodes.length, 2);
+  assert.equal(cluster.topNodes[0]!.name, 'Tim Bristol');
+  assert.deepEqual(payload.totals, { clusters: 1, packets: 1455, nodes: 12 });
+});
+
+test('shapeUnattributedPayload tolerates junk top_nodes and a missing run row', () => {
+  const payload = shapeUnattributedPayload(null, [
+    {
+      cluster_id: 'u1',
+      lat: 51.45,
+      lon: -2.59,
+      packets: 10,
+      observers: 2,
+      first_seen: null,
+      last_seen: null,
+      top_nodes: 'not-an-array',
+    },
+  ]);
+  assert.equal(payload.generatedAt, null);
+  assert.equal(payload.windowDays, null);
+  assert.deepEqual(payload.clusters[0]!.topNodes, []);
+  assert.deepEqual(payload.totals, { clusters: 1, packets: 10, nodes: 2 });
 });

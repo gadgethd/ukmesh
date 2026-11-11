@@ -1,0 +1,70 @@
+BEGIN
+SET
+ previous_tables_needing_vacuum
+--------------------------------
+                              5
+(1 row)
+
+ database_size_bytes | dead_rows |       oldest_vacuum_at        | tables_needing_vacuum
+---------------------+-----------+-------------------------------+-----------------------
+ 17721905635         | 503544    | 2026-10-20 15:41:37.193334+00 | 0
+(1 row)
+
+                                                                      QUERY PLAN
+-------------------------------------------------------------------------------------------------------------------------------------------------------
+ Aggregate  (cost=396.05..396.08 rows=1 width=128) (actual rows=1 loops=1)
+   Buffers: shared hit=363
+   ->  Hash Join  (cost=329.86..389.43 rows=294 width=360) (actual rows=247 loops=1)
+         Hash Cond: (c_1.oid = c.oid)
+         Buffers: shared hit=361
+         ->  HashAggregate  (cost=185.64..190.05 rows=294 width=316) (actual rows=247 loops=1)
+               Group Key: c_1.oid, n.nspname
+               Batches: 1  Memory Usage: 157kB
+               Buffers: shared hit=267
+               ->  Hash Right Join  (cost=137.41..184.17 rows=294 width=132) (actual rows=1096 loops=1)
+                     Hash Cond: (i.indrelid = c_1.oid)
+                     Buffers: shared hit=267
+                     ->  Index Only Scan using pg_index_indrelid_index on pg_index i  (cost=0.28..39.58 rows=1470 width=4) (actual rows=1470 loops=1)
+                           Heap Fetches: 497
+                           Buffers: shared hit=171
+                     ->  Hash  (cost=133.46..133.46 rows=294 width=132) (actual rows=247 loops=1)
+                           Buckets: 1024  Batches: 1  Memory Usage: 48kB
+                           Buffers: shared hit=96
+                           ->  Hash Join  (cost=4.42..133.46 rows=294 width=132) (actual rows=247 loops=1)
+                                 Hash Cond: (c_1.relnamespace = n.oid)
+                                 Buffers: shared hit=96
+                                 ->  Seq Scan on pg_class c_1  (cost=0.00..127.48 rows=573 width=72) (actual rows=573 loops=1)
+                                       Filter: (relkind = ANY ('{r,t,m,p}'::"char"[]))
+                                       Rows Removed by Filter: 1659
+                                       Buffers: shared hit=94
+                                 ->  Hash  (cost=3.69..3.69 rows=58 width=68) (actual rows=67 loops=1)
+                                       Buckets: 1024  Batches: 1  Memory Usage: 15kB
+                                       Buffers: shared hit=2
+                                       ->  Seq Scan on pg_namespace n  (cost=0.00..3.69 rows=58 width=68) (actual rows=67 loops=1)
+                                             Filter: ((nspname <> ALL ('{pg_catalog,information_schema}'::name[])) AND (nspname !~ '^pg_toast'::text))
+                                             Rows Removed by Filter: 61
+                                             Buffers: shared hit=2
+         ->  Hash  (cost=116.32..116.32 rows=2232 width=58) (actual rows=2232 loops=1)
+               Buckets: 4096  Batches: 1  Memory Usage: 123kB
+               Buffers: shared hit=94
+               ->  Seq Scan on pg_class c  (cost=0.00..116.32 rows=2232 width=58) (actual rows=2232 loops=1)
+                     Buffers: shared hit=94
+         SubPlan 1
+           ->  Function Scan on pg_options_to_table  (cost=0.00..0.05 rows=1 width=1) (actual rows=0 loops=247)
+                 Filter: (option_name = 'autovacuum_enabled'::text)
+                 Rows Removed by Filter: 0
+         SubPlan 2
+           ->  Function Scan on pg_options_to_table pg_options_to_table_1  (cost=0.00..0.05 rows=1 width=8) (actual rows=0 loops=247)
+                 Filter: (option_name = 'autovacuum_vacuum_threshold'::text)
+                 Rows Removed by Filter: 0
+         SubPlan 3
+           ->  Function Scan on pg_options_to_table pg_options_to_table_2  (cost=0.00..0.05 rows=1 width=8) (actual rows=0 loops=247)
+                 Filter: (option_name = 'autovacuum_vacuum_scale_factor'::text)
+                 Rows Removed by Filter: 0
+ Planning:
+   Buffers: shared hit=38
+ Planning Time: 6.526 ms
+ Execution Time: 15.184 ms
+(53 rows)
+
+COMMIT

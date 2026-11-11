@@ -7,7 +7,7 @@ mesh_config_dir="${MOSQUITTO_CONFIG_DIR:-$mesh_repo_dir/mosquitto}"
 mesh_username="${MQTT_USERNAME:-backend}"
 mesh_password="${MQTT_PASSWORD:-}"
 mesh_image="${MOSQUITTO_IMAGE:-eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87}"
-mesh_backend_uid="${MOSQUITTO_BACKEND_UID:-1000}"
+mesh_config_uid="${MOSQUITTO_CONFIG_UID:-1883}"
 mesh_broker_gid="${MOSQUITTO_BROKER_GID:-1883}"
 
 mesh_normalize_permissions() {
@@ -31,16 +31,16 @@ mesh_normalize_permissions() {
     --entrypoint chown \
     -v "$mesh_config_dir:/mosquitto/config" \
     "$mesh_image" \
-    "$mesh_backend_uid:$mesh_broker_gid" /mosquitto/config "${mesh_paths[@]}"
+    "$mesh_config_uid:$mesh_broker_gid" /mosquitto/config "${mesh_paths[@]}"
   docker run --rm \
-    --user "$mesh_backend_uid:$mesh_broker_gid" \
+    --user "$mesh_config_uid:$mesh_broker_gid" \
     --cap-drop ALL \
     --entrypoint chmod \
     -v "$mesh_config_dir:/mosquitto/config" \
     "$mesh_image" \
-    2750 /mosquitto/config
+    2770 /mosquitto/config
   docker run --rm \
-    --user "$mesh_backend_uid:$mesh_broker_gid" \
+    --user "$mesh_config_uid:$mesh_broker_gid" \
     --cap-drop ALL \
     --entrypoint chmod \
     -v "$mesh_config_dir:/mosquitto/config" \

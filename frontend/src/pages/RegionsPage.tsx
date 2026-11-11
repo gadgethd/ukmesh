@@ -17,6 +17,7 @@ import {
   type RegionRepeatersPayload,
   type RegionSummary,
   type RegionSummaryPayload,
+  type UnattributedPayload,
 } from './regionsModel.js';
 import './regions-page.css';
 
@@ -33,6 +34,8 @@ export const RegionsPage: React.FC = () => {
   const observer = site.observerId;
   const [summary, setSummary] = useState<RegionSummaryPayload | null>(null);
   const [repeatersPayload, setRepeatersPayload] = useState<RegionRepeatersPayload | null>(null);
+  const [unattributedPayload, setUnattributedPayload] = useState<UnattributedPayload | null>(null);
+  const [unnamedVisible, setUnnamedVisible] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -46,6 +49,7 @@ export const RegionsPage: React.FC = () => {
     const controller = new AbortController();
     setSummary(null);
     setRepeatersPayload(null);
+    setUnattributedPayload(null);
     setError(null);
     setSelectedRegion(null);
     setSelectedNodeId(null);
@@ -60,11 +64,17 @@ export const RegionsPage: React.FC = () => {
         { signal: controller.signal, cache: 'no-store' },
         { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024 },
       ),
+      fetchJson<UnattributedPayload>(
+        withScopeParams('/api/regions/unattributed', { network, observer }),
+        { signal: controller.signal, cache: 'no-store' },
+        { timeoutMs: 15_000, maxBytes: 4 * 1024 * 1024 },
+      ).catch(() => null),
     ])
-      .then(([nextSummary, nextRepeaters]) => {
+      .then(([nextSummary, nextRepeaters, nextUnattributed]) => {
         if (controller.signal.aborted) return;
         setSummary(nextSummary);
         setRepeatersPayload(nextRepeaters);
+        setUnattributedPayload(nextUnattributed);
       })
       .catch((reason: unknown) => {
         if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
@@ -79,6 +89,10 @@ export const RegionsPage: React.FC = () => {
   );
   const hiddenRegionCount = regions.length - displayRegions.length;
   const repeaters = useMemo(() => repeatersPayload?.repeaters ?? [], [repeatersPayload]);
+  const unattributedClusters = useMemo(
+    () => unattributedPayload?.clusters ?? [],
+    [unattributedPayload],
+  );
   const stats = useMemo(() => {
     let scopedPackets = 0;
     let memberships = 0;
@@ -92,8 +106,16 @@ export const RegionsPage: React.FC = () => {
       if (repeater.status === 'green') green += 1;
       else red += 1;
     }
-    return { regions: regions.length, scopedPackets, memberships, green, red };
-  }, [regions, repeaters]);
+    return {
+      regions: regions.length,
+      scopedPackets,
+      memberships,
+      green,
+      red,
+      unnamedClusters: unattributedPayload?.totals.clusters ?? 0,
+      unnamedPackets: unattributedPayload?.totals.packets ?? 0,
+    };
+  }, [regions, repeaters, unattributedPayload]);
   const selectedRegionData = useMemo(
     () => regions.find((region) => region.name === selectedRegion) ?? null,
     [regions, selectedRegion],
@@ -160,6 +182,14 @@ export const RegionsPage: React.FC = () => {
             />
             Low-confidence regions{hiddenRegionCount > 0 ? ` (${hiddenRegionCount})` : ''}
           </label>
+          <label className="regions-page__toggle">
+            <input
+              type="checkbox"
+              checked={unnamedVisible}
+              onChange={(event) => setUnnamedVisible(event.target.checked)}
+            />
+            Unnamed footprints{stats.unnamedClusters > 0 ? ` (${stats.unnamedClusters})` : ''}
+          </label>
           <label className="regions-page__toggle">Roles
             <select
               className="regions-page__select"
@@ -211,6 +241,7 @@ export const RegionsPage: React.FC = () => {
             <div><strong>{compactNumber(stats.green)}</strong><span>region-capable nodes</span></div>
             <div><strong>{compactNumber(stats.red)}</strong><span>no scoped relay observed</span></div>
             <div><strong>{compactNumber(stats.memberships)}</strong><span>relay memberships</span></div>
+            <div><strong>{compactNumber(stats.unnamedClusters)}</strong><span>unnamed footprints</span></div>
           </div>
 
           <div className="regions-page__workspace">
@@ -220,6 +251,8 @@ export const RegionsPage: React.FC = () => {
               repeaters={repeaters}
               shapesVisible={shapesVisible}
               repeatersVisible={repeatersVisible}
+              unattributed={unattributedClusters}
+              unattributedVisible={unnamedVisible}
               roleFilter={roleFilter}
               statusFilter={statusFilter}
               regionFilter={selectedRegion}
@@ -267,6 +300,35 @@ export const RegionsPage: React.FC = () => {
                       </li>
                     ))}
                   </ol>
+                  {unattributedPayload && unattributedPayload.clusters.length > 0 && (
+                    <>
+                      <h2>Unnamed footprints</h2>
+                      <p className="regions-page__note">
+                        {compactNumber(unattributedPayload.totals.packets)} scoped packets match no public
+                        region name. Private regions derive their transport key from stored key material, so
+                        the name cannot be recovered from traffic — these shapes show where the traffic is heard
+                        instead.
+                      </p>
+                      <ol className="regions-page__list">
+                        {unattributedPayload.clusters.slice(0, 8).map((cluster) => (
+                          <li key={cluster.id}>
+                            <div
+                              className="regions-page__unnamed-row"
+                              title={cluster.topNodes.length > 0
+                                ? cluster.topNodes.map((node) => `${node.name ?? node.nodeId.slice(0, 8)} (${node.packets})`).join(', ')
+                                : 'No located nodes'}
+                            >
+                              <span>
+                                <i className="regions-page__unnamed-dot" />
+                                Unnamed {cluster.id.toUpperCase()} · {cluster.nodeCount} nodes
+                              </span>
+                              <strong>{compactNumber(cluster.packets)}</strong>
+                            </div>
+                          </li>
+                        ))}
+                      </ol>
+                    </>
+                  )}
                   <p className="regions-page__note">
                     Region names are community-chosen keys, not official boundaries — shapes show where each
                     region's scoped traffic is relayed. Low-confidence regions (1–2 observations) are hidden;

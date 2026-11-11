@@ -24,7 +24,7 @@ export function OwnerLoginSection(props: {
           {props.submitting ? <LoadingIndicator label="Logging in..." variant="inline" /> : 'Login'}
         </button>
       </form>
-      {props.error && <p className="prose-note owner-login__error">{props.error}</p>}
+      {props.error && <p className="prose-note owner-login__error" role="alert">{props.error}{' '}<a href="/install#mqtt-observer">MQTT setup and troubleshooting</a></p>}
     </section>
   );
 }

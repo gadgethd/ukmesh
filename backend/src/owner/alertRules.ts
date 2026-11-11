@@ -112,20 +112,19 @@ export async function queueOwnerTestDelivery(options: {
   };
 }
 
-async function claimDueDeliveries(): Promise<Delivery[]> {
-  // A process crash cannot strand a delivery forever. A late claimant is
-  // fenced by claim_token when it tries to commit its result.
-  await query(
-    `UPDATE owner_alert_deliveries
-        SET status = 'failed',
+export const RECLAIM_EXPIRED_ALERT_DELIVERIES_SQL = `UPDATE owner_alert_deliveries
+        SET status = CASE WHEN attempts >= 5 THEN 'dead_lettered' ELSE 'failed' END,
             claim_token = NULL,
             claim_expires_at = NULL,
             next_attempt_at = NOW(),
             last_error = COALESCE(last_error, 'delivery claim expired'),
             updated_at = NOW()
       WHERE status = 'delivering'
-        AND claim_expires_at <= NOW()`,
-  );
+        AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())`;
+
+async function claimDueDeliveries(): Promise<Delivery[]> {
+  // A late claimant is fenced by claim_token when it commits its result.
+  await query(RECLAIM_EXPIRED_ALERT_DELIVERIES_SQL);
   const claimed = await query<Delivery>(
     `WITH due AS (
        SELECT delivery.id, rules.channels->>'webhook' AS webhook
@@ -173,7 +172,7 @@ async function hasClaimableDeliveries(): Promise<boolean> {
        SELECT 1
          FROM owner_alert_deliveries
         WHERE status = 'delivering'
-          AND claim_expires_at <= NOW()
+          AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
      ) AS claimable`,
     [MAX_DELIVERY_ATTEMPTS],
   );

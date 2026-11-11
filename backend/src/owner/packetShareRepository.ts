@@ -5,6 +5,25 @@ import { destinationAllowedForOwner, type PacketShareDestinationRow, type Packet
 export type PacketShareQueryFn = DatabaseQueryFn;
 export type PacketShareTransactionFn = <T>(work: (query: PacketShareQueryFn) => Promise<T>) => Promise<T>;
 
+/**
+ * Live owner-node grant predicate. It must be the same authority that gates the
+ * owner routes (a verified, non-revoked grant in the owner-auth database), not
+ * a persisted packet-share rule row.
+ */
+export type OwnerNodeGrantPredicate = (ownerUsername: string, nodeId: string) => Promise<boolean>;
+
+export type OwnerNodeGrantState = 'active' | 'inactive' | 'unknown';
+
+export type PacketShareRepositoryDeps = {
+  /**
+   * When supplied, every forwarding read/write re-checks the live grant.
+   * Omitting it preserves the legacy behaviour for owner-session callers that
+   * only list rules and for unit tests; the forwarder always wires it in
+   * production.
+   */
+  isOwnerNodeGrantActive?: OwnerNodeGrantPredicate;
+};
+
 export type PacketShareDeliveryRow = {
   id: string;
   owner_username: string;
@@ -21,7 +40,49 @@ export type PacketShareDeliveryRow = {
 export function createPacketShareRepository(
   query: PacketShareQueryFn,
   transaction?: PacketShareTransactionFn,
+  deps: PacketShareRepositoryDeps = {},
 ) {
+  /**
+   * Evaluate the live grant without letting a lookup failure masquerade as a
+   * revocation: "unknown" suppresses forwarding for this cycle but leaves
+   * queued rows intact, while an authoritative "false" is terminal.
+   */
+  async function ownerGrantState(ownerUsername: string, nodeId: string): Promise<OwnerNodeGrantState> {
+    // Fail closed when no authority source is wired: forwarding without a live
+    // grant check is exactly the defect this predicate exists to prevent.
+    if (!deps.isOwnerNodeGrantActive) return 'unknown';
+    try {
+      return (await deps.isOwnerNodeGrantActive(ownerUsername, nodeId)) ? 'active' : 'inactive';
+    } catch (error) {
+      console.error(
+        '[packet-share] owner grant lookup failed:',
+        error instanceof Error ? error.message : error,
+      );
+      return 'unknown';
+    }
+  }
+
+  async function deadLetterOwnerNodeDeliveries(
+    ownerUsername: string,
+    nodeId: string,
+    reason = 'owner node grant is not active',
+  ): Promise<number> {
+    const result = await query<{ id: string }>(
+      `UPDATE owner_packet_share_deliveries
+          SET status = 'dead_lettered',
+              last_error = $3,
+              claim_token = NULL,
+              claim_expires_at = NULL,
+              updated_at = NOW()
+        WHERE owner_username = $1
+          AND node_id = $2
+          AND status IN ('pending', 'failed', 'delivering')
+      RETURNING id`,
+      [ownerUsername, nodeId, reason.slice(0, 500)],
+    );
+    return result.rows.length;
+  }
+
   async function listDestinations(ownerUsername: string, nodeId: string): Promise<PacketShareDestinationRow[]> {
     const result = await query<PacketShareDestinationRow>(
       `SELECT destination_id, display_name, website_url, description,
@@ -98,7 +159,26 @@ export function createPacketShareRepository(
         ORDER BY destination.destination_id`,
       [nodeId],
     );
-    return result.rows.filter((row) => destinationAllowedForOwner(row, row.owner_username, row.node_id));
+    const allowed = result.rows.filter((row) => destinationAllowedForOwner(row, row.owner_username, row.node_id));
+    const verified: PacketShareTarget[] = [];
+    const grantStates = new Map<string, OwnerNodeGrantState>();
+    for (const row of allowed) {
+      const key = `${row.owner_username}\u0000${row.node_id}`;
+      let state = grantStates.get(key);
+      if (!state) {
+        state = await ownerGrantState(row.owner_username, row.node_id);
+        grantStates.set(key, state);
+      }
+      if (state === 'inactive') {
+        // A persisted rule row is not authority: revoke queued work for this
+        // owner/node as soon as the live grant says it is no longer held.
+        await deadLetterOwnerNodeDeliveries(row.owner_username, row.node_id);
+        continue;
+      }
+      if (state === 'unknown') continue;
+      verified.push(row);
+    }
+    return verified;
   }
 
   async function replaceOwnerRules(
@@ -155,6 +235,13 @@ export function createPacketShareRepository(
     destinationTopic: string;
     payload: Record<string, unknown>;
   }): Promise<boolean> {
+    const grantState = await ownerGrantState(input.ownerUsername, input.nodeId);
+    if (grantState !== 'active') {
+      if (grantState === 'inactive') {
+        await deadLetterOwnerNodeDeliveries(input.ownerUsername, input.nodeId);
+      }
+      return false;
+    }
     const result = await query(
       `INSERT INTO owner_packet_share_deliveries (
          owner_username, node_id, destination_id, event_key,
@@ -270,6 +357,8 @@ export function createPacketShareRepository(
     activeTargets,
     replaceOwnerRules,
     enqueueDelivery,
+    ownerGrantState,
+    deadLetterOwnerNodeDeliveries,
     reclaimExpiredClaims,
     claimDue,
     markSucceeded,

@@ -107,6 +107,10 @@ type appConfig struct {
 	minRecomputeIntervalHours float64
 	forceRecompute            bool
 	forceAllTiers             bool
+	// Scheduled runs use the daily cron slot instead of the startup guard
+	// and per-tier calendar-day freshness. Complex cron keeps the old rules.
+	scheduled    bool
+	scheduleCron string
 }
 
 // toAppConfig maps the YAML config schema onto the subset of fields run()
@@ -176,6 +180,7 @@ func toAppConfig(yc yconfig.Config) appConfig {
 		calibrationEnabled: yc.Calibration.Enabled,
 
 		minRecomputeIntervalHours: yc.Coverage.MinRecomputeIntervalHours,
+		scheduleCron:              yc.Schedule.Cron,
 	}
 }
 

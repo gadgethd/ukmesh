@@ -215,14 +215,6 @@ export function renderOwnerAcl(
   const systemReadUserSet = new Set(normalizedSystemReadUsers);
   const normalizedSystemReadwriteTopics = normalizeAclTopics(systemReadwriteTopics);
 
-  const generation = createHash('sha256')
-    .update(JSON.stringify({
-      renderer: OWNER_ACL_RENDERER_VERSION,
-      grants: sortedNormalized,
-      systemReadUsers: normalizedSystemReadUsers,
-      systemReadwriteTopics: normalizedSystemReadwriteTopics,
-    }))
-    .digest('hex');
   const stripped = stripManagedSection(existingContent);
   const parsed = parseAcl(stripped.content);
   parsed.managedSectionFound = stripped.found;
@@ -265,6 +257,15 @@ export function renderOwnerAcl(
     while (output.at(-1)?.trim() === '') output.pop();
   }
   if (output.length > 0) output.push('');
+  // Hash the effective policy, including retained global/unmanaged rules.
+  // Unused render options, comments and generation markers are not policy.
+  // This both avoids false bumps and prevents different permissions sharing
+  // one artifact key when an unmanaged directive changes.
+  const policy = [...output, ...buildManagedSection(sortedNormalized, '', systemReadUserSet)]
+    .map((line) => line.trim()).filter((line) => line && !line.startsWith('#'));
+  const generation = createHash('sha256')
+    .update(JSON.stringify({ renderer: OWNER_ACL_RENDERER_VERSION, policy }))
+    .digest('hex');
   output.push(...buildManagedSection(sortedNormalized, generation, systemReadUserSet));
   const content = `${output.join('\n').trimEnd()}\n`;
   const contentSha256 = createHash('sha256').update(content).digest('hex');

@@ -59,6 +59,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
        WHERE p.time > NOW() - INTERVAL '48 hours'
          AND p.network = ANY($1::text[])
          AND p.rx_node_id IS NOT NULL
+         AND ${publicPacketPrivacySql('p')}
        GROUP BY p.rx_node_id
      )
      SELECT n.node_id, n.name, n.lat, n.lon,

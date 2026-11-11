@@ -16,7 +16,7 @@ export interface WSMessage {
 
 type MessageHandler = (msg: WSMessage) => void;
 
-export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, scopeEpoch = 0) {
+export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, scopeEpoch = 0, enabled = true) {
   const [readyState, setReadyState] = useState<WSReadyState>('connecting');
   const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
   const wsRef   = useRef<WebSocket | null>(null);
@@ -27,7 +27,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
   handlerRef.current = onMessage;
 
   const connect = useCallback(() => {
-    if (!shouldReconnectRef.current) return;
+    if (!enabled || !shouldReconnectRef.current) return;
 
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -39,6 +39,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     const params = new URLSearchParams();
     if (scope.network) params.set('network', scope.network);
     if (scope.observer) params.set('observer', scope.observer);
+    if (scope.region) params.set('region', scope.region);
     const query = params.toString();
     const suffix = query ? `?${query}` : '';
     const url = `${protocol}//${window.location.host}/ws${suffix}`;
@@ -86,7 +87,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     ws.onerror = () => {
       ws.close();
     };
-  }, [scope.network, scope.observer, scopeEpoch]);
+  }, [scope.network, scope.observer, scope.region, scopeEpoch, enabled]);
 
   useEffect(() => {
     shouldReconnectRef.current = true;
