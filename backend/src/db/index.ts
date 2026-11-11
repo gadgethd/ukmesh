@@ -563,12 +563,10 @@ export async function upsertNode(nodeId: string, updates: {
   }
 
   return withIngestTransaction(async (transactionQuery) => {
-    const existing = hasIncomingPosition
-      ? await transactionQuery<{ lat: number | null; lon: number | null }>(
-          'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
-          [nodeId],
-        )
-      : null;
+    const existing = await transactionQuery<{ lat: number | null; lon: number | null }>(
+      'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
+      [nodeId],
+    );
 
     const upsert = await transactionQuery<{ advert_count: number }>(
       `WITH advert_once AS (
