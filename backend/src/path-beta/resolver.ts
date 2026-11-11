@@ -8,12 +8,7 @@ import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import { normalizePathHash, nodePathHash } from '../path-hash/utils.js';
 import type { DecodedHop } from '../path-core/decoder.js';
-import {
-  BETA_PURPLE_THRESHOLD,
-  CONTEXT_TTL_MS,
-  MAX_BETA_HOPS,
-  MODEL_LIMIT,
-} from './constants.js';
+import { pathingConfig } from '../platform/config/pathing.js';
 import { hasCoords, linkKey } from './geometry.js';
 import {
   decodeBetaCanonicalGroup,
@@ -45,7 +40,7 @@ const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
   name: 'path_context',
   maxEntries: 16,
   maxWeight: 128 * 1024 * 1024,
-  ttlMs: CONTEXT_TTL_MS,
+  ttlMs: pathingConfig.contextTtlMs,
 });
 const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(
   24 * 365,
@@ -110,7 +105,7 @@ async function buildLearningModel(
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
-      [network, MODEL_LIMIT],
+      [network, pathingConfig.modelLimit],
       signal,
     ),
     query<{
@@ -124,7 +119,7 @@ async function buildLearningModel(
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
-      [network, MODEL_LIMIT],
+      [network, pathingConfig.modelLimit],
       signal,
     ),
     query<{
@@ -139,7 +134,7 @@ async function buildLearningModel(
        WHERE network = $1
        ORDER BY score DESC, observed_count DESC
        LIMIT $2`,
-      [network, MODEL_LIMIT],
+      [network, pathingConfig.modelLimit],
       signal,
     ),
     query<{
@@ -154,7 +149,7 @@ async function buildLearningModel(
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
-      [network, MODEL_LIMIT],
+      [network, pathingConfig.modelLimit],
       signal,
     ),
     query<{ confidence_scale: number; confidence_bias: number }>(
@@ -234,7 +229,7 @@ export function canReusePathContext(input: {
   pinForBatch: boolean;
 }): boolean {
   return input.cachedVisibilityGeneration === input.currentVisibilityGeneration
-    && (input.pinForBatch || input.ageMs < CONTEXT_TTL_MS);
+    && (input.pinForBatch || input.ageMs < pathingConfig.contextTtlMs);
 }
 
 async function loadContext(
@@ -431,7 +426,7 @@ export function prepareObservationEntries(rows: readonly PathPacket[], context: 
   for (const row of rows) {
     if (!row.rx_node_id) continue;
     const prepared = preparePacketObservation(row, context.nodesById.get(row.rx_node_id) ?? null);
-    if (prepared.ignoreForPathing || prepared.hops.length === 0 || prepared.hops.length >= MAX_BETA_HOPS) continue;
+    if (prepared.ignoreForPathing || prepared.hops.length === 0 || prepared.hops.length >= pathingConfig.maxBetaHops) continue;
     const entry = toObserverEntry(prepared);
     if (!entry) continue;
     observers.add(entry.observerId);
@@ -566,7 +561,7 @@ function buildCanonicalPath(decoded: BetaSharedDecode): BetaCanonicalPathNode[] 
       name: hop?.name ?? null,
       lat: hop?.lat ?? null,
       lon: hop?.lon ?? null,
-      ambiguous: hop?.ambiguous ?? (confidence == null || confidence < BETA_PURPLE_THRESHOLD),
+      ambiguous: hop?.ambiguous ?? (confidence == null || confidence < pathingConfig.purpleThreshold),
       confidence,
     });
   }
@@ -631,7 +626,7 @@ function emptyPayload(
     redPath: null,
     redSegments: [],
     completionPaths: [],
-    threshold: BETA_PURPLE_THRESHOLD,
+    threshold: pathingConfig.purpleThreshold,
     debug: {
       hopsRequested,
       hopsUsed: 0,
@@ -666,7 +661,7 @@ function payloadFromProjection(
     redPath: null,
     redSegments: [],
     completionPaths: [],
-    threshold: BETA_PURPLE_THRESHOLD,
+    threshold: pathingConfig.purpleThreshold,
     debug: {
       hopsRequested: entry.hashes.length,
       hopsUsed: projection.resolvedHopCount,
@@ -739,7 +734,7 @@ export async function resolveBetaPathForPacketHash(
   const convertedSelectedEntry = toObserverEntry(selected);
   if (!convertedSelectedEntry
       || convertedSelectedEntry.hops.length === 0
-      || convertedSelectedEntry.hops.length >= MAX_BETA_HOPS) {
+      || convertedSelectedEntry.hops.length >= pathingConfig.maxBetaHops) {
     const result = emptyPayload(packetHash, selected.packet, selected.hashes.length, selected.hops.length);
     logPathResolution(options, `[path-beta] hash=${packetHash} network=${network} mode=none reason=no-decodable-hops`);
     return maskResolvedPayload(result, hiddenCoordMask);
@@ -894,7 +889,7 @@ async function resolveMultiObserverBetaPathFromRows(
     for (let position = 0; position < decoded.canonicalHashes.length; position++) {
       const hop = decoded.hops.get(position);
       const confidence = decoded.hopConfidences.get(position) ?? 0;
-      if (!hop?.nodeId || confidence < BETA_PURPLE_THRESHOLD) continue;
+      if (!hop?.nodeId || confidence < pathingConfig.purpleThreshold) continue;
       addStickyUpdate(stickyUpdates, stickyConflicts, decoded.canonicalHashes[position]!, hop.nodeId);
     }
 

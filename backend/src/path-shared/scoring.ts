@@ -23,11 +23,6 @@ export function transitionKey(fromNodeId: string, toNodeId: string): string {
   return `${fromNodeId}|${toNodeId}`;
 }
 
-/** Directed 2-gram motif key, matching rebuild.ts `${from}>${to}`. */
-export function motif2Key(fromNodeId: string, toNodeId: string): string {
-  return `${fromNodeId}>${toNodeId}`;
-}
-
 /**
  * Weights consumed by the shared Viterbi decoder. Evidence providers may pass
  * a different table for experiments, but production resolvers should use
@@ -74,9 +69,6 @@ export const SCORE: PathScoreWeights = {
 
 /** ML score at/above this is treated as strong (dominant) evidence. */
 export const ML_DOMINANT_THRESHOLD = 0.85;
-
-/** Lowest ML prefix score loaded as candidate evidence. */
-export const ML_SCORE_LOAD_THRESHOLD = 0.80;
 
 /** Distance-decay constant (km) for the transition distance-shaping term. */
 export const DIST_DECAY_KM = 40;
