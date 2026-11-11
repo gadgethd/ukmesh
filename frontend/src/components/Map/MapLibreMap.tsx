@@ -102,16 +102,7 @@ function setBasemapStyle(map: maplibregl.Map, style: string | maplibregl.StyleSp
   });
 }
 
-// The node detail dock is an overlay, so node selection must never reserve
-// camera padding or shift the visible map.
-function mapPaddingForNode(_selected: string | null): { top: number; right: number; bottom: number; left: number } {
-  return {
-    top: 0,
-    right: 0,
-    bottom: 0,
-    left: 0,
-  };
-}
+
 
 const NODE_LINK_CACHE_TTL_MS = 5 * 60_000;
 const nodeLinksCache = new ScopedCache<NodeLink[]>({
@@ -874,7 +865,9 @@ export function MapLibreMap({
     const notifyMapReady = () => {
       if (mapReadyNotifiedRef.current) return;
       mapReadyNotifiedRef.current = true;
-      map.setPadding(mapPaddingForNode(null));
+      // The node detail dock is an overlay, so selection must never reserve
+      // camera padding or shift the visible map.
+      map.setPadding({ top: 0, right: 0, bottom: 0, left: 0 });
       onMapReady?.(map);
     };
 
