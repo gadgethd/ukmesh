@@ -3,20 +3,7 @@ import { useOverlayStore } from '../../store/overlayStore.js';
 import type { MapMode } from '../../config/mapModes.js';
 import { MapModeSelector } from '../app/MapModeSelector.js';
 import { WatchlistPanel } from '../app/WatchlistPanel.js';
-
-export interface Filters {
-  livePackets:       boolean;
-  links:             boolean;
-  terrain:           boolean;
-  clientNodes:       boolean;
-  packetHistory:     boolean;
-  coverage:          boolean;
-  heatmap:           boolean;
-  betaPaths:         boolean;
-  betaPathThreshold: number;  // 0–1
-  hexClashes:        boolean;
-  hexClashMaxHops:   number;  // 0–3 (0 = direct only)
-}
+import type { Filters } from '../../types/filters.js';
 
 interface FilterPanelProps {
   filters:  Filters;

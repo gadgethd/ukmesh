@@ -1,4 +1,4 @@
-import type { Filters } from '../components/FilterPanel/FilterPanel.js';
+import type { Filters } from '../types/filters.js';
 
 const BOOLEAN_FILTER_KEYS = [
   'livePackets',
