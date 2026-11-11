@@ -12,14 +12,10 @@ export interface NodeLink {
 }
 
 // Shared with the repeater page's existing last-seen and packet timestamps.
-export function timeAgo(iso: string, now = Date.now()): string {
-  const timestamp = Date.parse(iso);
-  if (!Number.isFinite(timestamp)) return 'Unknown';
-  const secs = Math.max(0, Math.floor((now - timestamp) / 1000));
-  if (secs < 60) return `${secs}s ago`;
-  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
-  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
-  return `${Math.floor(secs / 86400)}d ago`;
+import { timeAgo as relativeTime } from '../utils/time.js';
+
+function timeAgo(iso: string, now = Date.now()): string {
+  return relativeTime(iso, { now, empty: 'Unknown' });
 }
 
 function contactTime(link: NodeLink): number {

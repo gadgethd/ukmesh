@@ -140,16 +140,6 @@ export function feedPathCacheKey(packet: FeedPacket): string {
   return `${packet.packet_hash.toUpperCase()}:${observers}`;
 }
 
-export function timeAgo(ts?: string | null): string {
-  if (!ts) return 'never';
-  const ageMs = Math.max(0, Date.now() - Date.parse(ts));
-  const seconds = Math.floor(ageMs / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
-}
-
 export function formatFeedTimestamp(ts: string): string {
   const date = new Date(ts);
   if (!Number.isFinite(date.getTime())) return '—';

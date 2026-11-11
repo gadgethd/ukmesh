@@ -2,6 +2,7 @@ import React, { lazy, memo, Suspense, useEffect } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay.js';
 import { OPENFREEMAP_STYLE_DARK } from '../Map/mapConfig.js';
+import { timeAgo as relativeTime } from '../../utils/time.js';
 
 export const C_CYAN = '#00c4ff';
 export const C_GREEN = '#00e676';
@@ -178,12 +179,7 @@ export function formatRatio(numerator: number, denominator: number): string {
 }
 
 export function formatTimeAgo(timestamp: string | null): string {
-  if (!timestamp) return 'never';
-  const seconds = Math.floor(Math.max(0, Date.now() - Date.parse(timestamp)) / 1000);
-  if (seconds < 60) return `${seconds}s ago`;
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  return relativeTime(timestamp, { empty: 'never' });
 }
 
 export function presentDecodedPath(nodes: DecodedPathNode[], fallback: string | null): {
