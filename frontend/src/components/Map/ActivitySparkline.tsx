@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { withScopeParams } from '../../utils/api.js';
+import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { getCurrentSite } from '../../config/site.js';
 
 type HistoryRow = { time: string };
@@ -23,8 +23,7 @@ export const ActivitySparkline: React.FC<Props> = ({ nodeId, hours = 24 }) => {
       `/api/nodes/${encodeURIComponent(nodeId)}/history?hours=${hours}`,
       { network: site.networkFilter, observer: site.observerId },
     );
-    void fetch(endpoint, { signal: controller.signal })
-      .then((res) => (res.ok ? (res.json() as Promise<HistoryRow[]>) : Promise.reject(new Error('bad'))))
+    void fetchJson<HistoryRow[]>(endpoint, { signal: controller.signal })
       .then((rows) => {
         const counts = new Array(hours).fill(0) as number[];
         const now = Date.now();
