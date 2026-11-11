@@ -1,19 +1,10 @@
 import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../types/domain.js';
-import type { FeedPacket } from './UKFeedPage.js';
+import type { FeedPacket, LazyPathResult } from './feedModel.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
 import type { MessageTags, TagConfidence } from '../../types/domain.js';
-import {
-  PathMap,
-  type LazyPath,
-  type LazyPathNode,
-  type LazyPathResult,
-  type ResolvedPath,
-} from './PacketPathMap.js';
-
-export { PathMap };
-export type { LazyPath, LazyPathNode, LazyPathResult, ResolvedPath };
+import { PathMap } from './PacketPathMap.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 

@@ -1,7 +1,34 @@
 import type { AggregatedPacket, MeshNode } from '../../types/domain.js';
 import type { MessageTags, TagConfidence } from '../../types/domain.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
-import type { LazyPathNode, LazyPathResult } from './PacketDetailPanel.js';
+
+/** Resolved lazy-path wire shape returned by /api/path-lazy/resolve. */
+export type LazyPathNode = {
+  position: number;
+  hash: string;
+  nodeId: string | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+  appearances: number;
+  totalObservations: number;
+  ambiguous: boolean;
+  isObserver: boolean;
+};
+
+export type LazyPath = {
+  canonicalPath: LazyPathNode[];
+  coordinates: Array<[number, number]>;
+  matchedHops: number;
+  totalHops: number;
+  observerIds: string[];
+};
+
+export type LazyPathResult = {
+  packetHash: string;
+  observerCount: number;
+  paths: LazyPath[];
+};
 
 export type FeedPacket = {
   time: string;

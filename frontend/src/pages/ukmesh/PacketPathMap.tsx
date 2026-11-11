@@ -4,6 +4,7 @@ import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../..
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { OPENFREEMAP_STYLE_DARK } from '../../components/Map/mapConfig.js';
 import type { MeshNode } from '../../types/domain.js';
+import type { LazyPath, LazyPathNode } from './feedModel.js';
 import {
   multiObserverPathRoutes,
   type CanonicalPathNode,
@@ -15,33 +16,6 @@ import { buildPathNodePopupContent } from './pathNodePopup.js';
 
 export type { CanonicalPathNode, MultiObserverBetaResponse, ResolveMode, ServerBetaResponse };
 export type ResolvedPath = ServerBetaResponse;
-
-export type LazyPathNode = {
-  position: number;
-  hash: string;
-  nodeId: string | null;
-  name: string | null;
-  lat: number | null;
-  lon: number | null;
-  appearances: number;
-  totalObservations: number;
-  ambiguous: boolean;
-  isObserver: boolean;
-};
-
-export type LazyPath = {
-  canonicalPath: LazyPathNode[];
-  coordinates: Array<[number, number]>;
-  matchedHops: number;
-  totalHops: number;
-  observerIds: string[];
-};
-
-export type LazyPathResult = {
-  packetHash: string;
-  observerCount: number;
-  paths: LazyPath[];
-};
 
 function lazyPathRuns(nodes: readonly LazyPathNode[]): LazyPathNode[][] {
   const runs: LazyPathNode[][] = [];
