@@ -8,15 +8,9 @@ import type {
   Router,
 } from 'express';
 
-export class ApiInputError extends Error {
-  constructor(
-    message: string,
-    readonly code = 'INVALID_INPUT',
-    readonly status = 400,
-  ) {
-    super(message);
-  }
-}
+import { ApiInputError } from '../platform/apiInputError.js';
+
+export { ApiInputError };
 
 type ExpressLayer = {
   handle?: RequestHandler & { stack?: ExpressLayer[] };
