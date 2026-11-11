@@ -27,7 +27,7 @@ type NavItem = {
   enabled: boolean;
 };
 
-const OWNER_SESSION_EVENT = 'meshcore-owner-session';
+import { OWNER_SESSION_EVENT } from '../../utils/appEvents.js';
 
 type OwnerSessionSummary = {
   ok: boolean;

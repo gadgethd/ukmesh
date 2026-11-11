@@ -5,6 +5,7 @@ import { OwnerLoginSection, OwnerPacketSharingSection, OwnerPublicFeedSection } 
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
 import { ApiResponseError, fetchJson } from '../utils/api.js';
+import { isValidMapCoord } from '../utils/pathing.js';
 
 import {
   PACKET_LABELS,
@@ -22,7 +23,6 @@ import {
   isOwnerSessionResponse,
   isPacketSharingOwner,
   isRecord,
-  isValidMapCoord,
   lastHopSeriesCache,
   linkBadge,
   nodeRoleLabel,

@@ -87,7 +87,7 @@ export function isPacketSharingOwner(username: string | null | undefined): boole
   return typeof username === 'string' && username.trim().length > 0;
 }
 
-const OWNER_SESSION_EVENT = 'meshcore-owner-session';
+import { OWNER_SESSION_EVENT } from '../../utils/appEvents.js';
 const LAST_HOP_EXCLUDED_COOKIE = 'meshcore-owner-last-hop-hidden-v1';
 const LAST_HOP_COOKIE_MAX_AGE = 60 * 60 * 24 * 365;
 
@@ -457,21 +457,9 @@ export function formatNeighborAge(timestamp: string | null, now = Date.now()): s
   if (!timestamp) return '—';
   const time = Date.parse(timestamp);
   if (!Number.isFinite(time)) return '—';
-  const totalMinutes = Math.max(0, Math.floor((now - time) / 60_000));
-  const days = Math.floor(totalMinutes / 1_440);
-  const hours = Math.floor((totalMinutes % 1_440) / 60);
-  const minutes = totalMinutes % 60;
-  if (days > 0) return `${days}d ${hours}h ${minutes}m ago`;
-  if (hours > 0) return `${hours}h ${minutes}m ago`;
-  return `${minutes}m ago`;
+  return `${formatDurationMs(Math.max(0, now - time))} ago`;
 }
 
-export function isValidMapCoord(lat: number | null, lon: number | null): boolean {
-  if (lat == null || lon == null) return false;
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
-  if (Math.abs(lat) < 5 && Math.abs(lon) < 5) return false;
-  return lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180;
-}
 
 export const PACKET_LABELS: Record<number, string> = {
   0: 'Request',

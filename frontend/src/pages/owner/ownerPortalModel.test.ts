@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { isValidMapCoord } from '../../utils/pathing.js';
 import {
   cleanPacketBody,
   formatDurationMs,
@@ -7,7 +8,6 @@ import {
   formatNeighborAge,
   isOwnerLiveResponse,
   isOwnerSessionResponse,
-  isValidMapCoord,
   nodeRoleLabel,
   ownerLoginCredentials,
   ownerLoginValidationError,
