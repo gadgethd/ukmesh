@@ -71,7 +71,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
     };
   }, [menuOpen]);
 
-  const filterRows = visibleFilterRows(viewshedEnabled, heatmapEnabled, rfCoverageEnabled);
+  const filterRows = visibleFilterRows(heatmapEnabled, rfCoverageEnabled);
   const activeFilterCount = filterRows.filter(({ key }) => filters[key]).length;
 
   if (fullScreenMap) {

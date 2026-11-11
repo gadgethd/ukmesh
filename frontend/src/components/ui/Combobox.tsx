@@ -1,6 +1,5 @@
 import { useRef, type ReactNode, type RefObject } from 'react';
 import {
-  Button,
   ComboBox as AriaComboBox,
   Input,
   Label,
@@ -34,7 +33,6 @@ export type ComboboxProps = {
   inputClassName?: string;
   popoverClassName?: string;
   optionClassName?: string;
-  showToggleButton?: boolean;
 };
 
 export function Combobox({
@@ -54,7 +52,6 @@ export function Combobox({
   inputClassName,
   popoverClassName,
   optionClassName,
-  showToggleButton = false,
 }: ComboboxProps) {
   const selectionInProgressRef = useRef(false);
 
@@ -87,9 +84,6 @@ export function Combobox({
           placeholder={placeholder}
           autoFocus={autoFocus}
         />
-        {showToggleButton ? (
-          <Button className="ui-combobox__toggle" aria-label={`Show ${label} options`}>⌄</Button>
-        ) : null}
       </div>
       <Popover
         isOpen={isOpen}
