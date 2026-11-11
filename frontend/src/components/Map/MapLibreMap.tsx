@@ -1317,12 +1317,10 @@ export function MapLibreMap({
 
   // -- Popup management ------------------------------------------------------
 
-  // Find the full observed MeshNode from nodeId.
   const getNode = useCallback((nodeId: string): MeshNode | undefined => {
     return nodesRef.current.get(nodeId);
   }, []);
 
-  // Fetch neighbour links for the selected node's detail panel
   useEffect(() => {
     if (!selectedNodeId) { setPopupLinks(null); return; }
     const node = getNode(selectedNodeId);

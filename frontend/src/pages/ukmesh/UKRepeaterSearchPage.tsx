@@ -162,7 +162,6 @@ async function loadCompleteNodeSnapshot(
 function predictNextAdvert<T extends { time: string; packet_hash: string }>(packets: T[]): { nextAdvert: Date; avgInterval: number; samples: number } | null {
   if (packets.length < 2) return null;
 
-  // Sort by time ascending (oldest first)
   const sorted = [...packets].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
   // First deduplicate by packet_hash (same advert received by different nodes)
@@ -199,7 +198,6 @@ function predictNextAdvert<T extends { time: string; packet_hash: string }>(pack
   // Take last 10 unique packets
   const recent = unique.slice(-10);
 
-  // Calculate intervals between consecutive packets
   const intervals: number[] = [];
   for (let i = 1; i < recent.length; i++) {
     const prev = new Date(recent[i - 1].time).getTime();
@@ -270,7 +268,6 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const selectionSequenceRef = useRef(0);
   const selectionControllerRef = useRef<AbortController | null>(null);
 
-  // Load nodes on mount
   useEffect(() => {
     const controller = new AbortController();
     setLoadingNodes(true);
@@ -359,7 +356,6 @@ export const UKRepeaterSearchPage: React.FC = () => {
     ),
   })), [searchResults]);
 
-  // Calculate predicted next advert based on advert packets
   const prediction = useMemo(() => {
     if (!adverts.length) return null;
     return predictNextAdvert(adverts);
