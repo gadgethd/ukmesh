@@ -346,7 +346,7 @@ export const App: React.FC = () => {
             cache: 'no-store',
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(MAP_FETCH_TIMEOUT_MS)]),
           }),
-          fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter })), {
+          fetch(uncachedEndpoint(withScopeParams('/api/stats', { network: networkFilter, observer: observerFilter, region })), {
             cache: 'no-store',
             signal: AbortSignal.any([controller.signal, AbortSignal.timeout(MAP_FETCH_TIMEOUT_MS)]),
           }),

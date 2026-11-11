@@ -8,9 +8,6 @@ import type { Filters } from '../../types/filters.js';
 interface FilterPanelProps {
   filters:  Filters;
   onChange: (f: Filters) => void;
-  betaPathConfidence?: number | null;
-  betaPermutationCount?: number | null;
-  betaRemainingHops?: number | null;
   activeMode: MapMode | null;
   viewshedEnabled: boolean;
   rfCoverageEnabled: boolean;
@@ -44,21 +41,20 @@ export const FILTER_ROWS: FilterRow[] = [
 ];
 
 export const visibleFilterRows = (
-  _viewshedEnabled: boolean,
   heatmapEnabled: boolean,
   rfCoverageEnabled = false,
 ): FilterRow[] =>
   FILTER_ROWS.filter(({ key, requiresRfCoverage }) =>
     (key !== 'heatmap' || heatmapEnabled) && (!requiresRfCoverage || rfCoverageEnabled));
 
-const activeLayerCount = (filters: Filters, viewshedEnabled: boolean, heatmapEnabled: boolean, rfCoverageEnabled: boolean): number =>
-  visibleFilterRows(viewshedEnabled, heatmapEnabled, rfCoverageEnabled).reduce(
+const activeLayerCount = (filters: Filters, heatmapEnabled: boolean, rfCoverageEnabled: boolean): number =>
+  visibleFilterRows(heatmapEnabled, rfCoverageEnabled).reduce(
     (count, { key }) => count + (filters[key] ? 1 : 0),
     0,
   );
 
 export const FilterPanel: React.FC<FilterPanelProps> = ({
-  filters, onChange, betaPathConfidence, betaPermutationCount, betaRemainingHops,
+  filters, onChange,
   activeMode, viewshedEnabled, rfCoverageEnabled, heatmapEnabled, onModeChange, onShare, shareLabel,
   collapsed, onToggleCollapse, nodeOpen = false,
 }) => {
@@ -66,15 +62,15 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
   const liveBetaPermutationCount = useOverlayStore((state) => state.betaPermutationCount);
   const liveBetaRemainingHops = useOverlayStore((state) => state.betaRemainingHops);
   const pathExplanation = useOverlayStore((state) => state.pathExplanation);
-  const resolvedConfidence = betaPathConfidence ?? liveBetaPathConfidence;
-  const resolvedPermutations = betaPermutationCount ?? liveBetaPermutationCount;
-  const resolvedRemainingHops = betaRemainingHops ?? liveBetaRemainingHops;
+  const resolvedConfidence = liveBetaPathConfidence;
+  const resolvedPermutations = liveBetaPermutationCount;
+  const resolvedRemainingHops = liveBetaRemainingHops;
   const toggle = (key: keyof Filters) => {
     onChange({ ...filters, [key]: !filters[key] });
   };
 
   if (collapsed) {
-    const count = activeLayerCount(filters, viewshedEnabled, heatmapEnabled, rfCoverageEnabled);
+    const count = activeLayerCount(filters, heatmapEnabled, rfCoverageEnabled);
     return (
       <button
         type="button"
@@ -134,7 +130,7 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           )}
         </div>
       )}
-      {visibleFilterRows(viewshedEnabled, heatmapEnabled, rfCoverageEnabled).map(({ key, label, color, hollow }) => (
+      {visibleFilterRows(heatmapEnabled, rfCoverageEnabled).map(({ key, label, color, hollow }) => (
         <React.Fragment key={key}>
           <button
             type="button"

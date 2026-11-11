@@ -6,16 +6,13 @@ type LoadingIndicatorProps = {
   label?: string;
   variant?: LoadingIndicatorVariant;
   className?: string;
-  visible?: boolean;
 };
 
 export const LoadingIndicator: React.FC<LoadingIndicatorProps> = ({
   label = 'Loading...',
   variant = 'block',
   className = '',
-  visible = true,
 }) => {
-  if (!visible) return null;
   const cls = ['loading-indicator', `loading-indicator--${variant}`, className]
     .filter(Boolean)
     .join(' ');

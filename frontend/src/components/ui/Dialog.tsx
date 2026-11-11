@@ -1,6 +1,5 @@
 import { useEffect, useRef, type ReactNode } from 'react';
 import {
-  Button,
   Dialog as AriaDialog,
   Heading,
   Modal,
@@ -66,16 +65,3 @@ export function DialogTitle({
   return <Heading slot="title" className={className}>{children}</Heading>;
 }
 
-export function DialogCloseButton({
-  children = 'Close',
-  className,
-}: {
-  children?: ReactNode;
-  className?: string;
-}) {
-  return (
-    <Button slot="close" className={className}>
-      {children}
-    </Button>
-  );
-}
