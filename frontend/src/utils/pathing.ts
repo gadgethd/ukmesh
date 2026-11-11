@@ -2,7 +2,7 @@ import type { MeshNode } from '../types/domain.js';
 
 export const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
 export const HIDDEN_NODE_MASK_RADIUS_METERS = HIDDEN_NODE_MASK_RADIUS_MILES * 1609.344;
-const PROHIBITED_NODE_MARKER = '🚫';
+export const PROHIBITED_NODE_MARKER = '🚫';
 export type HiddenMaskGeometry = {
   center: [number, number];
   point: [number, number];

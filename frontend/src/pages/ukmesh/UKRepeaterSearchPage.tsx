@@ -8,6 +8,7 @@ import { ScopedCache } from '../../utils/scopedCache.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
 import { ConfirmedNeighbours, type NodeLink } from '../../components/ConfirmedNeighbours.js';
 import { timeAgo } from '../../utils/time.js';
+import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
 
 interface MeshNode {
   node_id: string;
@@ -328,7 +329,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
     const localMatches = nodes
       .filter(n => {
         // Exclude nodes marked as disabled (🚫 in name)
-        if (n.name && n.name.includes('🚫')) return false;
+        if (n.name && n.name.includes(PROHIBITED_NODE_MARKER)) return false;
         // Repeaters only (role=2); exclude companion radios (role=1) and room servers (role=3)
         if (n.role !== undefined && n.role !== 2) return false;
         const nameMatch = n.name && n.name.toLowerCase().includes(q);
@@ -337,7 +338,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
         return nameMatch || keyMatch || iataMatch;
       });
     const matches = new Map(nameMatches
-      .filter(n => !n.name?.includes('🚫') && (n.role === undefined || n.role === null || n.role === 2))
+      .filter(n => !n.name?.includes(PROHIBITED_NODE_MARKER) && (n.role === undefined || n.role === null || n.role === 2))
       .map(n => [n.node_id, n]));
     for (const node of localMatches) {
       if (!matches.has(node.node_id)) matches.set(node.node_id, node);

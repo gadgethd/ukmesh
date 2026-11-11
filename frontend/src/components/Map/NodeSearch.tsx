@@ -3,6 +3,7 @@ import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../types/domain.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
+import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
@@ -25,7 +26,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
   const [geoStatus, setGeoStatus] = useState<string | null>(null);
 
   const searchableNodes = useMemo(() => Array.from(nodes.values()).filter(
-    (node) => isValidMapCoord(node.lat, node.lon) && !node.name?.includes('🚫'),
+    (node) => isValidMapCoord(node.lat, node.lon) && !node.name?.includes(PROHIBITED_NODE_MARKER),
   ), [nodes]);
   const fuse = useMemo(() => new Fuse(searchableNodes, {
     keys: [

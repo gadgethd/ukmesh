@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
+import { PROHIBITED_NODE_MARKER } from '../utils/pathing.js';
 import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../hooks/packetFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
@@ -41,7 +42,7 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
   const typeLabel = p.packetType !== undefined
     ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
     : '???';
-  const display = p.summary?.includes('🚫') ? '[redacted]' : p.summary;
+  const display = p.summary?.includes(PROHIBITED_NODE_MARKER) ? '[redacted]' : p.summary;
   const messageText = display ?? 'No decoded message text';
   const advertBadge = p.packetType === 4 && typeof p.advertCount === 'number'
     ? (p.advertCount === 1 ? 'NEW' : `${p.advertCount}`)
