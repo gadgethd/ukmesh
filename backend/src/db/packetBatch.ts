@@ -1,3 +1,4 @@
+import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import type { QueryResultRow } from 'pg';
 import {
   packetBatchDedupeTotal,
@@ -33,12 +34,6 @@ const FLUSH_INTERVAL_MS = boundedEnvInteger('MQTT_INGEST_FLUSH_MS', 10, 0, 1_000
 const MAX_QUEUE_DEPTH = boundedEnvInteger('MQTT_INGEST_QUEUE_MAX', 1_000, 1, 100_000);
 const MAX_WRITE_ATTEMPTS = 7;
 const RETRY_DELAYS_MS = [100, 250, 500, 1_000, 2_000, 4_000] as const;
-
-function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(parsed)));
-}
 
 const RETRYABLE_DATABASE_CODES = new Set([
   '08000', // connection_exception

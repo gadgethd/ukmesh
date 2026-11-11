@@ -1,3 +1,4 @@
+import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
@@ -36,12 +37,6 @@ import { ApiInputError } from '../api/errors.js';
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
 const WS_INITIAL_STATE_ENABLED = process.env['WS_INITIAL_STATE_ENABLED'] === '1';
-
-function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(parsed)));
-}
 
 const WS_MAX_PAYLOAD_BYTES = boundedEnvInteger('WS_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const WS_MAX_QUEUE_BYTES = boundedEnvInteger('WS_MAX_QUEUE_BYTES', 8 * 1_048_576, 16 * 1024, 32 * 1_048_576);

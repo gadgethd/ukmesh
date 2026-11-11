@@ -1,4 +1,6 @@
-const UK_PUBLIC_NETWORKS = new Set(['ukmesh', 'northeast', 'teesside']);
+import { UKMESH_NETWORKS } from '../networks.js';
+
+const UK_PUBLIC_NETWORKS = new Set<string>(UKMESH_NETWORKS);
 
 export type PrivatePrefixRow = {
   node_id: string;

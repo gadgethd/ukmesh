@@ -1,3 +1,4 @@
+import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 /**
  * RAM-first MQTT ingestion — protocol + configuration.
  *
@@ -14,12 +15,6 @@
 import type { PacketBatchInput } from '../db/packetBatch.js';
 
 export type RamIngestMode = 'durable' | 'ram';
-
-function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(parsed)));
-}
 
 export function getRamIngestMode(): RamIngestMode {
   const value = String(process.env['MQTT_INGEST_MODE'] ?? 'durable').trim().toLowerCase();

@@ -55,7 +55,7 @@ pool.on('error', (err) => {
 });
 configurePacketBatch(ingestQuery, withIngestTransaction);
 
-// Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
+// Dedicated pool for long-running analytical queries.
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
 const analyticsPool = new Pool({
   connectionString: process.env.DATABASE_URL,
@@ -387,94 +387,9 @@ export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void
 }
 
 /**
- * Refresh `last_path_evidence_at` from recent MULTIBYTE path hashes (2–3 byte).
- *
- * A repeater that shows up in a 2- or 3-byte path hash almost certainly relayed
- * that packet, so it was online at that moment — single-byte (1-byte) hashes are
- * too collision-prone to trust and are deliberately ignored here. Prefixes shared
- * by more than one repeater are also excluded (ambiguous → no credit). This is the
- * hourly backstop for the real-time `recordMultibyteEvidence` path; both only ever
- * move the timestamp forward.
- */
-export async function refreshRecentPathEvidence(
-  hours = 1,
-  network?: string,
-): Promise<number> {
-  const scope = buildScopePlaceholders(2, network);
-  const params: unknown[] = [hours, ...scope.params];
-  // Path hashes are intentionally short. Never resolve a test packet against a
-  // public node (or vice versa), even when a prefix happens to be unique across
-  // the combined node table.
-  const pathEvidenceNodeScope = network === 'test'
-    ? "network = 'test'"
-    : "network IS DISTINCT FROM 'test'";
-  const result = await analyticsPool.query<{ updated_count: string }>(
-    `WITH recent_hashes AS (
-       SELECT p.path_hash_size_bytes,
-              UPPER(h.hash) AS hash,
-              MAX(p.time) AS max_time
-       FROM packets p
-       CROSS JOIN LATERAL unnest(p.path_hashes) AS h(hash)
-       WHERE p.time > NOW() - INTERVAL '1 hour' * $1
-         AND p.path_hash_size_bytes >= 2
-         AND p.path_hashes IS NOT NULL
-         AND cardinality(p.path_hashes) > 0
-         -- Direct routes encode remaining destinations, not relays already
-         -- traversed. Only Flood/TransportFlood paths prove recent presence.
-         AND p.route_type IN (0, 1)
-         ${buildPacketScopeClause(scope, 'p', network)}
-       GROUP BY p.path_hash_size_bytes, UPPER(h.hash)
-     ),
-     node_hashes AS (
-       SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
-       FROM nodes
-       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
-         AND lat BETWEEN -90 AND 90
-         AND lon BETWEEN -180 AND 180
-         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
-       UNION ALL
-       SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
-       FROM nodes
-       WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
-         AND lat BETWEEN -90 AND 90
-         AND lon BETWEEN -180 AND 180
-         AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
-     ),
-     unique_node_hashes AS (
-       SELECT path_hash_size_bytes, hash, MIN(node_id) AS node_id
-       FROM node_hashes
-       GROUP BY path_hash_size_bytes, hash
-       HAVING COUNT(*) = 1
-     ),
-     matched AS (
-       SELECT nh.node_id,
-              MAX(r.max_time) AS max_time
-       FROM recent_hashes r
-       JOIN unique_node_hashes nh
-         ON nh.path_hash_size_bytes = r.path_hash_size_bytes
-        AND nh.hash = r.hash
-       GROUP BY nh.node_id
-     ),
-     updated AS (
-       UPDATE nodes n
-       SET last_path_evidence_at = m.max_time
-       FROM matched m
-       WHERE n.node_id = m.node_id
-         AND (n.last_path_evidence_at IS NULL OR n.last_path_evidence_at < m.max_time)
-       RETURNING 1
-     )
-     SELECT COUNT(*)::text AS updated_count
-     FROM updated`,
-    params,
-  );
-
-  return Number(result.rows[0]?.updated_count ?? 0);
-}
-
-/**
- * Real-time counterpart to {@link refreshRecentPathEvidence}: given the multibyte
- * path hashes of a single freshly-ingested packet, credit each repeater whose
- * prefix uniquely matches with `last_path_evidence_at = seenAt`. Returns the
+ * Credit path evidence from the multibyte path hashes of a single
+ * freshly-ingested packet: each repeater whose prefix uniquely matches gets
+ * `last_path_evidence_at = seenAt`. Returns the
  * preserved historic node rows so the caller can broadcast their coordinates.
  *
  * Only 2- and 3-byte hashes are accepted (single-byte is too collision-prone), and

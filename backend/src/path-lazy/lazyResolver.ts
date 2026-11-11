@@ -44,7 +44,7 @@
  * Decode mechanics live in ../path-core/decoder.ts. This wrapper owns database
  * evidence loading, observer grouping, and the public lazy-path DTO only.
  */
-import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import { packetExcludesPrivateNodesSql } from '../privacy/networkScope.js';
 import { privatePrefixPathFilterSql } from '../pathing/pathingRepository.js';
 import {
   MAX_HOP_KM,
@@ -245,20 +245,7 @@ export async function lazyResolvePath(
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND ${packetTimePredicate}
         AND rx_node_id IS NOT NULL
-        AND NOT EXISTS (
-          SELECT 1 FROM nodes private_node
-          WHERE private_node.name LIKE '%🚫%'
-            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
-            AND (
-              private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
-              OR EXISTS (
-                SELECT 1
-                FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
-                WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
-                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
-              )
-            )
-        )
+        AND ${packetExcludesPrivateNodesSql('packets')}
       ORDER BY rx_node_id,
                COALESCE(cardinality(path_hashes), 0) DESC,
                COALESCE(path_hash_size_bytes, 0) DESC,
