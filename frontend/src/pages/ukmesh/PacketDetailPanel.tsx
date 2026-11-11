@@ -1,9 +1,9 @@
 import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import type { FeedPacket } from './UKFeedPage.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
-import type { MessageTags, TagConfidence } from '../../hooks/packetFeed.js';
+import type { MessageTags, TagConfidence } from '../../types/domain.js';
 import {
   PathMap,
   type LazyPath,

@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { getCurrentSite } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { fetchJson, withScopeParams } from '../utils/api.js';
-import type { MeshNode } from './useNodes.js';
+import type { MeshNode } from '../types/domain.js';
 
 /** Resolve former names without adding history fields to the public node DTO. */
 export function useNodeNameSearch(query: string): MeshNode[] {

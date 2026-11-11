@@ -1,25 +1,14 @@
-import type { AggregatedPacket, LivePacketData, MeshNode } from './useNodes.js';
+import type {
+  AggregatedPacket,
+  LivePacketData,
+  MeshNode,
+  MessageTags,
+  TagConfidence,
+} from '../types/domain.js';
 import { canonicalNodeId, canonicalOptionalNodeId } from '../utils/nodeIds.js';
 
 export const FEED_MAX_PACKETS = 50;
 export const FEED_MAX_MESSAGES = 200;
-
-/** Message tags produced by the tagger-worker (TypeSafe/Jev). Flags are 0..1
- *  confidences; kind/topic/speaker are choices with their own confidences. */
-export type MessageTags = {
-  kind?: string;
-  topic?: string;
-  speaker?: string;
-  safety?: number;
-  directed?: number;
-  mentions_location?: number;
-};
-
-export type TagConfidence = {
-  kind?: number;
-  topic?: number;
-  speaker?: number;
-};
 
 /** One row of GET /api/tags/recent (live feed enrichment by packet hash). */
 export type TaggedMessage = {

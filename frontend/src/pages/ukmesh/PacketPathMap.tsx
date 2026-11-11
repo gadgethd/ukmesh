@@ -3,7 +3,7 @@ import type * as maplibregl from 'maplibre-gl';
 import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../../components/Map/AnimatedPathOverlay.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { OPENFREEMAP_STYLE_DARK } from '../../components/Map/mapConfig.js';
-import type { MeshNode } from '../../hooks/useNodes.js';
+import type { MeshNode } from '../../types/domain.js';
 import {
   multiObserverPathRoutes,
   type CanonicalPathNode,

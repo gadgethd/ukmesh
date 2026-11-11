@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { MeshNode } from '../hooks/useNodes.js';
+import type { MeshNode } from '../types/domain.js';
 import { resolvePathWaypoints } from './pathing.js';
 
 function fakeNode(id: string, name: string, lat: number, lon: number): MeshNode & { lat: number; lon: number } {

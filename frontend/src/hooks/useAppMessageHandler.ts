@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { WSMessage } from './useWebSocket.js';
-import type { LivePacketData, MeshNode } from './useNodes.js';
+import type { LivePacketData, MeshNode } from '../types/domain.js';
 import type { ViableLinkSnapshot } from './useLinkState.js';
 
 type PendingPacket = LivePacketData;

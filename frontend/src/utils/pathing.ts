@@ -1,4 +1,4 @@
-import type { MeshNode } from '../hooks/useNodes.js';
+import type { MeshNode } from '../types/domain.js';
 
 export const HIDDEN_NODE_MASK_RADIUS_MILES = 1;
 export const HIDDEN_NODE_MASK_RADIUS_METERS = HIDDEN_NODE_MASK_RADIUS_MILES * 1609.344;
