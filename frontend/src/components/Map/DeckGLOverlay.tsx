@@ -14,8 +14,9 @@ import * as maplibregl from 'maplibre-gl';
 import { PACKET_ARC_TTL_MS, type PacketArc } from '../../types/domain.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
-import type { ClashPathLine, CustomLosPoint, CustomLosSegment, LosProfile } from './types.js';
-import { TERRAIN_CONFIG } from './mapConfig.js';
+import type { ClashPathLine, LosProfile } from './types.js';
+import type { CustomLosPoint, CustomLosSegment } from '../../types/customLos.js';
+import { TERRAIN_CONFIG } from '../../config/terrain.js';
 import { ensureMapboxOverlayCompatibility } from './mapboxCompat.js';
 import {
   PATH_ARC_BLOOM_WIDTH,

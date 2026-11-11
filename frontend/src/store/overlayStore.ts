@@ -1,7 +1,7 @@
 import { create } from 'zustand';
 import type { AggregatedPacket } from '../types/domain.js';
 import type { ClashPathLine, LosProfile, PlannedRepeater } from '../components/Map/types.js';
-import type { CustomLosPoint, CustomLosSegment } from '../components/Map/types.js';
+import type { CustomLosPoint, CustomLosSegment } from '../types/customLos.js';
 
 export type { PlannedRepeater };
 
