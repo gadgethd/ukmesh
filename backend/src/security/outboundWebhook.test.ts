@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   isPublicWebhookAddress,
+  webhookLookup,
   resolveWebhookTarget,
   type WebhookDnsResolver,
 } from './outboundWebhook.js';
@@ -51,4 +52,20 @@ test('webhook DNS policy fails closed if any answer is non-public', async () => 
     { address: '8.8.8.8', family: 4 },
     { address: '2606:4700:4700::1111', family: 6 },
   ]);
+});
+
+test('webhook lookup honours the all-addresses contract used by autoSelectFamily', () => {
+  const selected = { address: '8.8.8.8', family: 4 as const };
+
+  const scalar: unknown[][] = [];
+  webhookLookup(selected)('hooks.example', { all: false }, (...args: unknown[]) => {
+    scalar.push(args);
+  });
+  assert.deepEqual(scalar, [[null, '8.8.8.8', 4]]);
+
+  const list: unknown[][] = [];
+  webhookLookup(selected)('hooks.example', { all: true }, (...args: unknown[]) => {
+    list.push(args);
+  });
+  assert.deepEqual(list, [[null, [{ address: '8.8.8.8', family: 4 }]]]);
 });

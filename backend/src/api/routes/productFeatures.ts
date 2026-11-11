@@ -12,6 +12,7 @@ import {
   submitObserverRegistration,
   visibleLinkNodeIds,
 } from '../../repositories/productFeatures.js';
+import { notifyObserverRegistration } from '../../notifications/observerRegistration.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -120,6 +121,9 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     }
     try {
       const result = await submitObserverRegistration(query, input);
+      if (result.accepted) {
+        notifyObserverRegistration({ requestId: result.requestId, ...input });
+      }
       res.status(202).json({
         ok: true,
         requestId: result.requestId,
