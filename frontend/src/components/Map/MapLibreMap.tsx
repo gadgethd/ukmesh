@@ -34,6 +34,7 @@ import {
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
 import { TERRAIN_CONFIG } from '../../config/terrain.js';
+import { PACKET_OBSERVED_EVENT } from '../../utils/appEvents.js';
 import type { CustomLosPoint } from '../../types/customLos.js';
 import {
   buildHiddenMask,
@@ -739,8 +740,8 @@ export function MapLibreMap({
 
   useEffect(() => {
     const noteArcActivity = () => { lastArcActivityRef.current = Date.now(); };
-    window.addEventListener('meshcore:packet-observed', noteArcActivity);
-    return () => window.removeEventListener('meshcore:packet-observed', noteArcActivity);
+    window.addEventListener(PACKET_OBSERVED_EVENT, noteArcActivity);
+    return () => window.removeEventListener(PACKET_OBSERVED_EVENT, noteArcActivity);
   }, []);
 
   useEffect(() => {

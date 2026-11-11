@@ -1,26 +1,18 @@
 import { type Plugin } from 'vite';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PUBLIC_CONTENT_ROUTES } from '../config/publicRoutes.js';
+import {
+  SEO_META as SHARED_SEO_META,
+  SITE_SEO_DEFAULTS,
+  SITEMAP_ROUTES as SHARED_SITEMAP_ROUTES,
+} from '../config/seo.js';
 
 type SiteId = 'ukmesh';
-
 type RouteMeta = { title: string; description: string };
 
-const SEO_META: Record<SiteId, Record<string, RouteMeta>> = {
-  ukmesh: Object.fromEntries(PUBLIC_CONTENT_ROUTES.map((route) => [
-    route.path,
-    { title: route.title, description: route.description },
-  ])),
-};
-
-const SITE_DEFAULTS: Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }> = {
-  ukmesh: { siteName: 'UK Mesh Network', baseUrl: 'https://ukmesh.com', themeColor: '#0a1628' },
-};
-
-const SITEMAP_ROUTES: Record<SiteId, string[]> = {
-  ukmesh: PUBLIC_CONTENT_ROUTES.filter((route) => route.sitemap).map((route) => route.path),
-};
+const SEO_META = SHARED_SEO_META as Record<SiteId, Record<string, RouteMeta>>;
+const SITE_DEFAULTS = SITE_SEO_DEFAULTS as Record<SiteId, { siteName: string; baseUrl: string; themeColor: string }>;
+const SITEMAP_ROUTES = SHARED_SITEMAP_ROUTES as Record<SiteId, string[]>;
 
 function getSiteId(): SiteId {
   return 'ukmesh';

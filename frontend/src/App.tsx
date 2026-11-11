@@ -4,6 +4,7 @@ import type * as maplibregl from 'maplibre-gl';
 import { MapLibreMap } from './components/Map/MapLibreMap.js';
 import { LiveOverlayController } from './components/Map/LiveOverlayController.js';
 import { FilterPanel } from './components/FilterPanel/FilterPanel.js';
+import { FOCUS_SEARCH_EVENT, PACKET_OBSERVED_EVENT } from './utils/appEvents.js';
 import type { Filters } from './types/filters.js';
 import { PacketFeed } from './components/PacketFeed.js';
 import { DisclaimerModal } from './components/app/DisclaimerModal.js';
@@ -489,7 +490,7 @@ export const App: React.FC = () => {
       scopeState.linkEpoch,
     ),
     onPacketObserved: (count) => {
-      window.dispatchEvent(new CustomEvent('meshcore:packet-observed', { detail: { count } }));
+      window.dispatchEvent(new CustomEvent(PACKET_OBSERVED_EVENT, { detail: { count } }));
     },
   });
 
@@ -516,7 +517,7 @@ export const App: React.FC = () => {
         setSelectedNodeId(null);
       } else if (!isEditing && event.key.toLowerCase() === 'f') {
         event.preventDefault();
-        window.dispatchEvent(new Event('meshcore:focus-search'));
+        window.dispatchEvent(new Event(FOCUS_SEARCH_EVENT));
       } else if (!isEditing && event.key.toLowerCase() === 's') {
         event.preventDefault();
         void handleShare();
