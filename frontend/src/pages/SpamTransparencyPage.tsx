@@ -78,14 +78,10 @@ interface IncidentsResp {
 // Helpers
 // ---------------------------------------------------------------------------
 
+import { timeAgo as relativeTime } from '../utils/time.js';
+
 function timeAgo(ts: string | null): string {
-  if (!ts) return 'never';
-  const diff = Math.max(0, Date.now() - Date.parse(ts));
-  const sec = Math.floor(diff / 1000);
-  if (sec < 60) return `${sec}s ago`;
-  if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-  if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-  return `${Math.floor(sec / 86400)}d ago`;
+  return relativeTime(ts, { empty: 'never' });
 }
 
 function fmtDateTime(ts: string): string {

@@ -6,7 +6,8 @@ import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
-import { ConfirmedNeighbours, timeAgo, type NodeLink } from '../../components/ConfirmedNeighbours.js';
+import { ConfirmedNeighbours, type NodeLink } from '../../components/ConfirmedNeighbours.js';
+import { timeAgo } from '../../utils/time.js';
 
 interface MeshNode {
   node_id: string;

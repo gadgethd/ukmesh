@@ -23,6 +23,7 @@ import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
 import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
+import { timeAgo } from '../../utils/time.js';
 import {
   MESSAGE_SCOPE_CHANNELS,
   FEED_PATH_MAX_CONCURRENCY,
@@ -39,7 +40,6 @@ import {
   packetObserverIatas,
   packetObserverIds,
   packetSummary,
-  timeAgo,
   type FeedPacket,
   type MessageScope,
 } from './feedModel.js';

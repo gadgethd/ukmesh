@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { ConfirmedNeighbours, NeighbourContact, sortNeighbourLinks, timeAgo, type NodeLink } from './ConfirmedNeighbours.js';
+import { ConfirmedNeighbours, NeighbourContact, sortNeighbourLinks, type NodeLink } from './ConfirmedNeighbours.js';
+import { timeAgo } from '../utils/time.js';
 
 const now = Date.parse('2026-09-07T12:00:00.000Z');
 const day = 86400_000;
@@ -46,9 +47,9 @@ test('unknown timestamps are neutral and clock skew never produces negative rela
     assert.doesNotMatch(html, /<time|NaN|Invalid Date/);
   }
   assert.match(contact({ last_observed: new Date(now + day).toISOString() }), /0s ago/);
-  assert.equal(timeAgo('invalid', now), 'Unknown');
+  assert.equal(timeAgo('invalid', { now, empty: 'Unknown' }), 'Unknown');
   for (const [age, relative] of [[15_000, '15s ago'], [120_000, '2m ago'], [7200_000, '2h ago'], [2 * day, '2d ago']] as const) {
-    assert.equal(timeAgo(new Date(now - age).toISOString(), now), relative);
+    assert.equal(timeAgo(new Date(now - age).toISOString(), { now }), relative);
   }
 });
 
