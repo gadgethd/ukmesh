@@ -17,8 +17,9 @@
  *    values our decoder produced (and `payload.decrypted.sender` is promoted to
  *    `packets.companion_sender`), so they are stripped before persistence.
  *
- * Pure module: no imports, no I/O, so the policy is testable without a database.
+ * No I/O, so the policy is testable without a database.
  */
+import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
 
 /** PostgreSQL int4 (`INTEGER`) domain. Values outside it fail with 22003. */
 const INT4 = { min: -2_147_483_648, max: 2_147_483_647 } as const;
@@ -149,32 +150,6 @@ export function statusEnvelopeViolations(json: Record<string, unknown>): Integer
 }
 
 /**
- * SQLSTATE classes that are deterministic for a given row: class 22
- * (data_exception — invalid text representation, numeric out of range,
- * datetime overflow) and class 23 (integrity_constraint_violation). Retrying
- * the identical insert cannot succeed, so the message is quarantined instead.
- * Class 08 (connection) and class 40 (serialization/deadlock) stay retryable.
- */
-const PERMANENT_SQLSTATE_PREFIXES = ['22', '23'] as const;
-
-const PERMANENT_ERROR_MESSAGE =
-  /invalid input syntax for type (?:smallint|integer|bigint|numeric)|out of range for type (?:smallint|integer|bigint)|violates (?:check|not-null|foreign key|unique|exclusion) constraint/i;
-
-/** True when re-running the same insert cannot succeed (a data/constraint error). */
-export function isPermanentPersistenceError(error: unknown): boolean {
-  if (typeof error === 'object' && error !== null && 'code' in error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === 'string' && PERMANENT_SQLSTATE_PREFIXES.some((prefix) => code.startsWith(prefix))) {
-      return true;
-    }
-  }
-  const message = error instanceof Error
-    ? error.message
-    : (typeof error === 'string' ? error : '');
-  return message !== '' && PERMANENT_ERROR_MESSAGE.test(message);
-}
-
-/**
  * What the durable ingest path should do with a persistence failure:
  * acknowledge-and-quarantine a deterministic data error, or withhold the ack
  * and let the broker redeliver a transient one.
@@ -229,4 +204,4 @@ export function validPacketIntegers(values: Record<string, number | undefined>):
 }
 
 
-export const isPermanentDataError = isPermanentPersistenceError;
+
