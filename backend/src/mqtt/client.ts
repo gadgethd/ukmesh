@@ -1,3 +1,4 @@
+import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import type { MqttClient } from 'mqtt';
 import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
@@ -317,12 +318,6 @@ const channelEntries = buildChannelEntries(process.env['MESHCORE_CHANNEL_SECRETS
 
 // Combined keyStore used for decryption (all secrets, single decode call per packet)
 const keyStore = buildCombinedKeyStore(channelEntries);
-
-function boundedEnvInteger(name: string, fallback: number, min: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  if (!Number.isFinite(parsed)) return fallback;
-  return Math.min(max, Math.max(min, Math.trunc(parsed)));
-}
 
 const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
 const MQTT_CLIENT_ID = String(

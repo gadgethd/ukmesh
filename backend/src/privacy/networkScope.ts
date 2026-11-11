@@ -1,3 +1,5 @@
+import { UKMESH_NETWORKS } from '../networks.js';
+
 const SQL_ALIAS = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function checkedAlias(value: string): string {
@@ -24,6 +26,26 @@ export function networksSharePrivacyScope(
   packetNetwork: string,
 ): boolean {
   if (nodeNetwork === packetNetwork) return true;
-  const production = new Set(['ukmesh', 'northeast', 'teesside']);
+  const production = new Set<string>(UKMESH_NETWORKS);
   return production.has(nodeNetwork) && production.has(packetNetwork);
+}
+
+/** SQL predicate excluding packets that involve a private (🚫) node.
+ *  Shared by every resolver so a privacy rule change cannot drift. */
+export function packetExcludesPrivateNodesSql(packetAlias: string): string {
+  const packet = checkedAlias(packetAlias);
+  return `NOT EXISTS (
+    SELECT 1 FROM core.nodes private_node
+    WHERE private_node.name LIKE '%🚫%'
+      AND ${privateNodePacketNetworkMatchSql('private_node', packet)}
+      AND (
+        private_node.node_id IN (${packet}.rx_node_id, ${packet}.src_node_id)
+        OR EXISTS (
+          SELECT 1
+          FROM unnest(COALESCE(${packet}.path_hashes, ARRAY[]::text[])) AS path_hash
+          WHERE ${packet}.path_hash_size_bytes BETWEEN 1 AND 3
+            AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
+        )
+      )
+  )`;
 }

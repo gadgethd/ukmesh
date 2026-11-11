@@ -5,7 +5,7 @@ import {
   touchNodesPredictedOnline,
 } from '../db/index.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
-import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import { packetExcludesPrivateNodesSql, privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import { normalizePathHash, nodePathHash } from '../path-hash/utils.js';
 import type { DecodedHop } from '../path-core/decoder.js';
 import { pathingConfig } from '../platform/config/pathing.js';
@@ -687,20 +687,7 @@ export async function resolveBetaPathForPacketHash(
      WHERE packet_hash = $1
        AND ($2::text[] IS NULL OR network = ANY($2))
        ${observer ? 'AND rx_node_id = $3' : ''}
-       AND NOT EXISTS (
-         SELECT 1 FROM core.nodes private_node
-         WHERE private_node.name LIKE '%🚫%'
-           AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
-           AND (
-             private_node.node_id IN (packets.rx_node_id, packets.src_node_id)
-             OR EXISTS (
-               SELECT 1
-               FROM unnest(COALESCE(packets.path_hashes, ARRAY[]::text[])) AS path_hash
-               WHERE packets.path_hash_size_bytes BETWEEN 1 AND 3
-                 AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
-             )
-           )
-       )
+       AND ${packetExcludesPrivateNodesSql('packets')}
      ORDER BY COALESCE(cardinality(path_hashes), 0) DESC,
               COALESCE(path_hash_size_bytes, 0) DESC,
               CASE WHEN src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,

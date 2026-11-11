@@ -1,5 +1,6 @@
 import type { OwnerRepository } from './ownerRepository.js';
 import type { OwnerSession } from './ownerSession.js';
+import { estimateAirUtilisation } from '../stats/telemetryEstimate.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 type OwnerDashboard = {
@@ -353,7 +354,6 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     })();
 
     const telemetry24h = (() => {
-      const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
       const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
       const bucketMs = 5 * 60 * 1000;
       type Point = {
@@ -386,56 +386,8 @@ export function createOwnerService(deps: OwnerServiceDeps) {
           ? null
           : clamp(((sample.batteryMv - 3200) / 1000) * 100, 0, 100);
 
-        let channelUtilPct = sample.channelUtilization;
-        let airUtilTxPct = sample.airUtilTx;
+        const { channelUtilPct, airUtilTxPct } = estimateAirUtilisation(sample, prev);
 
-        if ((channelUtilPct == null || airUtilTxPct == null) && prev) {
-          const uptimeDelta = (sample.uptimeSecs ?? 0) - (prev.uptimeSecs ?? 0);
-          const txDelta = (sample.txAirSecs ?? 0) - (prev.txAirSecs ?? 0);
-          const rxDelta = (sample.rxAirSecs ?? 0) - (prev.rxAirSecs ?? 0);
-          if (uptimeDelta > 0 && txDelta >= 0 && rxDelta >= 0) {
-            if (airUtilTxPct == null) {
-              airUtilTxPct = clamp((txDelta / uptimeDelta) * 100, 0, 100);
-            }
-            if (channelUtilPct == null) {
-              channelUtilPct = clamp(((txDelta + rxDelta) / uptimeDelta) * 100, 0, 100);
-            }
-          }
-        }
-
-        if ((channelUtilPct == null || airUtilTxPct == null) && prev) {
-          const currentUptimeMs = sample.uptimeMs;
-          const previousUptimeMs = prev.uptimeMs;
-          const deltaUptimeSeconds =
-            currentUptimeMs != null && previousUptimeMs != null && currentUptimeMs > previousUptimeMs
-              ? (currentUptimeMs - previousUptimeMs) / 1000
-              : 0;
-          const deltaRxCalls =
-            sample.rxPublishCalls != null && prev.rxPublishCalls != null
-              ? Math.max(0, sample.rxPublishCalls - prev.rxPublishCalls)
-              : 0;
-          const deltaTxCalls =
-            sample.txPublishCalls != null && prev.txPublishCalls != null
-              ? Math.max(0, sample.txPublishCalls - prev.txPublishCalls)
-              : 0;
-
-          if (deltaUptimeSeconds > 0) {
-            if (airUtilTxPct == null) {
-              airUtilTxPct = clamp(
-                (deltaTxCalls * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
-                0,
-                100,
-              );
-            }
-            if (channelUtilPct == null) {
-              channelUtilPct = clamp(
-                ((deltaTxCalls + deltaRxCalls) * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
-                0,
-                100,
-              );
-            }
-          }
-        }
 
         const bucketStartMs = Math.floor(sample.timeMs / bucketMs) * bucketMs;
         bucketed.set(bucketStartMs, {

@@ -32,3 +32,17 @@ export function positiveIntegerSetting(
   const parsed = Number(rawValue);
   return Number.isFinite(parsed) && parsed > 0 ? Math.min(max, Math.floor(parsed)) : fallback;
 }
+
+/** Lenient bounded integer read used for infrastructure tuning knobs. Invalid
+ *  values silently fall back; values outside the range are clamped. */
+export function boundedEnvInteger(
+  name: string,
+  fallback: number,
+  min: number,
+  max: number,
+  rawValue: string | undefined = process.env[name],
+): number {
+  const parsed = Number(rawValue);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.trunc(parsed)));
+}

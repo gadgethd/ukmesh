@@ -1,3 +1,4 @@
+import { networkMatchesScope } from '../networks.js';
 import type pg from 'pg';
 
 export type IdentityConfidence = 'high' | 'medium';
@@ -203,7 +204,7 @@ function namesMatch(a: string | null, b: string | null): boolean {
 
 function publicNetworkClass(network: string | null): string | null {
   if (!network || network === 'test') return null;
-  if (network === 'ukmesh' || network === 'northeast' || network === 'teesside') return 'public';
+  if (networkMatchesScope(network, 'ukmesh')) return 'public';
   return network;
 }
 

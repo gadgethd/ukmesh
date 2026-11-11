@@ -15,7 +15,7 @@
  */
 import { MAX_HOP_KM } from '../path-shared/scoring.js';
 import { expandResolverScope } from '../networks.js';
-import { privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
+import { packetExcludesPrivateNodesSql } from '../privacy/networkScope.js';
 import {
   buildNodePathHashIndex,
   getNodesForPathHash,
@@ -173,21 +173,7 @@ export async function resolveSpamOrigin(
         AND p.hop_count IS NOT NULL
         AND n.lat IS NOT NULL AND n.lon IS NOT NULL AND n.lat <> 0 AND n.lon <> 0
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-        AND NOT EXISTS (
-          SELECT 1
-          FROM core.nodes private_node
-          WHERE private_node.name LIKE '%🚫%'
-            AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
-            AND (
-              private_node.node_id IN (p.rx_node_id, p.src_node_id)
-              OR EXISTS (
-                SELECT 1
-                FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS path_hash
-                WHERE p.path_hash_size_bytes BETWEEN 1 AND 3
-                  AND UPPER(private_node.node_id) LIKE UPPER(path_hash) || '%'
-              )
-            )
-        )`,
+        AND ${packetExcludesPrivateNodesSql('p')}`,
     [ids, scope],
   );
   if (recRes.rows.length === 0) return null;

@@ -3,6 +3,7 @@ import { query } from '../../db/index.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';
+import { estimateAirUtilisation } from '../../stats/telemetryEstimate.js';
 import {
   parseBoundedInteger,
   parseBoundedString,
@@ -89,7 +90,6 @@ router.get('/node-status/history', async (req, res) => {
     max: 168,
   });
   try {
-    const ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH = 0.12;
     const network = resolvePublicNetworkScope(req.query['network'], req.headers);
     const networkValues = expandResolverScope(network);
     const observer = normalizeObserverQuery(req.query['observer']);
@@ -126,6 +126,8 @@ router.get('/node-status/history', async (req, res) => {
       time: string;
       battery_mv: number | null;
       uptime_secs: number | null;
+      tx_air_secs: number | null;
+      rx_air_secs: number | null;
       channel_utilization: number | null;
       air_util_tx: number | null;
       heap_free: number | null;
@@ -140,6 +142,8 @@ router.get('/node-status/history', async (req, res) => {
          time::text,
          battery_mv,
          uptime_secs,
+         tx_air_secs,
+         rx_air_secs,
          channel_utilization,
          air_util_tx,
          CASE
@@ -182,44 +186,24 @@ router.get('/node-status/history', async (req, res) => {
     );
 
     const points = result.rows.map((row, index) => {
-      if (row.channel_utilization != null || row.air_util_tx != null) {
-        return row;
-      }
-
-      const previous = index > 0 ? result.rows[index - 1] : null;
-      const currentUptimeMs = row.uptime_ms;
-      const previousUptimeMs = previous?.uptime_ms ?? null;
-      const deltaUptimeSeconds =
-        currentUptimeMs != null && previousUptimeMs != null && currentUptimeMs > previousUptimeMs
-          ? (currentUptimeMs - previousUptimeMs) / 1000
-          : null;
-
-      if (!deltaUptimeSeconds || deltaUptimeSeconds <= 0) {
-        return row;
-      }
-
-      const deltaRxCalls =
-        row.rx_publish_calls != null && previous?.rx_publish_calls != null
-          ? Math.max(0, row.rx_publish_calls - previous.rx_publish_calls)
-          : 0;
-      const deltaTxCalls =
-        row.tx_publish_calls != null && previous?.tx_publish_calls != null
-          ? Math.max(0, row.tx_publish_calls - previous.tx_publish_calls)
-          : 0;
-
-      const estimatedTxPct = Math.min(
-        100,
-        (deltaTxCalls * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
+      const toSample = (value: typeof row) => ({
+        uptimeSecs: value.uptime_secs == null ? null : Number(value.uptime_secs),
+        uptimeMs: value.uptime_ms == null ? null : Number(value.uptime_ms),
+        txAirSecs: value.tx_air_secs == null ? null : Number(value.tx_air_secs),
+        rxAirSecs: value.rx_air_secs == null ? null : Number(value.rx_air_secs),
+        rxPublishCalls: value.rx_publish_calls == null ? null : Number(value.rx_publish_calls),
+        txPublishCalls: value.tx_publish_calls == null ? null : Number(value.tx_publish_calls),
+        channelUtilization: value.channel_utilization == null ? null : Number(value.channel_utilization),
+        airUtilTx: value.air_util_tx == null ? null : Number(value.air_util_tx),
+      });
+      const estimated = estimateAirUtilisation(
+        toSample(row),
+        index > 0 ? toSample(result.rows[index - 1]!) : null,
       );
-      const estimatedTotalPct = Math.min(
-        100,
-        ((deltaTxCalls + deltaRxCalls) * ESTIMATED_AIRTIME_SECONDS_PER_PUBLISH / deltaUptimeSeconds) * 100,
-      );
-
       return {
         ...row,
-        channel_utilization: estimatedTotalPct,
-        air_util_tx: estimatedTxPct,
+        channel_utilization: estimated.channelUtilPct,
+        air_util_tx: estimated.airUtilTxPct,
       };
     });
 
