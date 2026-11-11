@@ -32,7 +32,7 @@ import {
   stripDerivedPacketFields,
   type IntegerDomainViolation,
 } from './envelopeSafety.js';
-import { fallbackPacketIdentity, ramMqttDeliveryKey, observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from './observationIdentity.js';
+import { fallbackPacketIdentity, ramMqttDeliveryKey, observationIdentityKey, packetAlreadyPersisted, type ObservationIdentity } from '../db/observationIdentity.js';
 import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';

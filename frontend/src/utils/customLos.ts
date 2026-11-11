@@ -3,8 +3,8 @@
  * path segments coloured by whether terrain obstructs the line of sight.
  */
 import { sampleTerrainProfile } from './terrainSampler.js';
-import { TERRAIN_CONFIG } from '../components/Map/mapConfig.js';
-import type { CustomLosPoint, CustomLosSegment } from '../components/Map/types.js';
+import { TERRAIN_CONFIG } from '../config/terrain.js';
+import type { CustomLosPoint, CustomLosSegment } from '../types/customLos.js';
 
 const ANTENNA_H = 10; // metres above stated elevation
 const K_FACTOR = 4 / 3; // effective Earth radius multiplier for radio propagation

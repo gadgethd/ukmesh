@@ -54,17 +54,6 @@ export interface LosProfile {
   profile: [number, number, number][];  // [lon, lat, elev_m]
 }
 
-export interface CustomLosPoint {
-  lat: number;
-  lon: number;
-  elevation_m: number;
-}
-
-export interface CustomLosSegment {
-  path: [number, number, number][];
-  obstructed: boolean;
-}
-
 export interface MapLibreMapProps {
   showLinks: boolean;
   showTerrain: boolean;

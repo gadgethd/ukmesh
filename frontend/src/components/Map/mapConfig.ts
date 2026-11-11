@@ -20,8 +20,6 @@ export const EMPTY_FC: GeoJSON.FeatureCollection = {
   features: [],
 };
 
-export const TERRAIN_CONFIG = { source: 'terrain-dem', exaggeration: 3 };
-
 // Overlay colours are independent of the raster basemap palette. Every solid
 // marker and link colour meets the 3:1 non-text contrast threshold against its
 // theme background (#080d14 dark, #edf2f7 light).

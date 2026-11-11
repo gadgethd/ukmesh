@@ -5,7 +5,7 @@ import { once } from 'node:events';
 import mqtt, { type MqttClient } from 'mqtt';
 import mqttPacket from 'mqtt-packet';
 import { installDurableMqttIntake } from './durableIntake.js';
-import { ramMqttDeliveryKey } from './observationIdentity.js';
+import { ramMqttDeliveryKey } from '../db/observationIdentity.js';
 
 const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 async function until(check: () => boolean) {

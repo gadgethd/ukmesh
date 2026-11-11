@@ -30,7 +30,7 @@ import {
   provisionOperatorRoles,
 } from './fixtures/baseSchema.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
-import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
+import { packetAlreadyPersisted } from './observationIdentity.js';
 import { admitPacketToRam, configureRamStore } from '../ram/liveStore.js';
 import { readRecentWithPending, resolvePendingSummaries } from '../ram/liveRead.js';
 import { createRamWriter } from '../ram/writer.js';

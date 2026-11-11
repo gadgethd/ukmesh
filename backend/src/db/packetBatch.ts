@@ -17,7 +17,7 @@ import {
   type PrivatePrefixRow,
 } from '../privacy/privatePrefixCache.js';
 import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
-import { observationIdentityKey } from '../mqtt/observationIdentity.js';
+import { observationIdentityKey } from './observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
 /**

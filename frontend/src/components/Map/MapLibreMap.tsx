@@ -31,9 +31,10 @@ import {
   NODE_STALE_AFTER_MS,
   OPENFREEMAP_STYLE_DARK,
   OPENFREEMAP_STYLE_LIGHT,
-  TERRAIN_CONFIG,
   TERRAIN_DEM_SOURCE,
 } from './mapConfig.js';
+import { TERRAIN_CONFIG } from '../../config/terrain.js';
+import type { CustomLosPoint } from '../../types/customLos.js';
 import {
   buildHiddenMask,
   buildLinksGeoJSON,
@@ -54,7 +55,6 @@ import { PlannedRepeaterPopup } from './PlannedRepeaterPopup.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 import type {
   ClashComputation,
-  CustomLosPoint,
   LosProfile,
   MapLibreMapProps,
   NodeFeatureProps,
