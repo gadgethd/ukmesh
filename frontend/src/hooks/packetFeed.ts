@@ -23,7 +23,11 @@ export function messageTagKind(packet: { tags?: MessageTags }): string | null {
   return typeof kind === 'string' && kind.trim() ? kind.trim() : null;
 }
 
-export function messageTagTitle(packet: { tags?: MessageTags; tag_confidence?: TagConfidence }): string {
+export function messageTagTitle(packet: {
+  tags?: MessageTags;
+  tagConfidence?: TagConfidence;
+  tag_confidence?: TagConfidence;
+}): string {
   const tags = packet.tags ?? {};
   const parts: string[] = [];
   if (tags.kind) parts.push(`kind: ${tags.kind}`);
@@ -34,7 +38,7 @@ export function messageTagTitle(packet: { tags?: MessageTags; tag_confidence?: T
   if ((tags.directed ?? 0) >= 0.5) flags.push('directed');
   if ((tags.mentions_location ?? 0) >= 0.5) flags.push('location');
   if (flags.length > 0) parts.push(`flags: ${flags.join(', ')}`);
-  const conf = packet.tag_confidence?.kind;
+  const conf = (packet.tagConfidence ?? packet.tag_confidence)?.kind;
   if (typeof conf === 'number') parts.push(`kind confidence ${(conf * 100).toFixed(0)}%`);
   return parts.join(' · ');
 }
