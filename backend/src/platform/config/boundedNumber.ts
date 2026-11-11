@@ -19,3 +19,16 @@ export function boundedIntegerSetting(
   }
   return parsed;
 }
+
+/** Lenient bounded positive integer read: invalid or non-positive values fall
+ *  back instead of failing startup. Use only for tuning knobs where the
+ *  fallback is safe. */
+export function positiveIntegerSetting(
+  name: string,
+  fallback: number,
+  max: number,
+  rawValue: string | undefined = process.env[name],
+): number {
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.min(max, Math.floor(parsed)) : fallback;
+}

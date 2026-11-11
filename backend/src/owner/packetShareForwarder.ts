@@ -21,6 +21,8 @@ import type {
   PacketShareRepository,
 } from './packetShareRepository.js';
 import { packetShareOutcomesTotal, packetShareQueueDepth } from '../metrics.js';
+import { positiveIntegerSetting } from '../platform/config/boundedNumber.js';
+import { withDeadline } from '../platform/deadline.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -37,25 +39,10 @@ export type PacketSharePublisherFactory = (
   destination: PacketShareDestinationRow,
 ) => PacketSharePublisher;
 
-function positiveIntegerSetting(name: string, fallback: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(max, Math.floor(parsed)) : fallback;
-}
-
 // A hung publisher promise must never be able to block the single-flight
 // delivery loop. The 2026-10-12 wedge: a QoS-1 publish on a silently-dead
 // connection never settled, freezing delivery for every destination until
 // the process was restarted.
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`${message} (after ${timeoutMs}ms)`)), timeoutMs);
-    timer.unref();
-    promise.then(
-      (value) => { clearTimeout(timer); resolve(value); },
-      (error) => { clearTimeout(timer); reject(error); },
-    );
-  });
-}
 
 function destinationUrl(destination: PacketShareDestinationRow): URL {
   if (!destination.broker_url) throw new Error('destination broker URL is missing');
@@ -152,10 +139,10 @@ function connectMqttPublisher(
     async publish(topic: string, payload: string): Promise<void> {
       const current = await connect();
       try {
-        await withTimeout(
+        await withDeadline(
           current.publishAsync(topic, payload, { qos: 1 }),
           publishAckTimeoutMs,
-          'destination MQTT publish timed out',
+          'destination MQTT publish',
         );
       } catch (error) {
         // A publish left in an unknown state must not linger: discard the
@@ -237,7 +224,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     if (existing?.fingerprint === fingerprint) return existing.publisher;
     if (existing) {
       publishers.delete(destination.destination_id);
-      await withTimeout(existing.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
+      await withDeadline(existing.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
     }
     const created = publisherFactory(destination);
     publishers.set(destination.destination_id, { publisher: created, fingerprint });
@@ -329,10 +316,10 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     }
     try {
       const publisher = await publisherFor(destination);
-      await withTimeout(
+      await withDeadline(
         publisher.publish(row.destination_topic, JSON.stringify(row.payload)),
         publishAckTimeoutMs,
-        'destination MQTT publish timed out',
+        'destination MQTT publish',
       );
       await deps.repository.markSucceeded(row.id, claimToken);
       packetShareOutcomesTotal.inc({ outcome: 'delivered' });
@@ -341,7 +328,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
       const entry = publishers.get(row.destination_id);
       if (entry) {
         publishers.delete(row.destination_id);
-        await withTimeout(entry.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
+        await withDeadline(entry.publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined);
       }
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
@@ -362,7 +349,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
         packetShareQueueDepth.set(rows.length);
         await Promise.all(rows.map(async (row) => {
           try {
-            await withTimeout(
+            await withDeadline(
               deliver(row, claimToken),
               deliverTimeoutMs,
               `delivery timed out (row ${row.id}, ${row.destination_id})`,
@@ -403,7 +390,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     if (processing) await processing.catch(() => undefined);
     const current = [...publishers.values()].map(({ publisher }) => publisher);
     publishers.clear();
-    await Promise.all(current.map((publisher) => withTimeout(publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined)));
+    await Promise.all(current.map((publisher) => withDeadline(publisher.close(), 2_000, 'publisher cleanup').catch(() => undefined)));
   }
 
   return { enqueuePacket, processDue, start, stop };

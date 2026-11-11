@@ -12,6 +12,7 @@ import {
 } from './publicFeedConfig.js';
 import type { PublicFeedDeliveryRow, PublicFeedRepository, PublicFeedAuthorizationSnapshot } from './publicFeedRepository.js';
 import { publicFeedOutcomesTotal, publicFeedQueueDepth, publicFeedOldestAgeSeconds } from '../metrics.js';
+import { positiveIntegerSetting } from '../platform/config/boundedNumber.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;
 const DEFAULT_BATCH_SIZE = 25;
@@ -24,11 +25,6 @@ export type PublicFeedPublisher = {
 };
 
 export type PublicFeedPublisherFactory = (config: PublicFeedConfig) => PublicFeedPublisher;
-
-function positiveIntegerSetting(name: string, fallback: number, max: number): number {
-  const parsed = Number(process.env[name]);
-  return Number.isFinite(parsed) && parsed > 0 ? Math.min(max, Math.floor(parsed)) : fallback;
-}
 
 function configUrl(config: PublicFeedConfig): URL {
   if (!config.brokerUrl) throw new Error('public feed broker URL is missing');
