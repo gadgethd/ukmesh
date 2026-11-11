@@ -188,7 +188,6 @@ tar -C "$mosquitto_config_stage" -czf "$payload_dir/mosquitto-config.tgz" \
 tar -C "$project_dir" -czf "$payload_dir/configuration.tgz" \
   .env .env.example .trivyignore.yaml \
   docker-compose.yml docker-compose.live.yml docker-compose.ci.yml \
-  docker-compose.infra-client.yml compose.phase4.yml \
   Dockerfile Dockerfile.app Dockerfile.backend Dockerfile.website \
   Dockerfile.mesh-health-check Dockerfile.mosquitto-reloader \
   viewshed-worker/Dockerfile \
