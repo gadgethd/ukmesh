@@ -72,7 +72,6 @@ export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = 
 ];
 
 /** @deprecated Use PUBLIC_CHANNELS to make the source classification explicit. */
-export const VALIDATED_CHANNELS = PUBLIC_CHANNELS;
 
 /** Build the channel entry list: committed defaults + env extras (dedup by secret). */
 export function buildChannelEntries(envValue?: string): ChannelEntry[] {
