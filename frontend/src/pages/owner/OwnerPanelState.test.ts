@@ -5,9 +5,9 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { OwnerPanelState } from './OwnerPanelState.js';
 import { OwnerHeardNeighbors } from './OwnerHeardNeighbors.js';
 
-function panel(hasData: boolean, error: string | null, loading = false) {
+function panel(hasData: boolean, error: string | null) {
   return renderToStaticMarkup(React.createElement(OwnerPanelState, {
-    label: 'Direct Senders', hasData, error, loading, onRetry: () => {},
+    label: 'Direct Senders', hasData, error, onRetry: () => {},
     children: React.createElement('p', null, 'No direct senders observed.'),
   }));
 }
@@ -30,7 +30,7 @@ test('refresh failures keep prior content visibly marked as out of date', () => 
 });
 
 test('background refresh keeps successful content in place without adding a loading row', () => {
-  const html = panel(true, null, true);
+  const html = panel(true, null);
   assert.match(html, /No direct senders observed/);
   assert.doesNotMatch(html, /Loading|Refreshing/);
 });

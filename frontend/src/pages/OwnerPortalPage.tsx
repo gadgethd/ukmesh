@@ -61,11 +61,11 @@ export const OwnerPortalPage: React.FC = () => {
   const [dashboard, setDashboard] = useState<OwnerDashboard | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string>('');
   const [liveResult, setLiveResult] = useState<{ scope: string; data: OwnerLiveResponse } | null>(null);
-  const [liveLoading, setLiveLoading] = useState(false);
+  const [, setLiveLoading] = useState(false);
   const [liveError, setLiveError] = useState<string | null>(null);
   const [lastHopResult, setLastHopResult] = useState<{ scope: string; points: LastHopStrengthPoint[] } | null>(null);
   const [lastHopError, setLastHopError] = useState<string | null>(null);
-  const [lastHopLoading, setLastHopLoading] = useState(false);
+  const [, setLastHopLoading] = useState(false);
   const [lastHopWindow, setLastHopWindow] = useState<LastHopWindow>('7d');
   const [compareNodeIds, setCompareNodeIds] = useState<string[]>([]);
   const [compareSeries, setCompareSeries] = useState<Array<{ id: string; points: LastHopStrengthPoint[] }>>([]);
@@ -497,7 +497,7 @@ export const OwnerPortalPage: React.FC = () => {
     },
   });
 
-  const livePanelState = { hasData: live !== null, loading: liveLoading, error: liveError, onRetry: retryLive };
+  const livePanelState = { hasData: live !== null, error: liveError, onRetry: retryLive };
 
   const mapPoints = useMemo(() => {
     const ownerNode = live?.ownerNode;
@@ -669,7 +669,7 @@ export const OwnerPortalPage: React.FC = () => {
                   meta={latestTelemetry?.uptimeSecs == null ? 'No telemetry yet' : `${latestTelemetry.uptimeSecs}s reported`}
                 />
                 </OwnerPanelState>
-                <OwnerPanelState label="RX strength" hasData={lastHopResult?.scope === lastHopViewScope} loading={lastHopLoading} error={lastHopError} onRetry={retryLastHop}>
+                <OwnerPanelState label="RX strength" hasData={lastHopResult?.scope === lastHopViewScope} error={lastHopError} onRetry={retryLastHop}>
                 <LastHopStrengthChart nodeId={selectedNodeId} points={lastHopStrength} timeWindow={lastHopWindow} onTimeWindowChange={setLastHopWindow} isPassiveRepeater={live !== null && (live.incomingPeers.length === 0 && live.recentPackets.length === 0 && live.heardBy.length > 0)} compareSeries={compareChartSeries} />
                 </OwnerPanelState>
               </div>

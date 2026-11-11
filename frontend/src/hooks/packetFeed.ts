@@ -239,20 +239,6 @@ export function mapMessageRows(rows: RecentPacketRow[]): AggregatedPacket[] {
     .slice(0, FEED_MAX_MESSAGES);
 }
 
-/** Merge two message lists (type=5 only). Client-side messages take priority so
- *  a WS reconnect with a stale server cache doesn't wipe recently received messages. */
-export function mergeMessages(clientMessages: AggregatedPacket[], serverMessages: AggregatedPacket[]): AggregatedPacket[] {
-  const merged = new Map<string, AggregatedPacket>();
-  for (const m of serverMessages) merged.set(m.packetHash, m);
-  for (const m of clientMessages) {
-    const existing = merged.get(m.packetHash);
-    merged.set(m.packetHash, existing ? mergeAggregatedPacket(existing, m) : m);
-  }
-  return Array.from(merged.values())
-    .sort((a, b) => b.ts - a.ts)
-    .slice(0, FEED_MAX_MESSAGES);
-}
-
 export function mergePackets(existing: AggregatedPacket[], incoming: AggregatedPacket[]): AggregatedPacket[] {
   const merged = new Map<string, AggregatedPacket>();
   for (const packet of existing) merged.set(packet.packetHash, packet);

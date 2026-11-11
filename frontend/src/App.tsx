@@ -55,7 +55,6 @@ const DEFAULT_FILTERS: Filters = {
   coverage: false,
   heatmap: false,
   betaPaths: false,
-  betaPathThreshold: 0.45,
   hexClashes: false,
   hexClashMaxHops: 3,
 };
@@ -93,7 +92,7 @@ export const App: React.FC = () => {
             ? (parsed.filters ?? parsed)
             : null;
         if (migrated) {
-          stored = { ...DEFAULT_FILTERS, ...migrated, betaPathThreshold: 0.45 };
+          stored = { ...DEFAULT_FILTERS, ...migrated };
           localStorage.setItem(FILTERS_KEY, JSON.stringify({ version: FILTERS_VERSION, filters: stored }));
           localStorage.removeItem(LEGACY_FILTERS_KEY);
         }

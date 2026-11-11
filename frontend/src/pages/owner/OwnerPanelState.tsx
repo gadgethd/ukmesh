@@ -4,7 +4,6 @@ import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 export type OwnerPanelStateProps = {
   label: string;
   hasData: boolean;
-  loading: boolean;
   error: string | null;
   onRetry: () => void;
   children: React.ReactNode;

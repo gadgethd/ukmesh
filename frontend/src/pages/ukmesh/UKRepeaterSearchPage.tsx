@@ -9,21 +9,7 @@ import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
 import { ConfirmedNeighbours, type NodeLink } from '../../components/ConfirmedNeighbours.js';
 import { timeAgo } from '../../utils/time.js';
 import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
-
-interface MeshNode {
-  node_id: string;
-  name?: string;
-  lat?: number;
-  lon?: number;
-  iata?: string;
-  role?: number;
-  last_seen: string;
-  is_online: boolean;
-  hardware_model?: string;
-  public_key?: string;
-  advert_count?: number;
-  elevation_m?: number;
-}
+import type { MeshNode } from '../../types/domain.js';
 
 interface PacketHistory {
   time: string;

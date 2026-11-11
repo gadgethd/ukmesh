@@ -351,11 +351,3 @@ export async function sampleTerrainProfile(
   }
   return output;
 }
-
-export function terrainTileCacheSnapshot(): TerrainTileCacheSnapshot {
-  return terrainTiles.snapshot();
-}
-
-export function clearTerrainTileCache(): void {
-  terrainTiles.clear();
-}

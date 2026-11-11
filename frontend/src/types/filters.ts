@@ -9,7 +9,6 @@ export interface Filters {
   coverage:          boolean;
   heatmap:           boolean;
   betaPaths:         boolean;
-  betaPathThreshold: number;  // 0–1
   hexClashes:        boolean;
   hexClashMaxHops:   number;  // 0–3 (0 = direct only)
 }
