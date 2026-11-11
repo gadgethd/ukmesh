@@ -7,20 +7,10 @@ export const pathingConfig = {
   // Physics is a bounded tiebreaker; full-strength transition physics reduced
   // the bake-off accuracy by overwhelming the tuned evidence model.
   physicsSoftMarginWeight: 0.05,
-  prefixAmbiguityFloorKm: 45,
-  weakLinkPathlossMaxDb: 137.5,
-  looseLinkPathlossMaxDb: 146.0,
   impossibleLinkPathlossDb: 165.0,
   maxHopKm: 100,
   contextTtlMs: 900_000,
   modelLimit: 6000,
-  maxRenderPermutations: 24,
-  maxPermutationStates: 200_000,
-  softFallbackHopKm: 60,
-  observerHopWeightConfirmed: 0.18,
-  observerHopWeightReachable: 0.22,
-  observerHopWeightFallback: 0.20,
-  anchorConfidenceDefault: 0.65,
   // Slow mode: wait out the packet propagation window before the final
   // multi-observer resolution (real spread first->last observer p50 11s,
   // p95 34s, p99 50s). Env overrides: PATH_SLOW_MODE_ENABLED /

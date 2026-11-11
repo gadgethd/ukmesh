@@ -1,5 +1,6 @@
 import type { PathingRepository } from './pathingRepository.js';
 import type { HeldPathEntry } from '../path-beta/resolveCache.js';
+import { pathingConfig } from '../platform/config/pathing.js';
 import {
   toPublicBetaResultDto,
   toPublicMultiObserverDto,
@@ -83,7 +84,7 @@ export function addPathExplanation(value: unknown): unknown {
   }
   if (!payload.mode) return value;
   const confidence = payload.confidence ?? null;
-  const threshold = Number(payload.threshold ?? 0.45);
+  const threshold = Number(payload.threshold ?? pathingConfig.purpleThreshold);
   const requested = Number(payload.debug?.hopsRequested ?? 0);
   const used = Number(payload.debug?.hopsUsed ?? 0);
   const reasons: string[] = [];
