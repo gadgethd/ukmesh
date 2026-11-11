@@ -1,3 +1,19 @@
+export type MaskedDecodedPathNode = {
+  ord: number;
+  node_id: string | null;
+  name: string | null;
+  lat: number | null;
+  lon: number | null;
+};
+
+export type DecodedPathNodeInput = MaskedDecodedPathNode & {
+  last_seen?: string | null;
+};
+
+export type MaskDecodedPathNodesFn = (
+  rawNodes: DecodedPathNodeInput[] | null | undefined,
+) => MaskedDecodedPathNode[];
+
 const PROHIBITED_NODE_MARKER = '🚫';
 
 function isProhibitedMapNode(node: { name?: string | null } | null | undefined): boolean {
