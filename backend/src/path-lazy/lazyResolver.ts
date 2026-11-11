@@ -491,7 +491,6 @@ export async function lazyResolvePath(
       ),
     ]);
 
-  // Build known-links set
   const knownLinks = new Set<string>();
   const itmViableLinks = new Set<string>();
   for (const row of linkResult.rows) {

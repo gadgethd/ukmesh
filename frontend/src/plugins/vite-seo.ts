@@ -212,10 +212,8 @@ export default function viteSeoPlugin(): Plugin {
 
       if (!isPublicWebsite) return;
 
-      // Write sitemap.xml
       fs.writeFileSync(path.join(outDir, 'sitemap.xml'), generateSitemapXml(site));
 
-      // Write manifest.json
       fs.writeFileSync(path.join(outDir, 'manifest.json'), generateManifestJson(site));
 
       // Generate per-route index.html variants
