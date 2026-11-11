@@ -75,6 +75,8 @@ Point the backend at the local database, Redis and broker. A minimal example:
 ```bash
 docker run --rm --name ukmesh-sample-redis -p 127.0.0.1:6379:6379 redis:7
 
+docker exec ukmesh-sample-db createdb -U meshcore meshcore_owner_auth
+
 cd backend
 DATABASE_URL="$DATABASE_URL" \
 REDIS_URL=redis://127.0.0.1:6379 \
@@ -82,8 +84,16 @@ MQTT_BROKER_URL=ws://127.0.0.1:9001 \
 JWT_SECRET=local-development-secret-32-characters-minimum \
 OPERATOR_SITE_TOKEN=local-development-token \
 OWNER_COOKIE_SECRET=local-development-cookie-secret \
+OWNER_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore_owner_auth \
+OWNER_ACL_MODE=shadow \
+MOSQUITTO_ACL_PATH="$PWD/../scripts/local-sample/mosquitto-acl" \
+OWNER_ACL_SHADOW_PATH=/tmp/ukmesh-owner-acl.shadow \
 npm run dev
 ```
+
+`MOSQUITTO_ACL_PATH` and a separate owner-auth database are required because
+the owner-ACL reconciler reads the broker ACL at startup even in shadow mode.
+The local ACL is intentionally permissive; it is never used outside localhost.
 
 ## 5. Replay
 
