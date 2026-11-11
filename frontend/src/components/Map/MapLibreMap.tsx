@@ -32,6 +32,7 @@ import {
   OPENFREEMAP_STYLE_DARK,
   OPENFREEMAP_STYLE_LIGHT,
   TERRAIN_DEM_SOURCE,
+  LINK_AMBER_THRESHOLD_DB,
 } from './mapConfig.js';
 import { TERRAIN_CONFIG } from '../../config/terrain.js';
 import { PACKET_OBSERVED_EVENT } from '../../utils/appEvents.js';
@@ -324,7 +325,7 @@ export function MapLibreMap({
               peer_id: link.peer_id,
               peer_name: link.peer_name,
               itm_path_loss_db: link.itm_path_loss_db,
-              itm_viable: link.itm_path_loss_db != null && link.itm_path_loss_db <= 129.5,
+              itm_viable: link.itm_path_loss_db != null && link.itm_path_loss_db <= LINK_AMBER_THRESHOLD_DB,
               profile: [
                 [sourceNode.lon, sourceNode.lat, srcElev],
                 [peer.lon, peer.lat, peerElev],

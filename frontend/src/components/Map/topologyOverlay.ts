@@ -1,3 +1,4 @@
+import { LINK_GREEN_THRESHOLD_DB } from './mapConfig.js';
 import { filterTopologyLinks } from '../../pages/topologyModel.js';
 
 export type TopologyMapNode = {
@@ -35,7 +36,7 @@ function linkColor(link: TopologyMapLink, selected: boolean): string {
   if (selected) return '#f8fafc';
   if (link.strongObservations > 0) return '#22d3ee';
   if (link.pathLossDb == null) return '#70d7ef';
-  return link.pathLossDb <= 121.5 ? '#34d399' : '#fbbf24';
+  return link.pathLossDb <= LINK_GREEN_THRESHOLD_DB ? '#34d399' : '#fbbf24';
 }
 
 export function buildTopologyLinksGeoJSON(

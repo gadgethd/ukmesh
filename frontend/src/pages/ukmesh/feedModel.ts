@@ -106,7 +106,6 @@ export type PathTreeBranchNode = LazyPathNode & {
   children: PathTreeBranchNode[];
 };
 
-export const LAZY_SETTLE_MS = 10_000;
 export const PATH_REQUEST_TIMEOUT_MS = 15_000;
 export const FEED_PATH_MAX_CONCURRENCY = 1;
 export const feedPathCache = new ScopedCache<LazyPathResult>({

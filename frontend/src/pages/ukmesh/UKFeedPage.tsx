@@ -25,10 +25,10 @@ import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
 import { timeAgo } from '../../utils/time.js';
 import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
+import { LAZY_SETTLE_MS } from '../../config/timing.js';
 import {
   MESSAGE_SCOPE_CHANNELS,
   FEED_PATH_MAX_CONCURRENCY,
-  LAZY_SETTLE_MS,
   MAX_PACKETS,
   PATH_REQUEST_TIMEOUT_MS,
   aggregatedPacketToFeedPacket,
