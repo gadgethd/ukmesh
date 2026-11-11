@@ -235,10 +235,6 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
   let consecutiveFlushFailures = 0;
   let retryAfterMs = 0;
 
-  function entryBytes(value: string): number {
-    return accountedRamEntryBytes(value);
-  }
-
   /**
    * Undecodable entries are acknowledged so they can never block the stream,
    * but not discarded silently: a bounded quarantine stream keeps the raw
@@ -280,7 +276,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         4,
         deps.streamKey(), getRamQueueBytesKey(), getRamCommittedKey(),
         deliveryKey ? getRamAdmissionKey(deliveryKey) : `${deps.streamKey()}:unused`,
-        deps.group(), id, entryBytes(value), deliveryKey ? 1 : 0,
+        deps.group(), id, accountedRamEntryBytes(value), deliveryKey ? 1 : 0,
       ) === 1;
     } catch (error) {
       deps.log('[ram] quarantine cleanup failed; source retained', error);
@@ -328,7 +324,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           continue;
         }
         appendEntries([
-          { id, entry: decoded.entry, bytes: entryBytes(fields[1]), raw: fields[1] },
+          { id, entry: decoded.entry, bytes: accountedRamEntryBytes(fields[1]), raw: fields[1] },
         ]);
       }
     }
@@ -351,7 +347,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
       for (const [id, fields] of items) {
         const decoded = decodeRamStreamValue(fields[1]);
         if (decoded && decoded.kind === 'entry') {
-          appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1]), raw: fields[1] }]);
+          appendEntries([{ id, entry: decoded.entry, bytes: accountedRamEntryBytes(fields[1]), raw: fields[1] }]);
         } else if (!decoded) {
           await quarantineMalformed(id, fields[1] ?? '').catch((error: unknown) => {
             deps.log('[ram] malformed own-PEL cleanup failed', error);
@@ -383,7 +379,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
         for (const [id, fields] of claimed) {
           const decoded = decodeRamStreamValue(fields[1]);
           if (decoded && decoded.kind === 'entry') {
-            appendEntries([{ id, entry: decoded.entry, bytes: entryBytes(fields[1] ?? ''), raw: fields[1] ?? '' }]);
+            appendEntries([{ id, entry: decoded.entry, bytes: accountedRamEntryBytes(fields[1] ?? ''), raw: fields[1] ?? '' }]);
           } else if (!decoded) {
             await quarantineMalformed(id, fields[1] ?? '').catch((error: unknown) => {
               deps.log('[ram] malformed reclaimed cleanup failed', error);
@@ -582,7 +578,7 @@ export function createRamWriter(deps: RamWriterDeps): RamWriter {
           getRamCommittedKey(),
           deliveryKey ? getRamAdmissionKey(deliveryKey) : `${streamKey}:unused`,
           id,
-          entryBytes(fields[1] ?? ''),
+          accountedRamEntryBytes(fields[1] ?? ''),
           cutoffMs,
           deliveryKey ? 1 : 0,
         );
