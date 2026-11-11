@@ -46,6 +46,33 @@ test('concurrent index operations require the explicit non-transactional directi
   }
 });
 
+// The revamp backend branch owns 071-073 in the production ledger (it continues
+// at 078+). Main's unapplied row fence must stay outside that applied band or the
+// merged tree cannot load migrations at all. Set() is deliberate: once the branch
+// lands for real these names are already in the tree and the simulation must stay
+// idempotent.
+const REVAMP_BACKEND_MIGRATIONS = [
+  '071_backend_schemas.sql',
+  '072_backend_grants.sql',
+  '073_owner_auth_tables.sql',
+];
+
+test('main row fence does not collide with the revamp backend migration band', () => {
+  const names = loadMigrationFiles().map((migration) => migration.name);
+  assert.doesNotThrow(
+    () => validateMigrationPrefixes([...new Set([...names, ...REVAMP_BACKEND_MIGRATIONS])]),
+    'merging the revamp backend migrations must not duplicate a prefix',
+  );
+  assert.ok(
+    names.includes('074_prefix_visibility_row_fence.sql'),
+    'the row fence must occupy the free slot above the branch band',
+  );
+  assert.ok(
+    !names.includes('071_prefix_visibility_row_fence.sql'),
+    'the row fence must not collide with the branch 071',
+  );
+});
+
 // Validate the real tree as well as synthetic names: merging independent
 // branches must never ship a new duplicate prefix or lose either legacy file.
 test('merged migration tree preserves shipped names and rejects new prefix collisions', () => {

@@ -5,6 +5,7 @@ import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { MAP_STYLE } from '../components/Map/mapConfig.js';
 import './spam-page.css';
 import { useWatchlist } from '../hooks/useWatchlist.js';
+import { buildZonesGeoJSON, circlePolygon, groupSpamOrigins, type SpamOriginGroup } from './spamMapModel.js';
 
 // ---------------------------------------------------------------------------
 // Spam Watch — message-spam dashboard.
@@ -112,39 +113,21 @@ function levelLabel(level: OriginLevel): string {
   }
 }
 
-/** Build an approximate circle polygon (lon/lat ring) for a coarse heat zone. */
-function circlePolygon(lat: number, lon: number, radiusKm: number, steps = 48): GeoJSON.Position[] {
-  const ring: GeoJSON.Position[] = [];
-  const dLat = radiusKm / 111.32;
-  const dLon = radiusKm / (111.32 * Math.cos((lat * Math.PI) / 180) || 1);
-  for (let i = 0; i <= steps; i++) {
-    const theta = (i / steps) * 2 * Math.PI;
-    ring.push([lon + dLon * Math.cos(theta), lat + dLat * Math.sin(theta)]);
-  }
-  return ring;
-}
-
-function buildZonesGeoJSON(incidents: PublicIncident[]): GeoJSON.FeatureCollection {
-  return {
-    type: 'FeatureCollection',
-    features: incidents
-      .filter((i) => i.origin.zone)
-      .map((i) => ({
-        type: 'Feature' as const,
-        properties: { id: i.id, confidence: i.confidence, active: i.status === 'active' },
-        geometry: {
-          type: 'Polygon' as const,
-          coordinates: [circlePolygon(i.origin.zone!.lat, i.origin.zone!.lon, i.origin.zone!.radiusKm)],
-        },
-      })),
-  };
-}
-
 const EMPTY_FC: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
 
 // On-brand zone colours (danger for active, amber for closed) — see design tokens.
 const ZONE_ACTIVE = '#ff3860';
 const ZONE_CLOSED = '#ffb300';
+
+function fitOriginGroups(map: maplibregl.Map, groups: SpamOriginGroup[]): void {
+  const bounds = new maplibregl.LngLatBounds();
+  for (const { zone } of groups) {
+    for (const [lon, lat] of circlePolygon(zone.lat, zone.lon, zone.radiusKm)) {
+      bounds.extend([lon, lat]);
+    }
+  }
+  map.fitBounds(bounds, { padding: 40, maxZoom: 8, duration: 0 });
+}
 
 // ---------------------------------------------------------------------------
 // Per-incident origin map — the coarse confidence circle for one incident.
@@ -422,7 +405,8 @@ export function SpamPage() {
   const mapEl = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapReady = useRef(false);
-  const zonesRef = useRef<PublicIncident[]>([]);
+  const zonesFitted = useRef(false);
+  const zonesRef = useRef<SpamOriginGroup[]>([]);
 
   useEffect(() => {
     if (!requestedIncident || !incidents?.some((incident) => incident.id === requestedIncident)) return;
@@ -476,7 +460,8 @@ export function SpamPage() {
 
   const active = useMemo(() => (incidents ?? []).filter((i) => i.status === 'active'), [incidents]);
   const historical = useMemo(() => (incidents ?? []).filter((i) => i.status === 'closed'), [incidents]);
-  const zones = useMemo(() => (incidents ?? []).filter((i) => i.origin.zone), [incidents]);
+  const zones = useMemo(() => groupSpamOrigins(incidents ?? []), [incidents]);
+  const mappedIncidentCount = zones.reduce((count, group) => count + group.incidentIds.length, 0);
   zonesRef.current = zones;
 
   // Initialise the coarse heat-zone map once.
@@ -495,6 +480,7 @@ export function SpamPage() {
         id: 'zones-fill',
         type: 'fill',
         source: 'zones',
+        filter: ['==', ['geometry-type'], 'Polygon'],
         paint: {
           'fill-color': ['case', ['get', 'active'], ZONE_ACTIVE, ZONE_CLOSED],
           'fill-opacity': 0.16,
@@ -504,21 +490,44 @@ export function SpamPage() {
         id: 'zones-outline',
         type: 'line',
         source: 'zones',
+        filter: ['==', ['geometry-type'], 'Polygon'],
         paint: {
           'line-color': ['case', ['get', 'active'], ZONE_ACTIVE, ZONE_CLOSED],
           'line-width': 1.5,
           'line-opacity': 0.75,
         },
       });
+      map.addLayer({
+        id: 'zones-count',
+        type: 'symbol',
+        source: 'zones',
+        filter: ['==', ['geometry-type'], 'Point'],
+        layout: {
+          'text-field': ['concat', ['to-string', ['get', 'incidentCount']], ' incident', ['case', ['==', ['get', 'incidentCount'], 1], '', 's']],
+          'text-size': 12,
+          'text-font': ['Noto Sans Regular'],
+          'text-padding': 8,
+        },
+        paint: {
+          'text-color': '#f0f6ff',
+          'text-halo-color': '#0a1628',
+          'text-halo-width': 2,
+        },
+      });
       mapReady.current = true;
       const src = map.getSource('zones') as maplibregl.GeoJSONSource | undefined;
       src?.setData(buildZonesGeoJSON(zonesRef.current));
+      if (zonesRef.current.length > 0 && !zonesFitted.current) {
+        fitOriginGroups(map, zonesRef.current);
+        zonesFitted.current = true;
+      }
     });
     mapRef.current = map;
     return () => {
       map.remove();
       mapRef.current = null;
       mapReady.current = false;
+      zonesFitted.current = false;
     };
   }, []);
 
@@ -527,6 +536,10 @@ export function SpamPage() {
     if (!mapRef.current || !mapReady.current) return;
     const src = mapRef.current.getSource('zones') as maplibregl.GeoJSONSource | undefined;
     src?.setData(buildZonesGeoJSON(zones));
+    if (zones.length > 0 && !zonesFitted.current) {
+      fitOriginGroups(mapRef.current, zones);
+      zonesFitted.current = true;
+    }
   }, [zones]);
 
   return (
@@ -585,9 +598,15 @@ export function SpamPage() {
               ? 'Origin zones are unavailable.'
               : zones.length === 0
                 ? 'No coarse origin zones are available for this result.'
-                : 'Coarse origin heat zones — broad areas only, not precise locations.'}
+                : `${mappedIncidentCount} incident${mappedIncidentCount === 1 ? '' : 's'} grouped into ${zones.length} suspected source area${zones.length === 1 ? '' : 's'} — broad estimates only.`}
         </div>
         <div ref={mapEl} className="sm-map" />
+        {zones.length > 0 && (
+          <p className="sm-muted">
+            Similar origin estimates share one circle; labels show incident counts. Red means at least one
+            incident is ongoing. Grouping suggests a common source area, not a confirmed sender.
+          </p>
+        )}
       </section>
 
       {incidents && (

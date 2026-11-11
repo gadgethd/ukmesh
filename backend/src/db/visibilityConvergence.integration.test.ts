@@ -22,9 +22,9 @@ const execute = promisify(execFile);
 const nodeId = 'AABBCC' + 'AA'.repeat(29);
 const otherId = 'BB'.repeat(32);
 const previousMigration = fs.readFileSync(new URL('./migrations/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
-const migration = fs.readFileSync(new URL('./migrations/071_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
+const migration = fs.readFileSync(new URL('./migrations/074_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
 const rollback = fs.readFileSync(new URL('./rollback/066_prefix_visibility_statement_fence.sql', import.meta.url), 'utf8');
-const rowRollback = fs.readFileSync(new URL('./rollback/071_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
+const rowRollback = fs.readFileSync(new URL('./rollback/074_prefix_visibility_row_fence.sql', import.meta.url), 'utf8');
 
 test('local TimescaleDB visibility-fence reproduction, regression and convergence', {
   skip: local ? false : 'explicit loopback TEST_PRIVACY_DATABASE_URL or TEST_INGEST_DATABASE_URL required',
@@ -111,8 +111,8 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     t.diagnostic('BASELINE REPRO: empty FK-cascade DELETE changes 1/1 -> 2/1 with zero prefix rows');
     await pool.query("INSERT INTO packets(packet_hash, topic) VALUES ('upgrade-preserved', 'fixture')");
     await pool.query(previousMigration);
-    await pool.query("DELETE FROM schema_migrations WHERE name = '071_prefix_visibility_row_fence.sql'");
-    assert.deepEqual(await runMigrations(pool), ['071_prefix_visibility_row_fence.sql']);
+    await pool.query("DELETE FROM schema_migrations WHERE name = '074_prefix_visibility_row_fence.sql'");
+    assert.deepEqual(await runMigrations(pool), ['074_prefix_visibility_row_fence.sql']);
     assert.deepEqual(await flags('packets'), [{ packet_hash: 'upgrade-preserved', is_private: false, visibility_ok: true }]);
     // Neither migration nor rollback certifies an existing gap.
     assert.deepEqual(await pair(), { generation: '2', materialized_generation: '1' });
@@ -135,7 +135,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.deepEqual(await pair(), { generation: '1', materialized_generation: '1' });
   });
 
-  await t.test('071 replaces 066 value-identical UPDATE invalidation without certifying an existing gap', async () => {
+  await t.test('074 replaces 066 value-identical UPDATE invalidation without certifying an existing gap', async () => {
     await reset(); await addNode(nodeId, true);
     await repair();
     const before = await pair();
@@ -145,7 +145,7 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.equal(BigInt(stale.generation), BigInt(before.generation) + 1n);
     assert.equal((await health()).reason, 'desired_ahead');
     await pool.query(migration);
-    assert.deepEqual(await pair(), stale, 'installing 071 never stamps a stale certificate');
+    assert.deepEqual(await pair(), stale, 'installing 074 never stamps a stale certificate');
     await repair();
     const settled = await pair();
     await pool.query('UPDATE private_node_prefixes SET prefix = prefix, updated_at = NOW()');
