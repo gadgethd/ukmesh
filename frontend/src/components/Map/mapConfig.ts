@@ -97,4 +97,3 @@ export const TERRAIN_DEM_SOURCE: maplibregl.RasterDEMSourceSpecification = {
 };
 
 export const MAP_STYLE = OPENFREEMAP_STYLE_DARK;
-export const MAP_STYLE_LIGHT = OPENFREEMAP_STYLE_LIGHT;

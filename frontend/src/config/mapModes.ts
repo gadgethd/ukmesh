@@ -14,7 +14,7 @@ export function isMapMode(value: string | null): value is MapMode {
 }
 
 export function filtersForMapMode(mode: MapMode, current: Filters): Filters {
-  const shared = { ...current, betaPathThreshold: 0.45, hexClashMaxHops: 3 };
+  const shared = { ...current, hexClashMaxHops: 3 };
   switch (mode) {
     case 'traffic':
       return {
