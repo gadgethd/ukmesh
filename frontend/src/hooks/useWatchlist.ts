@@ -30,8 +30,7 @@ function readEntries(): WatchEntry[] {
 }
 
 function currentWatchScope(): string {
-  const requested = new URLSearchParams(window.location.search).get('network')?.trim().toLowerCase();
-  return requested || getCurrentSite().network;
+  return getCurrentSite().network;
 }
 
 function emit(): void { for (const listener of listeners) listener(); }
