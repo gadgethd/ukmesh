@@ -22,9 +22,10 @@ trap cleanup EXIT
 
 # Hold the entrypoint's socket-only server open past the first health probe.
 # A Unix-socket pg_isready falsely passes here; the migration client uses TCP.
+# No marker table: the freshness guard rejects any relation that is not part of
+# the shipped base schema, so the database must stay exactly the initdb output.
 cat >"$scratch/999_ci_readiness.sql" <<'SQL'
 SELECT pg_sleep(15);
-CREATE TABLE ci_init_completed (id integer);
 SQL
 cat >"$scratch/compose.yml" <<YAML
 services:
