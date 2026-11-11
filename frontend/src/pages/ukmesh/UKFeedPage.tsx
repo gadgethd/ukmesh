@@ -105,10 +105,6 @@ export const UKFeedPage: React.FC = () => {
     handleNodeUpdateBatch: (data) => nodeStore.handleNodeUpdateBatch(data, scopeEpoch),
     handleNodeUpsert: (data) => nodeStore.handleNodeUpsert(data, scopeEpoch),
     handleNodeUpsertBatch: (data) => nodeStore.handleNodeUpsertBatch(data, scopeEpoch),
-    applyInitialViablePairs: () => {},
-    applyInitialViableLinks: () => {},
-    applyLinkUpdate: () => {},
-    applyLinkUpdateBatch: () => {},
   });
 
   const wsConnection = useWebSocket(handleWSMessage, scope, scopeEpoch);

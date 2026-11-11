@@ -48,9 +48,9 @@ export type RealtimeMessageActions = {
   handleNodeUpdateBatch?: (data: PendingNodeUpdate[]) => void;
   handleNodeUpsert: (data: PendingNodeUpsert) => void;
   handleNodeUpsertBatch?: (data: PendingNodeUpsert[]) => void;
-  applyInitialViablePairs: (pairs?: [string, string][]) => void;
-  applyInitialViableLinks: (links?: ViableLinkSnapshot[]) => void;
-  applyLinkUpdate: (update: PendingLinkUpdate) => void;
+  applyInitialViablePairs?: (pairs?: [string, string][]) => void;
+  applyInitialViableLinks?: (links?: ViableLinkSnapshot[]) => void;
+  applyLinkUpdate?: (update: PendingLinkUpdate) => void;
   applyLinkUpdateBatch?: (updates: PendingLinkUpdate[]) => void;
   onPacketObserved?: (count: number) => void;
 };
@@ -108,7 +108,7 @@ export function createRealtimeMessageCoordinator(
 
     if (batch.linkUpdates.length > 0) {
       if (actions.applyLinkUpdateBatch) actions.applyLinkUpdateBatch(batch.linkUpdates);
-      else batch.linkUpdates.forEach(actions.applyLinkUpdate);
+      else batch.linkUpdates.forEach((update) => actions.applyLinkUpdate?.(update));
     }
 
     if (batch.packets.length > 0) actions.onPacketObserved?.(batch.packets.length);
@@ -121,9 +121,9 @@ export function createRealtimeMessageCoordinator(
       const actions = getActions();
       actions.handleInitialState(data);
       if (Object.prototype.hasOwnProperty.call(data, 'viable_links')) {
-        actions.applyInitialViableLinks(data.viable_links ?? []);
+        actions.applyInitialViableLinks?.(data.viable_links ?? []);
       } else {
-        actions.applyInitialViablePairs(data.viable_pairs ?? []);
+        actions.applyInitialViablePairs?.(data.viable_pairs ?? []);
       }
       snapshotReceived = true;
       flush();
