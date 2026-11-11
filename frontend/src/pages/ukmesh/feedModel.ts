@@ -53,20 +53,6 @@ export type FeedPacket = {
   tag_confidence?: TagConfidence;
 };
 
-export const TYPE_LABELS: Record<number, string> = {
-  0: 'REQ',
-  1: 'RSP',
-  2: 'DM',
-  3: 'ACK',
-  4: 'ADV',
-  5: 'GRP',
-  6: 'DAT',
-  7: 'ANON',
-  8: 'PATH',
-  9: 'TRC',
-  11: 'CTL',
-};
-
 export const MAX_PACKETS = 500;
 /** Decrypted/visible channel scopes — matches the [Channel] summary prefix (lowercased).
  * Kept in sync with backend/src/mqtt/channelRegistry.ts VALIDATED_CHANNELS. */

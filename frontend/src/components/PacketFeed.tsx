@@ -5,20 +5,7 @@ import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } fr
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import type { AggregatedPacket } from '../types/domain.js';
-
-const TYPE_LABELS: Record<number, string> = {
-  0:  'REQ',
-  1:  'RSP',
-  2:  'DM',
-  3:  'ACK',
-  4:  'ADV',
-  5:  'GRP',
-  6:  'DAT',
-  7:  'ANON',
-  8:  'PATH',
-  9:  'TRC',
-  11: 'CTL',
-};
+import { PACKET_TYPE_LABELS } from '../config/packetTypes.js';
 
 type PacketFeedItemProps = {
   packet: AggregatedPacket;
@@ -40,7 +27,7 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
   onToggleWatch,
 }) => {
   const typeLabel = p.packetType !== undefined
-    ? (TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
+    ? (PACKET_TYPE_LABELS[p.packetType] ?? `T${p.packetType}`)
     : '???';
   const display = p.summary?.includes(PROHIBITED_NODE_MARKER) ? '[redacted]' : p.summary;
   const messageText = display ?? 'No decoded message text';
