@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { LazyPathResult } from '../pages/ukmesh/feedModel.js';
+import { LAZY_SETTLE_MS } from '../config/timing.js';
 import type { MultiObserverBetaResponse } from './packetPathOverlayUtils.js';
 import type { MessageTags, TagConfidence } from '../types/domain.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
@@ -37,7 +38,6 @@ export type RadioState = {
 };
 
 const CACHE_TTL_MS = 5 * 60_000;
-export const LAZY_PATH_SETTLE_MS = 10_000;
 const detailCache = new ScopedCache<PacketDetail | null>({
   name: 'packet-detail',
   ttlMs: CACHE_TTL_MS,
@@ -64,8 +64,8 @@ export function lazyPathSettleRemainingMs(packetTime: string, nowMs = Date.now()
   const parsedPacketTime = Date.parse(packetTime);
   const ageMs = Number.isFinite(parsedPacketTime)
     ? Math.max(0, nowMs - parsedPacketTime)
-    : LAZY_PATH_SETTLE_MS;
-  return Math.max(0, LAZY_PATH_SETTLE_MS - ageMs);
+    : LAZY_SETTLE_MS;
+  return Math.max(0, LAZY_SETTLE_MS - ageMs);
 }
 
 async function cachedPacketDetail(

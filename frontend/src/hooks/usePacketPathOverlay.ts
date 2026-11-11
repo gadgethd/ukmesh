@@ -381,7 +381,7 @@ export function usePacketPathOverlay({
 
     // Start a TTL timer: after PATH_TTL - FADE_MS, begin CSS fade-out. After
     // FADE_MS more, clear the path state entirely.
-    const FADE_MS = 1_000;
+    const FADE_MS = PATH_LINE_FADE_MS;
     setPathFadingOut(false);
     pathTimerRef.current = setTimeout(() => {
       setPathFadingOut(true);
@@ -413,7 +413,7 @@ export function usePacketPathOverlay({
     }
 
     setPathFadingOut(false);
-    const FADE_MS = 1_000;
+    const FADE_MS = PATH_LINE_FADE_MS;
     pinnedTimerRef.current = setTimeout(() => {
       setPathFadingOut(true);
       pathFadeTimerRef.current = setTimeout(() => {
