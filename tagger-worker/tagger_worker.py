@@ -196,11 +196,16 @@ def load_public_message(cur, ph, ts, rx_node_id, network):
 
 
 def tag_message(cur, ph, ts, rx_node_id, network):
-    """Tag one message with up to 3 inline attempts. Returns (ok, latency_ms, err)."""
+    """Tag one message with up to 3 inline attempts.
+
+    Returns (status, latency_ms, err) where status is 'tagged', 'skipped'
+    (deleted, private, or no longer taggable) or 'failed'.
+    """
+    err = None
     for attempt in (1, 2, 3):
         row = load_public_message(cur, ph, ts, rx_node_id, network)
         if row is None:
-            return True, None, None  # deleted, private, or no longer taggable
+            return 'skipped', None, None
         sender, message = row
         state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
         try:
@@ -211,7 +216,7 @@ def tag_message(cur, ph, ts, rx_node_id, network):
                            VALUES (%s, %s, now(), %s, %s, %s, %s)
                            ON CONFLICT (packet_hash) DO NOTHING""",
                         (ph, ts, MODEL, int(ms), json.dumps(tags), json.dumps(conf)))
-            return True, ms, None
+            return 'tagged', ms, None
         except urllib.error.HTTPError as e:
             if e.code == 429:
                 cur.execute("UPDATE ops.tagger_state SET http_429=http_429+1 WHERE id=1")
@@ -222,7 +227,7 @@ def tag_message(cur, ph, ts, rx_node_id, network):
         except Exception as ex:  # noqa: BLE001
             err = str(ex)[:200]
             time.sleep(2 * attempt)
-    return False, None, err
+    return 'failed', None, err
 
 
 def public_packet_keys(cur, ph, ts):
@@ -275,11 +280,12 @@ def process_retries(cur):
             # Became private (or vanished) after it was queued: never re-egress.
             cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
             continue
-        good, ms, err = tag_message(cur, *keys)
-        if good:
+        status, ms, err = tag_message(cur, *keys)
+        if status != 'failed':
             cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
-            cur.execute("UPDATE ops.tagger_state SET retried=retried+1 WHERE id=1")
-            ok += 1
+            if status == 'tagged':
+                cur.execute("UPDATE ops.tagger_state SET retried=retried+1 WHERE id=1")
+                ok += 1
         else:
             fail += 1
             if attempts + 1 >= MAX_RETRY_ATTEMPTS:
@@ -351,38 +357,10 @@ def main():
                 cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
                 if cur.fetchone():
                     continue
-                ans, ms, err = None, None, None
-                no_longer_public = False
-                for attempt in (1, 2, 3):
-                    current = load_public_message(cur, ph, ts, rx_node_id, network)
-                    if current is None:
-                        no_longer_public = True
-                        break
-                    sender, message = current
-                    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
-                    try:
-                        resp, ms = api_tag(state)
-                        ans = resp.get('answers')
-                        break
-                    except urllib.error.HTTPError as e:
-                        if e.code == 429:
-                            cur.execute("UPDATE ops.tagger_state SET http_429=http_429+1 WHERE id=1")
-                            time.sleep(min(CALL_FLOOR_S * (2 ** attempt), 30))
-                            continue
-                        err = f'http {e.code}: {e.read().decode()[:160]}'
-                        time.sleep(2 * attempt)
-                    except Exception as ex:  # noqa: BLE001
-                        err = str(ex)[:200]
-                        time.sleep(2 * attempt)
-                if no_longer_public:
+                status, ms, err = tag_message(cur, ph, ts, rx_node_id, network)
+                if status == 'skipped':
                     continue
-                if ans:
-                    tags, conf = flatten(ans)
-                    cur.execute("""INSERT INTO message_tags
-                                   (packet_hash, packet_time, tagged_at, model, latency_ms, tags, confidence)
-                                   VALUES (%s, %s, now(), %s, %s, %s, %s)
-                                   ON CONFLICT (packet_hash) DO NOTHING""",
-                                (ph, ts, MODEL, int(ms), json.dumps(tags), json.dumps(conf)))
+                if status == 'tagged':
                     new += 1
                     lat_hist.append(ms)
                     lat_hist = lat_hist[-50:]
