@@ -5,7 +5,7 @@ import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertN
 import { ingestQuery } from '../db/ingest.js';
 import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
-import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
+import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath, resolveCacheKey } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { scheduleSlowResolution } from '../path-beta/slowMode.js';
 import { pathingConfig } from '../platform/config/pathing.js';
@@ -1210,7 +1210,6 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
     if (oldest !== undefined) preResolveLastStarted.delete(oldest);
   }
   preResolveLastStarted.set(preResolveKey, Date.now());
-  const ck = `m|${finalHash}|${network}`;
   // Pass any previously resolved high-confidence hop assignments so the solver reuses them
   const stickyEntry = getStickyNodeMap(finalHash, network);
   const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
@@ -1223,7 +1222,7 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
     .then((result) => {
       if (result) {
         const { stickyUpdates, ...cacheableResult } = result;
-        setResolveCache(ck, cacheableResult);
+        setResolveCache(resolveCacheKey('multi', finalHash, network), cacheableResult);
         if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
           mergeStickyNodes(finalHash, network, stickyUpdates);
         }

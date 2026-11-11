@@ -28,6 +28,7 @@ import {
   getStickyNodeMap,
   getHeldPath,
   setHeldPath,
+  resolveCacheKey,
 } from './resolveCache.js';
 
 type PendingEntry = {
@@ -143,7 +144,6 @@ export function __setSlowModeRecorderForTests(fn: SlowRecorder): void {
 }
 
 async function finalizeSlowResolution(packetHash: string, network: string): Promise<void> {
-  const cacheKey = `m|${packetHash}|${network}`;
   try {
     // Force the next API read to re-resolve with the complete observer set.
     invalidateResolveCache(packetHash);
@@ -166,7 +166,7 @@ async function finalizeSlowResolution(packetHash: string, network: string): Prom
     });
     if (!result) return;
     const { stickyUpdates, ...cacheableResult } = result;
-    setResolveCache(cacheKey, cacheableResult);
+    setResolveCache(resolveCacheKey('multi', packetHash, network), cacheableResult);
     if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
       mergeStickyNodes(packetHash, network, stickyUpdates);
     }
