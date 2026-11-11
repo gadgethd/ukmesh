@@ -12,7 +12,7 @@ import {
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
   initOwnerAuthDb,
-} from './db/ownerAuth.js';
+} from './owner/ownerAuth.js';
 import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
 import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
 import { getRamIngestMode } from './ram/protocol.js';

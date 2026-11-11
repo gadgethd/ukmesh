@@ -106,7 +106,7 @@ export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecu
 }
 
 async function defaultRecordObservation(username: string, nodeId: string): Promise<void> {
-  const { recordUntrustedMqttNodeObservation } = await import('../db/ownerAuth.js');
+  const { recordUntrustedMqttNodeObservation } = await import('../owner/ownerAuth.js');
   await recordUntrustedMqttNodeObservation(username, nodeId);
 }
 

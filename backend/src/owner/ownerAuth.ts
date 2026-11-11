@@ -1,10 +1,10 @@
 import pg from 'pg';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { resolveDbAssetPath } from './assets.js';
+import { resolveDbAssetPath } from '../db/assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
-import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
-import { createOwnerAclArtifactStore } from '../owner/ownerAclArtifacts.js';
+import { planOperatorConfiguredOwnerGrantSync } from './ownerGrantReconciliation.js';
+import { createOwnerAclArtifactStore } from './ownerAclArtifacts.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';

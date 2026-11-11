@@ -7,7 +7,7 @@ import {
   saveOwnerAclArtifact,
   syncOperatorConfiguredOwnerGrants,
   updateOwnerAclState,
-} from '../db/ownerAuth.js';
+} from './ownerAuth.js';
 import {
   readAclFile,
   reloadMosquitto,

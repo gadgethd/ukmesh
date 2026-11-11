@@ -8,7 +8,7 @@ import {
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
   getAppliedOwnerAclArtifact,
-} from '../db/ownerAuth.js';
+} from '../owner/ownerAuth.js';
 import { parseAcl, readAclFile, renderOwnerAcl } from '../mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from '../owner/ownerGrantConfig.js';
 import { getPublicFeedConfig } from '../owner/publicFeedConfig.js';

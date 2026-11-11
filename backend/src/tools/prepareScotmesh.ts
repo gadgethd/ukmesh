@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { generatePacketShareIdentity } from '../owner/packetShareAuth.js';
-import { getOwnerNodeIdsForUsername, closeOwnerAuthDb } from '../db/ownerAuth.js';
+import { getOwnerNodeIdsForUsername, closeOwnerAuthDb } from '../owner/ownerAuth.js';
 
 async function main(): Promise<void> {
   const [nodeIdArgument, outputFile] = process.argv.slice(2);
