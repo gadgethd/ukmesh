@@ -89,7 +89,7 @@ scrape_configs:
       - targets:
           - http://app-ukmesh:8080/
           - http://website-ukmesh:8080/
-          - http://mesh-health-check:3090/healthz
+          - http://mesh-health-check:3090/api/bootstrap
     relabel_configs:
       - source_labels: [__address__]
         target_label: __param_target

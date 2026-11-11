@@ -329,7 +329,7 @@ services:
     memswap_limit: "256m"
     cpus: 1.0
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       DATABASE_APPLICATION_NAME: ukmesh-tagger-worker
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       TAGGER_START: ${TAGGER_START:-}
