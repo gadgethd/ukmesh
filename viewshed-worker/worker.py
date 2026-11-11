@@ -159,7 +159,6 @@ RF_PREFIX_RAY_BATCH = max(
     1,
     min(64, int(os.environ.get('RF_PREFIX_RAY_BATCH', '8'))),
 )
-MIN_LINK_OBSERVATIONS = 5  # must match backend db/index.ts
 PREFIX_AMBIGUITY_RADIUS_KM = 45.0  # only penalize same-prefix ambiguity when nodes are realistically in range
 MAX_RADIUS_M     = 100_000  # absolute cap on viewshed radius (m)
 SIMPLIFY_DEG     = 0.001    # Douglas-Peucker tolerance (~100 m)

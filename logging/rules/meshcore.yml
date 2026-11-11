@@ -41,8 +41,6 @@ groups:
           summary: Dependency exporter {{ $labels.job }} is unavailable
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#dependencyexporterdown
-
-          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mosquittobacklogoverflow
       - alert: MosquittoUnavailable
         expr: probe_success{job="mosquitto-broker"} == 0
         for: 2m
