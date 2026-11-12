@@ -15,7 +15,7 @@ import {
   PATH_LINE_TTL_MS,
   PATH_TERRAIN_CLEARANCE_M,
   packetPathColors,
-} from './pathArcStyle.js';
+} from '../../features/pathing/style.js';
 
 export type AerialPathNode = {
   position: [number, number];

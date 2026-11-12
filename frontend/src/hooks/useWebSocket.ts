@@ -1,116 +1,117 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import type { WSReadyState, WSConnectionState, WSMessage } from '../features/realtime/protocol.js';
+import { useEffect, useLayoutEffect, useMemo, useState } from 'react';
 import type { ApiScope } from '../utils/api.js';
 import { createMessageTimestampPublisher } from '../utils/messageTimestamp.js';
 import { POLLING } from '../config/polling.js';
-
-export type WSReadyState = 'connecting' | 'connected' | 'disconnected';
-export type WSConnectionState = {
-  readyState: WSReadyState;
-  lastMessageAt: number | null;
-};
-
-export interface WSMessage {
-  type: 'packet' | 'node_update' | 'node_upsert' | 'initial_state' | 'link_update';
-  data: unknown;
-  ts: number;
-  scopeEpoch?: number;
-}
+import { useCommittedRef } from './useCommittedRef.js';
 
 type MessageHandler = (msg: WSMessage) => void;
+type ConnectionOwner = {
+  active: boolean;
+  socket: WebSocket | null;
+  timer: ReturnType<typeof setTimeout> | null;
+  timestamps: ReturnType<typeof createMessageTimestampPublisher> | null;
+  retryDelay: number;
+  scope: ApiScope;
+  scopeEpoch: number;
+  enabled: boolean;
+};
+
+function stopConnection(owner: ConnectionOwner) {
+  if (owner.timer !== null) clearTimeout(owner.timer);
+  owner.timer = null;
+  owner.timestamps?.stop();
+  owner.timestamps = null;
+  const socket = owner.socket;
+  owner.socket = null;
+  socket?.close();
+}
 
 export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, scopeEpoch = 0, enabled = true) {
   const [readyState, setReadyState] = useState<WSReadyState>('connecting');
   const [lastMessageAt, setLastMessageAt] = useState<number | null>(null);
-  const wsRef   = useRef<WebSocket | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const shouldReconnectRef = useRef(true);
-  const retryDelayRef = useRef(3000);
-  const timestampRef = useRef<ReturnType<typeof createMessageTimestampPublisher> | null>(null);
-  const handlerRef = useRef(onMessage);
-  handlerRef.current = onMessage;
+  const handlerRef = useCommittedRef(onMessage);
+  const owner = useMemo<ConnectionOwner>(() => ({
+    active: false,
+    socket: null,
+    timer: null,
+    timestamps: null,
+    retryDelay: 3000,
+    scope: { network: scope.network, observer: scope.observer, region: scope.region },
+    scopeEpoch,
+    enabled,
+  }), [scope.network, scope.observer, scope.region, scopeEpoch, enabled]);
 
-  const connect = useCallback(() => {
-    if (!enabled || !shouldReconnectRef.current) return;
-
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    if (wsRef.current?.readyState === WebSocket.OPEN || wsRef.current?.readyState === WebSocket.CONNECTING) return;
-
-    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const params = new URLSearchParams();
-    if (scope.network) params.set('network', scope.network);
-    if (scope.observer) params.set('observer', scope.observer);
-    if (scope.region) params.set('region', scope.region);
-    const query = params.toString();
-    const suffix = query ? `?${query}` : '';
-    const url = `${protocol}//${window.location.host}/ws${suffix}`;
-    const ws = new WebSocket(url);
-    timestampRef.current?.stop();
-    const timestamps = createMessageTimestampPublisher(setLastMessageAt, { intervalMs: POLLING.socketStatus });
-    timestampRef.current = timestamps;
-    wsRef.current = ws;
-    setReadyState('connecting');
-
-    ws.onopen = () => {
-      if (wsRef.current !== ws) return;
-      setReadyState('connected');
-      retryDelayRef.current = 3000;
-      console.log('[ws] connected');
+  useLayoutEffect(() => {
+    owner.active = true;
+    return () => {
+      owner.active = false;
+      stopConnection(owner);
     };
-
-    ws.onmessage = (e: MessageEvent<string>) => {
-      if (wsRef.current !== ws) return;
-      try {
-        const raw = String(e.data ?? '');
-        const lines = raw.includes('\n') ? raw.split('\n').filter(Boolean) : [raw];
-        for (const line of lines) {
-          const msg = {
-            ...(JSON.parse(line) as WSMessage),
-            scopeEpoch,
-          };
-          timestamps.record(Date.now());
-          handlerRef.current(msg);
-        }
-      } catch {
-        // ignore malformed messages
-      }
-    };
-
-    ws.onclose = () => {
-      if (wsRef.current !== ws || !shouldReconnectRef.current) return;
-      timestamps.flush();
-      timestamps.stop();
-      wsRef.current = null;
-      setReadyState('disconnected');
-      const baseDelay = retryDelayRef.current;
-      const jitter = Math.random() * 1000;
-      const delay = baseDelay + jitter;
-      retryDelayRef.current = Math.min(15000, retryDelayRef.current * 1.5);
-      console.log(`[ws] disconnected — reconnecting in ${(delay / 1000).toFixed(1)}s (${Math.round(jitter)}ms jitter)`);
-      timerRef.current = setTimeout(connect, delay);
-    };
-
-    ws.onerror = () => {
-      ws.close();
-    };
-  }, [scope.network, scope.observer, scope.region, scopeEpoch, enabled]);
+  }, [owner]);
 
   useEffect(() => {
-    shouldReconnectRef.current = true;
-    retryDelayRef.current = 3000;
     setLastMessageAt(null);
+    function connect() {
+      if (!owner.enabled || !owner.active) return;
+      if (owner.timer !== null) clearTimeout(owner.timer);
+      owner.timer = null;
+      if (owner.socket?.readyState === WebSocket.OPEN || owner.socket?.readyState === WebSocket.CONNECTING) return;
+
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const params = new URLSearchParams();
+      if (owner.scope.network) params.set('network', owner.scope.network);
+      if (owner.scope.observer) params.set('observer', owner.scope.observer);
+      if (owner.scope.region) params.set('region', owner.scope.region);
+      const query = params.toString();
+      const ws = new WebSocket(`${protocol}//${window.location.host}/ws${query ? `?${query}` : ''}`);
+      const isCurrent = () => owner.active && owner.socket === ws;
+      owner.timestamps?.stop();
+      const timestamps = createMessageTimestampPublisher(timestamp => {
+        if (isCurrent()) setLastMessageAt(timestamp);
+      }, { intervalMs: POLLING.socketStatus });
+      owner.timestamps = timestamps;
+      owner.socket = ws;
+      setReadyState('connecting');
+
+      ws.onopen = () => {
+        if (!isCurrent()) return;
+        setReadyState('connected');
+        owner.retryDelay = 3000;
+        console.log('[ws] connected');
+      };
+      ws.onmessage = (event: MessageEvent<string>) => {
+        if (!isCurrent()) return;
+        try {
+          const raw = String(event.data ?? '');
+          const lines = raw.includes('\n') ? raw.split('\n').filter(Boolean) : [raw];
+          for (const line of lines) {
+            if (!isCurrent()) return;
+            const msg = { ...(JSON.parse(line) as WSMessage), scopeEpoch: owner.scopeEpoch };
+            timestamps.record(Date.now());
+            handlerRef.current(msg);
+          }
+        } catch {
+          // Ignore malformed messages.
+        }
+      };
+      ws.onclose = () => {
+        if (!isCurrent()) return;
+        timestamps.flush();
+        timestamps.stop();
+        owner.timestamps = null;
+        owner.socket = null;
+        setReadyState('disconnected');
+        const jitter = Math.random() * 1000;
+        const delay = owner.retryDelay + jitter;
+        owner.retryDelay = Math.min(15000, owner.retryDelay * 1.5);
+        console.log(`[ws] disconnected — reconnecting in ${(delay / 1000).toFixed(1)}s (${Math.round(jitter)}ms jitter)`);
+        owner.timer = setTimeout(connect, delay);
+      };
+      ws.onerror = () => { if (isCurrent()) ws.close(); };
+    }
     connect();
-    return () => {
-      shouldReconnectRef.current = false;
-      if (timerRef.current) clearTimeout(timerRef.current);
-      timestampRef.current?.stop();
-      const ws = wsRef.current;
-      wsRef.current = null;
-      ws?.close();
-    };
-  }, [connect]);
+  }, [owner]);
 
   return { readyState, lastMessageAt } satisfies WSConnectionState;
 }

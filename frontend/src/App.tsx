@@ -11,14 +11,18 @@ import { DisclaimerModal } from './components/app/DisclaimerModal.js';
 import { AppTopBar } from './components/app/AppTopBar.js';
 import { RegionSelector } from './components/app/RegionSelector.js';
 import { useRegionScope } from './hooks/useRegionScope.js';
+import { useRealtimeScopeSession } from './hooks/useRealtimeScopeSession.js';
+import { scopeKey } from './utils/scope.js';
 import { MobileControls } from './components/app/MobileControls.js';
 import { LoadingIndicator } from './components/LoadingIndicator.js';
 import { Dialog, DialogTitle } from './components/ui/Dialog.js';
 import { useWebSocket } from './hooks/useWebSocket.js';
 import { nodeStore } from './hooks/useNodes.js';
-import { requestRfNodeCoverage, rfNodeCoverageState, useRfCoverage, type RfCoverageTierName } from './hooks/useRfCoverage.js';
+import { requestRfNodeCoverage } from './features/rf/client.js';
+import { rfNodeCoverageState, type RfCoverageTierName } from './features/rf/model.js';
+import { useRfCoverage } from './hooks/useRfCoverage.js';
 import { useDashboardStats, type DashboardStats } from './hooks/useDashboardStats.js';
-import { linkStateStore } from './hooks/useLinkState.js';
+import { linkStateStore } from './features/realtime/linkStore.js';
 import { useAppMessageHandler } from './hooks/useAppMessageHandler.js';
 import { useMessageTags } from './hooks/useMessageTags.js';
 import {
@@ -154,19 +158,10 @@ export const App: React.FC = () => {
   // switch into another deployment's dataset.
   const networkFilter = site.networkFilter ?? 'ukmesh';
   const observerFilter = site.observerId;
-  const realtimeScopeKey = `${networkFilter}|${observerFilter ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}${region ? `|region-${region}` : ''}`;
-  const [scopeState, setScopeState] = useState({ key: '', nodeEpoch: -1, linkEpoch: -1 });
-  const scopeReady = scopeState.key === realtimeScopeKey;
-  // Publish external-store resets after React commits, before painting. Doing
-  // this during render updates mounted subscribers such as NodeSearch mid-render.
-  useLayoutEffect(() => {
-    if (scopeState.key === realtimeScopeKey) return;
-    setScopeState({
-      key: realtimeScopeKey,
-      nodeEpoch: nodeStore.reset(realtimeScopeKey),
-      linkEpoch: linkStateStore.reset(realtimeScopeKey),
-    });
-  }, [realtimeScopeKey, scopeState.key]);
+  const publicScope = { network: networkFilter, observer: observerFilter, region, privacyGeneration: runtimeFeatures.privacyGeneration };
+  const realtimeScopeKey = scopeKey(publicScope);
+  const scopeState = useRealtimeScopeSession(publicScope, true);
+  const scopeReady = scopeState.ready;
 
   const stats = useDashboardStats(fetchedStats, realtimeScopeKey);
   const previousRegionRef = useRef(region);
@@ -505,7 +500,7 @@ export const App: React.FC = () => {
     scopeReady,
   );
   // Live tag enrichment for the feed panel (tags land ~2s after a packet).
-  useMessageTags({ network: networkFilter, observer: observerFilter }, realtimeScopeKey);
+  useMessageTags({ network: networkFilter, observer: observerFilter }, realtimeScopeKey, scopeReady);
   const wsState = wsConnection.readyState;
   wsConnectedRef.current = wsState === 'connected';
 
@@ -554,6 +549,7 @@ export const App: React.FC = () => {
 
       <MobileControls
         map={mlMap}
+        scope={publicScope}
         filters={filters}
         onFiltersChange={handleFiltersChange}
         activeMode={activeMode}

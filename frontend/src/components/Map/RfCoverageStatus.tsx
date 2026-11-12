@@ -1,11 +1,6 @@
 import { useState } from 'react';
 
-import {
-  rfNodeCoverageState,
-  type RfCoverageMeta,
-  type RfCoverageProgress,
-  type RfCoverageTierName,
-} from '../../hooks/useRfCoverage.js';
+import { rfNodeCoverageState, type RfCoverageMeta, type RfCoverageProgress, type RfCoverageTierName } from '../../features/rf/model.js';
 
 export function formatRfEta(seconds: number | undefined): string | null {
   if (seconds === undefined || !Number.isFinite(seconds) || seconds < 0) return null;

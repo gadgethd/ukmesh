@@ -75,7 +75,6 @@ export function installMapSourcesAndLayers(
 ): void {
   const { showLinks, mapLight } = options;
   const colors = MAP_OVERLAY_COLORS[mapLight ? 'light' : 'dark'];
-      // ── Node dots source + layer ───────────────────────────────────────────
       map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
 
       map.addLayer({
@@ -110,8 +109,6 @@ export function installMapSourcesAndLayers(
           'circle-stroke-opacity': 0.9,
         },
       });
-
-      // ── Selected-node highlight (recolour + ring) ──────────────────────────
       // Two circle layers over node-dots, filtered to the selected node id.
       // A soft halo underneath, a bright solid marker on top.
       map.addLayer({
@@ -146,8 +143,6 @@ export function installMapSourcesAndLayers(
           'circle-stroke-opacity': 0.95,
         },
       });
-
-      // ── Privacy rings source + layer ───────────────────────────────────────
       map.addSource('privacy-rings', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'privacy-rings-layer',
@@ -160,8 +155,6 @@ export function installMapSourcesAndLayers(
           'line-dasharray': [4, 6],
         },
       });
-
-      // ── Viable links source + layer ───────────────────────────────────────
       map.addSource('viable-links', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'viable-links-layer',
@@ -178,8 +171,6 @@ export function installMapSourcesAndLayers(
           'line-opacity': ['get', 'opacity'],
         },
       });
-
-      // ── Clash lines source + layer ─────────────────────────────────────────
       map.addSource('clash-lines', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'clash-lines-layer',
@@ -192,8 +183,6 @@ export function installMapSourcesAndLayers(
           'line-opacity': 0.9,
         },
       });
-
-      // ── Planned coverage source + layers ──────────────────────────────────
       map.addSource('planned-coverage', { type: 'geojson', data: EMPTY_FC });
       map.addLayer({
         id: 'planned-coverage-fill',
@@ -220,8 +209,6 @@ export function installMapSourcesAndLayers(
           'line-opacity': 0.6,
         },
       });
-
-      // ── Predicted planned-repeater links source + layer ───────────────────
       // Dashed lines (coloured by predicted path loss) so they read as
       // hypothetical, distinct from the solid observed-link lines. Visibility
       // follows the global Links toggle.
@@ -242,8 +229,6 @@ export function installMapSourcesAndLayers(
           'line-dasharray': [2, 1.5],
         },
       });
-
-      // ── Planned repeater pins source + layers ──────────────────────────────
       // Styled to match real repeater nodes in the active theme but visually
       // distinct via a white stroke and glow halo. Shared map labels and glyphs
       // belong to the base style; planned status text stays in the popup so

@@ -1,6 +1,6 @@
 import { type FormEvent } from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
-import type { OwnerPacketSharing, OwnerPublicFeed } from '../../pages/owner/ownerPortalModel.js';
+import type { OwnerPacketSharing, OwnerPublicFeed } from '../../features/owner/model.js';
 
 export function OwnerLoginSection(props: {
   username: string;

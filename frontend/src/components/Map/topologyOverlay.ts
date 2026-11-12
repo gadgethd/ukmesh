@@ -1,5 +1,5 @@
 import { LINK_GREEN_THRESHOLD_DB } from './mapConfig.js';
-import { filterTopologyLinks } from '../../pages/topologyModel.js';
+import { filterTopologyLinks } from '../../features/topology/model.js';
 
 export type TopologyMapNode = {
   nodeId: string;

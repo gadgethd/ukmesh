@@ -1,21 +1,22 @@
 import { POLLING } from '../../config/polling.js';
-import { parseStatsSection } from '../statsSections.js';
-import React, { useMemo, useCallback, useEffect, useState, useRef } from 'react';
+import { parseStatsSection } from '../../features/stats/sections.js';
+import React, { useMemo, useEffect, useState, useRef } from 'react';
 import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
+import { useRealtimeScopeSession } from '../../hooks/useRealtimeScopeSession.js';
+import { scopeKey as publicScopeKey } from '../../utils/scope.js';
 import {
   nodeStore,
   useMessages,
   useNodeMap,
   usePackets,
 } from '../../hooks/useNodes.js';
-import { mapMessageRows, type RecentPacketRow } from '../../hooks/packetFeed.js';
+import { mapMessageRows, type RecentPacketRow } from '../../features/packets/liveFeed.js';
 import { useAppMessageHandler } from '../../hooks/useAppMessageHandler.js';
 import { useMessageTags } from '../../hooks/useMessageTags.js';
-import { messageTagKind, messageTagTitle } from '../../hooks/packetFeed.js';
+import { messageTagKind, messageTagTitle } from '../../features/packets/liveFeed.js';
 import {
-  ApiResponseError,
   fetchJson,
   uncachedEndpoint,
   withScopeParams,
@@ -23,20 +24,15 @@ import {
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
 import { useMeasuredVirtualRows } from '../../hooks/useMeasuredVirtualRows.js';
-import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
 import { timeAgo } from '../../utils/time.js';
 import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
-import { LAZY_SETTLE_MS } from '../../config/timing.js';
+import { useFeedPathSelection } from '../../hooks/useFeedPathSelection.js';
 import {
   MESSAGE_SCOPE_CHANNELS,
-  FEED_PATH_MAX_CONCURRENCY,
   MAX_PACKETS,
-  PATH_REQUEST_TIMEOUT_MS,
   aggregatedPacketToFeedPacket,
-  feedPathCache,
-  feedPathCacheKey,
   mergeFeedPacketObservations,
   formatFeedTimestamp,
   packetMatchesMessageScope,
@@ -45,26 +41,21 @@ import {
   packetSummary,
   type FeedPacket,
   type MessageScope,
-} from './feedModel.js';
+} from '../../features/packets/feedModel.js';
 import {
   feedConnectionDot,
   feedConnectionLabel,
   feedConnectionStatus,
-  initialPathTreeStatus,
   validatedRegionSelection,
-  type PathTreeStatus,
-} from './feedState.js';
+} from '../../features/packets/feedState.js';
 
 export const UKFeedPage: React.FC = () => {
   const site = getCurrentSite();
   const { privacyGeneration } = useRuntimeFeatures();
   const scope = useMemo(() => ({ network: site.networkFilter, observer: site.observerId }), [site.networkFilter, site.observerId]);
-  const scopeKey = `${scope.network ?? 'all'}|${scope.observer ?? 'all'}|privacy-${privacyGeneration}`;
-  const scopeEpochRef = useRef<{ key: string; epoch: number } | null>(null);
-  if (scopeEpochRef.current?.key !== scopeKey) {
-    scopeEpochRef.current = { key: scopeKey, epoch: nodeStore.reset(scopeKey) };
-  }
-  const scopeEpoch = scopeEpochRef.current.epoch;
+  const scopeKey = publicScopeKey({ ...scope, privacyGeneration });
+  const session = useRealtimeScopeSession({ ...scope, privacyGeneration });
+  const scopeEpoch = session.nodeEpoch;
   const [selectedIata, setSelectedIata] = useState<string>(() => localStorage.getItem('uk-feed-iata') ?? 'all');
   const [selectedMessageScope, setSelectedMessageScope] = useState<MessageScope>(() => {
     const stored = localStorage.getItem('uk-feed-message-scope');
@@ -76,10 +67,6 @@ export const UKFeedPage: React.FC = () => {
   const [regionOptions, setRegionOptions] = useState<string[]>([]);
   const [regionOptionsStatus, setRegionOptionsStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
   const [selectedPacketHash, setSelectedPacketHash] = useState<string | null>(null);
-  const selectedPacketHashRef = useRef<string | null>(selectedPacketHash);
-  const selectedPacketRef = useRef<FeedPacket | null>(null);
-  const [pathTreeOpen, setPathTreeOpen] = useState(false);
-  const [pathTreeStatus, setPathTreeStatus] = useState<PathTreeStatus>('idle');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedPacketType, setSelectedPacketType] = useState<string | null>(() => {
     const requested = new URLSearchParams(window.location.search).get('type')?.trim().toLowerCase();
@@ -107,15 +94,15 @@ export const UKFeedPage: React.FC = () => {
     handleNodeUpsertBatch: (data) => nodeStore.handleNodeUpsertBatch(data, scopeEpoch),
   });
 
-  const wsConnection = useWebSocket(handleWSMessage, scope, scopeEpoch);
+  const wsConnection = useWebSocket(handleWSMessage, scope, scopeEpoch, session.ready);
 
   // Live tag enrichment: tags land ~2s after a packet, so patch rows by hash.
-  useMessageTags(scope, scopeKey);
+  useMessageTags(scope, scopeKey, session.ready);
 
   useEffect(() => {
     historyRequestRef.current?.abort();
     historyRequestRef.current = null;
-    if (selectedMessageScope === 'all') {
+    if (!session.ready || selectedMessageScope === 'all') {
       setHistoricalMessages([]);
       setHistoryStatus('idle');
       setHistoryError(null);
@@ -149,26 +136,16 @@ export const UKFeedPage: React.FC = () => {
       controller.abort();
       if (historyRequestRef.current === controller) historyRequestRef.current = null;
     };
-  }, [scope, scopeKey, selectedMessageScope]);
+  }, [scope, scopeKey, selectedMessageScope, session.ready]);
 
-  // Persist filters
   useEffect(() => { localStorage.setItem('uk-feed-iata', selectedIata); }, [selectedIata]);
   useEffect(() => { localStorage.setItem('uk-feed-message-scope', selectedMessageScope); }, [selectedMessageScope]);
   useEffect(() => { localStorage.setItem('uk-feed-messages-only', messagesOnly ? '1' : '0'); }, [messagesOnly]);
 
-  // Clock tick for live connection indicator and stats
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), POLLING.feedClock);
     return () => window.clearInterval(timer);
   }, []);
-
-  // Selected-packet path cache. Requests are demand-driven and scope-fenced.
-  const [, setLazyCacheVersion] = useState(0);
-  const settleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const pathRequestControllersRef = useRef<Map<string, AbortController>>(new Map());
-  const fetchSelectedLazyPathRef = useRef<(packet: FeedPacket, skipSettle?: boolean) => Promise<void>>(
-    async () => {},
-  );
 
   useEffect(() => {
     setRegionOptionsStatus('loading');
@@ -199,7 +176,6 @@ export const UKFeedPage: React.FC = () => {
     onError: () => setRegionOptionsStatus('failed'),
   });
 
-  // Convert live packets to FeedPacket format for display
   const packets: FeedPacket[] = useMemo(() => {
     return packetsList.slice(0, MAX_PACKETS).map(aggregatedPacketToFeedPacket);
   }, [packetsList]);
@@ -321,143 +297,8 @@ export const UKFeedPage: React.FC = () => {
       : null,
     [selectedPacketHash, packets, retainedMessagePackets],
   );
-  const selectedPathCacheKey = selectedPacket
-    ? feedPathCacheKey(selectedPacket)
-    : null;
-  const selectedLazyPath = selectedPathCacheKey
-    ? (feedPathCache.get(scopeKey, selectedPathCacheKey) ?? null)
-    : null;
-  const selectedPathRequestKey = selectedPathCacheKey
-    ? `${scopeKey}:${selectedPathCacheKey}`
-    : null;
-  selectedPacketRef.current = selectedPacket;
-
-  useEffect(() => {
-    selectedPacketHashRef.current = selectedPacketHash;
-    setPathTreeOpen(false);
-    if (settleTimerRef.current !== null) {
-      clearTimeout(settleTimerRef.current);
-      settleTimerRef.current = null;
-    }
-    for (const [key, controller] of pathRequestControllersRef.current) {
-      if (key !== selectedPathRequestKey) {
-        controller.abort();
-        pathRequestControllersRef.current.delete(key);
-      }
-    }
-    setPathTreeStatus('idle');
-  }, [selectedPacketHash, selectedPathRequestKey]);
-
-  useEffect(() => {
-    if (!selectedPacket) {
-      setPathTreeStatus('idle');
-    } else {
-      const next = initialPathTreeStatus(
-        Boolean(selectedPacket.path_hashes?.length),
-        selectedLazyPath !== null,
-      );
-      if (next !== 'idle') setPathTreeStatus(next);
-    }
-  }, [selectedLazyPath, selectedPacket]);
-
-  useEffect(() => {
-    feedPathCache.invalidateScope(scopeKey);
-    setLazyCacheVersion((version) => version + 1);
-    return () => {
-      if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
-      for (const controller of pathRequestControllersRef.current.values()) controller.abort();
-      pathRequestControllersRef.current.clear();
-      feedPathCache.invalidateScope(scopeKey);
-    };
-  }, [scopeKey]);
-
-  const fetchSelectedLazyPath = useCallback(async (
-    packet: FeedPacket,
-    skipSettle = false,
-  ) => {
-    const hash = packet.packet_hash;
-    const pathKey = feedPathCacheKey(packet);
-    const requestKey = `${scopeKey}:${pathKey}`;
-    const setStatusForSelected = (status: PathTreeStatus) => {
-      if (selectedPacketHashRef.current === hash) setPathTreeStatus(status);
-    };
-
-    if (!packet.path_hashes?.length) {
-      setStatusForSelected('unavailable');
-      return;
-    }
-
-    if (feedPathCache.peek(scopeKey, pathKey)) {
-      setStatusForSelected('ready');
-      return;
-    }
-
-    if (!skipSettle) {
-      const packetAgeMs = Math.max(0, Date.now() - Date.parse(packet.time));
-      const remainingMs = Math.max(0, LAZY_SETTLE_MS - packetAgeMs);
-      if (remainingMs > 0) {
-        setStatusForSelected('settling');
-        if (settleTimerRef.current !== null) clearTimeout(settleTimerRef.current);
-        settleTimerRef.current = setTimeout(() => {
-          settleTimerRef.current = null;
-          const current = selectedPacketRef.current;
-          if (current?.packet_hash === hash) {
-            void fetchSelectedLazyPathRef.current(current, true);
-          }
-        }, remainingMs);
-        return;
-      }
-    }
-
-    if (pathRequestControllersRef.current.has(requestKey)) {
-      setStatusForSelected('loading');
-      return;
-    }
-
-    while (pathRequestControllersRef.current.size >= FEED_PATH_MAX_CONCURRENCY) {
-      const oldest = pathRequestControllersRef.current.entries().next().value as
-        | [string, AbortController]
-        | undefined;
-      if (!oldest) break;
-      oldest[1].abort();
-      pathRequestControllersRef.current.delete(oldest[0]);
-    }
-    const controller = new AbortController();
-    pathRequestControllersRef.current.set(requestKey, controller);
-    setStatusForSelected('loading');
-
-    try {
-      const result = await fetchJson<LazyPathResult>(
-        withScopeParams(`/api/path-lazy/resolve?hash=${encodeURIComponent(hash)}`, scope),
-        { cache: 'no-store', signal: controller.signal },
-        { timeoutMs: PATH_REQUEST_TIMEOUT_MS, maxBytes: 4 * 1024 * 1024 },
-      );
-      if (controller.signal.aborted || scopeEpochRef.current?.epoch !== scopeEpoch) return;
-      feedPathCache.set(scopeKey, pathKey, result);
-      setLazyCacheVersion((version) => version + 1);
-      setStatusForSelected('ready');
-    } catch (error) {
-      if (error instanceof ApiResponseError && error.status === 404) {
-        setStatusForSelected('unavailable');
-        return;
-      }
-      if (!controller.signal.aborted && (error as DOMException).name !== 'AbortError') {
-        setStatusForSelected('error');
-      }
-    } finally {
-      if (pathRequestControllersRef.current.get(requestKey) === controller) {
-        pathRequestControllersRef.current.delete(requestKey);
-      }
-    }
-  }, [scope, scopeEpoch, scopeKey]);
-  fetchSelectedLazyPathRef.current = fetchSelectedLazyPath;
-
-  const openPathTree = useCallback(() => {
-    if (!selectedPacket) return;
-    selectedPacketHashRef.current = selectedPacket.packet_hash;
-    setPathTreeOpen(true);
-    void fetchSelectedLazyPath(selectedPacket);
-  }, [fetchSelectedLazyPath, selectedPacket]);
+  const { selectedLazyPath, pathTreeStatus, pathTreeOpen, setPathTreeOpen,
+    fetchSelectedLazyPath, openPathTree } = useFeedPathSelection({ ...scope, privacyGeneration }, scopeEpoch, selectedPacket);
 
   const connStatus = feedConnectionStatus(
     wsConnection.readyState,

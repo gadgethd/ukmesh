@@ -537,6 +537,9 @@ jobs:
       - name: Verify production basemap worker and provider recovery
         working-directory: frontend
         run: npm run test:basemap
+      - name: Verify owner, region and topology browser contracts
+        working-directory: frontend
+        run: npm run test:browser-contracts
       - name: Clean up live E2E stack
         if: always()
         run: |

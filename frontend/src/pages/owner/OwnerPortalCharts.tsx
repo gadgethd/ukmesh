@@ -14,7 +14,7 @@ import {
   type LastHopStrengthPoint,
   type LastHopWindow,
   type OwnerLiveResponse,
-} from './ownerPortalModel.js';
+} from '../../features/owner/model.js';
 export const TrendBars: React.FC<{ points: Array<{ bucket: string; adverts: number }> }> = ({ points }) => {
   const max = Math.max(1, ...points.map((point) => point.adverts));
   return (

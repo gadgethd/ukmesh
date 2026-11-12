@@ -5,7 +5,7 @@ import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { MAP_STYLE } from '../components/Map/mapConfig.js';
 import './spam-page.css';
 import { useWatchlist } from '../hooks/useWatchlist.js';
-import { buildZonesGeoJSON, circlePolygon, groupSpamOrigins, type SpamOriginGroup } from './spamMapModel.js';
+import { buildZonesGeoJSON, circlePolygon, groupSpamOrigins, type SpamOriginGroup } from '../features/spam/mapModel.js';
 
 // ---------------------------------------------------------------------------
 // Spam Watch — message-spam dashboard.
@@ -16,7 +16,7 @@ import { buildZonesGeoJSON, circlePolygon, groupSpamOrigins, type SpamOriginGrou
 // origins are coarse heat zones — never exact identities or locations.
 // ---------------------------------------------------------------------------
 
-import { isIncidentDetail, isIncidentsResp, isStatusResp, type IncidentDetail, type OriginLevel, type PublicIncident, type StatusResp } from './spamPayload.js';
+import { isIncidentDetail, isIncidentsResp, isStatusResp, type IncidentDetail, type OriginLevel, type PublicIncident, type StatusResp } from '../features/spam/payload.js';
 import { fetchJson } from '../utils/api.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 

@@ -1,6 +1,6 @@
 import React from 'react';
 import { StatsPanel } from '../StatsPanel/StatsPanel.js';
-import type { WSReadyState } from '../../hooks/useWebSocket.js';
+import type { WSReadyState } from '../../features/realtime/protocol.js';
 import type { DashboardStats } from '../../hooks/useDashboardStats.js';
 
 type AppTopBarProps = {

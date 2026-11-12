@@ -1,7 +1,7 @@
 import React from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
 import { LINK_AMBER_THRESHOLD_DB, LINK_GREEN_THRESHOLD_DB } from './mapConfig.js';
-import type { PredictedLink } from './types.js';
+import type { PredictedLink } from '../../features/map/model.js';
 
 function linkColor(pathLoss: number | null): string {
   if (pathLoss == null) return 'var(--text-dim, #9ca3af)';

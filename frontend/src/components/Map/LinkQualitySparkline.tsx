@@ -5,6 +5,7 @@ import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { canonicalNodeId } from '../../utils/nodeIds.js';
 import { RequestLimiter } from '../../utils/requestLimiter.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
+import { scopeKey } from '../../utils/scope.js';
 
 type Point = { time: string; snr: number | null; path_loss: number | null };
 type LinkHistoryResponse = { points: Point[] };
@@ -48,21 +49,22 @@ export const LinkQualitySparkline = memo(function LinkQualitySparkline({
   const [points, setPoints] = useState<Point[]>([]);
 
   const pair = [canonicalNodeId(source), canonicalNodeId(target)].sort().join(':');
-  const cacheScope = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}`;
+  const cacheScope = scopeKey({ network, observer, privacyGeneration });
 
   useEffect(() => {
+    sparklineCache.activateScope(cacheScope);
     setPoints(sparklineCache.get(cacheScope, pair) ?? []);
   }, [cacheScope, pair]);
 
   useVisibilityPoll(async (signal) => {
-    const next = await sparklineCache.getOrLoad(cacheScope, pair, () => (
-      sparklineRequestLimiter.run(signal, async () => {
+    const next = await sparklineCache.getOrLoad(cacheScope, pair, (loadSignal) => (
+      sparklineRequestLimiter.run(loadSignal, async () => {
         const value = await fetchJson<LinkHistoryResponse>(
           withScopeParams(`/api/links/${encodeURIComponent(pair)}/history?hours=72`, {
             network,
             observer,
           }),
-          { signal, cache: 'no-store' },
+          { signal: loadSignal, cache: 'no-store' },
           {
             timeoutMs: 15_000,
             maxBytes: 512 * 1024,
@@ -71,9 +73,10 @@ export const LinkQualitySparkline = memo(function LinkQualitySparkline({
         );
         return value.points.slice(-288);
       })
-    ));
+    ), signal);
     if (!signal.aborted) setPoints(next);
   }, {
+    enabled: privacyGeneration > 0,
     scopeKey: `link-sparkline:${cacheScope}:${pair}`,
     intervalMs: 5 * 60_000,
     timeoutMs: 15_000,

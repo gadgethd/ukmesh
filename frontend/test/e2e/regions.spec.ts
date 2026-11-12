@@ -142,6 +142,38 @@ test('region selection round-trips reload, browser history and All regions', asy
   await page.screenshot({ path: `../.ukmesh-tools/regions-${testInfo.project.name}.png` });
 });
 
+test('former-name search stays in the selected region when an older response arrives late', async ({ page }, testInfo) => {
+  const fixture = await installRegionFixture(page, true);
+  let releaseOld!: () => void;
+  const old = new Promise<void>(resolve => { releaseOld = resolve; });
+  const searched: string[] = [];
+  await page.route('**/api/nodes/map?**', async route => {
+    const params = new URL(route.request().url()).searchParams;
+    if (!params.has('q')) return route.fallback();
+    const region = params.get('region') ?? 'all';
+    searched.push(region);
+    if (region === 'eng-ne') await old;
+    await route.fulfill({ json: { nodes: [{ node_id: (region === 'Europe' ? 'D' : 'C').repeat(64),
+      name: `${region} former-name match`, role: 2, lat: 54, lon: -1,
+      last_seen: new Date().toISOString(), is_online: true }] } }).catch(() => {});
+  });
+  try {
+    await page.goto('/#region=eng-ne');
+    const select = page.getByRole('combobox', { name: 'Region', exact: true });
+    await expect(select).toHaveValue('eng-ne', { timeout: 30_000 });
+    if (testInfo.project.name.includes('mobile')) await page.getByRole('button', { name: 'Layers' }).first().click();
+    const search = page.getByRole('combobox', { name: 'Search map nodes' });
+    await search.fill('HistoricalName');
+    await expect.poll(() => searched).toContain('eng-ne');
+    await page.evaluate(() => { window.location.hash = 'region=Europe'; });
+    await expect.poll(() => searched).toContain('Europe');
+    await expect(page.getByRole('option', { name: /Europe former-name match/ })).toBeVisible();
+    releaseOld();
+    await expect(page.getByRole('option', { name: /eng-ne former-name match/ })).toHaveCount(0);
+    expect(fixture.crashes).toEqual([]);
+  } finally { releaseOld(); }
+});
+
 test('late old-region responses cannot repopulate the new scope and runtime disable restores default', async ({ page }) => {
   const fixture = await installRegionFixture(page, true, true);
   await page.goto('/#region=eng-ne');
@@ -179,6 +211,6 @@ test('late old-region responses cannot repopulate the new scope and runtime disa
   });
   await expect(select).toHaveCount(0);
   await expect.poll(async () => (await snapshot(page)).names).toEqual(['Europe', 'eng-ne']);
-  expect((await snapshot(page)).scope).not.toContain('region-');
+  expect(new URL(await page.evaluate(() => (window as unknown as { regionSockets: { url: string }[] }).regionSockets.at(-1)!.url)).searchParams.has('region')).toBe(false);
   expect(fixture.crashes).toEqual([]);
 });

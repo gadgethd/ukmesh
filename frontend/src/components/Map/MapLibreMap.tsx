@@ -1,21 +1,7 @@
-/**
- * MapLibreMap — replaces MapView (Leaflet).
- *
- * Node dots are rendered as a MapLibre GeoJSON circle layer (GPU, no React fibers).
- * Pan/zoom is pure GPU — zero JS work on move events.
- * RF coverage is a separate HopReach image overlay; this component owns
- * nodes, links, hex-clash lines, and privacy rings.
- * Click hit-testing uses MapLibre's built-in R-tree spatial index.
- * deck.gl overlays are integrated via @deck.gl/mapbox (MapboxOverlay).
- */
 import './basemap-labels.css';
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
-import { createPortal } from 'react-dom';
 import * as maplibregl from './maplibre.js';
 import type { MeshNode } from '../../types/domain.js';
-import { nodeStore } from '../../hooks/useNodes.js';
-import { linkStateStore } from '../../hooks/useLinkState.js';
-import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import {
   hasCoords,
   isProhibitedMapNode,
@@ -27,51 +13,25 @@ import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
   MAP_INITIAL_LOAD_TIMEOUT_MS,
-  EMPTY_FC,
-  MAP_ARC_REFRESH_INTERVAL_MS,
-  MAP_REFRESH_INTERVAL_MS,
   NODE_STALE_AFTER_MS,
   OPENFREEMAP_STYLE_DARK,
   OPENFREEMAP_STYLE_LIGHT,
   TERRAIN_DEM_SOURCE,
-  LINK_AMBER_THRESHOLD_DB,
 } from './mapConfig.js';
 import { TERRAIN_CONFIG } from '../../config/terrain.js';
-import { PACKET_OBSERVED_EVENT } from '../../utils/appEvents.js';
 import type { CustomLosPoint } from '../../types/customLos.js';
-import {
-  buildHiddenMask,
-  buildLinksGeoJSON,
-  buildNodeGeoJSON,
-  buildPlannedCoverageGeoJSON,
-  buildPlannedLinksGeoJSON,
-  buildPlannedPinGeoJSON,
-  buildPrivacyRingsGeoJSON,
-  computeClashData,
-  ALL_MAP_SOURCE_DIRTY_FLAGS,
-  mergeMapSourceDirtyFlags,
-  nodeMapNeedsSourceRefresh,
-  nextNodePresenceTransition,
-} from './geojsonBuilders.js';
-import type { MapSourceDirtyFlags } from './geojsonBuilders.js';
-import { NodePopupContent } from './NodePopupContent.js';
+import { NodeDock } from './NodeDock.js';
+import { fetchNodeLinks, activateNodeLinksScope } from '../../features/map/nodeLinks.js';
+import { useNodeLos } from '../../hooks/useNodeLos.js';
 import { NodeLegend } from './NodeLegend.js';
-import { ActivitySparkline } from './ActivitySparkline.js';
-import { PlannedRepeaterPopup } from './PlannedRepeaterPopup.js';
-import { useWatchlist } from '../../hooks/useWatchlist.js';
-import type {
-  ClashComputation,
-  LosProfile,
-  MapLibreMapProps,
-  NodeFeatureProps,
-  NodeLink,
-  PlannedRepeater,
-  PopupNodeView,
-} from './types.js';
+import { useLegacyPlanner } from './useLegacyPlanner.js';
+import type { MapLibreMapProps } from './types.js';
+import type { NodeFeatureProps, NodeLink, PopupNodeView } from '../../features/map/model.js';
 import { sampleElevationAt } from '../../utils/terrainSampler.js';
 import { computeCustomLos } from '../../utils/customLos.js';
-import { fetchJson, withScopeParams, type ApiScope } from '../../utils/api.js';
-import { ScopedCache } from '../../utils/scopedCache.js';
+import { scopeKey } from '../../utils/scope.js';
+import { createLiveMapSources } from './liveMapSources.js';
+import { useCommittedRef } from '../../hooks/useCommittedRef.js';
 
 // Keep a live DEM source across basemap changes. Removing it while a worker
 // initializes can strand MapLibre 6.11's in-flight DEM actor. A fresh vector
@@ -106,29 +66,6 @@ function setBasemapStyle(map: maplibregl.Map, style: string | maplibregl.StyleSp
   });
 }
 
-
-
-const NODE_LINK_CACHE_TTL_MS = 5 * 60_000;
-const nodeLinksCache = new ScopedCache<NodeLink[]>({
-  name: 'map-node-links',
-  ttlMs: NODE_LINK_CACHE_TTL_MS,
-  maxEntries: 512,
-  maxBytes: 8 * 1024 * 1024,
-  maxInflight: 8,
-});
-
-function fetchNodeLinks(nodeId: string, scopeKey: string, scope: ApiScope): Promise<NodeLink[]> {
-  return nodeLinksCache.getOrLoad(scopeKey, nodeId.toUpperCase(), async () => {
-    const payload = await fetchJson<unknown>(
-      withScopeParams(`/api/nodes/${encodeURIComponent(nodeId)}/links`, scope),
-      {},
-      { timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024 },
-    );
-    if (!Array.isArray(payload)) throw new Error('node links response was not an array');
-    return payload as NodeLink[];
-  });
-}
-
 import {
   applyMapOverlayTheme,
   installMapSourcesAndLayers,
@@ -151,7 +88,6 @@ import {
 } from './basemapHealth.js';
 import { buildFallbackStyle, FALLBACK_RASTER_SOURCE_ID, installFallbackMarkers, loadFallbackCities } from './basemapFallback.js';
 import { applyBasemapLabelTheme, installUkPlaceLabels } from './basemapLabels.js';
-// ── Main Component ────────────────────────────────────────────────────────────
 
 export function MapLibreMap({
   showLinks,
@@ -177,72 +113,43 @@ export function MapLibreMap({
   showMapChrome = true,
 }: MapLibreMapProps) {
   const requestScope = useMemo(() => ({ network, observer, region }), [network, observer, region]);
-  const requestScopeKey = `${network ?? 'all'}|${observer ?? 'all'}|privacy-${privacyGeneration}${region ? `|region-${region}` : ''}`;
+  const publicScope = { network, observer, region, privacyGeneration };
+  const requestScopeKey = scopeKey(publicScope);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const mapLoadedRef = useRef(false);
   const [mapError, setMapError] = useState<string | null>(null);
   const [mapAttempt, setMapAttempt] = useState(0);
-  const nodesRef = useRef(nodeStore.getState().nodes);
-  const viablePairsRef = useRef(linkStateStore.getState().viablePairsArr);
-  const linkMetricsRef = useRef(linkStateStore.getState().linkMetrics);
-  const showLinksRef = useRef(showLinks);
-  const showTerrainRef = useRef(showTerrain);
-  const showClientNodesRef = useRef(showClientNodes);
-  const showHexClashesRef = useRef(showHexClashes);
-  const maxHexClashHopsRef = useRef(maxHexClashHops);
-  const viewshedEnabledRef = useRef(viewshedEnabled);
-  const mapLightRef = useRef(mapLight);
+  const showLinksRef = useCommittedRef(showLinks);
+  const showTerrainRef = useCommittedRef(showTerrain);
+  const viewshedEnabledRef = useCommittedRef(viewshedEnabled);
+  const mapLightRef = useCommittedRef(mapLight);
   const styleUrlRef = useRef(mapLight ? OPENFREEMAP_STYLE_LIGHT : OPENFREEMAP_STYLE_DARK);
   const hasLoadedStyleRef = useRef(false);
-  const pathNodeIdsRef = useRef(useOverlayStore.getState().pathNodeIds);
-  const replayNodeIdsRef = useRef(useOverlayStore.getState().replayNodeIds);
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
-  const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
-  const refreshTimerRef = useRef<number | null>(null);
-  const presenceTimerRef = useRef<number | null>(null);
-  const lastArcActivityRef = useRef(0);
-  const dirtyFlagsRef = useRef<MapSourceDirtyFlags>({ ...ALL_MAP_SOURCE_DIRTY_FLAGS });
-  const clashRef = useRef<ClashComputation>({
-    clashOffenderNodeIds: new Set(),
-    clashRelayIds: new Set(),
-    clashPathLines: [],
-    clashModeActive: false,
-  });
-  const selectedNodeIdRef = useRef<string | null>(selectedNodeId);
-  const onNodeSelectRef = useRef(onNodeSelect);
-  onNodeSelectRef.current = onNodeSelect;
+  const selectedNodeIdRef = useCommittedRef<string | null>(selectedNodeId);
+  const onNodeSelectRef = useCommittedRef(onNodeSelect);
 
   const customLosNodeClickedRef = useRef(false);
-  // handleCustomLosPointRef is assigned after handleCustomLosPoint is defined below
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const handleCustomLosPointRef = useRef<(point: CustomLosPoint) => Promise<void>>(null as any);
-  // Planned repeater placement
-  const plannedRepeatersRef = useRef<PlannedRepeater[]>([]);
-  const plannedPollRefs = useRef<Map<string, { stop: () => void }>>(new Map());
-  // Plans whose LOS overlay has already been auto-applied (so we don't re-apply
-  // it or fight a user who manually hid it from the popup).
-  const plannedLosAppliedRef = useRef<Set<string>>(new Set());
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const placePlannedRepeaterRef = useRef<(lat: number, lon: number) => Promise<void>>(null as any);
-  // Planned-repeater popup (parallel to the normal node popup)
-  const plannedPopupRef = useRef<maplibregl.Popup | null>(null);
-  const plannedPopupContainerRef = useRef<HTMLDivElement>(document.createElement('div'));
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const openPlannedPopupRef = useRef<(planId: string, lngLat: maplibregl.LngLatLike) => void>(null as any);
-
-  const [plannedPopupState, setPlannedPopupState] = useState<{ planId: string; lngLat: maplibregl.LngLatLike } | null>(null);
   const [popupLinks, setPopupLinks] = useState<NodeLink[] | null>(null);
   const [focusedPrefix, setFocusedPrefix] = useState<string | null>(null);
   const [focusedNodeId, setFocusedNodeId] = useState<string | null>(null);
   const [focusedPrefixNodeIds, setFocusedPrefixNodeIds] = useState<Set<string> | null>(null);
   const [popupVersion, setPopupVersion] = useState(0);
   const focusTimerRef = useRef<number | null>(null);
-  const dockRef = useRef<HTMLElement>(null);
-  const watchlist = useWatchlist();
-  const [copyLinkLabel, setCopyLinkLabel] = useState('Copy link');
 
-  // -- Basemap health (watchdog → cache-busted retry → bundled fallback) -----
+  const sourceView = useCommittedRef({ showLinks, showClients: showClientNodes, showClashes: showHexClashes,
+    maxClashHops: maxHexClashHops, light: mapLight, focusedNodeId, focusedPrefixNodeIds });
+  const [liveSources] = useState(() => createLiveMapSources({
+    getMap: () => mapLoadedRef.current ? mapRef.current : null,
+    getView: () => sourceView.current,
+    onSelectedNodeChange: () => { if (selectedNodeIdRef.current) setPopupVersion(value => value + 1); },
+    refreshPlannedLinks: () => updatePlannedLinks(),
+  }));
+  const refreshMapSources = liveSources.refresh;
+  const scheduleRefresh = liveSources.schedule;
+  useEffect(() => liveSources.start(), [liveSources]);
+
   const basemapHealthRef = useRef(createBasemapHealth());
   const basemapModeRef = useRef<'remote' | 'fallback'>('remote');
   const basemapTimerRef = useRef<number | null>(null);
@@ -260,97 +167,13 @@ export function MapLibreMap({
     void import('maplibre-gl/dist/maplibre-gl.css');
   }, []);
 
-  useEffect(() => {
-    mapLightRef.current = mapLight;
-  }, [mapLight]);
 
-  // -- LOS profiles (client-side, multi-node, auto-expire) -------------------
 
-  const addLosLoading = useOverlayStore((state) => state.addLosLoading);
-  const setLosProfilesForNode = useOverlayStore((state) => state.setLosProfilesForNode);
-  const removeLosNode = useOverlayStore((state) => state.removeLosNode);
+  const popupLosActive = useOverlayStore(state => selectedNodeId != null && state.losNodeIds.has(selectedNodeId));
+  const popupLosLoading = useOverlayStore(state => selectedNodeId != null && state.losLoadingIds.has(selectedNodeId));
+  const handleToggleLos = useNodeLos(publicScope);
+  useEffect(() => activateNodeLinksScope(publicScope), [requestScopeKey]);
 
-  // Targeted selectors — only re-render MapLibreMap when the SELECTED node's LOS
-  // status changes (boolean equality), not every time any node's Set changes.
-  const popupNodeId = selectedNodeId;
-  const popupLosActive = useOverlayStore((state) => popupNodeId != null && state.losNodeIds.has(popupNodeId));
-  const popupLosLoading = useOverlayStore((state) => popupNodeId != null && state.losLoadingIds.has(popupNodeId));
-
-  // Same targeted LOS selectors for the open planned-repeater popup.
-  const plannedPopupId = plannedPopupState?.planId ?? null;
-  const plannedPopupLosActive = useOverlayStore((state) => plannedPopupId != null && state.losNodeIds.has(plannedPopupId));
-  const plannedPopupLosLoading = useOverlayStore((state) => plannedPopupId != null && state.losLoadingIds.has(plannedPopupId));
-
-  // Timers for auto-expiry: nodeId → setTimeout handle
-  const losTimersRef = useRef<Map<string, number>>(new Map());
-
-  const clearLosTimer = useCallback((nodeId: string) => {
-    const handle = losTimersRef.current.get(nodeId);
-    if (handle !== undefined) {
-      window.clearTimeout(handle);
-      losTimersRef.current.delete(nodeId);
-    }
-  }, []);
-
-  const handleToggleLos = useCallback(async (nodeId: string) => {
-    // Read current state imperatively — avoids stale closure from useCallback deps.
-    if (useOverlayStore.getState().losNodeIds.has(nodeId)) {
-      clearLosTimer(nodeId);
-      removeLosNode(nodeId);
-      return;
-    }
-    addLosLoading(nodeId);
-    // deck.gl renders at actual altitude; MapLibre terrain is visually exaggerated.
-    // Multiply altitude by the terrain exaggeration factor so lines appear
-    // above the terrain mesh rather than inside it.
-    const ANTENNA_H = 10;
-    const EXAG = TERRAIN_CONFIG.exaggeration;
-    try {
-      const links = await fetchNodeLinks(nodeId, requestScopeKey, requestScope);
-      const sourceNode = nodesRef.current.get(nodeId);
-      if (!sourceNode || !hasCoords(sourceNode)) {
-        setLosProfilesForNode(nodeId, []);
-      } else {
-        const srcElev = ((sourceNode.elevation_m ?? 0) + ANTENNA_H) * EXAG;
-        const profiles = links
-          .map((link): LosProfile | null => {
-            const peer = nodesRef.current.get(link.peer_id);
-            if (!peer || !hasCoords(peer)) return null;
-            const peerElev = ((peer.elevation_m ?? 0) + ANTENNA_H) * EXAG;
-            return {
-              peer_id: link.peer_id,
-              peer_name: link.peer_name,
-              itm_path_loss_db: link.itm_path_loss_db,
-              itm_viable: link.itm_path_loss_db != null && link.itm_path_loss_db <= LINK_AMBER_THRESHOLD_DB,
-              profile: [
-                [sourceNode.lon, sourceNode.lat, srcElev],
-                [peer.lon, peer.lat, peerElev],
-              ],
-            };
-          })
-          .filter((p): p is LosProfile => p !== null);
-        setLosProfilesForNode(nodeId, profiles);
-      }
-    } catch {
-      setLosProfilesForNode(nodeId, []);
-    }
-    // Auto-expire after 15 seconds
-    clearLosTimer(nodeId);
-    const handle = window.setTimeout(() => {
-      losTimersRef.current.delete(nodeId);
-      removeLosNode(nodeId);
-    }, 15_000);
-    losTimersRef.current.set(nodeId, handle);
-  }, [
-    addLosLoading,
-    clearLosTimer,
-    removeLosNode,
-    requestScope,
-    requestScopeKey,
-    setLosProfilesForNode,
-  ]);
-
-  // -- Custom LOS (two-point terrain-sampled LOS) ----------------------------
 
   const customLosMode = useOverlayStore((state) => state.customLosMode);
   const customLosStart = useOverlayStore((state) => state.customLosStart);
@@ -360,7 +183,6 @@ export function MapLibreMap({
   const clearCustomLos = useOverlayStore((state) => state.clearCustomLos);
   const planRepeaterMode = useOverlayStore((state) => state.planRepeaterMode);
   const plannedRepeaters = useOverlayStore((state) => state.plannedRepeaters);
-  const requestedPlanCoordinates = useOverlayStore((state) => state.requestedPlanCoordinates);
   const setPlanRepeaterMode = useOverlayStore((state) => state.setPlanRepeaterMode);
 
   // Stable async handler called by map click handlers (reads state via getState())
@@ -375,173 +197,15 @@ export function MapLibreMap({
     }
   }, [setCustomLosStart, setCustomLosResult]);
 
-  // Keep ref in sync so map event handlers always call the latest version
-  useEffect(() => {
-    handleCustomLosPointRef.current = handleCustomLosPoint;
-  }, [handleCustomLosPoint]);
+  const handleCustomLosPointRef = useCommittedRef(handleCustomLosPoint);
 
-  // -- Planned repeater placement --------------------------------------------
-
-  const handleRemovePlannedRepeater = useCallback((planId: string) => {
-    const poll = plannedPollRefs.current.get(planId);
-    if (poll) {
-      poll.stop();
-      plannedPollRefs.current.delete(planId);
-    }
-    setPlannedPopupState((prev) => (prev?.planId === planId ? null : prev));
-    plannedLosAppliedRef.current.delete(planId);
-    useOverlayStore.getState().removeLosNode(planId);
-    useOverlayStore.getState().removePlannedRepeater(planId);
-  }, []);
-
-  // Rebuild the planned-link lines from the current plans + live node positions,
-  // and toggle their visibility with the global Links toggle.
-  const updatePlannedLinks = useCallback(() => {
-    if (!mapLoadedRef.current || !mapRef.current) return;
-    const data = viewshedEnabledRef.current && showLinksRef.current
-      ? buildPlannedLinksGeoJSON(
-          plannedRepeatersRef.current,
-          nodesRef.current,
-          hiddenCoordMaskRef.current,
-          mapLightRef.current ? 'light' : 'dark',
-        )
-      : EMPTY_FC;
-    (mapRef.current.getSource('planned-links') as maplibregl.GeoJSONSource | undefined)?.setData(data);
-    mapRef.current.setLayoutProperty('planned-links-layer', 'visibility', viewshedEnabledRef.current && showLinksRef.current ? 'visible' : 'none');
-  }, []);
-
-  const openPlannedPopup = useCallback((planId: string, lngLat: maplibregl.LngLatLike) => {
-    if (!viewshedEnabledRef.current) return;
-    onNodeSelectRef.current?.(null); // close any normal node panel
-    setPlannedPopupState({ planId, lngLat });
-  }, []);
-
-  useEffect(() => {
-    openPlannedPopupRef.current = openPlannedPopup;
-  }, [openPlannedPopup]);
-
-  // Build 3D LOS sight-lines for a planned repeater from its server-predicted
-  // links: plan location → each viable peer, at antenna-tip altitude (same
-  // representation the normal "Show LOS" overlay uses).
-  const buildPlannedLosProfiles = useCallback(async (repeater: PlannedRepeater): Promise<LosProfile[]> => {
-    if (!viewshedEnabledRef.current) return [];
-    const links = repeater.coverage?.predicted_links;
-    if (!links || links.length === 0) return [];
-    const ANTENNA_H = 10;
-    const EXAG = TERRAIN_CONFIG.exaggeration;
-    const srcElevRaw = await sampleElevationAt(repeater.lon, repeater.lat).catch(() => 0);
-    const srcElev = ((srcElevRaw ?? 0) + ANTENNA_H) * EXAG;
-    const profiles: LosProfile[] = [];
-    for (const link of links) {
-      const peer = nodesRef.current.get(link.peer_id);
-      if (!peer || !hasCoords(peer)) continue;
-      const [peerLat, peerLon] = maskNodePoint(peer, hiddenCoordMaskRef.current);
-      const peerElev = ((peer.elevation_m ?? 0) + ANTENNA_H) * EXAG;
-      profiles.push({
-        peer_id: link.peer_id,
-        peer_name: link.peer_name,
-        itm_path_loss_db: link.itm_path_loss_db,
-        itm_viable: link.itm_viable,
-        profile: [
-          [repeater.lon, repeater.lat, srcElev],
-          [peerLon, peerLat, peerElev],
-        ],
-      });
-    }
-    return profiles;
-  }, []);
-
-  const handleTogglePlannedLos = useCallback(async (planId: string) => {
-    if (!viewshedEnabledRef.current) return;
-    if (useOverlayStore.getState().losNodeIds.has(planId)) {
-      useOverlayStore.getState().removeLosNode(planId);
-      return;
-    }
-    const repeater = plannedRepeatersRef.current.find((r) => r.id === planId);
-    if (!repeater) return;
-    useOverlayStore.getState().addLosLoading(planId);
-    const profiles = await buildPlannedLosProfiles(repeater);
-    useOverlayStore.getState().setLosProfilesForNode(planId, profiles);
-  }, [buildPlannedLosProfiles]);
-
-  // Auto-show LOS for ready plans (no toggle needed) and clean up removed ones.
-  useEffect(() => {
-    if (!viewshedEnabled) return;
-    const liveIds = new Set(plannedRepeaters.map((r) => r.id));
-    for (const id of Array.from(plannedLosAppliedRef.current)) {
-      if (!liveIds.has(id)) {
-        plannedLosAppliedRef.current.delete(id);
-        useOverlayStore.getState().removeLosNode(id);
-      }
-    }
-    for (const repeater of plannedRepeaters) {
-      if (repeater.status !== 'ready') continue;
-      if (plannedLosAppliedRef.current.has(repeater.id)) continue;
-      plannedLosAppliedRef.current.add(repeater.id);
-      useOverlayStore.getState().addLosLoading(repeater.id);
-      void buildPlannedLosProfiles(repeater).then((profiles) => {
-        useOverlayStore.getState().setLosProfilesForNode(repeater.id, profiles);
-      });
-    }
-  }, [viewshedEnabled, plannedRepeaters, buildPlannedLosProfiles]);
-
-  const placePlannedRepeater = useCallback(async (lat: number, lon: number) => {
-    void lat;
-    void lon;
-    // Retired with the legacy viewshed planner. Kept as a no-op until the
-    // dormant planner UI is removed after the rollback window.
-  }, []);
-
-  // Keep handler refs in sync for map event handlers
-  useEffect(() => {
-    placePlannedRepeaterRef.current = placePlannedRepeater;
-  }, [placePlannedRepeater]);
-
-  useEffect(() => {
-    if (!viewshedEnabled || requestedPlanCoordinates.length === 0) return;
-    const available = Math.max(0, 5 - useOverlayStore.getState().plannedRepeaters.length);
-    for (const coordinate of requestedPlanCoordinates.slice(0, available)) {
-      void placePlannedRepeater(coordinate.lat, coordinate.lon);
-    }
-    useOverlayStore.getState().clearPlanRestoreRequest();
-  }, [placePlannedRepeater, requestedPlanCoordinates, viewshedEnabled]);
-
-  // Keep planned repeaters ref in sync
-  useEffect(() => {
-    plannedRepeatersRef.current = viewshedEnabled ? plannedRepeaters : [];
-  }, [viewshedEnabled, plannedRepeaters]);
-
-  // Update planned coverage, pin, and predicted-link layers when plans change
-  useEffect(() => {
-    if (!mapLoadedRef.current || !mapRef.current) return;
-    const visiblePlans = viewshedEnabled ? plannedRepeaters : [];
-    (mapRef.current.getSource('planned-coverage') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedCoverageGeoJSON(visiblePlans));
-    (mapRef.current.getSource('planned-pins') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedPinGeoJSON(visiblePlans));
-    updatePlannedLinks();
-  }, [viewshedEnabled, plannedRepeaters, updatePlannedLinks]);
-
-  // Stop old-scope jobs before they can publish into a new network/observer.
-  useEffect(() => () => {
-    for (const [planId, poll] of plannedPollRefs.current) {
-      poll.stop();
-      useOverlayStore.getState().updatePlannedRepeater(planId, { status: 'error' });
-    }
-    plannedPollRefs.current.clear();
-  }, [requestScopeKey]);
-
-  // Clean up all planned repeaters, pollers, and LOS overlays on unmount
-  useEffect(() => () => {
-    for (const [, poll] of plannedPollRefs.current) {
-      poll.stop();
-    }
-    plannedPollRefs.current.clear();
-    for (const planId of plannedLosAppliedRef.current) {
-      useOverlayStore.getState().removeLosNode(planId);
-    }
-    plannedLosAppliedRef.current.clear();
-  }, []);
+  const legacy = useLegacyPlanner({ enabled: viewshedEnabled,
+    getMap: () => mapLoadedRef.current ? mapRef.current : null,
+    getNodes: () => liveSources.getNodes(), getMask: () => liveSources.getMask(),
+    isLight: () => mapLightRef.current, linksVisible: () => showLinksRef.current,
+    onSelectNode: nodeId => onNodeSelectRef.current?.(nodeId),
+  });
+  const updatePlannedLinks = legacy.updateLinks;
 
   // Cursor crosshair while in custom LOS mode or plan repeater mode
   useEffect(() => {
@@ -563,20 +227,6 @@ export function MapLibreMap({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [viewshedEnabled, customLosMode, planRepeaterMode, clearCustomLos, setPlanRepeaterMode]);
 
-  // Escape closes the node detail dock (when not in a picking mode, which the
-  // handler above owns). Also move focus into the dock when it opens so keyboard
-  // users land on the panel rather than being stranded on the map canvas.
-  useEffect(() => {
-    if (!selectedNodeId || customLosMode || (viewshedEnabled && planRepeaterMode)) return;
-    dockRef.current?.focus();
-    const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onNodeSelectRef.current?.(null);
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [selectedNodeId, customLosMode, viewshedEnabled, planRepeaterMode]);
-
-  // -- Focus mode (same-prefix highlight) ------------------------------------
 
   const clearFocusTimer = useCallback(() => {
     if (focusTimerRef.current !== null) {
@@ -584,89 +234,6 @@ export function MapLibreMap({
       focusTimerRef.current = null;
     }
   }, []);
-
-  const refreshMapSources = useCallback((): void => {
-    if (!mapLoadedRef.current || !mapRef.current) return;
-
-    const dirty = dirtyFlagsRef.current;
-    dirtyFlagsRef.current = {
-      nodes: false,
-      privacy: false,
-      links: false,
-      clash: false,
-      plannedLinks: false,
-    };
-    const nodes = nodesRef.current;
-    const viablePairsArr = viablePairsRef.current;
-    const linkMetrics = linkMetricsRef.current;
-    const currentPathNodeIds = pathNodeIdsRef.current;
-    const maskDirty = dirty.nodes || dirty.privacy || dirty.links || dirty.clash || dirty.plannedLinks;
-    const currentHiddenCoordMask = maskDirty ? buildHiddenMask(nodes) : hiddenCoordMaskRef.current;
-    if (maskDirty) hiddenCoordMaskRef.current = currentHiddenCoordMask;
-
-    const clashDirty = dirty.clash || dirty.nodes || dirty.links;
-    const clash = clashDirty
-      ? computeClashData(
-          nodes,
-          viablePairsArr,
-          linkMetrics,
-          showHexClashesRef.current,
-          maxHexClashHopsRef.current,
-          focusedNodeId,
-          focusedPrefixNodeIds,
-        )
-      : clashRef.current;
-    if (clashDirty) clashRef.current = clash;
-
-    if (dirty.nodes || clashDirty) {
-      const nodeGeoJSON = buildNodeGeoJSON(
-        nodes,
-        currentHiddenCoordMask,
-        showClientNodesRef.current,
-        clash.clashOffenderNodeIds,
-        clash.clashRelayIds,
-        clash.clashModeActive,
-        clash.clashModeActive ? null : currentPathNodeIds,
-        replayNodeIdsRef.current,
-        Date.now(),
-      );
-      (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
-      if (presenceTimerRef.current !== null) window.clearTimeout(presenceTimerRef.current);
-      const transition = nextNodePresenceTransition(nodes);
-      presenceTimerRef.current = transition === null ? null : window.setTimeout(() => {
-        presenceTimerRef.current = null;
-        dirtyFlagsRef.current = { ...ALL_MAP_SOURCE_DIRTY_FLAGS };
-        refreshMapSources();
-      }, Math.max(1, Math.min(2_147_483_647, transition - Date.now())));
-    }
-
-    if (dirty.privacy || dirty.nodes) {
-      const privacyGeoJSON = buildPrivacyRingsGeoJSON(nodes, currentHiddenCoordMask);
-      (mapRef.current.getSource('privacy-rings') as maplibregl.GeoJSONSource | undefined)?.setData(privacyGeoJSON);
-    }
-
-    if (dirty.links || dirty.nodes) {
-      const linksGeoJSON = showLinksRef.current
-        ? buildLinksGeoJSON(
-            nodes,
-            viablePairsArr,
-            linkMetrics,
-            currentHiddenCoordMask,
-            mapLightRef.current ? 'light' : 'dark',
-          )
-        : EMPTY_FC;
-      (mapRef.current.getSource('viable-links') as maplibregl.GeoJSONSource | undefined)?.setData(linksGeoJSON);
-      mapRef.current.setLayoutProperty('viable-links-layer', 'visibility', showLinksRef.current ? 'visible' : 'none');
-    }
-
-    if (clashDirty) {
-      setClashPathLines(clash.clashModeActive ? clash.clashPathLines : []);
-      (mapRef.current.getSource('clash-lines') as maplibregl.GeoJSONSource | undefined)?.setData(EMPTY_FC);
-      mapRef.current.setLayoutProperty('clash-lines-layer', 'visibility', 'none');
-    }
-
-    if (dirty.plannedLinks || dirty.nodes || dirty.links) updatePlannedLinks();
-  }, [viewshedEnabled, focusedNodeId, focusedPrefixNodeIds, setClashPathLines, updatePlannedLinks]);
 
   const restoreTerrain = useCallback((map: maplibregl.Map, animatePitch = false) => {
     if (!showTerrainRef.current) return;
@@ -712,14 +279,9 @@ export function MapLibreMap({
 
     // setStyle removes all application sources and layers, so force every
     // source to refresh from the current refs after installing the new style.
-    dirtyFlagsRef.current = { ...ALL_MAP_SOURCE_DIRTY_FLAGS };
-    refreshMapSources();
+    liveSources.reset();
 
-    const visiblePlans = viewshedEnabledRef.current ? plannedRepeatersRef.current : [];
-    (map.getSource('planned-coverage') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedCoverageGeoJSON(visiblePlans));
-    (map.getSource('planned-pins') as maplibregl.GeoJSONSource | undefined)
-      ?.setData(buildPlannedPinGeoJSON(visiblePlans));
+    legacy.rehydrate(map);
 
     const selectedFilter: maplibregl.FilterSpecification = [
       '==', ['get', 'node_id'], selectedNodeIdRef.current ?? '__none__',
@@ -730,46 +292,13 @@ export function MapLibreMap({
     restoreTerrain(map, animateTerrain);
   }, [refreshMapSources, restoreTerrain]);
 
-  const scheduleRefresh = useCallback((flags: Partial<MapSourceDirtyFlags> = ALL_MAP_SOURCE_DIRTY_FLAGS) => {
-    dirtyFlagsRef.current = mergeMapSourceDirtyFlags(dirtyFlagsRef.current, flags);
-    if (refreshTimerRef.current !== null) return;
-    const interval = Date.now() - lastArcActivityRef.current < 5_000
-      ? MAP_ARC_REFRESH_INTERVAL_MS
-      : MAP_REFRESH_INTERVAL_MS;
-    refreshTimerRef.current = window.setTimeout(() => {
-      refreshTimerRef.current = null;
-      refreshMapSources();
-    }, interval);
-  }, [refreshMapSources]);
-
   useEffect(() => {
-    const noteArcActivity = () => { lastArcActivityRef.current = Date.now(); };
-    window.addEventListener(PACKET_OBSERVED_EVENT, noteArcActivity);
-    return () => window.removeEventListener(PACKET_OBSERVED_EVENT, noteArcActivity);
-  }, []);
-
-  useEffect(() => {
-    viewshedEnabledRef.current = viewshedEnabled;
-    if (!viewshedEnabled) {
-      setPlanRepeaterMode(false);
-      setPlannedPopupState(null);
-      plannedPopupRef.current?.remove();
-      for (const [, poll] of plannedPollRefs.current) {
-        poll.stop();
-      }
-      plannedPollRefs.current.clear();
-      for (const repeater of useOverlayStore.getState().plannedRepeaters) {
-        useOverlayStore.getState().removeLosNode(repeater.id);
-        useOverlayStore.getState().removePlannedRepeater(repeater.id);
-      }
-      plannedLosAppliedRef.current.clear();
-    }
     scheduleRefresh();
-  }, [viewshedEnabled, scheduleRefresh, setPlanRepeaterMode]);
+  }, [viewshedEnabled, scheduleRefresh]);
 
   const handleFocusSamePrefix = useCallback((nodeId: string) => {
     const prefix = nodeId.slice(0, 2).toUpperCase();
-    const ids = Array.from(nodesRef.current.values())
+    const ids = Array.from(liveSources.getNodes().values())
       .filter((node) => hasCoords(node) && (node.role === undefined || node.role === 2))
       .filter((node) => node.node_id.slice(0, 2).toUpperCase() === prefix)
       .map((node) => node.node_id);
@@ -788,17 +317,9 @@ export function MapLibreMap({
 
   useEffect(() => () => {
     clearFocusTimer();
-    if (refreshTimerRef.current !== null) {
-      window.clearTimeout(refreshTimerRef.current);
-      refreshTimerRef.current = null;
-    }
-    if (presenceTimerRef.current !== null) {
-      window.clearTimeout(presenceTimerRef.current);
-      presenceTimerRef.current = null;
-    }
+    liveSources.cancel();
   }, [clearFocusTimer]);
 
-  // -- Map initialisation (runs once on mount) --------------------------------
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -825,7 +346,6 @@ export function MapLibreMap({
     }
 
     mapRef.current = map;
-    // ── Load watchdog (blocking failures: style, worker, WebGL) ───────────────
     let loadTimer: number | undefined;
     let waitingForLoad = true;
     const watchLoading = () => {
@@ -850,7 +370,6 @@ export function MapLibreMap({
       setMapError('The browser lost the map graphics connection. Retry to reload the map.');
     };
 
-    // ── Basemap watchdog (non-blocking failures: tiles, sprite, source) ───────
     let basemapWatchdogHandle: number | null = null;
     let interactionsInstalled = false;
     let fallbackRasterLoaded = false;
@@ -983,7 +502,6 @@ export function MapLibreMap({
       armBasemapWatchdog(BASEMAP_RETRY_TIMEOUT_MS);
     };
 
-    // ── Map event handlers ────────────────────────────────────────────────────
     const handleSourceData = (rawEvent: unknown) => {
       const event = rawEvent as { sourceId?: string; tile?: { state?: string } };
       if (basemapModeRef.current === 'fallback') {
@@ -1081,7 +599,6 @@ export function MapLibreMap({
       if (interactionsInstalled) return;
       interactionsInstalled = true;
 
-      // ── Click handler ──────────────────────────────────────────────────────
       map.on('click', 'planned-pins-dot', (e) => {
         if (!viewshedEnabledRef.current) return;
         // Click a planned pin (in any mode) to open its popup with coords,
@@ -1091,7 +608,7 @@ export function MapLibreMap({
         const planId = (feature.properties as { plan_id: string }).plan_id;
         const coords = (feature.geometry as GeoJSON.Point).coordinates as [number, number];
         customLosNodeClickedRef.current = true; // prevent general map-click from placing a new pin
-        openPlannedPopupRef.current(planId, { lng: coords[0], lat: coords[1] });
+        legacy.open(planId, { lng: coords[0], lat: coords[1] });
       });
 
       map.on('click', 'node-dots-hit', (e) => {
@@ -1102,10 +619,10 @@ export function MapLibreMap({
         // In plan repeater mode, node clicks place a repeater on the node's location
         if (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) {
           customLosNodeClickedRef.current = true;
-          if (plannedRepeatersRef.current.length < 5) {
-            const node = nodesRef.current.get(props.node_id);
+          if (legacy.canPlace()) {
+            const node = liveSources.getNodes().get(props.node_id);
             if (node && hasCoords(node)) {
-              void placePlannedRepeaterRef.current(node.lat, node.lon);
+              void legacy.place(node.lat, node.lon);
             }
           }
           return;
@@ -1115,7 +632,7 @@ export function MapLibreMap({
         if (useOverlayStore.getState().customLosMode) {
           customLosNodeClickedRef.current = true; // always consume to prevent map-click firing
           if (!props.is_prohibited) {
-            const node = nodesRef.current.get(props.node_id);
+            const node = liveSources.getNodes().get(props.node_id);
             if (node && hasCoords(node)) {
               void handleCustomLosPointRef.current({ lat: node.lat, lon: node.lon, elevation_m: node.elevation_m ?? 0 });
             }
@@ -1139,8 +656,8 @@ export function MapLibreMap({
 
         if (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) {
           if (consumed) return;
-          if (plannedRepeatersRef.current.length < 5) {
-            void placePlannedRepeaterRef.current(lat, lng);
+          if (legacy.canPlace()) {
+            void legacy.place(lat, lng);
           }
           return;
         }
@@ -1173,7 +690,6 @@ export function MapLibreMap({
       });
     }
 
-    // ── Basemap health signals ────────────────────────────────────────────────
     map.on('style.load', handleStyleLoad);
 
     basemapStartRef.current = () => {
@@ -1202,10 +718,7 @@ export function MapLibreMap({
       mapLoadedRef.current = false;
       hasLoadedStyleRef.current = false;
       mapReadyNotifiedRef.current = false;
-      if (presenceTimerRef.current !== null) {
-        window.clearTimeout(presenceTimerRef.current);
-        presenceTimerRef.current = null;
-      }
+      liveSources.cancel();
       clearBasemapWatchdog();
       fallbackMarkersCleanupRef.current?.();
       fallbackMarkersCleanupRef.current = null;
@@ -1227,7 +740,6 @@ export function MapLibreMap({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mapAttempt, initialView, onMapReady, onNodeSelect, refreshMapSources, rehydrateMapStyle, setClashPathLines]);
 
-  // -- Map theme (light/dark) -------------------------------------------------
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -1250,16 +762,13 @@ export function MapLibreMap({
     setBasemapStyle(map, targetStyle, basemapNonceRef.current);
   }, [mapLight]);
 
-  // -- Imperative source updates ---------------------------------------------
 
   useEffect(() => {
-    showLinksRef.current = showLinks;
     updatePlannedLinks();
     scheduleRefresh({ nodes: true, links: true, plannedLinks: true, clash: true });
   }, [showLinks, scheduleRefresh, updatePlannedLinks]);
 
   useEffect(() => {
-    showTerrainRef.current = showTerrain;
     const map = mapRef.current;
     if (!map || !mapLoadedRef.current) return;
     if (showTerrain) {
@@ -1269,72 +778,33 @@ export function MapLibreMap({
       if (map.getLayer('hillshade')) map.removeLayer('hillshade');
       map.setSky({});
       if (map.getSource('terrain-dem')) map.removeSource('terrain-dem');
+      const finish = () => { if (!showTerrainRef.current) map.setMaxPitch(0); };
+      map.once('moveend', finish);
       map.easeTo({ pitch: 0, duration: 400 });
-      setTimeout(() => map.setMaxPitch(0), 400);
+      return () => { map.off('moveend', finish); };
     }
   }, [restoreTerrain, showTerrain]);
 
   useEffect(() => {
-    showClientNodesRef.current = showClientNodes;
     scheduleRefresh({ nodes: true });
   }, [showClientNodes, scheduleRefresh]);
 
   useEffect(() => {
-    showHexClashesRef.current = showHexClashes;
     scheduleRefresh({ nodes: true, clash: true });
   }, [showHexClashes, scheduleRefresh]);
 
   useEffect(() => {
-    maxHexClashHopsRef.current = maxHexClashHops;
     scheduleRefresh({ nodes: true, clash: true });
   }, [maxHexClashHops, scheduleRefresh]);
 
-  useEffect(() => {
-    selectedNodeIdRef.current = selectedNodeId;
-  }, [selectedNodeId]);
-
-  useEffect(() => {
-    const unsubscribeNodes = nodeStore.subscribe(() => {
-      const { nodes: nextNodes, nodeChanges } = nodeStore.getState();
-      // Packet/message updates share the same node Map reference. Ignore those
-      // emissions so live feed traffic does not trigger a 3.6k-node rebuild.
-      if (nextNodes === nodesRef.current) return;
-      const refreshSources = nodeChanges.full || nodeChanges.previous !== nodesRef.current || nodeMapNeedsSourceRefresh(nodesRef.current, nextNodes, Date.now(), nodeChanges.ids);
-      nodesRef.current = nextNodes;
-      if (refreshSources) scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
-      if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
-    });
-    const unsubscribeLinks = linkStateStore.subscribe(() => {
-      const linkState = linkStateStore.getState();
-      viablePairsRef.current = linkState.viablePairsArr;
-      linkMetricsRef.current = linkState.linkMetrics;
-      scheduleRefresh({ links: true, clash: true, nodes: true, plannedLinks: true });
-    });
-    const unsubscribeOverlay = useOverlayStore.subscribe((overlayState) => {
-      if (
-        overlayState.pathNodeIds === pathNodeIdsRef.current
-        && overlayState.replayNodeIds === replayNodeIdsRef.current
-      ) return;
-      pathNodeIdsRef.current = overlayState.pathNodeIds;
-      replayNodeIdsRef.current = overlayState.replayNodeIds;
-      scheduleRefresh({ nodes: true });
-    });
-
-    return () => {
-      unsubscribeNodes();
-      unsubscribeLinks();
-      unsubscribeOverlay();
-    };
-  }, [scheduleRefresh]);
 
   useEffect(() => {
     scheduleRefresh({ nodes: true, clash: true });
   }, [focusedNodeId, focusedPrefixNodeIds, scheduleRefresh]);
 
-  // -- Popup management ------------------------------------------------------
 
   const getNode = useCallback((nodeId: string): MeshNode | undefined => {
-    return nodesRef.current.get(nodeId);
+    return liveSources.getNodes().get(nodeId);
   }, []);
 
   useEffect(() => {
@@ -1343,7 +813,7 @@ export function MapLibreMap({
     if (!node) return;
     let cancelled = false;
     setPopupLinks(null);
-    void fetchNodeLinks(selectedNodeId, requestScopeKey, requestScope)
+    void fetchNodeLinks(selectedNodeId, publicScope)
       .then((rows) => { if (!cancelled) setPopupLinks(rows); })
       .catch(() => { if (!cancelled) setPopupLinks([]); });
     return () => { cancelled = true; };
@@ -1359,37 +829,6 @@ export function MapLibreMap({
     map.setFilter('node-dots-selected', filter);
   }, [selectedNodeId, popupVersion]);
 
-  // Show/update/close the planned-repeater popup when its state changes
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !mapLoadedRef.current) return;
-
-    if (!plannedPopupState) {
-      plannedPopupRef.current?.remove();
-      return;
-    }
-
-    if (!plannedPopupRef.current) {
-      const popup = new maplibregl.Popup({ maxWidth: '280px', closeOnClick: false })
-        .setDOMContent(plannedPopupContainerRef.current);
-      popup.on('close', () => setPlannedPopupState(null));
-      plannedPopupRef.current = popup;
-    }
-
-    plannedPopupRef.current.setLngLat(plannedPopupState.lngLat).addTo(map);
-  }, [plannedPopupState]);
-
-  // The currently open planned repeater (re-derived as plans/coverage update)
-  const plannedPopupRepeater = useMemo(
-    () => viewshedEnabled ? plannedRepeaters.find((r) => r.id === plannedPopupState?.planId) ?? null : null,
-    [viewshedEnabled, plannedRepeaters, plannedPopupState],
-  );
-
-  // Auto-close the planned popup if its repeater is gone
-  useEffect(() => {
-    if (plannedPopupState && !plannedPopupRepeater) setPlannedPopupState(null);
-  }, [plannedPopupState, plannedPopupRepeater]);
-
   // Resolve popup props from current nodes map
   const popupNodeProps = useMemo((): PopupNodeView | null => {
     if (!selectedNodeId) return null;
@@ -1397,7 +836,7 @@ export function MapLibreMap({
     if (!node || !hasCoords(node)) return null;
     const now = Date.now();
     const ageMs = now - new Date(node.last_seen).getTime();
-    const masked = maskNodePoint(node as MeshNode & { lat: number; lon: number }, hiddenCoordMaskRef.current);
+    const masked = maskNodePoint(node as MeshNode & { lat: number; lon: number }, liveSources.getMask());
     return {
       props: {
         node_id: node.node_id,
@@ -1406,8 +845,8 @@ export function MapLibreMap({
         is_online: node.is_online,
         is_stale: ageMs > NODE_STALE_AFTER_MS,
         is_prohibited: isProhibitedMapNode(node),
-        replay_active: replayNodeIdsRef.current?.has(node.node_id.toLowerCase()) ?? false,
-        replay_mode: replayNodeIdsRef.current !== null,
+        replay_active: liveSources.getReplayNodes()?.has(node.node_id.toLowerCase()) ?? false,
+        replay_mode: liveSources.getReplayNodes() !== null,
         hex_clash_state: null,
         visible: true,
         last_seen: node.last_seen,
@@ -1424,18 +863,17 @@ export function MapLibreMap({
   const popupSamePrefixCount = useMemo(() => {
     if (!selectedNodeId) return 1;
     const prefix = selectedNodeId.slice(0, 2).toUpperCase();
-    return Array.from(nodesRef.current.values()).filter(
+    return Array.from(liveSources.getNodes().values()).filter(
       (node) => hasCoords(node)
         && (node.role === undefined || node.role === 2)
         && node.node_id.slice(0, 2).toUpperCase() === prefix,
     ).length || 1;
   }, [selectedNodeId, popupVersion]);
 
-  // -- Render ----------------------------------------------------------------
 
   return (
     <div className="map-area" data-basemap-state={basemapPhase} style={{ position: 'relative', width: '100%', height: '100%' }}>
-      {showMapChrome && <NodeSearch map={mapRef.current} onNodeSelect={onNodeSelect} />}
+      {showMapChrome && <NodeSearch map={mapRef.current} scope={publicScope} onNodeSelect={onNodeSelect} />}
       {showMapChrome && <NodeLegend mapLight={mapLight} />}
       <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
       {mapError && (
@@ -1550,115 +988,19 @@ export function MapLibreMap({
         </div>
       )}
 
-      {/* Node detail — docked panel on the right (replaces the old floating popup) */}
-      {selectedNodeId && popupNodeProps && (() => {
-        const nodeName = popupNodeProps.props.is_prohibited
-          ? 'Redacted node'
-          : (popupNodeProps.props.name ?? `Node ${selectedNodeId.slice(0, 8)}`);
-        const statusLabel = popupNodeProps.props.is_stale
-          ? 'STALE' : popupNodeProps.props.is_online ? 'ONLINE' : 'OFFLINE';
-        const statusMod = popupNodeProps.props.is_stale
-          ? 'stale' : popupNodeProps.props.is_online ? 'online' : 'offline';
-        const observations = (popupLinks ?? []).reduce(
-          (sum, lk) => sum + Number(lk.count_this_to_peer || 0) + Number(lk.count_peer_to_this || 0), 0);
-        const watched = watchlist.isWatched('node', selectedNodeId);
-        const copyLink = () => {
-          const done = (label: string) => {
-            setCopyLinkLabel(label);
-            window.setTimeout(() => setCopyLinkLabel('Copy link'), 1600);
-          };
-          try {
-            void navigator.clipboard.writeText(window.location.href).then(
-              () => done('Copied!'), () => done('Copy failed'));
-          } catch { done('Copy failed'); }
-        };
-        return (
-          <aside
-            className="node-dock"
-            aria-label="Node details"
-            role="dialog"
-            tabIndex={-1}
-            ref={dockRef}
-          >
-            <header className="node-dock__header">
-              <div className="node-dock__heading">
-                <span className={`node-dock__status node-dock__status--${statusMod}`}>{statusLabel}</span>
-                <h2 className="node-dock__name" title={nodeName}>{nodeName}</h2>
-              </div>
-              <button
-                type="button"
-                className="node-dock__close"
-                aria-label="Close node details"
-                onClick={() => onNodeSelectRef.current?.(null)}
-              >×</button>
-            </header>
-            <div className="node-dock__actions">
-              <button
-                type="button"
-                className={`node-dock__watch${watched ? ' node-dock__watch--on' : ''}`}
-                onClick={() => watchlist.toggle('node', selectedNodeId, nodeName)}
-              >
-                {watched ? '★ Watching' : '☆ Watch node'}
-              </button>
-              <button
-                type="button"
-                className="node-dock__copy"
-                onClick={copyLink}
-                aria-label="Copy a link to this node"
-              >
-                {copyLinkLabel}
-              </button>
-            </div>
-            {popupLinks !== null && popupLinks.length > 0 && (
-              <div className="node-dock__metrics">
-                <div><strong>{popupLinks.length}</strong><span>neighbours</span></div>
-                <div><strong>{observations.toLocaleString()}</strong><span>observations</span></div>
-              </div>
-            )}
-            <ActivitySparkline nodeId={selectedNodeId} />
-            <div className="node-dock__body">
-              <NodePopupContent
-                props={popupNodeProps.props}
-                lat={popupNodeProps.maskedLat}
-                lon={popupNodeProps.maskedLon}
-                links={popupLinks}
-                hideName
-                onFocusSamePrefix={handleFocusSamePrefix}
-                samePrefixCount={popupSamePrefixCount}
-                losActive={popupLosActive}
-                losLoading={popupLosLoading}
-                onToggleLos={handleToggleLos}
-                rfCoverageEnabled={rfCoverageEnabled}
-                rfCoverageActive={!!popupNodeProps.props.public_key
-                  && selectedRfCoverageNodeKey?.toLowerCase() === popupNodeProps.props.public_key.toLowerCase()}
-                rfCoverageState={getRfCoverageNodeState?.(popupNodeProps.props.public_key ?? '') ?? 'pending'}
-                onShowRfCoverage={(publicKey) => onShowRfCoverage?.(publicKey)}
-                onClearRfCoverage={() => onClearRfCoverage?.()}
-                network={network}
-                observer={observer}
-                privacyGeneration={privacyGeneration}
-              />
-            </div>
-          </aside>
-        );
-      })()}
+      {selectedNodeId && popupNodeProps && <NodeDock
+        nodeId={selectedNodeId} view={popupNodeProps} links={popupLinks} scope={publicScope}
+        picking={customLosMode || (viewshedEnabled && planRepeaterMode)} onClose={() => onNodeSelectRef.current?.(null)}
+        details={{ onFocusSamePrefix: handleFocusSamePrefix, samePrefixCount: popupSamePrefixCount,
+          losActive: popupLosActive, losLoading: popupLosLoading, onToggleLos: handleToggleLos,
+          rfCoverageEnabled, rfCoverageActive: !!popupNodeProps.props.public_key
+            && selectedRfCoverageNodeKey?.toLowerCase() === popupNodeProps.props.public_key.toLowerCase(),
+          rfCoverageState: getRfCoverageNodeState?.(popupNodeProps.props.public_key ?? '') ?? 'pending',
+          onShowRfCoverage: publicKey => onShowRfCoverage?.(publicKey), onClearRfCoverage: () => onClearRfCoverage?.(),
+          network, observer, privacyGeneration }}
+      />}
 
-      {/* Planned repeater popup rendered into its MapLibre popup DOM node via portal */}
-      {viewshedEnabled && plannedPopupState && plannedPopupRepeater && createPortal(
-        <PlannedRepeaterPopup
-          planId={plannedPopupRepeater.id}
-          lat={plannedPopupRepeater.lat}
-          lon={plannedPopupRepeater.lon}
-          status={plannedPopupRepeater.status}
-          links={plannedPopupRepeater.coverage?.predicted_links}
-          getPeerName={(peerId) => nodesRef.current.get(peerId)?.name ?? peerId.slice(0, 8)}
-          onRemove={handleRemovePlannedRepeater}
-          losActive={plannedPopupLosActive}
-          losLoading={plannedPopupLosLoading}
-          onToggleLos={handleTogglePlannedLos}
-        />,
-        plannedPopupContainerRef.current,
-      )}
+      {legacy.portal}
 
       {/* Focus mode indicator */}
       {focusedPrefix && (

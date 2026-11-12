@@ -8,7 +8,7 @@ import {
   buildUnattributedGeoJSON,
   type RegionRepeaterFilters,
 } from './regionOverlay.js';
-import type { RegionRepeater, RegionSummary, UnattributedCluster } from '../../pages/regionsModel.js';
+import type { RegionRepeater, RegionSummary, UnattributedCluster } from '../../features/regions/model.js';
 
 const REGION_AREAS_FILL_LAYER = 'region-areas-fill';
 const REGION_AREAS_LINE_LAYER = 'region-areas-line';

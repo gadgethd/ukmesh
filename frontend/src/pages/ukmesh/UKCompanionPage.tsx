@@ -1,8 +1,9 @@
+import { scopeKey as publicScopeKey } from '../../utils/scope.js';
 import '../docs-pages.css';
 import '../../styles/companion.css';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
-import type { WSMessage } from '../../hooks/useWebSocket.js';
+import type { WSMessage } from '../../features/realtime/protocol.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { ObserverRegistrationForm } from '../../components/ObserverRegistrationForm.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
@@ -44,12 +45,11 @@ export const UKCompanionPage: React.FC = () => {
   const observer = site.observerId;
   const { privacyGeneration } = useRuntimeFeatures();
   const requestScope = useMemo(() => ({ network, observer }), [network, observer]);
-  const scopeKey = `${network}:${observer ?? 'all'}:${privacyGeneration}`;
+  const scopeKey = publicScopeKey({ network, observer, privacyGeneration });
   const [entries, setEntries] = useState<CompanionEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [liveCount, setLiveCount] = useState(0);
-  // Track which packet hashes we've already counted to avoid double-counting
   const seenHashes = useRef(new Set<string>());
 
   useEffect(() => {
@@ -74,6 +74,7 @@ export const UKCompanionPage: React.FC = () => {
     setLiveCount(0);
     seenHashes.current.clear();
   }, {
+    enabled: privacyGeneration > 0,
     scopeKey: `companion-activity:${scopeKey}`,
     intervalMs: 60_000,
     timeoutMs: 15_000,
@@ -92,7 +93,6 @@ export const UKCompanionPage: React.FC = () => {
     if (hash) {
       if (seenHashes.current.has(hash)) return;
       seenHashes.current.add(hash);
-      // Keep the seen set from growing unboundedly
       if (seenHashes.current.size > 10_000) seenHashes.current.clear();
     }
 
@@ -112,7 +112,7 @@ export const UKCompanionPage: React.FC = () => {
     setLiveCount(n => n + 1);
   }, []);
 
-  useWebSocket(handleMessage, requestScope);
+  useWebSocket(handleMessage, requestScope, privacyGeneration, privacyGeneration > 0);
 
   const topCount = entries[0]?.message_count ?? 1;
 

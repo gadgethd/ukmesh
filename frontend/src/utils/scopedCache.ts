@@ -19,6 +19,7 @@ export type ScopedCacheOptions<Value> = {
   maxEntries: number;
   maxBytes: number;
   maxInflight?: number;
+  loadTimeoutMs?: number;
   estimateBytes?: (value: Value) => number;
   onEvict?: (value: Value, reason: 'capacity' | 'expired' | 'delete' | 'clear' | 'scope') => void;
   now?: () => number;
@@ -30,6 +31,22 @@ type Entry<Value> = {
   expiresAt: number;
   bytes: number;
 };
+
+type Load<Value> = {
+  scope: string;
+  controller: AbortController;
+  promise: Promise<Value>;
+};
+
+function consume<Value>(pending: Promise<Value>, signal?: AbortSignal): Promise<Value> {
+  if (!signal) return pending;
+  if (signal.aborted) return Promise.reject(signal.reason);
+  return new Promise<Value>((resolve, reject) => {
+    const aborted = () => reject(signal.reason);
+    signal.addEventListener('abort', aborted, { once: true });
+    void pending.then(resolve, reject).finally(() => signal.removeEventListener('abort', aborted));
+  });
+}
 
 function defaultEstimateBytes(value: unknown): number {
   try {
@@ -48,9 +65,9 @@ export class ScopedCache<Value> {
     Pick<ScopedCacheOptions<Value>, 'name' | 'ttlMs' | 'maxEntries' | 'maxBytes' | 'maxInflight'>
   > & ScopedCacheOptions<Value>;
   readonly #entries = new Map<string, Entry<Value>>();
-  readonly #inflight = new Map<string, Promise<Value>>();
-  readonly #scopeGenerations = new Map<string, number>();
-  #generation = 0;
+  readonly #inflight = new Map<string, Load<Value>>();
+  readonly #active = new Set<Load<Value>>();
+  #activeScope: string | null = null;
   #bytes = 0;
   #hits = 0;
   #misses = 0;
@@ -71,6 +88,9 @@ export class ScopedCache<Value> {
     const maxInflight = options.maxInflight ?? Math.min(options.maxEntries, 32);
     if (!Number.isSafeInteger(maxInflight) || maxInflight <= 0) {
       throw new Error('maxInflight must be a positive integer');
+    }
+    if (options.loadTimeoutMs !== undefined && (!Number.isFinite(options.loadTimeoutMs) || options.loadTimeoutMs <= 0)) {
+      throw new Error('loadTimeoutMs must be positive');
     }
     this.#options = { ...options, maxInflight };
   }
@@ -119,7 +139,6 @@ export class ScopedCache<Value> {
       this.#misses += 1;
       return undefined;
     }
-    // Map insertion order is the LRU order.
     this.#entries.delete(id);
     this.#entries.set(id, entry);
     this.#hits += 1;
@@ -155,51 +174,73 @@ export class ScopedCache<Value> {
   }
 
   invalidateScope(scope: string): number {
-    this.#scopeGenerations.set(scope, (this.#scopeGenerations.get(scope) ?? 0) + 1);
     let removed = 0;
     for (const [key, entry] of this.#entries) {
       if (entry.scope === scope && this.#remove(key, 'scope')) removed += 1;
     }
-    for (const key of this.#inflight.keys()) {
-      if (key.startsWith(`${scope.length}:${scope}`)) this.#inflight.delete(key);
+    for (const [key, load] of this.#inflight) {
+      if (load.scope === scope) {
+        this.#inflight.delete(key);
+        load.controller.abort(new DOMException('Scope invalidated', 'AbortError'));
+      }
     }
     return removed;
   }
 
+  /** Called by a resource's session owner, never by a consumer's unmount cleanup. */
+  activateScope(scope: string): void {
+    if (this.#activeScope === scope) return;
+    if (this.#activeScope !== null) this.invalidateScope(this.#activeScope);
+    this.#activeScope = scope;
+  }
+
   clear(): void {
-    this.#generation += 1;
+    this.#activeScope = null;
     for (const key of [...this.#entries.keys()]) this.#remove(key, 'clear');
+    for (const load of this.#inflight.values()) {
+      load.controller.abort(new DOMException('Cache disposed', 'AbortError'));
+    }
     this.#inflight.clear();
   }
 
-  async getOrLoad(scope: string, key: string, loader: () => Promise<Value>): Promise<Value> {
+  async getOrLoad(scope: string, key: string, loader: (signal: AbortSignal) => Promise<Value>, consumerSignal?: AbortSignal): Promise<Value> {
+    if (consumerSignal?.aborted) throw consumerSignal.reason;
     const cached = this.get(scope, key);
     if (cached !== undefined) return cached;
     const id = compositeKey(scope, key);
     const existing = this.#inflight.get(id);
-    if (existing) return existing;
-    if (this.#inflight.size >= this.#options.maxInflight) {
+    if (existing) return consume(existing.promise, consumerSignal);
+    if (this.#active.size >= this.#options.maxInflight) {
       this.#rejectedLoads += 1;
       throw new Error(`ScopedCache ${this.#options.name} inflight limit exceeded`);
     }
     this.#loads += 1;
-    const generation = this.#generation;
-    const scopeGeneration = this.#scopeGenerations.get(scope) ?? 0;
-    const pending = loader()
+    const controller = new AbortController();
+    const load: Load<Value> = { scope, controller, promise: Promise.resolve(undefined as Value) };
+    this.#active.add(load);
+    this.#inflight.set(id, load);
+    const timer = setTimeout(() => controller.abort(new DOMException('Cache load deadline exceeded', 'TimeoutError')),
+      this.#options.loadTimeoutMs ?? 15_000);
+    timer.unref?.();
+    const stopTimer = () => clearTimeout(timer);
+    controller.signal.addEventListener('abort', stopTimer, { once: true });
+    let work: Promise<Value>;
+    try { work = loader(controller.signal); } catch (error) { work = Promise.reject(error); }
+    const pending = work
       .then((value) => {
-        if (
-          this.#generation === generation
-          && (this.#scopeGenerations.get(scope) ?? 0) === scopeGeneration
-        ) {
+        if (!controller.signal.aborted && this.#inflight.get(id) === load) {
           this.set(scope, key, value);
         }
         return value;
       })
       .finally(() => {
-        if (this.#inflight.get(id) === pending) this.#inflight.delete(id);
+        stopTimer();
+        controller.signal.removeEventListener('abort', stopTimer);
+        this.#active.delete(load);
+        if (this.#inflight.get(id) === load) this.#inflight.delete(id);
       });
-    this.#inflight.set(id, pending);
-    return pending;
+    load.promise = consume(pending, controller.signal);
+    return consume(load.promise, consumerSignal);
   }
 
   snapshot(): ScopedCacheSnapshot {
@@ -208,7 +249,7 @@ export class ScopedCache<Value> {
       name: this.#options.name,
       entries: this.#entries.size,
       bytes: this.#bytes,
-      inflight: this.#inflight.size,
+      inflight: this.#active.size,
       hits: this.#hits,
       misses: this.#misses,
       loads: this.#loads,

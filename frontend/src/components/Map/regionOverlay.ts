@@ -6,7 +6,7 @@ import {
   type RegionRepeater,
   type RegionSummary,
   type UnattributedCluster,
-} from '../../pages/regionsModel.js';
+} from '../../features/regions/model.js';
 
 type RegionFeatureProperties = {
   [key: string]: string | number | boolean | null;

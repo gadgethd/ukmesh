@@ -2,10 +2,10 @@ import React from 'react';
 import type { MeshNode } from '../../types/domain.js';
 import { Dialog, DialogTitle } from '../../components/ui/Dialog.js';
 import { PacketDetailPanel } from './PacketDetailPanel.js';
-import type { LazyPathResult } from './feedModel.js';
+import type { LazyPathResult } from '../../features/packets/feedModel.js';
 import { FeedMapPanel, PacketPathTree } from './FeedPathViews.js';
-import type { FeedPacket } from './feedModel.js';
-import type { PathTreeStatus } from './feedState.js';
+import type { FeedPacket } from '../../features/packets/feedModel.js';
+import type { PathTreeStatus } from '../../features/packets/feedState.js';
 import '../path-modal.css';
 
 export const FeedDialogs: React.FC<{

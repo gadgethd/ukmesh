@@ -4,7 +4,7 @@ import {
   createRealtimeMessageCoordinator,
   type RealtimeMessageActions,
 } from './useAppMessageHandler.js';
-import type { WSMessage } from './useWebSocket.js';
+import type { WSMessage } from '../features/realtime/protocol.js';
 
 const NODE_ID = 'AB'.repeat(32);
 

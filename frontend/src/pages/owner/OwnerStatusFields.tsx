@@ -3,7 +3,7 @@ import {
   formatDurationMs,
   formatEpochSeconds,
   type OwnerStatus,
-} from './ownerPortalModel.js';
+} from '../../features/owner/model.js';
 
 function numberValue(value: number | null, suffix = ''): string {
   if (value == null || !Number.isFinite(value)) return '—';

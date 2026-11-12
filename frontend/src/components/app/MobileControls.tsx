@@ -7,9 +7,11 @@ import type { MapMode } from '../../config/mapModes.js';
 import { MapModeSelector } from './MapModeSelector.js';
 import { WatchlistPanel } from './WatchlistPanel.js';
 import { useOverlayStore } from '../../store/overlayStore.js';
+import type { PublicScope } from '../../utils/scope.js';
 
 type MobileControlsProps = {
   map: maplibregl.Map | null;
+  scope: PublicScope;
   filters: Filters;
   onFiltersChange: (next: Filters) => void;
   activeMode: MapMode | null;
@@ -28,6 +30,7 @@ type MobileControlsProps = {
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
   map,
+  scope,
   filters,
   onFiltersChange,
   activeMode,
@@ -228,7 +231,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             <section className="mobile-menu__section" aria-label="Find a node">
               <h3 className="mobile-menu__heading">Find</h3>
               <div className="mobile-search">
-                <NodeSearch map={map} onNodeSelect={onNodeSelect} />
+                <NodeSearch map={map} scope={scope} onNodeSelect={onNodeSelect} />
               </div>
             </section>
             <section className="mobile-menu__section" aria-label="Watchlist">

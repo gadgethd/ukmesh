@@ -4,7 +4,7 @@ import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay
 import { OPENFREEMAP_STYLE_DARK } from '../Map/mapConfig.js';
 import * as maplibre from '../Map/maplibre.js';
 import 'maplibre-gl/dist/maplibre-gl.css';
-import type { DecodedPathNode } from './StatsPrimitives.js';
+import type { DecodedPathNode } from '../../features/stats/model.js';
 
 const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nodes }) => {
   const containerRef = React.useRef<HTMLDivElement>(null);

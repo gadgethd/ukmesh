@@ -1,10 +1,10 @@
 import React, { useState } from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
 import { NODE_STALE_AFTER_MS } from './mapConfig.js';
-import type { NodeFeatureProps, NodeLink } from './types.js';
+import type { NodeFeatureProps, NodeLink } from '../../features/map/model.js';
 import { LinkQualitySparkline } from './LinkQualitySparkline.js';
 import { Tab, TabList, TabPanel, Tabs } from '../ui/Tabs.js';
-import type { RfNodeCoverageState } from '../../hooks/useRfCoverage.js';
+import type { RfNodeCoverageState } from '../../features/rf/model.js';
 
 const GPU_ROLE_LABELS: Record<number, string> = {
   1: 'Companion Radio', 2: 'Repeater', 3: 'Room Server', 4: 'Sensor',

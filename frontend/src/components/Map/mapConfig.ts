@@ -13,8 +13,7 @@ export const NODE_HIDE_AFTER_MS = 28 * 24 * 60 * 60 * 1000;
 export const MAP_REFRESH_INTERVAL_MS = 250;
 export const MAP_ARC_REFRESH_INTERVAL_MS = 100;
 
-export const LINK_GREEN_THRESHOLD_DB = 121.5;
-export const LINK_AMBER_THRESHOLD_DB = 129.5;
+export { LINK_GREEN_THRESHOLD_DB, LINK_AMBER_THRESHOLD_DB } from '../../features/map/linkPolicy.js';
 
 export const EMPTY_FC: GeoJSON.FeatureCollection = {
   type: 'FeatureCollection',

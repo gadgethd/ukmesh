@@ -1,6 +1,6 @@
 import { fetchJson, uncachedEndpoint, withScopeParams } from '../utils/api.js';
-import { nodeStore } from './useNodes.js';
-import type { TaggedMessage } from './packetFeed.js';
+import { nodeStore } from '../features/realtime/nodeStore.js';
+import type { TaggedMessage } from '../features/packets/liveFeed.js';
 import { useVisibilityPoll } from './useVisibilityPoll.js';
 import { POLLING } from '../config/polling.js';
 
@@ -24,7 +24,7 @@ export function isTaggedMessages(value: unknown): value is TaggedMessage[] {
 }
 
 /** Tags arrive after the packet; enrichment failures leave the feed usable. */
-export function useMessageTags(scope: TagScope, scopeKey: string): void {
+export function useMessageTags(scope: TagScope, scopeKey: string, enabled = true): void {
   useVisibilityPoll(async signal => {
     const epoch = nodeStore.getState().epoch;
     const rows = await fetchJson<TaggedMessage[]>(
@@ -34,6 +34,7 @@ export function useMessageTags(scope: TagScope, scopeKey: string): void {
     );
     if (!signal.aborted && nodeStore.getState().epoch === epoch) nodeStore.applyMessageTags(rows);
   }, {
+    enabled,
     scopeKey: `message-tags:${scopeKey}`,
     intervalMs: POLLING.feedTags,
     timeoutMs: POLLING.ordinaryTimeout,

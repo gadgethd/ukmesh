@@ -1,6 +1,6 @@
 import React, { lazy, Suspense, useMemo } from 'react';
 import { Dialog, DialogTitle } from '../ui/Dialog.js';
-import type { DecodedPathNode } from './StatsPrimitives.js';
+import type { DecodedPathNode } from '../../features/stats/model.js';
 import { LoadingIndicator } from '../LoadingIndicator.js';
 
 const DecodedPathMapView = lazy(() => import('./DecodedPathMapView.js'));

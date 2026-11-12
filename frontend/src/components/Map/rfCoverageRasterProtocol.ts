@@ -1,5 +1,5 @@
 import * as maplibregl from 'maplibre-gl';
-import type { RfCoverageBounds } from '../../hooks/useRfCoverage.js';
+import type { RfCoverageBounds } from '../../features/rf/model.js';
 
 const PROTOCOL = 'hopreach-rf';
 const TILE_SIZE = 256;

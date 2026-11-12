@@ -18,7 +18,7 @@ import {
   MAP_OVERLAY_COLORS,
 } from './mapConfig.js';
 import type { MapTheme } from './mapConfig.js';
-import type { ClashComputation, NodeFeatureProps, PlannedRepeater } from './types.js';
+import type { ClashComputation, NodeFeatureProps, PlannedRepeater } from '../../features/map/model.js';
 
 export type MapSourceDirtyFlags = {
   nodes: boolean;
@@ -289,7 +289,7 @@ export function buildPlannedPinGeoJSON(repeaters: PlannedRepeater[]): GeoJSON.Fe
  */
 export function buildPlannedLinksGeoJSON(
   repeaters: PlannedRepeater[],
-  nodes: Map<string, MeshNode>,
+  nodes: ReadonlyMap<string, MeshNode>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
   theme: MapTheme = 'dark',
 ): GeoJSON.FeatureCollection {
@@ -329,7 +329,7 @@ export function buildPlannedLinksGeoJSON(
 }
 
 export function buildLinksGeoJSON(
-  nodes: Map<string, MeshNode>,
+  nodes: ReadonlyMap<string, MeshNode>,
   viablePairsArr: [string, string][],
   linkMetrics: Map<string, { itm_path_loss_db?: number | null }>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
@@ -390,7 +390,7 @@ function pairInReceiveRange(
 }
 
 export function computeClashData(
-  nodes: Map<string, MeshNode>,
+  nodes: ReadonlyMap<string, MeshNode>,
   viablePairsArr: [string, string][],
   linkMetrics: Map<string, { itm_path_loss_db?: number | null }>,
   showHexClashes: boolean,
@@ -533,6 +533,6 @@ export function computeClashData(
   };
 }
 
-export function buildHiddenMask(nodes: Map<string, MeshNode>): Map<string, HiddenMaskGeometry> {
+export function buildHiddenMask(nodes: ReadonlyMap<string, MeshNode>): Map<string, HiddenMaskGeometry> {
   return buildHiddenCoordMask(nodes.values());
 }

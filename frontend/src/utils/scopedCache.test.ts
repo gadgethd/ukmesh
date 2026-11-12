@@ -55,3 +55,71 @@ test('scoped cache single-flights loaders and rejects work above its inflight ca
   assert.equal(cache.get('scope', 'same'), 7);
   assert.equal(cache.snapshot().rejectedLoads, 1);
 });
+
+test('detaching one consumer leaves the session-owned request available to another', async () => {
+  const cache = new ScopedCache<number>({ name: 'detach', ttlMs: 100, maxEntries: 4, maxBytes: 100, maxInflight: 1 });
+  const consumer = new AbortController();
+  let resolve!: (value: number) => void;
+  let requestSignal!: AbortSignal;
+  let calls = 0;
+  const loader = (signal: AbortSignal) => {
+    calls++;
+    requestSignal = signal;
+    return new Promise<number>(done => { resolve = done; });
+  };
+  const first = cache.getOrLoad('scope', 'same', loader, consumer.signal);
+  const second = cache.getOrLoad('scope', 'same', loader);
+  consumer.abort(new DOMException('Unmounted', 'AbortError'));
+  await assert.rejects(first, { name: 'AbortError' });
+  assert.equal(requestSignal.aborted, false);
+  assert.equal(calls, 1);
+  resolve(9);
+  assert.equal(await second, 9);
+  assert.equal(cache.get('scope', 'same'), 9);
+});
+
+test('invalidated abort-ignoring requests remain counted and cannot publish', async () => {
+  const cache = new ScopedCache<number>({ name: 'physical-cap', ttlMs: 100, maxEntries: 4, maxBytes: 100, maxInflight: 1 });
+  let resolve!: (value: number) => void;
+  let requestSignal!: AbortSignal;
+  const pending = cache.getOrLoad('old', 'same', signal => {
+    requestSignal = signal;
+    return new Promise<number>(done => { resolve = done; });
+  });
+  cache.invalidateScope('old');
+  await assert.rejects(pending, { name: 'AbortError' });
+  assert.equal(requestSignal.aborted, true);
+  assert.equal(cache.snapshot().inflight, 1);
+  await assert.rejects(cache.getOrLoad('new', 'other', async () => 2), /inflight limit/);
+  resolve(7);
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(cache.snapshot().inflight, 0);
+  assert.equal(cache.get('old', 'same'), undefined);
+  assert.equal(await cache.getOrLoad('new', 'other', async () => 2), 2);
+});
+
+test('cache disposal aborts all requests and prevents late publication', async () => {
+  const cache = new ScopedCache<number>({ name: 'dispose', ttlMs: 100, maxEntries: 4, maxBytes: 100 });
+  let resolve!: (value: number) => void;
+  const pending = cache.getOrLoad('scope', 'key', () => new Promise<number>(done => { resolve = done; }));
+  cache.clear();
+  await assert.rejects(pending, { name: 'AbortError' });
+  resolve(1);
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(cache.get('scope', 'key'), undefined);
+  assert.equal(cache.snapshot().inflight, 0);
+});
+
+test('a session deadline rejects waiters without freeing an unfinished physical request', async () => {
+  const cache = new ScopedCache<number>({ name: 'deadline', ttlMs: 100, maxEntries: 4, maxBytes: 100, loadTimeoutMs: 5 });
+  let resolve!: (value: number) => void;
+  const pending = cache.getOrLoad('scope', 'key', () => new Promise<number>(done => { resolve = done; }));
+  const rejection = assert.rejects(pending, { name: 'TimeoutError' });
+  await new Promise(done => setTimeout(done, 20));
+  await rejection;
+  assert.equal(cache.snapshot().inflight, 1);
+  resolve(1);
+  await new Promise<void>(done => setImmediate(done));
+  assert.equal(cache.get('scope', 'key'), undefined);
+  assert.equal(cache.snapshot().inflight, 0);
+});

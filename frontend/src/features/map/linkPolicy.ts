@@ -1,0 +1,2 @@
+export const LINK_GREEN_THRESHOLD_DB = 121.5;
+export const LINK_AMBER_THRESHOLD_DB = 129.5;

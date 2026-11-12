@@ -1,30 +1,33 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
-import { getCurrentSite } from '../../config/site.js';
+import { scopeIsReady, scopeKey, type PublicScope } from '../../utils/scope.js';
 
 type HistoryRow = { time: string };
 
 type Props = {
   nodeId: string;
+  scope: PublicScope;
   hours?: number;
 };
 
 /** Tiny 24h activity sparkline from /api/nodes/:id/history. */
-export const ActivitySparkline: React.FC<Props> = ({ nodeId, hours = 24 }) => {
+export const ActivitySparkline: React.FC<Props> = ({ nodeId, scope, hours = 24 }) => {
   const [buckets, setBuckets] = useState<number[] | null>(null);
   const [error, setError] = useState(false);
-  const site = getCurrentSite();
+  const key = scopeKey(scope);
 
   useEffect(() => {
     const controller = new AbortController();
     setBuckets(null);
     setError(false);
+    if (!scopeIsReady(scope)) return;
     const endpoint = withScopeParams(
       `/api/nodes/${encodeURIComponent(nodeId)}/history?hours=${hours}`,
-      { network: site.networkFilter, observer: site.observerId },
+      scope,
     );
     void fetchJson<HistoryRow[]>(endpoint, { signal: controller.signal })
       .then((rows) => {
+        if (controller.signal.aborted) return;
         const counts = new Array(hours).fill(0) as number[];
         const now = Date.now();
         const windowMs = hours * 3_600_000;
@@ -41,13 +44,13 @@ export const ActivitySparkline: React.FC<Props> = ({ nodeId, hours = 24 }) => {
         setBuckets(counts);
       })
       .catch((err: unknown) => {
-        if ((err as DOMException).name !== 'AbortError') {
+        if (!controller.signal.aborted && (err as DOMException).name !== 'AbortError') {
           setError(true);
           setBuckets([]);
         }
       });
     return () => controller.abort();
-  }, [hours, nodeId, site.networkFilter, site.observerId]);
+  }, [hours, nodeId, key]);
 
   const { points, max, total } = useMemo(() => {
     if (!buckets || buckets.length === 0) {

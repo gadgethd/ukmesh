@@ -18,7 +18,7 @@ import {
   type RegionSummary,
   type RegionSummaryPayload,
   type UnattributedPayload,
-} from './regionsModel.js';
+} from '../features/regions/model.js';
 import './regions-page.css';
 
 const RegionsMap = lazy(() => import('../components/Map/RegionsMap.js').then(module => ({ default: module.RegionsMap })));

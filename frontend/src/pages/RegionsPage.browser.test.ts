@@ -1,11 +1,10 @@
+import { browserLane, browserLaunchOptions } from '../../test/browserLane.js';
 import assert from 'node:assert/strict';
-import test from 'node:test';
 import { chromium, expect, type Page } from '@playwright/test';
 import { mapHandle } from '../../test/browserMapHandle.js';
 
-// Run against an isolated local Vite server; never change the deployed site.
-const browserTest = process.env['REGIONS_BROWSER_TESTS'] === '1' ? test : test.skip;
-const origin = process.env['REGIONS_TEST_ORIGIN'] ?? 'http://127.0.0.1:4204';
+// Run against an isolated local website; never change the deployed site.
+const { browserTest, origin } = browserLane('REGIONS_BROWSER_TESTS', 'REGIONS_TEST_ORIGIN', 'http://127.0.0.1:4204');
 const style = {
   version: 8 as const, sources: {},
   layers: [{ id: 'background', type: 'background' as const, paint: { 'background-color': '#182838' } }],
@@ -37,7 +36,7 @@ async function mockApi(page: Page): Promise<void> {
 
 
 browserTest('regions survive repeated style loads with current filters and visibility', { timeout: 120_000 }, async () => {
-  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch(browserLaunchOptions());
   try {
     const page = await browser.newPage({ serviceWorkers: 'block' });
     const errors: string[] = [];
@@ -66,7 +65,7 @@ browserTest('regions survive repeated style loads with current filters and visib
 });
 
 browserTest('a stalled sprite shows a visible failure and retry restores the map', { timeout: 120_000 }, async () => {
-  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch(browserLaunchOptions());
   try {
     const page = await browser.newPage({ serviceWorkers: 'block' });
     await mockApi(page);
@@ -97,7 +96,7 @@ browserTest('a stalled sprite shows a visible failure and retry restores the map
 
 for (const failure of ['style-http-error', 'webgl-unavailable'] as const) {
   browserTest(`${failure} is visible and retry can recover`, { timeout: 120_000 }, async () => {
-    const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const browser = await chromium.launch(browserLaunchOptions());
     try {
       const page = await browser.newPage({ serviceWorkers: 'block' });
       await mockApi(page);
@@ -133,8 +132,7 @@ for (const failure of ['style-http-error', 'webgl-unavailable'] as const) {
 
 
 browserTest('regions wait for privacy authority and clear the map when its refresh fails', { timeout: 30_000 }, async () => {
-  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'],
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch(browserLaunchOptions());
   try {
     const page = await browser.newPage({ serviceWorkers: 'block' });
     await mockApi(page);
@@ -153,7 +151,9 @@ browserTest('regions wait for privacy authority and clear the map when its refre
     assert.equal(summaryReads, 0);
     authoritative = true;
     await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
-    await expect(page.locator('.regions-page__map canvas')).toBeVisible();
+    // The server requested five-second authority polls; a visible-to-visible
+    // event does not shorten that cadence. Allow its next poll and map startup.
+    await expect(page.locator('.regions-page__map canvas')).toBeVisible({ timeout: 12_000 });
     assert.equal(summaryReads, 1);
     unavailable = true;
     await expect(page.locator('.regions-page__map canvas')).toHaveCount(0, { timeout: 10_000 });

@@ -3,7 +3,8 @@ import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../types/domain.js';
 import { useNodeMap } from '../../hooks/useNodes.js';
-import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
+import { PROHIBITED_NODE_MARKER, isProhibitedMapNode } from '../../utils/pathing.js';
+import type { PublicScope } from '../../utils/scope.js';
 import { FOCUS_SEARCH_EVENT } from '../../utils/appEvents.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { isValidMapCoord } from '../../utils/pathing.js';
@@ -12,14 +13,15 @@ import { Combobox, type ComboboxOption } from '../ui/Combobox.js';
 
 interface NodeSearchProps {
   map: maplibregl.Map | null;
+  scope: PublicScope;
   onNodeSelect?: (nodeId: string) => void;
 }
 
-export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => {
+export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect }) => {
   const nodes = useNodeMap();
   const restoredQuery = new URLSearchParams(window.location.search).get('search')?.trim() ?? '';
   const [query, setQuery] = useState(restoredQuery);
-  const nameMatches = useNodeNameSearch(query);
+  const nameMatches = useNodeNameSearch(query, scope);
   const [open, setOpen] = useState(Boolean(restoredQuery));
   const inputRef = useRef<HTMLInputElement>(null);
   const watchlist = useWatchlist();
@@ -51,7 +53,8 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, onNodeSelect }) => 
       || node.public_key?.toLowerCase().startsWith(q),
     );
     const fuzzyMatches = fuse.search(q).map((result) => result.item);
-    const matches = new Map(nameMatches.map((node) => [node.node_id, node]));
+    const matches = new Map(nameMatches.filter(node => isValidMapCoord(node.lat, node.lon)
+      && !isProhibitedMapNode(node)).map((node) => [node.node_id, node]));
     for (const node of [...prefixMatches, ...fuzzyMatches]) {
       if (!matches.has(node.node_id)) matches.set(node.node_id, node);
     }

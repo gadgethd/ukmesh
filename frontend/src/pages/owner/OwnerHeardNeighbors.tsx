@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { formatNeighborAge, type HeardNeighbor } from './ownerPortalModel.js';
+import { formatNeighborAge, type HeardNeighbor } from '../../features/owner/model.js';
 
 function signalValue(value: number | null, suffix: string): string {
   if (value == null || !Number.isFinite(value)) return '—';

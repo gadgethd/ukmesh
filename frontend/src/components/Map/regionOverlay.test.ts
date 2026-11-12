@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildRegionAreasGeoJSON, buildRegionRepeatersGeoJSON, buildUnattributedGeoJSON, type RegionRepeaterFilters } from './regionOverlay.js';
-import type { RegionRepeater, RegionSummary } from '../../pages/regionsModel.js';
+import type { RegionRepeater, RegionSummary } from '../../features/regions/model.js';
 
 function repeater(overrides: Partial<RegionRepeater> = {}): RegionRepeater {
   return {

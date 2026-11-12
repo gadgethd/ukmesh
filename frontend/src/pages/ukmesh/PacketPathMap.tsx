@@ -4,14 +4,14 @@ import { AnimatedPathOverlay, type AerialPath, type AerialPathNode } from '../..
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { OPENFREEMAP_STYLE_DARK } from '../../components/Map/mapConfig.js';
 import type { MeshNode } from '../../types/domain.js';
-import type { LazyPath, LazyPathNode } from './feedModel.js';
+import type { LazyPath, LazyPathNode } from '../../features/packets/feedModel.js';
 import {
   multiObserverPathRoutes,
   type CanonicalPathNode,
   type MultiObserverBetaResponse,
   type ResolveMode,
   type ServerBetaResponse,
-} from '../../hooks/packetPathOverlayUtils.js';
+} from '../../features/pathing/model.js';
 import { buildPathNodePopupContent } from './pathNodePopup.js';
 
 export type { CanonicalPathNode, MultiObserverBetaResponse, ResolveMode, ServerBetaResponse };

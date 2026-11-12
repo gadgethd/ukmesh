@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { isOwnerPacketSharingResponse, isOwnerPublicFeedResponse, isPacketSharingOwner } from './ownerPortalModel.js';
+import { isOwnerPacketSharingResponse, isOwnerPublicFeedResponse, isPacketSharingOwner } from '../../features/owner/model.js';
 
 const valid = {
   nodeId: 'A'.repeat(64),

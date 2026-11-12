@@ -9,7 +9,7 @@ import { buildResolvedAerialPaths } from './LiveOverlayController.js';
 import {
   aggregateCanonicalPath,
   type MultiObserverBetaResponse,
-} from '../../hooks/packetPathOverlayUtils.js';
+} from '../../features/pathing/model.js';
 
 function response(packetHash: string, observerLon: number): MultiObserverBetaResponse {
   return {

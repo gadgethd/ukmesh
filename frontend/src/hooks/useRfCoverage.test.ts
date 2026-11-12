@@ -1,12 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  availableRfCoverageTiers,
-  isValidRfCoverageTile,
-  rfNodeCoverageState,
-  rfCoveragePollingPolicy,
-  type RfCoverageMeta,
-} from './useRfCoverage.js';
+import { availableRfCoverageTiers, isValidRfCoverageTile, rfNodeCoverageState, rfCoveragePollingPolicy, type RfCoverageMeta } from '../features/rf/model.js';
 import { POLLING } from '../config/polling.js';
 
 const validTile = {

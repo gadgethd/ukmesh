@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { lazyPathSettleRemainingMs } from './usePacketDetailData.js';
+import { lazyPathSettleRemainingMs } from '../features/pathing/timing.js';
 import { LAZY_SETTLE_MS } from '../config/timing.js';
 
 test('old packets resolve immediately instead of restarting the settle delay', () => {

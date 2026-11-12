@@ -16,6 +16,7 @@
     "test:mobile": "playwright test mobile.spec.ts --project=mobile-regression",
     "test:dev-renderer": "playwright test --config=playwright.development.config.ts",
     "test:regions": "playwright test --config=playwright.regions.config.ts",
+    "test:browser-contracts": "node scripts/test-browser-contracts.mjs",
     "bench:website": "node scripts/benchmark-website.mjs",
     "check": "tsc --noEmit && npm test && npm run lint:css",
     "budget:routes": "node scripts/check-route-budgets.mjs",

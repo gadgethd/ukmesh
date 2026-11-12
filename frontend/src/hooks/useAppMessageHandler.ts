@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef } from 'react';
-import type { WSMessage } from './useWebSocket.js';
+import { useCallback, useLayoutEffect, useRef } from 'react';
+import { useCommittedRef } from './useCommittedRef.js';
+import type { WSMessage } from '../features/realtime/protocol.js';
 import type { LivePacketData, MeshNode } from '../types/domain.js';
-import type { ViableLinkSnapshot } from './useLinkState.js';
+import type { ViableLinkSnapshot } from '../features/realtime/linkStore.js';
 
 type PendingPacket = LivePacketData;
 type PendingNodeUpdate = { nodeId: string; ts: number };
@@ -170,8 +171,7 @@ type UseAppMessageHandlerParams = RealtimeMessageActions & {
 
 export function useAppMessageHandler(params: UseAppMessageHandlerParams) {
   const { epoch, ...actions } = params;
-  const actionsRef = useRef<RealtimeMessageActions>(actions);
-  actionsRef.current = actions;
+  const actionsRef = useCommittedRef<RealtimeMessageActions>(actions);
   const rafRef = useRef<number | null>(null);
   const coordinatorRef = useRef<ReturnType<typeof createRealtimeMessageCoordinator> | null>(null);
 
@@ -197,7 +197,7 @@ export function useAppMessageHandler(params: UseAppMessageHandlerParams) {
     );
   }
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     coordinatorRef.current?.reset();
     return () => coordinatorRef.current?.reset();
   }, [epoch]);

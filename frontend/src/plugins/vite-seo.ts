@@ -183,7 +183,6 @@ export default function viteSeoPlugin(): Plugin {
         metaTags,
       );
 
-      // Add a manifest only when the base template does not already have one.
       if (!html.includes('rel="manifest"')) {
         html = html.replace(
           /(<link rel="icon"[^>]*>)/,

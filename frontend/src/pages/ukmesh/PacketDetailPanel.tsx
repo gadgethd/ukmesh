@@ -1,15 +1,11 @@
 import React, { useMemo } from 'react';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../types/domain.js';
-import type { FeedPacket, LazyPathResult } from './feedModel.js';
+import type { FeedPacket, LazyPathResult } from '../../features/packets/feedModel.js';
 import { usePacketDetailData, type RadioState } from '../../hooks/usePacketDetailData.js';
 import type { MessageTags, TagConfidence } from '../../types/domain.js';
 import { PathMap } from './PacketPathMap.js';
 import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
-
-// ── Constants ─────────────────────────────────────────────────────────────────
 
 const PAYLOAD_NAMES: Record<number, string> = {
   0: 'Request', 1: 'Response', 2: 'TextMessage', 3: 'Ack',
@@ -21,8 +17,6 @@ const ROUTE_NAMES: Record<number, string> = {
   0: 'Transport Flood', 1: 'Flood', 2: 'Direct', 3: 'Transport Direct',
 };
 const LAZY_PATH_COLORS = ['#26c6a2', '#00b4d8', '#f59e0b', '#a78bfa', '#f87171'];
-
-// ── Hex parsing ───────────────────────────────────────────────────────────────
 
 function hexToBytes(hex: string): Uint8Array {
   const clean = hex.replace(/\s/g, '');
@@ -98,8 +92,6 @@ function parsePacketHex(hex: string): ParsedPacket | null {
   };
 }
 
-// ── Byte breakdown section ────────────────────────────────────────────────────
-
 const ByteSection: React.FC<{
   label: string;
   byteRange: string;
@@ -139,8 +131,6 @@ const BitTable: React.FC<{
   </table>
 );
 
-// ── Radio formatting ──────────────────────────────────────────────────────────
-
 function formatRadio(radio: RadioState): string {
   const parts: string[] = [];
   if (radio.frequency != null) parts.push(`${(radio.frequency / 1_000_000).toFixed(3)} MHz`);
@@ -149,8 +139,6 @@ function formatRadio(radio: RadioState): string {
   if (radio.cr != null) parts.push(`CR${radio.cr}`);
   return parts.join(' / ') || '—';
 }
-
-// ── Main panel ────────────────────────────────────────────────────────────────
 
 
 export const PacketDetailPanel: React.FC<{

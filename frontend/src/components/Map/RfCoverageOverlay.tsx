@@ -1,10 +1,6 @@
 import { useEffect, useMemo } from 'react';
 import type * as maplibregl from 'maplibre-gl';
-import {
-  isValidRfCoverageTile,
-  type RfCoverageMeta,
-  type RfCoverageTierName,
-} from '../../hooks/useRfCoverage.js';
+import { isValidRfCoverageTile, type RfCoverageMeta, type RfCoverageTierName } from '../../features/rf/model.js';
 import {
   maxRfRasterZoom,
   registerRfRasterDataset,

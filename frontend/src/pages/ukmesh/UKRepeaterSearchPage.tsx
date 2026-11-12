@@ -6,6 +6,7 @@ import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
+import { scopeKey } from '../../utils/scope.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
 import { ConfirmedNeighbours, type NodeLink } from '../../components/ConfirmedNeighbours.js';
 import { timeAgo } from '../../utils/time.js';
@@ -73,22 +74,22 @@ async function loadNodeDetails(
 ): Promise<NodeDetailBundle> {
   const cacheKey = node.node_id.toUpperCase();
   const publicKey = node.public_key ?? node.node_id;
-  return nodeDetailCache.getOrLoad(scopeKey, cacheKey, async () => {
+  return nodeDetailCache.getOrLoad(scopeKey, cacheKey, async (loadSignal) => {
     const requestScope = { network, observer };
     const [links, history, adverts] = await Promise.all([
       fetchJson<NodeLink[]>(
         withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/links`, requestScope),
-        { signal, cache: 'no-store' },
+        { signal: loadSignal, cache: 'no-store' },
         { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
       ),
       fetchJson<PacketHistory[]>(
         withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/history?hours=24`, requestScope),
-        { signal, cache: 'no-store' },
+        { signal: loadSignal, cache: 'no-store' },
         { timeoutMs: 8_000, maxBytes: 4 * 1024 * 1024 },
       ),
       fetchJson<AdvertPacket[]>(
         withScopeParams(`/api/nodes/${encodeURIComponent(publicKey)}/adverts?hours=168`, requestScope),
-        { signal, cache: 'no-store' },
+        { signal: loadSignal, cache: 'no-store' },
         { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
       ),
     ]);
@@ -97,7 +98,7 @@ async function loadNodeDetails(
       history: Array.isArray(history) ? history : [],
       adverts: Array.isArray(adverts) ? adverts : [],
     };
-  });
+  }, signal);
 }
 
 async function loadCompleteNodeSnapshot(
@@ -152,7 +153,6 @@ function predictNextAdvert<T extends { time: string; packet_hash: string }>(pack
   const sorted = [...packets].sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
 
   // First deduplicate by packet_hash (same advert received by different nodes)
-  // Keep the earliest time for each unique hash
   const byHash = new Map<string, T>();
   for (const pkt of sorted) {
     if (!byHash.has(pkt.packet_hash)) {
@@ -238,9 +238,11 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const runtimeFeatures = useRuntimeFeatures();
   const network = site.networkFilter ?? site.network;
   const observer = site.observerId;
-  const detailScopeKey = `${network}|${observer ?? 'all'}|privacy-${runtimeFeatures.privacyGeneration}`;
+  const publicScope = { network, observer, privacyGeneration: runtimeFeatures.privacyGeneration };
+  const detailScopeKey = scopeKey(publicScope);
+  useEffect(() => nodeDetailCache.activateScope(detailScopeKey), [detailScopeKey]);
   const [searchQuery, setSearchQuery] = useState('');
-  const nameMatches = useNodeNameSearch(searchQuery);
+  const nameMatches = useNodeNameSearch(searchQuery, publicScope);
   const [showResults, setShowResults] = useState(false);
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
@@ -261,6 +263,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
     setNodes([]);
     setSelectedNode(null);
     selectionControllerRef.current?.abort();
+    if (runtimeFeatures.privacyGeneration < 1) return () => controller.abort();
     loadCompleteNodeSnapshot(controller.signal, network, observer)
       .then(loadedNodes => {
         if (!controller.signal.aborted) {
@@ -286,6 +289,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   useEffect(() => {
     const controller = new AbortController();
     setTopAdverts([]);
+    if (runtimeFeatures.privacyGeneration < 1) return () => controller.abort();
     fetchJson<TopAdvertNode[]>(
       withScopeParams('/api/nodes/top-adverts?hours=24&limit=10', { network, observer }),
       { signal: controller.signal, cache: 'default' },
@@ -303,7 +307,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
     return () => {
       controller.abort();
     };
-  }, [network, observer]);
+  }, [network, observer, runtimeFeatures.privacyGeneration]);
 
   useEffect(() => () => selectionControllerRef.current?.abort(), []);
 

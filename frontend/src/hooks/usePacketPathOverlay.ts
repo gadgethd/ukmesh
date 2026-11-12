@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { AggregatedPacket } from '../types/domain.js';
 import { useNodeMap, useMessages, usePackets } from './useNodes.js';
-import { withScopeParams, uncachedEndpoint } from '../utils/api.js';
-import { fetchPathResolution } from '../utils/pathResolutionRequest.js';
+import { createPredictionResource } from '../features/pathing/predictions.js';
+import { useCommittedRef } from './useCommittedRef.js';
 import type { Filters } from '../types/filters.js';
 import {
   aggregateCanonicalPath,
@@ -12,18 +12,13 @@ import {
   type CanonicalPathNode,
   type MultiObserverBetaResponse,
   type ResolvedPathRoute,
-} from './packetPathOverlayUtils.js';
+} from '../features/pathing/model.js';
 import { useOverlayStore } from '../store/overlayStore.js';
-import { PATH_LINE_FADE_MS, PATH_LINE_TTL_MS } from '../components/Map/pathArcStyle.js';
+import { PATH_LINE_FADE_MS, PATH_LINE_TTL_MS } from '../features/pathing/style.js';
 
 // Retain resolved data beyond the renderer's 60-second visible lifetime so the
 // hop animation and final fade can finish before React clears the path state.
 const PATH_DATA_RETENTION_MS = PATH_LINE_TTL_MS + PATH_LINE_FADE_MS + 30_000;
-const PREDICTION_CACHE_TTL_MS = 120_000;
-const MAX_PREDICTION_CACHE = 1200;
-const RECENT_PREDICTION_TTL_MS = 45_000;
-const MAX_RECENT_PREDICTIONS = 48;
-
 type UsePacketPathOverlayParams = {
   scopeKey?: string;
   filters: Filters;
@@ -48,60 +43,6 @@ type UsePacketPathOverlayResult = {
   activePacketSnapshot: AggregatedPacket | null;
   handlePacketPin: (packet: AggregatedPacket) => void;
 };
-
-type SlowModePendingResponse = { status: 'pending'; remainingMs: number };
-
-function isSlowPending(
-  result: MultiObserverBetaResponse | SlowModePendingResponse,
-): result is SlowModePendingResponse {
-  const maybe = result as SlowModePendingResponse;
-  return maybe.status === 'pending' && typeof maybe.remainingMs === 'number';
-}
-
-async function fetchServerBetaMulti(
-  packetHash: string,
-  network?: string,
-  mode?: 'slow',
-): Promise<MultiObserverBetaResponse | SlowModePendingResponse | null> {
-  const modeQuery = mode === 'slow' ? '&mode=slow' : '';
-  const endpoint = withScopeParams(
-    `/api/path-beta/resolve-multi?hash=${encodeURIComponent(packetHash)}${modeQuery}`,
-    { network },
-  );
-  const response = await fetchPathResolution(uncachedEndpoint(endpoint), { cache: 'no-store' });
-  if (response.status === 202) {
-    return response.json() as Promise<SlowModePendingResponse>;
-  }
-  if (!response.ok) return null;
-  return response.json() as Promise<MultiObserverBetaResponse>;
-}
-
-/**
- * Slow-mode fetch: asks the backend to wait out the packet's propagation
- * window, retrying while the backend reports `pending`. Bounded so the
- * pinned-packet view cannot hang forever on a stalled resolver.
- */
-async function fetchServerBetaMultiSlow(
-  packetHash: string,
-  network?: string,
-): Promise<MultiObserverBetaResponse | null> {
-  const maxAttempts = 3;
-  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const result = await fetchServerBetaMulti(packetHash, network, 'slow');
-    if (result === null) return null;
-    if (isSlowPending(result)) {
-      const waitMs = Math.min(Math.max(result.remainingMs + 500, 1_000), 30_000);
-      await new Promise((resolve) => window.setTimeout(resolve, waitMs));
-      continue;
-    }
-    return result;
-  }
-  return null;
-}
-
-function cacheKey(packetHash: string, observerIds: string[], network?: string): string {
-  return `${network ?? 'all'}|${[...observerIds].sort().join(',')}|${packetHash}`;
-}
 
 function packetResolutionKey(packet: AggregatedPacket | null | undefined, network?: string, observer?: string): string | null {
   if (!packet) return null;
@@ -158,9 +99,8 @@ export function usePacketPathOverlay({
   const pathFadeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const activeReqSeqRef = useRef(0);
   const pinnedOverlayKeyRef = useRef('');
-  const recentPredictionsRef = useRef<Map<string, AggregatedPredictionState>>(new Map());
-  const multiPredictionCacheRef = useRef<Map<string, { response: MultiObserverBetaResponse; ts: number }>>(new Map());
-  const multiInflightRef = useRef<Map<string, Promise<MultiObserverBetaResponse | null>>>(new Map());
+  const [predictions] = useState(() => createPredictionResource(scopeKey ?? ''));
+  useEffect(() => () => predictions.dispose(), [predictions]);
 
   const stopPathTimers = useCallback(() => {
     if (pathTimerRef.current) {
@@ -198,20 +138,6 @@ export function usePacketPathOverlay({
     return () => document.removeEventListener('visibilitychange', updateVisibility);
   }, []);
 
-  const pruneRecentPredictions = useCallback(() => {
-    const now = Date.now();
-    const recent = recentPredictionsRef.current;
-    for (const [key, value] of recent) {
-      if (now - value.ts > RECENT_PREDICTION_TTL_MS) recent.delete(key);
-    }
-    if (recent.size <= MAX_RECENT_PREDICTIONS) return;
-    const sorted = Array.from(recent.entries()).sort((a, b) => a[1].ts - b[1].ts);
-    for (let i = 0; i < Math.max(0, recent.size - MAX_RECENT_PREDICTIONS); i += 1) {
-      const key = sorted[i]?.[0];
-      if (key) recent.delete(key);
-    }
-  }, []);
-
   const applyAggregatedPrediction = useCallback((aggregated: AggregatedPredictionState) => {
     setBetaPacketPaths(aggregated.routes.map((route) => (
       route.nodes.map((node) => [node.lat, node.lon] as [number, number])
@@ -234,34 +160,17 @@ export function usePacketPathOverlay({
     if (aggregated) {
       const state = { ...aggregated, ts: Date.now() };
       applyAggregatedPrediction(state);
-      recentPredictionsRef.current.set(packetHash, state);
-      pruneRecentPredictions();
+      predictions.remember(packetHash, state);
       return;
     }
 
-    pruneRecentPredictions();
-    const recent = recentPredictionsRef.current.get(packetHash);
-    if (recent && Date.now() - recent.ts <= RECENT_PREDICTION_TTL_MS) {
+    const recent = predictions.recent(packetHash);
+    if (recent) {
       applyAggregatedPrediction(recent);
       return;
     }
     clearBetaState();
-  }, [applyAggregatedPrediction, clearBetaState, pruneRecentPredictions]);
-
-  const prunePredictionCache = useCallback(() => {
-    const now = Date.now();
-    const cache = multiPredictionCacheRef.current;
-    for (const [key, value] of cache) {
-      if (now - value.ts > PREDICTION_CACHE_TTL_MS) cache.delete(key);
-    }
-    if (cache.size <= MAX_PREDICTION_CACHE) return;
-    const sorted = Array.from(cache.entries()).sort((a, b) => a[1].ts - b[1].ts);
-    const removeCount = Math.max(0, cache.size - MAX_PREDICTION_CACHE);
-    for (let i = 0; i < removeCount; i += 1) {
-      const key = sorted[i]?.[0];
-      if (key) cache.delete(key);
-    }
-  }, []);
+  }, [applyAggregatedPrediction, clearBetaState, predictions]);
 
   const getPacketObserverIds = useCallback((packet: AggregatedPacket | undefined): string[] => packetObserverIds(packet), []);
 
@@ -276,39 +185,8 @@ export function usePacketPathOverlay({
     minFreshTs = 0,
     mode?: 'slow',
   ): Promise<MultiObserverBetaResponse | null> => {
-    prunePredictionCache();
-    const key = `${scopeKey ?? ''}|${cacheKey(packetHash, observerIds, networkName)}`;
-    const inflightKey = mode === 'slow' ? `${key}|slow` : key;
-    // Slow-mode requests must not be served from the eager cache or deduped
-    // onto an in-flight eager fetch — the whole point is the post-window set.
-    if (mode !== 'slow') {
-      const cached = multiPredictionCacheRef.current.get(key);
-      if (cached && cached.ts >= minFreshTs && Date.now() - cached.ts <= PREDICTION_CACHE_TTL_MS) {
-        return Promise.resolve(cached.response);
-      }
-    }
-    const inflight = multiInflightRef.current.get(inflightKey);
-    if (inflight) return inflight;
-
-    const fetchFn: () => Promise<MultiObserverBetaResponse | null> = mode === 'slow'
-      ? () => fetchServerBetaMultiSlow(packetHash, networkName)
-      : async () => {
-          const result = await fetchServerBetaMulti(packetHash, networkName);
-          // fast path never receives a 202; treat it as unresolved anyway
-          return result === null || isSlowPending(result) ? null : result;
-        };
-    const promise = fetchFn()
-      .then((response) => {
-        if (response) multiPredictionCacheRef.current.set(key, { response, ts: Date.now() });
-        return response;
-      })
-      .catch(() => null)
-      .finally(() => {
-        multiInflightRef.current.delete(inflightKey);
-      });
-    multiInflightRef.current.set(inflightKey, promise);
-    return promise;
-  }, [prunePredictionCache, scopeKey]);
+    return predictions.resolve(scopeKey ?? '', packetHash, observerIds, networkName, minFreshTs, mode);
+  }, [predictions, scopeKey]);
 
   const latestPacket = messages[0] ?? null;
   const latestResolutionKey = packetResolutionKey(latestPacket, network, observer);
@@ -327,16 +205,13 @@ export function usePacketPathOverlay({
     if (betaEffectThrottleRef.current !== null) clearTimeout(betaEffectThrottleRef.current);
     pinnedTimerRef.current = null;
     betaEffectThrottleRef.current = null;
-    recentPredictionsRef.current.clear();
-    multiPredictionCacheRef.current.clear();
-    multiInflightRef.current.clear();
+    predictions.setScope(scopeKey ?? '');
     clearPathState();
   }, [scopeKey, stopPathTimers, clearPathState]);
 
   // Keep a ref to the latest message so this effect runs only when the active
   // packet identity changes, not on every packet-feed update.
-  const messagesRef = useRef(messages);
-  messagesRef.current = messages;
+  const messagesRef = useCommittedRef(messages);
 
   useEffect(() => {
     if (pinnedPacketId !== null) return;
@@ -347,7 +222,6 @@ export function usePacketPathOverlay({
     }, 50);
 
     stopPathTimers();
-    pruneRecentPredictions();
 
     const latest = messagesRef.current[0];
     const observerIds = getPacketObserverIds(latest);
@@ -393,7 +267,7 @@ export function usePacketPathOverlay({
   // `packets` intentionally omitted — only the latest message drives this
   // effect, so it does not run on every packet-feed update.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [latestResolutionKey, filters.betaPaths, pinnedPacketId, network, observer, getPacketObserverIds, buildLocalPaths, resolveMultiPrediction, applyServerPrediction, isPageVisible, stopPathTimers, clearPathState, clearBetaState, pruneRecentPredictions]);
+  }, [latestResolutionKey, filters.betaPaths, pinnedPacketId, network, observer, getPacketObserverIds, buildLocalPaths, resolveMultiPrediction, applyServerPrediction, isPageVisible, stopPathTimers, clearPathState, clearBetaState]);
 
   const handlePacketPin = useCallback((packet: AggregatedPacket) => {
     togglePinnedPacket(packet);
@@ -428,7 +302,6 @@ export function usePacketPathOverlay({
 
   useEffect(() => {
     if (pinnedPacketId === null) return;
-    pruneRecentPredictions();
 
     if (!isPageVisible) return;
 
@@ -480,7 +353,6 @@ export function usePacketPathOverlay({
     resolveMultiPrediction,
     applyServerPrediction,
     isPageVisible,
-    pruneRecentPredictions,
     clearBetaState,
   ]);
 

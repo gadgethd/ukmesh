@@ -14,7 +14,7 @@ import * as maplibregl from 'maplibre-gl';
 import { PACKET_ARC_TTL_MS, type PacketArc } from '../../types/domain.js';
 import type { HiddenMaskGeometry } from '../../utils/pathing.js';
 import { maskPoint } from '../../utils/pathing.js';
-import type { ClashPathLine, LosProfile } from './types.js';
+import type { ClashPathLine, LosProfile } from '../../features/map/model.js';
 import type { CustomLosPoint, CustomLosSegment } from '../../types/customLos.js';
 import { TERRAIN_CONFIG } from '../../config/terrain.js';
 import { ensureMapboxOverlayCompatibility } from './mapboxCompat.js';
@@ -23,7 +23,7 @@ import {
   PATH_ARC_CORE_WIDTH,
   PATH_ARC_HEIGHT,
   packetPathColors,
-} from './pathArcStyle.js';
+} from '../../features/pathing/style.js';
 
 type HistorySegment = {
   positions: [[number, number], [number, number]];
@@ -121,8 +121,6 @@ function buildLayers(
 ): Layer[] {
   const now = Date.now();
   const layers: Layer[] = [];
-
-  // ── Arc trails ─────────────────────────────────────────────────────────────
   if (showArcs && arcs.length > 0) {
     const visible = arcs.filter((a) => now - a.ts < PACKET_ARC_TTL_MS);
     if (visible.length > 0) {
@@ -151,8 +149,6 @@ function buildLayers(
       );
     }
   }
-
-  // ── Packet history heat map ────────────────────────────────────────────────
   if (showPacketHistory && packetHistorySegments.length > 0) {
     const maxCount = packetHistorySegments.reduce((max, segment) => Math.max(max, segment.count), 0);
     const historyWithColors: HistorySegmentWithColor[] = packetHistorySegments.map((d) => {
@@ -226,8 +222,6 @@ function buildLayers(
       );
     }
   }
-
-  // ── Hex clash paths ───────────────────────────────────────────────────────
   if (clashPathLines.length > 0) {
     layers.push(
       new PathLayer<ClashPathLine>({
@@ -242,8 +236,6 @@ function buildLayers(
       }),
     );
   }
-
-  // ── LOS terrain profiles ───────────────────────────────────────────────────
   if (losProfiles && losProfiles.length > 0) {
     type LosEndpoint = { position: [number, number, number]; viable: boolean };
     const losEndpoints: LosEndpoint[] = losProfiles.flatMap((p) => [
@@ -288,8 +280,6 @@ function buildLayers(
       }),
     );
   }
-
-  // ── Custom LOS segments ────────────────────────────────────────────────────
   if (customLosSegments.length > 0) {
     layers.push(
       // Glow layer
@@ -314,8 +304,6 @@ function buildLayers(
       }),
     );
   }
-
-  // ── Custom LOS start marker (waiting for second point) ─────────────────────
   if (customLosStart) {
     const EXAG = TERRAIN_CONFIG.exaggeration;
     layers.push(
@@ -458,14 +446,11 @@ export const DeckGLOverlay: React.FC<Props> = ({
       customLosSegments, customLosStart, consistencySegments, onPathSegmentClick, showHeatmap],
   );
 
-  // Push updated layers to the overlay imperatively
   useEffect(() => {
     overlayRef.current?.setProps({ layers });
   }, [layers]);
 
-  // No DOM output — everything is rendered inside the MapLibre canvas
   return null;
 };
 
-// Keep DeckViewState export for backward compat (no longer used by App)
 export type { Props as DeckGLOverlayProps };

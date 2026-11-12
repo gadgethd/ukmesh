@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
 import { PROHIBITED_NODE_MARKER } from '../utils/pathing.js';
-import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../hooks/packetFeed.js';
+import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../features/packets/liveFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import type { AggregatedPacket } from '../types/domain.js';

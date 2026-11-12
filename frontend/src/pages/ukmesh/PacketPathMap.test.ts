@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildAerialPaths, type MultiObserverBetaResponse } from './PacketPathMap.js';
-import type { LazyPath } from './feedModel.js';
+import type { LazyPath } from '../../features/packets/feedModel.js';
 
 const response: MultiObserverBetaResponse = {
   packetHash: 'ABC',

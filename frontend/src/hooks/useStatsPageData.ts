@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChartData, StatsTabId } from '../components/stats/StatsPrimitives.js';
+import type { ChartData, StatsTabId } from '../features/stats/model.js';
 import { getCurrentSite } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { chartStatsEndpoint, fetchJson, withScopeParams } from '../utils/api.js';
-import { isLiveObserverSnapshot, type LiveObserverSnapshot } from '../pages/statsState.js';
-import { parseStatsSection } from '../pages/statsSections.js';
+import { isLiveObserverSnapshot, type LiveObserverSnapshot } from '../features/stats/state.js';
+import { parseStatsSection } from '../features/stats/sections.js';
 import { useVisibilityPoll } from './useVisibilityPoll.js';
 import { POLLING } from '../config/polling.js';
+import { scopeKey } from '../utils/scope.js';
 
 const STATS_MAX_BYTES = 8 * 1024 * 1024;
 
@@ -37,7 +38,8 @@ export function useStatsPageData(section: StatsTabId): StatsPageData {
     () => ({ network: site.networkFilter, observer: site.observerId }),
     [site.networkFilter, site.observerId],
   );
-  const key = `stats:${statsScope.network ?? 'ukmesh'}:${statsScope.observer ?? 'all'}:${privacyGeneration}:${section}`;
+  const publicScope = scopeKey({ ...statsScope, privacyGeneration });
+  const key = JSON.stringify(['stats', publicScope, section]);
   const data = result?.key === key ? result.data : null;
 
   const load = useCallback(async (externalSignal?: AbortSignal) => {
@@ -109,7 +111,7 @@ export function useStatsPageData(section: StatsTabId): StatsPageData {
     if (!signal.aborted) { setLiveObservers(payload); setObserverError(null); }
   }, {
     enabled: section === 'observers' && privacyGeneration > 0,
-    scopeKey: `live-observers:${statsScope.network ?? 'all'}:${statsScope.observer ?? 'all'}:${privacyGeneration}`,
+    scopeKey: JSON.stringify(['live-observers', publicScope]),
     intervalMs: POLLING.liveObservers, timeoutMs: POLLING.ordinaryTimeout,
     onError: () => setObserverError('Live observer updates are unavailable. Showing the last received data.'),
   });
