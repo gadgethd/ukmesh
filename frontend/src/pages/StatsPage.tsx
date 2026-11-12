@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { lazy, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   AreaChart, Area, BarChart, Bar,
@@ -31,11 +31,8 @@ import {
   presentDecodedPath,
   type StatsTabId,
 } from '../components/stats/StatsPrimitives.js';
-import {
-  StatsDecodedPathDialog,
-  type DecodedPathSelection,
-} from '../components/stats/StatsDecodedPathDialog.js';
-import { Tab, TabList, TabPanel, Tabs } from '../components/ui/Tabs.js';
+import type { DecodedPathSelection } from '../components/stats/StatsDecodedPathDialog.js';
+import { LazyMapBoundary } from '../components/Map/LazyMapBoundary.js';
 import { useStatsPageData } from '../hooks/useStatsPageData.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import { isStatsPayloadEmpty } from './statsState.js';
@@ -43,11 +40,20 @@ import './path-modal.css';
 import './stats-page.css';
 import { fmtAxisDay, fmtAxisTime, fmtPeakHour } from './statsTimeFormat.js';
 
+const StatsDecodedPathDialog = lazy(() => import('../components/stats/StatsDecodedPathDialog.js').then(module => ({ default: module.StatsDecodedPathDialog })));
+
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const watchlist = useWatchlist();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
+  const pathTrigger = useRef<HTMLElement | null>(null);
+  const openPath = (selection: DecodedPathSelection) => {
+    pathTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setSelectedDecodedPath(selection);
+  };
+  const closePath = () => { setSelectedDecodedPath(null); pathTrigger.current?.focus(); };
+  const tabGroup = React.useId();
   const requestedTab = searchParams.get('tab');
   const requestedRegion = searchParams.get('region')?.trim().toUpperCase() ?? '';
   const activeTab: StatsTabId = isStatsTabId(requestedTab) ? requestedTab : 'overview';
@@ -147,25 +153,38 @@ export const StatsPage: React.FC = () => {
           </div>
         )}
 
-          <Tabs
-            selectedKey={activeTab}
-            onSelectionChange={(key) => setActiveTab(key as StatsTabId)}
-            className="stats-page__tab-system"
-          >
-            <TabList className="stats-page__tabs" aria-label="Stats sections">
+          <div className="stats-page__tab-system">
+            <div className="stats-page__tabs" role="tablist" aria-label="Stats sections"
+              onKeyDown={(event) => {
+                if (event.altKey || event.ctrlKey || event.metaKey) return;
+                const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+                const index = tabs.indexOf(document.activeElement as HTMLButtonElement);
+                if (index < 0) return;
+                const last = tabs.length - 1;
+                const next = event.key === 'Home' ? 0 : event.key === 'End' ? last
+                  : event.key === 'ArrowRight' ? (index + 1) % tabs.length
+                    : event.key === 'ArrowLeft' ? (index + last) % tabs.length : -1;
+                if (next < 0) return;
+                event.preventDefault();
+                tabs[next].focus();
+              }}>
               {STATS_TABS.map((tab) => (
-                <Tab
-                  key={tab.id}
-                  id={tab.id}
-                  className={({ isSelected }) => (
-                    `stats-page__tab${isSelected ? ' stats-page__tab--active' : ''}`
-                  )}
-                >
+                <button type="button" role="tab" key={tab.id}
+                  id={`${tabGroup}-tab-${tab.id}`} aria-controls={`${tabGroup}-panel-${tab.id}`}
+                  aria-selected={activeTab === tab.id} tabIndex={activeTab === tab.id ? 0 : -1}
+                  className={`stats-page__tab${activeTab === tab.id ? ' stats-page__tab--active' : ''}`}
+                  onFocus={() => { if (activeTab !== tab.id) setActiveTab(tab.id); }}
+                  onClick={() => { if (activeTab !== tab.id) setActiveTab(tab.id); }}>
                   {tab.label}
-                </Tab>
+                </button>
               ))}
-            </TabList>
-            <TabPanel id={activeTab} className="stats-page__tabpanel">
+            </div>
+            {STATS_TABS.filter(tab => tab.id !== activeTab).map(tab => (
+              <div key={tab.id} role="tabpanel" id={`${tabGroup}-panel-${tab.id}`}
+                aria-labelledby={`${tabGroup}-tab-${tab.id}`} hidden />
+            ))}
+            <div role="tabpanel" id={`${tabGroup}-panel-${activeTab}`}
+              aria-labelledby={`${tabGroup}-tab-${activeTab}`} tabIndex={0} className="stats-page__tabpanel">
         {loading && (
           <div className="stats-page__loading-shell" aria-label="Loading stats">
             <LoadingIndicator label="Loading stats..." variant="block" />
@@ -588,7 +607,7 @@ export const StatsPage: React.FC = () => {
                         <button
                           type="button"
                           className="stats-page__path-link"
-                          onClick={() => setSelectedDecodedPath({
+                          onClick={() => openPath({
                             title: 'Last Fully Decoded Path',
                             hash: data.pathHashes.latestFullyDecodedHash,
                             hops: data.pathHashes.latestFullyDecodedHops,
@@ -607,7 +626,7 @@ export const StatsPage: React.FC = () => {
                         <button
                           type="button"
                           className="stats-page__path-link"
-                          onClick={() => setSelectedDecodedPath({
+                          onClick={() => openPath({
                             title: 'Longest Fully Decoded Path',
                             hash: data.pathHashes.longestFullyDecodedHash,
                             hops: data.pathHashes.longestFullyDecodedHops,
@@ -704,13 +723,15 @@ export const StatsPage: React.FC = () => {
               </>
             )}
             </>)}
-            </TabPanel>
-          </Tabs>
+            </div>
+          </div>
 
-        <StatsDecodedPathDialog
-          selection={selectedDecodedPath}
-          onClose={() => setSelectedDecodedPath(null)}
-        />
+        {selectedDecodedPath && (
+          <LazyMapBoundary key={selectedDecodedPath.hash ?? selectedDecodedPath.title}
+            className="stats-page__path-status" label="Decoded path map" onClose={closePath}>
+            <StatsDecodedPathDialog selection={selectedDecodedPath} onClose={closePath} />
+          </LazyMapBoundary>
+        )}
       </div>
     </div>
   );

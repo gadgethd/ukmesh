@@ -111,6 +111,31 @@ done
 npm run budget
 ```
 
+### Stats route delivery
+
+The initial stats dependency closure is 213.8 KiB gzip, versus the qualified
+460.3 KiB baseline (54% lower). The enforced route ceiling is now 230 KiB;
+the global 2,900/850 KiB ceilings remain unchanged. The public artifact after
+this change measures 2,892.6/828.0 KiB raw/gzip JavaScript.
+
+The complete decoded-path dialog loads on selection, including its dialog
+framework, while its renderer remains separately lazy. The existing map
+boundary supplies loading/error state with a close action; closing restores
+the invoking control's focus. Cold-page requests must include neither dialog
+nor map/deck modules, and chunk failures must leave the stats page usable.
+
+Stats uses its fixed tab set with native buttons and the
+[WAI-ARIA tabs pattern](https://www.w3.org/WAI/ARIA/apg/patterns/tabs/): labelled
+tablist/panels, one tab stop, automatic selection, wrapping left/right arrows,
+Home/End, and a focusable active panel. URL state and active-section request
+cancellation remain intact. The shared React Aria controls remain available to
+node popups; this change is scoped to the stats page.
+
+Deferring only the dialog was not enough: shared tab-library code remained in
+the cold route and that trial exceeded the global artifact ceiling. The
+qualified combination removes those initial dependencies without raising a
+budget or removing accessibility assertions.
+
 ### Served compression
 
 The locally built website image uses Nginx 1.31.8 from the pinned base. Its

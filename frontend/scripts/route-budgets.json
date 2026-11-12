@@ -16,12 +16,13 @@
     },
     "/stats": {
       "module": "src/pages/StatsPage.tsx",
-      "scriptGzipKiB": 270,
+      "scriptGzipKiB": 230,
       "cssGzipKiB": 9,
       "forbiddenChunks": [
         "maplibre",
         "MapLibreMap",
-        "deck-"
+        "deck-",
+        "StatsDecodedPathDialog"
       ]
     },
     "/feed": {

@@ -345,7 +345,7 @@ test('stats tabs support Arrow, Home, and End and the path dialog restores focus
   await installFixtures(page);
   const mapRequests: string[] = [];
   page.on('request', request => {
-    if (/\/assets\/.*(?:maplibre|deck-|DecodedPathMapView)/i.test(request.url())) mapRequests.push(request.url());
+    if (/\/assets\/.*(?:maplibre|deck-|DecodedPathMapView|StatsDecodedPathDialog|Dialog-)/i.test(request.url())) mapRequests.push(request.url());
   });
   await page.goto('/stats');
 
@@ -353,6 +353,20 @@ test('stats tabs support Arrow, Home, and End and the path dialog restores focus
   await expect(overview).toHaveAttribute('aria-selected', 'true');
   expect(mapRequests).toEqual([]);
   await overview.focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.getByRole('tab', { name: 'Signal' })).toBeFocused();
+  await expect(page.getByRole('tab', { name: 'Signal' })).toHaveAttribute('aria-selected', 'true');
+  await page.keyboard.press('ArrowRight');
+  await expect(overview).toBeFocused();
+  await expect(overview).toHaveAttribute('aria-selected', 'true');
+  expect(await page.getByRole('tab').evaluateAll(tabs => tabs.every(tab => {
+    const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
+    return panel?.getAttribute('role') === 'tabpanel' && panel.getAttribute('aria-labelledby') === tab.id;
+  }))).toBe(true);
+  await page.keyboard.press('Tab');
+  await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(overview).toBeFocused();
   await page.keyboard.press('End');
   await expect(page.getByRole('tab', { name: 'Signal' })).toHaveAttribute('aria-selected', 'true');
   await page.keyboard.press('Home');
@@ -366,7 +380,8 @@ test('stats tabs support Arrow, Home, and End and the path dialog restores focus
   await pathTrigger.click();
   const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.locator('canvas')).toBeVisible();
+  await expect(dialog.locator('canvas.maplibregl-canvas')).toBeVisible();
+  await expect(dialog.locator('canvas#deckgl-overlay')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(pathTrigger).toBeFocused();
@@ -374,6 +389,53 @@ test('stats tabs support Arrow, Home, and End and the path dialog restores focus
 
 test.describe('lazy path-map delivery failures', () => {
   test.use({ serviceWorkers: 'block' });
+  test('the unopened path dialog stays deferred and its pending load can be closed and reopened', async ({ page }) => {
+    await installFixtures(page);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    let requests = 0;
+    await page.route(/\/(?:assets\/StatsDecodedPathDialog-[^/]+\.js|src\/components\/stats\/StatsDecodedPathDialog\.tsx)/, async route => {
+      requests++; await gate; await route.continue();
+    });
+    try {
+      await page.goto('/stats?tab=paths&region=LHR');
+      const trigger = page.getByRole('button', { name: 'North -> South' }).first();
+      await expect(trigger).toBeVisible();
+      expect(requests).toBe(0);
+      await trigger.click();
+      await expect.poll(() => requests).toBeGreaterThan(0);
+      const pending = page.locator('.stats-page__path-status');
+      await expect(pending.getByRole('status')).toBeVisible();
+      await pending.getByRole('button', { name: 'Close', exact: true }).click();
+      await expect(pending).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      release();
+      await trigger.click();
+      const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
+      await expect(dialog).toBeVisible();
+      await expect(dialog.locator('canvas.maplibregl-canvas')).toBeVisible();
+      await expect(dialog.locator('canvas#deckgl-overlay')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeHidden();
+      await expect(trigger).toBeFocused();
+      expect(new URL(page.url()).searchParams.get('region')).toBe('LHR');
+    } finally { release(); }
+  });
+
+  test('a failed deferred dialog leaves the stats page usable and restores focus on close', async ({ page }) => {
+    await installFixtures(page);
+    await page.route(/\/(?:assets\/StatsDecodedPathDialog-[^/]+\.js|src\/components\/stats\/StatsDecodedPathDialog\.tsx)/, route => route.abort());
+    await page.goto('/stats?tab=paths');
+    const trigger = page.getByRole('button', { name: 'North -> South' }).first();
+    await trigger.click();
+    const fallback = page.locator('.stats-page__path-status');
+    await expect(fallback.getByRole('alert')).toContainText('The map could not be loaded');
+    await expect(page.getByRole('tablist', { name: 'Stats sections' })).toBeVisible();
+    await fallback.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(fallback).toHaveCount(0);
+    await expect(trigger).toBeFocused();
+  });
+
   test('a failed lazy path-map chunk leaves an accessible error and a working close button', async ({ page }) => {
     await installFixtures(page);
     let blocked = 0;

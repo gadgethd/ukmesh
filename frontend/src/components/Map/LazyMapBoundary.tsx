@@ -3,7 +3,7 @@ import { LoadingIndicator } from '../LoadingIndicator.js';
 
 /** Keep the page and its reserved map space usable if the renderer chunk fails. */
 export class LazyMapBoundary extends React.Component<
-  React.PropsWithChildren<{ className: string; label: string }>,
+  React.PropsWithChildren<{ className: string; label: string; onClose?: () => void }>,
   { failed: boolean; ready: boolean }
 > {
   state = { failed: false, ready: false };
@@ -24,9 +24,9 @@ export class LazyMapBoundary extends React.Component<
   }
 
   render() {
-    const { className, label, children } = this.props;
+    const { className, label, children, onClose } = this.props;
     const placeholder = (content: React.ReactNode) => (
-      <div className={className} aria-label={label}>{content}</div>
+      <div className={className} aria-label={label}>{content}{onClose && <button type="button" onClick={onClose}>Close</button>}</div>
     );
     if (this.state.failed) return placeholder(
       <div role="alert">
