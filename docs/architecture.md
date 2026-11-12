@@ -54,14 +54,27 @@ paths. Coverage is not sent through backend JSON or WebSocket messages.
 
 - `backend/src/api/`: thin route modules, including the internal HopReach
   compatibility boundary and static `410 Gone` legacy coverage contracts;
-- `backend/src/repositories/`: SQL for nodes, topology, RF validation, owner
+- `backend/src/repositories/`: SQL for node state/reads, packet reads, topology, RF validation, owner
   alerts, registration, and operator workflows;
 - `backend/src/operations/`: local operator, link-queue, registration, model,
   and audit services;
-- `backend/src/db/`: pool setup, base schema, and migrations;
+- `backend/src/db/`: execution pools/query/transaction contracts, explicit packet
+  persistence setup, base schema, and migrations; feature queries live with their
+  repositories rather than a database facade;
 - `backend/src/pathing/` and `backend/src/path-beta/`: pathing orchestration,
   resolver implementation, pool, and caches;
 - `backend/src/stats/` and `backend/src/owner/`: stats and owner domains.
+
+Public privacy authority distinguishes the current desired generation from a
+generation ready for publication. A current counter alone does not authorize a
+public response: delivery and snapshot publication retain fresh ready-state
+checks around their work.
+
+Cross-runtime definitions live in [`contracts/`](../contracts/README.md).
+Deterministically generated package-local bindings keep standalone builds and
+worker-only Docker contexts independent. HTTP schemas remain owned by the
+backend contracts and OpenAPI; queue vocabulary does not merge distinct queue
+state machines or producer policies.
 
 `region-snapshot-worker` shares the backend image and runs independently of
 HTTP serving and the higher-priority privacy rematerialization worker. It

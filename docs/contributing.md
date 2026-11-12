@@ -7,6 +7,24 @@
 - repositories own SQL
 - worker RF math should stay separate from queue orchestration
 - frontend map builders should stay separate from `MapLibreMap.tsx`
+- reusable frontend models and parsers belong to their feature, below pages and
+  renderers; hooks must not import page implementations
+- process entrypoints compose services and own their start/close lifecycle;
+  registering HTTP routes must not install a hidden service registry
+
+## Shared definitions
+
+Public channel labels/slugs, stats section membership and the shared link-v3
+admission protocol live in [`contracts/`](../contracts/README.md). Generate local
+bindings with `node scripts/generate-shared-contracts.mjs` from the repository
+root, and commit the source and generated outputs together. Check drift without
+rewriting files with `node scripts/generate-shared-contracts.mjs --check`.
+
+Package and container builds consume their checked-in local adapters. Keep
+channel keys and confidential runtime channels in the backend; browser metadata
+must contain public names only. A shared queue definition does not make producer
+serialization, identity generation, configuration parsing or heartbeat policies
+interchangeable.
 
 ## Repository hygiene
 
