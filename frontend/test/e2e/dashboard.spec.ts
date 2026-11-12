@@ -30,6 +30,7 @@ test.beforeEach(async ({ page }) => {
       static readonly OPEN = 1;
       static readonly CLOSING = 2;
       static readonly CLOSED = 3;
+      static connections = 0;
       readyState = FixtureWebSocket.CONNECTING;
       onopen: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent<string>) => void) | null = null;
@@ -37,6 +38,7 @@ test.beforeEach(async ({ page }) => {
       onerror: ((event: Event) => void) | null = null;
       constructor(_url: string | URL) {
         super();
+        FixtureWebSocket.connections++;
         window.setTimeout(() => {
           this.readyState = FixtureWebSocket.OPEN;
           this.onopen?.(new Event('open'));
@@ -108,6 +110,10 @@ test.beforeEach(async ({ page }) => {
   }));
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path.endsWith('/runtime-config')) return route.fulfill({ json: {
+      version: 1, packetArcs: false, heatmap: false, regionScoping: false,
+      privacyGeneration: 1, refreshAfterSeconds: 300,
+    } });
     if (path.endsWith('/packets/recent')) return route.fulfill({ json: [] });
     if (path.endsWith('/inferred-nodes')) {
       return route.fulfill({ json: { inferredNodes: [], inferredActiveNodeIds: [] } });
@@ -119,6 +125,27 @@ test.beforeEach(async ({ page }) => {
     }
     return route.fulfill({ json: {} });
   });
+});
+
+test('map search and realtime load no nodes without valid privacy authority', async ({ page }, testInfo) => {
+  const nodeRequests: string[] = [];
+  const dataPaths = new Set(['/api/inferred-nodes', '/api/packets/recent', '/api/stats']);
+  page.on('request', request => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith('/api/nodes/') || dataPaths.has(url.pathname)) nodeRequests.push(url.pathname + url.search);
+  });
+  await page.route('**/api/runtime-config', route => route.fulfill({ json: {} }));
+  await page.goto(`/?node=${'0'.repeat(64)}`);
+  if (testInfo.project.name === 'dashboard-mobile') {
+    await page.getByRole('button', { name: 'Layers' }).first().click();
+  }
+  await page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true }).fill('HarbourBeacon');
+  // Observe beyond the 200ms former-name debounce after the app has mounted.
+  await page.waitForTimeout(500);
+  expect(nodeRequests).toEqual([]);
+  expect(await page.evaluate(() => (window.WebSocket as typeof WebSocket & { connections: number }).connections)).toBe(0);
+  await expect(page.getByRole('dialog', { name: 'Node details' })).toHaveCount(0);
+  await expect(page.getByRole('option', { name: /Ridge current/ })).toHaveCount(0);
 });
 
 test('former node names resolve to the current name in map search', async ({ page }, testInfo) => {

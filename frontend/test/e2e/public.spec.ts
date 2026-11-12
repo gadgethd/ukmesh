@@ -137,6 +137,22 @@ test.describe('public Web Vitals delivery', () => {
   });
 });
 
+test('repeater search loads no nodes or former names without valid privacy authority', async ({ page }) => {
+  const nodeRequests: string[] = [];
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    if (url.pathname.startsWith('/api/nodes/')) nodeRequests.push(url.pathname + url.search);
+    return route.fulfill({ json: [] });
+  });
+  await page.route('**/api/runtime-config', route => route.fulfill({ json: [] }));
+  await page.goto('/repeater');
+  await page.getByRole('combobox', { name: 'Search repeaters' }).fill('HarbourBeacon');
+  // Observe beyond the 200ms former-name debounce with authority still unavailable.
+  await page.waitForTimeout(500);
+  expect(nodeRequests).toEqual([]);
+  await expect(page.getByRole('option', { name: /Ridge current/ })).toHaveCount(0);
+});
+
 test('former node names resolve to the current name in repeater search', async ({ page }) => {
   const current = {
     node_id: 'A'.repeat(64), name: 'Ridge current', lat: 54.5, lon: -1.5,
@@ -154,6 +170,7 @@ test('former node names resolve to the current name in repeater search', async (
       page: { complete: true, nextCursor: null, snapshot: new Date().toISOString() },
     } });
   });
+  await installPublicPolicy(page);
   await page.goto('/repeater');
   const input = page.getByRole('combobox', { name: 'Search repeaters' });
   await input.fill('HarbourBeacon');
