@@ -118,6 +118,13 @@ The initial stats dependency closure is 213.8 KiB gzip, versus the qualified
 the global 2,900/850 KiB ceilings remain unchanged. The public artifact after
 this change measures 2,892.6/828.0 KiB raw/gzip JavaScript.
 
+Six fresh Chromium 153 navigations with the populated CI fixtures transferred
+227,086 script bytes each. Median stats LCP was 3.47 seconds mobile and 0.82
+seconds desktop; CLS was 0/0.063 and TBT 3.04/2.68 seconds. All six had
+accessibility and SEO scores of 100. These pass the existing navigation gates;
+they do not measure field INP or establish a latency improvement against a
+different data fixture.
+
 The complete decoded-path dialog loads on selection, including its dialog
 framework, while its renderer remains separately lazy. The existing map
 boundary supplies loading/error state with a close action; closing restores
