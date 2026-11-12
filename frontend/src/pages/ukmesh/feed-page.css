@@ -119,6 +119,9 @@
   min-height: 0;
   overflow-y: auto;
   overflow-x: hidden;
+  /* The measured virtualizer owns anchors, including staying at the top on
+     prepend. Native anchoring would independently move the same scroll. */
+  overflow-anchor: none;
   align-content: start;
   min-width: 0;
 }

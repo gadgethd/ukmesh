@@ -22,6 +22,7 @@ import {
 } from '../../utils/api.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
+import { useMeasuredVirtualRows } from '../../hooks/useMeasuredVirtualRows.js';
 import type { LazyPathResult } from './feedModel.js';
 import { FeedMapPanel } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
@@ -85,8 +86,6 @@ export const UKFeedPage: React.FC = () => {
     return requested && (/^(?:[0-9]{1,3}|unknown)$/.test(requested)) ? requested : null;
   });
   const [now, setNow] = useState(() => Date.now());
-  const [viewportHeight, setViewportHeight] = useState(() => window.innerHeight);
-  const [listScrollTop, setListScrollTop] = useState(0);
   const [detailOpen, setDetailOpen] = useState(false);
   const [historicalMessages, setHistoricalMessages] = useState<FeedPacket[]>([]);
   const [historyStatus, setHistoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
@@ -161,12 +160,6 @@ export const UKFeedPage: React.FC = () => {
   useEffect(() => {
     const timer = window.setInterval(() => setNow(Date.now()), POLLING.feedClock);
     return () => window.clearInterval(timer);
-  }, []);
-
-  useEffect(() => {
-    const handleResize = () => setViewportHeight(window.innerHeight);
-    window.addEventListener('resize', handleResize);
-    return () => window.removeEventListener('resize', handleResize);
   }, []);
 
   // Selected-packet path cache. Requests are demand-driven and scope-fenced.
@@ -316,21 +309,8 @@ export const UKFeedPage: React.FC = () => {
   const recentPackets = useMemo(() => {
     return filteredPackets.slice(0, MAX_PACKETS);
   }, [filteredPackets]);
-  const virtualRows = useMemo(() => {
-    // Rows are natural-height; tagged rows add one ~18px chips line under the
-    // meta section. Keep the estimate aligned with the taller (tagged) case so
-    // spacers never underestimate and rows cannot overlap (2026-09-17).
-    const rowHeight = 76;
-    const visibleHeight = Math.max(320, viewportHeight - 200);
-    const start = Math.max(0, Math.floor(listScrollTop / rowHeight) - 5);
-    const end = Math.min(recentPackets.length, start + Math.ceil(visibleHeight / rowHeight) + 10);
-    return {
-      rows: recentPackets.slice(start, end),
-      start,
-      top: start * rowHeight,
-      bottom: Math.max(0, (recentPackets.length - end) * rowHeight),
-    };
-  }, [listScrollTop, recentPackets, viewportHeight]);
+  const packetKeys = useMemo(() => recentPackets.map(packet => `${packet.packet_hash}-${packet.time}`), [recentPackets]);
+  const virtualRows = useMeasuredVirtualRows(packetKeys, packetListRef);
 
   // Always derive selectedPacket from the live list so new MQTT observers are picked up
   const selectedPacket = useMemo(
@@ -629,17 +609,18 @@ export const UKFeedPage: React.FC = () => {
           <div
             className="uk-feed-packets-list"
             ref={packetListRef}
-            onScroll={(event) => setListScrollTop(event.currentTarget.scrollTop)}
+            onScroll={virtualRows.onScroll}
           >
             {recentPackets.length > 0 ? <>
               <div aria-hidden="true" style={{ height: virtualRows.top }} />
-              {virtualRows.rows.map((packet, virtualIndex) => {
+              {recentPackets.slice(virtualRows.start, virtualRows.end).map((packet, virtualIndex) => {
               const iatas = packetObserverIatas(packet, nodeMap);
               const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
               const isSelected = selectedPacketHash === packet.packet_hash;
               return (
-                <React.Fragment key={`${packet.packet_hash}-${packet.time}-${virtualRows.start + virtualIndex}`}>
+                <React.Fragment key={packetKeys[virtualRows.start + virtualIndex]}>
                   <article
+                    ref={virtualRows.measureRow(packetKeys[virtualRows.start + virtualIndex]!)}
                     className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
                     onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
                     role="button"
@@ -676,8 +657,8 @@ export const UKFeedPage: React.FC = () => {
               <p className="dev-status-empty">No public packets have arrived yet.</p>
             )}
           </div>
-          {/* Selected details live outside the fixed-height virtual rows. This
-              keeps expansion height from corrupting spacer calculations. */}
+          {/* Selected details stay outside the measured list so expanding a
+              path does not change packet-row scroll anchors. */}
           {selectedPacket && (
             <section className="uk-feed-mobile-selection" aria-label="Selected packet summary">
               <div className="uk-feed-inline-map">

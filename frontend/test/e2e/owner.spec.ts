@@ -21,6 +21,10 @@ const dashboard = {
 
 test.beforeEach(async ({ page }) => {
   await installMapRoutes(page);
+  // Optional owner features must not reach a developer backend and revoke the
+  // fixture session. Individual scenarios override the endpoints they need.
+  await page.route('**/api/owner/**', route => route.fulfill({ status: 404,
+    json: { error: 'Owner endpoint not mocked in this spec' } }));
   await page.route('**/api/runtime-config', (route) => route.fulfill({ json: {
     version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 30,
   } }));
@@ -111,16 +115,13 @@ test('linked owner sees a recent default-root denial and the hint clears on sess
   await expect(page.getByLabel('Owned repeater identities')).toContainText('Alpha Repeater');
   showDiagnostic = false;
   const before = requests;
-  await page.clock.fastForward(15_001);
+  await page.clock.fastForward(17_001);
   await expect.poll(() => requests).toBeGreaterThan(before);
   await expect(hint).toHaveCount(0);
   await expect(page.getByLabel('Owned repeater identities')).toContainText('Alpha Repeater');
 });
 
 test('session polling does not reset the repeater owner content', async ({ page }) => {
-  // Production owner polling predates main's /api/owner/session cadence and is
-  // authoritative for Stage 1; session-polling parity is a Stage 2 item.
-  test.fixme(true, 'deferred: owner session-polling parity (Stage 2)');
   let sessionRequests = 0;
   let liveRequests = 0;
   let liveRequestLimit: number | null = null;
@@ -161,6 +162,7 @@ test('session polling does not reset the repeater owner content', async ({ page 
   await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('.owner-section-tabs')).toHaveCount(0);
   await expect(page.locator('.owner-settings')).toHaveCount(0);
+  await expect(page.getByRole('heading', { name: 'Direct Sender Map' })).toBeVisible();
 
   const initialSessionRequests = sessionRequests;
   const initialLiveRequests = liveRequests;
@@ -169,7 +171,9 @@ test('session polling does not reset the repeater owner content', async ({ page 
     new URL(response.url()).pathname === '/api/owner/session'
     && sessionRequests > initialSessionRequests
   ));
-  await page.clock.fastForward(15_001);
+  // The shared poller permits 10% jitter: 17 seconds covers a session tick
+  // while remaining before the earliest second 10-second live tick (18s).
+  await page.clock.fastForward(17_001);
   await sessionRefresh;
   await page.clock.fastForward(100);
   await expect(identities.getByText('Alpha Repeater', { exact: true })).toBeVisible();
@@ -178,9 +182,6 @@ test('session polling does not reset the repeater owner content', async ({ page 
 });
 
 test('owner map construction remains one across repeated live polls', async ({ page }) => {
-  // Same main-only owner cadence as the session-polling spec above; the
-  // deployed owner client is authoritative for Stage 1.
-  test.fixme(true, 'deferred: owner live-poll map lifecycle parity (Stage 2)');
   let liveRequests = 0;
   await page.clock.install({ time: new Date('2026-07-16T12:00:00Z') });
   await page.addInitScript(() => {
