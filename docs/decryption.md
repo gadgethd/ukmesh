@@ -36,9 +36,10 @@ variants, direct ASCII passphrases).
 - Live ingest stores decrypted content inline in `payload.decrypted`
   (message/sender/timestamp/flags) and `_summary` =
   `[ChannelName] sender: message`.
-- Historical decryption lives in the `packet_decryptions` side table
-  (migration 035), filled by the backfill tool. The feed joins it with
-  `COALESCE(p.payload->>'_summary', pd.summary)`.
+- Historical decryption lives in `mesh.packet_decryptions` (migration 035),
+  filled by the backfill tool. Channel history prefers a nonempty `pd.summary`,
+  then a nonempty ingest `payload._summary`, so an old encrypted marker does not
+  hide a later successful decryption.
 - ⛔ Never bulk-UPDATE the `packets` hypertable — TimescaleDB plans a seq-scan
   over every chunk. INSERT into the side table instead.
 
@@ -51,8 +52,9 @@ Two-phase keyset-paginated scan over `packets_hash_idx` (~1,250 hashes/s).
 ## Feed integration
 
 - `GET /api/feed/messages?channel=<scope>&limit<=50` — up to 50 unique
-  historical messages per channel (90-day bound, dedup by packet hash).
-- The feed sidebar lists every decrypted channel
+  historical messages per public channel (90-day query upper bound, constrained
+  by the 30-day content-retention policy and actual retained rows, dedup by hash).
+- The feed sidebar lists its explicitly supported public channels
   (`MESSAGE_SCOPE_CHANNELS` in `frontend/src/pages/ukmesh/feedModel.ts`);
   new channels need a frontend rebuild to appear as filters.
 
@@ -64,8 +66,9 @@ buckets collide across channels (MAC pass rate can reach ~97% on junk);
 always validate before `.env` deploy. Honest decrypt coverage measured at
 **~43.5%** of the 90-day volume (raw hash-bucket sums overcount).
 
-## Out-of-band keys
+## External configuration boundary
 
-`~/ukmesh/meshcore-discord-bot/.env` holds `NORTHEAST_CHANNEL_SECRET`
-(== #northeast) and `THENORF_CHANNEL_SECRET` (hash 8A) — the discord bot
-forwards those channels. Check it before attacking new keys.
+The 2026-08-06 investigation also identified channel configuration in a separate
+Discord bot checkout. That historical observation is not the current site's key
+inventory. This repository reads its own `MESHCORE_CHANNEL_SECRETS`; confidential
+external configuration must not be copied into source or public diagnostics.

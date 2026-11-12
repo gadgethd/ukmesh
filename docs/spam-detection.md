@@ -274,7 +274,10 @@ confidence circle on a map.
 ## Privacy model
 
 Abuse mitigation only. The public API serves the pre-computed `public_json`
-column, which is produced solely by `sanitizeIncident()`:
+column, which is produced solely by `sanitizeIncident()`. Delivery also requires
+its migration-136 visibility certificate to match the current ready privacy
+generation; uncertified or old geometry is withheld. Fresh checks fence both
+publication and public response delivery:
 
 - **Sender names** are redacted to a short non-identifying hint (`John_UK`→`Jo…`)
   that still conveys variant similarity. Raw names stay in local-only columns.
@@ -307,16 +310,12 @@ destructive changes). The one-shot `db-migrate` service applies unrecorded
 migrations before the backend starts. Do not apply the SQL file or insert its
 migration-ledger row manually.
 
-For a normal deployment, use:
+Production uses the approved immutable backend digest and the
+[release procedure](runbook-release-rollback.md). Complete pending migrations
+before starting the analyzer; do not build over a deployed release. After
+selecting the reviewed image, the explicit migration command is:
 
 ```bash
-docker compose up -d --build
-```
-
-To inspect or apply pending migrations manually after building the image:
-
-```bash
-docker compose build db-migrate
 docker compose run --rm db-migrate
 ```
 
@@ -334,8 +333,10 @@ If the analyzer log shows `status=timed_out`, the run's work exceeded
 `SPAM_MESSAGE_ANALYSIS_BUDGET_MS` — the 5 s default is tuned for quiet days;
 busy spam days need ~30–60 s (each public incident resolves relay paths for
 origin). Raise it in `.env` (e.g. `SPAM_MESSAGE_ANALYSIS_BUDGET_MS=60000`) and
-recreate the backend. The recompute tool loads more rows than the analyzer and
-may need `SPAM_MESSAGE_MAX_MESSAGES` raised for wide windows.
+recreate the backend. The recompute tool first counts the selected logical transmissions and refuses
+an over-budget window. Reduce `--hours`, or qualify a higher
+`SPAM_MESSAGE_MAX_MESSAGES` within its 10,000-message ceiling; it does not
+silently publish a truncated historical recomputation.
 
 ## Tests
 

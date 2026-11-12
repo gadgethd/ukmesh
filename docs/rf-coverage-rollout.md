@@ -18,8 +18,10 @@ at `third_party/hopreach`.
   operator access.
 - Use digest-pinned backend, HopReach, and app images built by the signed
   release workflow. Confirm the backend/app revision label is the integration
-  release commit and the HopReach revision label is
-  `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119`.
+  release commit. The release workflow also binds HopReach's OCI revision label
+  to that integration commit; its calculator source/version is the unchanged
+  vendored `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119` / `v0.1.32-ukmesh.4`.
+  Verify both the signed integration inventory and the vendored source pin.
 - Do not enable calibrated variants. The production profile deliberately has
   `calibration.enabled: false`; evidence validation is a separate rollout.
 - Do not reduce range, node count, terrain zoom, supersampling, or RF fidelity
@@ -69,10 +71,10 @@ From a clean reviewed revision:
 docker compose config --quiet
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/work" -w /work/third_party/hopreach \
-  golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 go test ./...
+  golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db go test -count=1 ./...
 docker run --rm --user "$(id -u):$(id -g)" -e HOME=/tmp \
   -v "$PWD:/work" -w /work \
-  golang:1.25.7-bookworm@sha256:564e366a28ad1d70f460a2b97d1d299a562f08707eb0ecb24b659e5bd6c108e1 \
+  golang:1.23-bookworm@sha256:167053a2bb901972bf2c1611f8f52c44d5fe7e762e5cab213708d82c421614db \
   /work/scripts/benchmark-hopreach.sh
 ```
 

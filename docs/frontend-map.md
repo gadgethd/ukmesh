@@ -71,9 +71,10 @@ guard the boundary; map initialization must remain one instance per mount.
 
 ## Basemap reliability
 
-Map constructors must import the configured `maplibre.ts` module. Its
-`?worker&url` import makes Vite bundle the worker and shared code into one
-content-hashed JavaScript asset. Do not copy MapLibre's fixed `.mjs` filenames
+Map constructors must import the configured `maplibre.ts` module. Production
+resolves a virtual module-worker entry into the shared Vite graph;
+development uses the upstream `?worker&url` entry. Both give the worker a
+content-hashed URL. Do not copy MapLibre's fixed `.mjs` filenames
 into `/assets`: browser caches and older service workers can otherwise pair a
 new renderer with an incompatible worker after an upgrade.
 
@@ -119,15 +120,12 @@ access so Vite can eliminate the other host's route tree at build time.
 `build-target.json` binds budget checks to the artifact. A website must contain
 no dashboard App chunk. Both targets enforce JS/CSS ceilings in CI and in their Dockerfiles.
 
-The November reconciliation preserves main's MapLibre 6.11.2 and deck.gl 9.4
-upgrades. These differ from the deployed audit release (MapLibre 6.4.1). Its
-2,900/850-KiB total-JavaScript ceiling therefore does not describe this merged
-source tree. The reconciled ceiling is 3,200 KiB raw / 900 KiB gzip, including
-all worker/shared chunks; renderer (820/225), charts (400/110) and CSS (230/42)
-ceilings remain unchanged. Every production chunk receives Terser compression.
-This is a documented dependency-baseline adjustment, not evidence that the
-old total ceiling passes on the newer dependencies. Requalify both targets
-and production browser journeys when changing this baseline.
+The November candidate preserves MapLibre 6.11.2 and deck.gl 9.4 while meeting
+2,900 KiB raw / 850 KiB gzip for all JavaScript, including worker/shared chunks.
+The temporary 3,200/900 allowance has been removed. Renderer (820/225), charts
+(400/110) and CSS (230/42) ceilings remain unchanged. Terser and compact code
+generation preserve legal notices. See [the current budgets and measurements](performance-budgets.md)
+and requalify both targets and production browser journeys after build changes.
 
 ## Polling ownership
 
@@ -158,3 +156,33 @@ Connection-status timestamp publications are coalesced to at most once a second,
 with a trailing exact last-reception value. Socket messages and store updates
 are delivered immediately through the existing coordinator. This status timer
 is cancelled on connection/scope cleanup.
+
+### React profiling
+
+The November comparison used isolated production profiling builds with React's
+[Profiler](https://react.dev/reference/react/Profiler), Chromium 153 and the same
+invented grid. Only the four map/store/socket implementation files were reverted
+for the baseline. Each case used three fresh browser contexts, three seconds
+of warm-up, six seconds of roughly 500 updates/s and 1.5 seconds to drain.
+Mobile used four-times CPU throttling. Every sent update was received and each
+touched node retained its latest timestamp.
+
+Median React render work associated with committed updates, normalized per
+1,000 received updates, was:
+
+| Nodes | Desktop before → after | Mobile before → after |
+| ---: | ---: | ---: |
+| 1,000 | 115 → 53 ms | 373 → 235 ms |
+| 3,000 | 233 → 128 ms | 807 → 497 ms |
+| 6,000 | 399 → 231 ms | 1,124 → 1,083 ms |
+
+The mobile 6,000-node render change is small; it does not establish a material
+React speedup there. Native frame p95 at 6,000 nodes fell from 66.6 to 16.8 ms
+desktop and 150 to 66.7 ms mobile. Profiling adds overhead, so these figures
+are separate from uninstrumented frame/CPU measurements. `actualDuration`
+measures render work, not DOM mutation or effect duration. Profiling globals
+and the special renderer exist only in the ignored measurement copies.
+
+Immutable store snapshots remain in place. A broader per-key subscription or
+structural-sharing rewrite was not selected by this change; the mobile residual
+cost remains a measured limit rather than a reason to mutate React snapshots.

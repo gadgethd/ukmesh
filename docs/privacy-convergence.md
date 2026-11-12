@@ -19,7 +19,7 @@ If materialization becomes current again inside the same transaction, a later
 prefix edit invalidates it again. A real cascading row deletion has no surviving
 parent and remains fail closed. Nested maintenance of a surviving node retains
 migration 056's asynchronous queue without an independent invalidation.
-Installing 071 does not repair an existing generation gap or rewrite history.
+Installing 074 (or its post-move replacement 134) does not repair an existing generation gap or rewrite history.
 Alias changes and completed node-scoped worker passes carry materialization
 forward only when it was already current; neither repairs an unrelated gap.
 
@@ -86,7 +86,7 @@ On an alert:
 1. Inspect the structured event and internal health detail. A missing relation,
    read failure or absent metric is unavailable evidence, never proof of convergence.
 2. For `desired_ahead`/`materialized_ahead` with `queueActive: false`, investigate
-   recent policy changes and confirm migration 071 is installed through normal
+   recent policy changes and confirm migration 074 or its post-move replacement 134 is installed through normal
    operator procedures. An empty queue does not certify packet flags.
 3. For `queue_active`, inspect the existing rematerialization backlog/worker
    diagnostics. Do not reset a processing claim or copy generation numbers.
@@ -200,7 +200,7 @@ publication. Rollback disables scheduling and preserves jobs/evidence; it must
 not roll generation numbers backward. This work needs its own implementation
 and operational review.
 
-Use the reviewed backend build with migration 071 applied through the normal
+Use the reviewed backend build with migration 074 (or post-move replacement 134) applied through the normal
 migration process. From `backend/`, with `DATABASE_URL` already configured for
 the intended database:
 
@@ -315,10 +315,11 @@ The worker's conditional advancement and the convergence command are compatible
 with either trigger layout; retain the worker guard when possible.
 
 Do not erase the production migration ledger to roll back. The runner will
-retain 071's checksum and will not reapply it automatically; a later forward
-rollout needs a reviewed migration or explicit reapplication of the reviewed
-SQL. The local fixture removes its own 071 ledger row solely to test a populated
-066-to-071 upgrade. Failed migration transactions are also tested to leave the
+retain the recorded 074/134 checksums and will not reapply them automatically;
+a later forward rollout needs a reviewed migration or explicit reapplication
+of the reviewed SQL. The disposable fixture removes its own fence ledger rows
+solely to reproduce the old layout and test the real runner's 066-to-074/134
+upgrade. Failed migration transactions are also tested to leave the
 prior complete trigger layout intact.
 
 Convergence has no automatic data reversal: its only changes are verified

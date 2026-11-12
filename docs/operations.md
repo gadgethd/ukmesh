@@ -17,8 +17,10 @@ The overlay treats that bridge as external and reserves
 the backend trusted-proxy allowlist exact without attempting to delete or
 renumber unrelated endpoints. It also publishes this stack's Prometheus on
 `127.0.0.1:9092` because the host's independent isolated-network Prometheus
-owns port 9090. Fresh, CI, and isolated restore environments must use only
-`docker-compose.yml` and its dedicated `172.30.0.0/24` network.
+owns port 9090. The base application Compose file uses separately managed
+data-plane services. CI combines it with `docker-compose.ci.yml` on a dedicated
+`172.30.0.0/24` network; the contributor helper and restore drill use their own
+owned stacks. Do not apply the live external-network overlay to those fixtures.
 
 ## Browser operator access
 
@@ -311,7 +313,11 @@ verification, checkpoint restart tests, and rollback. Do not delete the
 
 ## Public status and maintenance
 
-The public `/health` page polls the aggregated `/api/health` contract every minute. Set `MAINTENANCE_ACTIVE=1` and `MAINTENANCE_MESSAGE` during a planned window; the API and page show the notice without leaking hostnames, credentials, addresses, or private node identities.
+The machine-readable `/api/health` contract includes the configured
+`MAINTENANCE_ACTIVE=1` and bounded `MAINTENANCE_MESSAGE` notice. The former
+website `/health` page was removed; public navigation links to the separate
+health-check application. Keep maintenance text free of hostnames, credentials,
+addresses and private node identities.
 
 ## Operational runbooks
 
@@ -323,11 +329,11 @@ The public `/health` page polls the aggregated `/api/health` contract every minu
 
 ### Owner authorization baseline refresh
 
-`/readyz` fails closed when the current owner accounts, grants, configured grants,
-or ACL generations differ from `OWNER_AUTH_INVENTORY_BASELINE_PATH`. This means
-an owner grant or `OWNER_MQTT_USERNAME_MAP` entry changed after the baseline was
-recorded. Drift is expected after every approved grant change and is not itself
-an incident, but it must be reviewed before the baseline is refreshed.
+`/readyz` validates owner accounts, grants, configured grants and ACL evidence
+against `OWNER_AUTH_INVENTORY_BASELINE_PATH`. Unexplained inventory or permission
+drift fails closed. A verified transition limited to public-feed read permissions
+can converge without replacing the baseline; see [the exact certificate rules](privacy-convergence.md#owner-acl-readiness-convergence).
+Review approved grant changes before generating a replacement baseline.
 
 1. Identify the change from the audit trail and confirm it was approved:
 
@@ -430,13 +436,14 @@ The [2026-10-23 evidence review](reviews/20261023-ukmesh-broker.md) records exac
 keys, clients, commands, windows, and counts. Four retained broker archives
 contain **2,356** `/raw` denials from `ESP32_a806F8`, on
 `meshcore/LBA/8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A/raw`.
-The current-log snapshot contains zero further denials from that client.
+The dated review's current-log snapshot contained zero further denials from
+that client; these counts are historical, not current host readback.
 Accepted `/packets` messages for the same key are present in the archive.
 
-The current `meshmonitor-observer-nevrg6ol` authenticates as `nick`. It has
+In that dated review, `meshmonitor-observer-nevrg6ol` authenticated as `nick`. It had
 **zero denied publishes** in the retained files and accepted packets on
 `meshcore/EXT/67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5/packets`.
-The live ACL already grants this key's packet/status/neighbor topics. Historical
+The ACL inspected for that review granted this key's packet/status/neighbor topics. Historical
 broker output preserved in shared memory shows `meshmonitor-observer-qy92lten`
 denied on this key's `/status` and `/packets` topics; it does not establish a
 current fault. `EXT` is a valid IATA covered by the ACL's `+` segment.
@@ -689,9 +696,11 @@ is written only after packet-batch commit. The broker session is
 ### Feed history contract
 
 `GET /api/feed/messages?channel=<scope>&limit<=50` — up to 50 unique
-historical messages per channel, 90-day bound, dedup by packet hash. Uses an
-ordered keyset-paginated packet scan (500-row pages, in-memory hash dedup,
-early stop at 50) so it stays fast under TimescaleDB load; observer-stat
+historical messages per public channel, a query upper bound of 90 days, dedup
+by packet hash. Actual availability is limited by the 30-day content-retention
+policy and retained rows. Uses an
+ordered keyset-paginated packet scan (100-row pages and bounded distinct-hash
+selection, with oversampling before the final public projection to 50 rows) so it stays fast under TimescaleDB load; observer-stat
 aggregation is bounded on the history path only (live WS path keeps full
 aggregation). UI merges history under live WS messages; `initial_state`
 still delivers 200. See `docs/decryption.md` for the join.

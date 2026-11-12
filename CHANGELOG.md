@@ -29,6 +29,9 @@ completion of the candidate gates and separate release authorization.
 - Broker correlations, lease observations and spam-detector state have explicit
   bounds and occupancy/health metrics. Incomplete spam evidence refreshes retain
   the previous complete snapshot and report degraded coverage.
+- Region snapshots recover outside HTTP through a bounded supervised worker.
+  Node responses and cached links validate current privacy before delivery,
+  including conditional responses.
 - Link-worker geometry dependencies load when needed, reducing measured startup
   time and memory. RF calculations, queue protocols and authority remain intact.
 - A local contributor stack provides invented-data and private archive profiles,

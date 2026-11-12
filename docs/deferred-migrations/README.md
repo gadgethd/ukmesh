@@ -1,5 +1,9 @@
 # Deferred migrations
 
+The original deferral notes below are historical. The current runtime chain
+contains `061_node_status_sample_status.sql`; verify the actual deployment
+ledger independently before choosing an upgrade path.
+
 Migrations in this directory are **not** part of the applied migration chain and are not copied into
 the runtime image's migration directory. They are kept here so contributor work is not lost while
 the live deployment remains the schema of record.

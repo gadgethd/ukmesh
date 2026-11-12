@@ -29,5 +29,9 @@ test('docs gate catches broken links, duplicate-heading anchors and nonexistent 
     assert.match(run().stderr, /stale path/);
     put('README.md', 'Historical: `backend/src/db/ownerAuth.ts` was removed.');
     assert.equal(run().status, 0);
+    put('README.md', '```bash\ndocker compose exec -e REVIEWED=true backend npm run db:lifecycle\n```');
+    assert.match(run().stderr, /backend runtime image has no npm/);
+    put('README.md', '```bash\ndocker compose exec backend node dist/tools/dataLifecycle.js\n```');
+    assert.equal(run().status, 0);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

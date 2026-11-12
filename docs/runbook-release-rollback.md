@@ -132,8 +132,10 @@ docker compose up -d --no-build --no-deps backend
 curl --fail http://127.0.0.1:3000/readyz
 ```
 
-Additive migrations are deliberately compatible with the prior backend. Never
-attempt a destructive down-migration. If database contents must roll back,
+Additive schema changes do not establish prior-image or data compatibility.
+Use only the prior image set that passed the isolated compatibility rehearsal
+against this exact migrated candidate. Never attempt a destructive down-migration.
+If database contents must roll back,
 stop MQTT ingest and all writers, restore the signed pre-release backup in an
 isolated environment first, then perform a separately approved disaster
 recovery cutover.

@@ -8,7 +8,11 @@ records the current discovery/authorization boundaries and follow-up hooks.
 
 Owner cookies include the Redis credential generation that was current at login.
 The owner session route and protected owner routes compare that generation on
-each request. Cookies expire after seven days.
+each request. The encrypted v4 cookie also carries a server-side session ID;
+protected reads require an active, unrevoked, unexpired row in the owner-auth
+database. Cookies and their server-side sessions expire after seven days.
+Revoking one session, all sessions or the credential generation closes access;
+a valid cookie alone cannot authorize a revoked server-side session.
 
 After changing a Mosquitto password, revoke existing owner sessions immediately
 by running the backend tool with the affected MQTT username:

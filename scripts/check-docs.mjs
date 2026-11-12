@@ -74,6 +74,13 @@ for (const document of documents) {
     }
   }
   for (const block of text.matchAll(/^```(?:bash|sh|shell|console)\s*\n([\s\S]*?)^```/gm)) {
+    const commands = block[1].replace(/\\\r?\n\s*/g, ' ');
+    for (const line of commands.split('\n')) {
+      if (line.trimStart().startsWith('#')) continue;
+      if (/\bdocker\s+(?:compose\s+[^\n]*?\b(?:exec|run)\s+[^\n]*?\b(?:backend|db-migrate)|exec\s+(?:-[^\s]+\s+)*meshcore-analytics-backend-\d+)\s+npm\b/.test(line)) {
+        issues.push(`${document}: backend runtime image has no npm; invoke its compiled Node tool directly`);
+      }
+    }
     let working = root;
     for (const line of block[1].split('\n')) {
       const cd = /(?:^|&&\s*)cd\s+(backend|frontend|scripts)(?:\s|$)/.exec(line.trim());

@@ -29,12 +29,13 @@ export const PrivacyPage: React.FC = () => (
         <li>a truncated error message and stack trace,</li>
         <li>the page path you were on (no query string),</li>
         <li>your browser type, and</li>
-        <li>an anonymised hash of your IP address — never the address itself.</li>
+        <li>a pseudonymous hash of your IP address, rather than the address itself.</li>
       </ul>
       <p>
-        We do <strong>not</strong> collect your name, email, account details, or
-        anything that identifies you personally. Diagnostics are kept for{' '}
-        <strong>30 days</strong>, then deleted automatically.
+        Diagnostic records omit account IDs, query strings and cookie contents.
+        Error text can contain contextual information. Our retention policy for
+        diagnostics is <strong>30 days</strong>. Add <code>?telemetry=off</code> to
+        the page URL to disable browser diagnostic and performance reports.
       </p>
     </section>
 
@@ -47,16 +48,17 @@ export const PrivacyPage: React.FC = () => (
       <ul>
         <li>
           <strong>Message content and raw packet data</strong> — kept for{' '}
-          <strong>30 days</strong>, then deleted automatically.
+          <strong>30 days</strong> under the content-retention policy.
         </li>
         <li>
           <strong>Decrypted message content</strong> — kept for{' '}
-          <strong>30 days</strong>, then deleted automatically.
+          <strong>30 days</strong> under the content-retention policy.
         </li>
         <li>
           <strong>Path metadata</strong> (which nodes a packet travelled through,
           timing, signal quality) — retained for network analytics. It contains
-          node identifiers and timing only, never message content, and is stored
+          node identifiers, timing and radio metadata, never message content or
+          coordinates, and is stored
           indefinitely in pseudonymous form.
         </li>
         <li>
@@ -65,9 +67,30 @@ export const PrivacyPage: React.FC = () => (
         </li>
       </ul>
       <p>
-        Node identifiers can be linked to individuals only when a node owner has
-        registered their node in the owner portal; in that case we can delete that
-        node&apos;s data on request.
+        Node identifiers may be linked to individuals through owner registration
+        or other identifying context. Contact us about access, correction or
+        deletion of data relating to you.
+      </p>
+    </section>
+
+    <section className="prose-section">
+      <h2>Performance reports</h2>
+      <p>
+        Public pages report a small set of loading, layout and interaction timings
+        for fixed page categories. These reports omit account and node identifiers,
+        cookies, referrers and interaction details, and contribute to aggregate
+        performance metrics. The same telemetry opt-out applies.
+      </p>
+    </section>
+
+    <section className="prose-section">
+      <h2>Browser storage and login</h2>
+      <p>
+        Preferences and saved local views use browser storage. Owner login uses
+        a secure session cookie on HTTPS and a separate cookie that protects
+        account changes. The session expires after seven days and can be revoked;
+        signing out ends that session. These cookies support authentication and
+        security, rather than advertising.
       </p>
     </section>
 
@@ -75,10 +98,9 @@ export const PrivacyPage: React.FC = () => (
       <h2>Your rights</h2>
       <p>
         Under the UK GDPR you can request access to, correction of, or deletion of
-        personal data we hold about you. Because error diagnostics cannot be linked
-        to individuals, deletion there happens automatically via the 30-day
-        retention. For node-linked data, contact us and we will remove the relevant
-        records.
+        personal data we hold about you. Include enough information to help us
+        locate relevant records without sending passwords or private keys.
+        Routine diagnostic expiry follows the 30-day retention policy.
       </p>
       <p>
         Contact: <a href="mailto:ukmesh@proton.me">ukmesh@proton.me</a>

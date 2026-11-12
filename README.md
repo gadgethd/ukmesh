@@ -462,15 +462,19 @@ MeshCore Devices
 | Service | Image | Purpose |
 |---|---|---|
 | `timescaledb` | Digest-pinned TimescaleDB/PostgreSQL image from Compose | Time-series and relational data storage |
-| `mosquitto` | Digest-pinned Eclipse Mosquitto image from Compose | MQTT broker (WebSocket only) |
+| `mosquitto` | Digest-pinned Eclipse Mosquitto image from Compose | MQTT broker; listener configuration belongs to the selected infrastructure stack |
 | `mosquitto-reloader` | Locally built, least-privilege helper | Authenticated broker-local ACL reload |
 | `redis` | Digest-pinned Redis image from Compose | WebSocket fan-out pub/sub and bounded job queues |
 | `backend` | Built from `Dockerfile.backend` | MQTT ingest, decoding, API, WebSocket |
+| `db-migrate` | Same backend image | Explicit one-shot schema migration before application startup |
+| `privacy-remat-worker` | Same backend image | Retained packet/path privacy rematerialization |
+| `region-snapshot-worker` | Same backend image | Bounded repair and refresh of privacy-certified region snapshots |
 | `path-learning-worker` | Built from `Dockerfile.backend` | Hourly path-learning model rebuilds |
 | `health-worker` | Built from `Dockerfile.backend` | Periodic health snapshot capture |
 | `link-backfill-worker` | Built from `Dockerfile.backend` | One-shot historical link backfill |
 | `synthetic-monitor` | Built from `Dockerfile.backend` | Independent HTTP/WebSocket journey checks and alert delivery |
 | `link-worker` | Built from `viewshed-worker/Dockerfile` | Link/path-loss processing from observed paths |
+| `tagger-worker` | Built from `tagger-worker/Dockerfile` | Bounded message classification |
 | `hopreach` | Built from `third_party/hopreach/Dockerfile` | Canonical terrain RF calculation and progressive raster publication |
 | `app-ukmesh` | Built from `Dockerfile.app` | Interactive dashboard frontend |
 | `website-ukmesh` | Built from `Dockerfile.website` | Public website frontend |
@@ -498,9 +502,10 @@ MeshCore Devices
   backup/restore receipt and per-table approval. When lifecycle actions are
   enabled, startup fails closed if required core targets are missing from the
   configured allowlists.
-- Expired forensic data is available only by restoring a suitable pre-expiry
-  backup into an isolated, read-only environment; do not restore it over
-  production.
+- Content already removed by retention is available only by restoring a suitable
+  pre-expiry backup into an isolated, read-only environment; do not restore it
+  over production. API query windows do not replace verified cleanup: channel
+  history has a 90-day query upper bound despite the 30-day content policy.
 - Operational row-table cleanup is bounded and runs only when both
   `DATA_LIFECYCLE_RETENTION_ENABLED=true` and the exact table appears in
   `DATA_LIFECYCLE_RETENTION_TARGETS`.

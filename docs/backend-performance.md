@@ -242,13 +242,15 @@ the old cached links are withheld; after privacy convergence, the map excludes
 that peer and the current-generation link result is empty.
 
 On the retained archive, a focused four-pair comparison of 1,000-row map pages
-used two request warm-ups, 30 measurements per process, ten seconds of startup
-settling and one discarded pair. Median trial p95 was 62.8 versus 67.4 ms with
-the new privacy checks (+7.4%), within the predeclared 10% or 5 ms allowance.
-One individual pair exceeded its allowance by 0.45 ms; pooled p95 and the median
-passed. Every before/after pair had the same normalized response and byte count.
-This establishes the observed cost of the privacy fix, not a speedup or a
-production SLO.
+pinned one snapshot time, used two request warm-ups, 30 measurements per process,
+ten seconds of startup settling and one discarded pair. Median trial p95 was
+63.2 versus 65.1 ms with the new privacy checks (+2.9%), within the predeclared
+10% or 5 ms allowance. One individual pair exceeded its allowance by 1.41 ms;
+pooled 90-request p95 was 63.3 versus 67.1 ms and also passed. All 240 measured
+responses had identical normalized data and 297,618 decoded bytes. An earlier
+time-relative comparison crossed an online-status boundary; the fixed-snapshot
+repeat resolves that parity uncertainty. This records the observed cost of the
+privacy fix, not a speedup or a production SLO.
 
 ## Region snapshot convergence
 

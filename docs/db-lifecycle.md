@@ -8,6 +8,11 @@
   - runs additive versioned migrations
 - historical backfills must not run on backend startup
 
+Existing shipped migrations remain immutable. Migration 059 includes a historical
+observation-ledger backfill; budget that one-time work in the isolated upgrade
+rehearsal described in [RAM ingestion](ram-first-ingestion.md). The schema-only
+rule applies to new migrations and does not erase historical data work.
+
 ## Use the right layer
 
 ### Base schema
@@ -33,13 +38,17 @@ Use for:
 - recalculating historical summaries
 
 Run historical work deliberately during a low-traffic window. For example,
-after building the current backend image, reconstruct the bounded stats
-rollups without restarting the live API:
+on an isolated development stack, build the current backend image and
+reconstruct bounded stats rollups without restarting its API:
 
 ```bash
 docker compose build backend
 docker compose run --rm --no-deps backend node dist/tools/backfillStatsRollups.js --apply
 ```
+
+Production uses the approved immutable backend digest and the
+[release procedure](runbook-release-rollback.md); do not build over a deployed
+release.
 
 `backfillStatsRollups` uses independent daily/24-hour slices and monotonic
 upserts, so a live ingest write cannot be replaced by an older candidate. It
@@ -55,7 +64,8 @@ resume without skipping or double-counting a slice.
 
 ## History contract and retention inventory
 
-Content-bearing packets have a hard 30-day bound. Timescale drops complete
+The configured packet-content retention target is 30 days. With the reviewed
+policies enabled, Timescale drops complete
 chunks, while the health worker deletes exact expired rows from the partial
 boundary chunk in deterministic 25,000-row batches; new packet chunks are one
 day. Content-free path reconstruction reads `packet_paths`, so it continues
@@ -66,7 +76,7 @@ node/link/coverage state, and privacy state remain longer lived.
 Run the exact, read-only inventory before considering compression or deletion:
 
 ```bash
-docker compose exec backend npm run db:lifecycle
+docker compose exec backend node dist/tools/dataLifecycle.js
 ```
 
 It reports exact expired rows, expired/compressed Timescale chunks, relation
@@ -115,7 +125,7 @@ First inspect the read-only inventory and record the named backup and restore
 receipt for the change:
 
 ```bash
-docker compose exec backend npm run db:lifecycle
+docker compose exec backend node dist/tools/dataLifecycle.js
 ```
 
 After approval, enable the reviewed core retention windows with one explicit
@@ -124,13 +134,13 @@ in the current repository policy; neighbour telemetry is seven days.
 `packet_paths` is never a retention target:
 
 ```bash
-docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-retention --target=packets \
   --approve=apply-data-lifecycle-retention-packets
-docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-retention --target=node_status_samples \
   --approve=apply-data-lifecycle-retention-node_status_samples
-docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-retention --target=node_neighbor_samples \
   --approve=apply-data-lifecycle-retention-node_neighbor_samples
 ```
@@ -140,16 +150,16 @@ headroom. The reviewed policy compresses packets, path rows, and status after
 14 days, and neighbour samples after one day:
 
 ```bash
-docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-compression --target=packets \
   --approve=apply-data-lifecycle-compression-packets
-docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-compression --target=packet_paths \
   --approve=apply-data-lifecycle-compression-packet_paths
-docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-compression --target=node_status_samples \
   --approve=apply-data-lifecycle-compression-node_status_samples
-docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend npm run db:lifecycle -- \
+docker compose exec -e DATA_LIFECYCLE_COMPRESSION_ENABLED=true backend node dist/tools/dataLifecycle.js \
   --apply-compression --target=node_neighbor_samples \
   --approve=apply-data-lifecycle-compression-node_neighbor_samples
 ```
@@ -161,8 +171,11 @@ is present; missing targets make the application fail closed.
 
 ## Expired forensic data
 
-Expired packet content, status samples, and neighbour history are not served by
-the production application. For forensic access, restore a named backup that
+Enforce the reviewed retention policies before admitting production reads.
+Content removed by those policies is restore-only. API windows do not replace
+cleanup: channel history still has a 90-day query upper bound, while its content
+retention target is 30 days. Confirm expiry using the inventory rather than
+assuming a route alone enforces that target. For forensic access, restore a named backup that
 predates the expiry into an isolated restore environment, keep the database and
 application read-only, disable MQTT ingest and all background writers, and
 limit access to the authorized investigation. Never restore old data over the
@@ -204,8 +217,12 @@ Backend startup should be safe against a production-sized database. If a change 
 
 ## Compose deployment
 
-`docker compose up -d --build` runs the one-shot `db-migrate` service after
-TimescaleDB becomes healthy and before the backend starts. It applies only
+The one-shot `db-migrate` service must complete before application startup.
+The base application Compose file uses separately managed infrastructure; the
+CI overlay supplies owned TimescaleDB, Redis and Mosquitto for its empty-volume
+smoke. The contributor helper uses its own isolated Compose file. Production
+follows the immutable [release runbook](runbook-release-rollback.md).
+The migration tool applies only
 unrecorded files from `backend/src/db/migrations/`; after a successful run it
 exits with no changes on later deploys.
 
