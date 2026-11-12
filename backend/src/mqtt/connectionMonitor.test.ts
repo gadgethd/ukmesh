@@ -8,6 +8,7 @@ import {
   metricsRegistry,
   mqttConnectionMonitorErrorsTotal,
   mqttConnectionMonitorHealthy,
+  mqttConnectionMonitorClients,
   mqttDeniedPublishesTotal,
 } from '../metrics.js';
 import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
@@ -16,7 +17,7 @@ import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
 // injected recorder, and even an accidental connection cannot reach a real DB.
 process.env['OWNER_DATABASE_URL'] = 'postgresql://unused:***@127.0.0.1:1/unused';
 process.env['MQTT_CONN_MONITOR_CLIENT_TTL_MS'] = '900000';
-const { createMqttConnectionMonitor, observeBrokerLogLine, scanBrokerLogRange } =
+const { connectionMonitorSettings, createMqttConnectionMonitor, observeBrokerLogLine, scanBrokerLogRange } =
   await import('./connectionMonitor.js');
 
 const denied = `Denied PUBLISH from meshcore_A1A1A1A1A1A1_2 (d0, q0, r0, m0, 'meshcore/NCL/${'A1'.repeat(32)}/status', ... (42 bytes))\n`;
@@ -30,6 +31,38 @@ const connection = (client: string) => `1792760000: New client connected from 19
 const denial = (client: string, topic: string) => `1792760001: Denied PUBLISH from ${client} (d0, q0, r0, m0, '${topic}', ... (42 bytes))`;
 const onboardConnect = (client: string, username: string) => `New client connected from 192.0.2.1 as ${client} (p2, c1, k60, u'${username}').`;
 const timedDenial = (client: string, topic = 'meshcore', time = Date.now()) => `${Math.floor(time / 1_000)}: Denied PUBLISH from ${client} (d0, q0, r0, m0, '${topic}', ... (42 bytes))`;
+
+test('invalid tuning values cannot disable correlation bounds or polling deadlines', () => {
+  const defaults = connectionMonitorSettings({});
+  assert.deepEqual(defaults, { pollMs: 2_000, maxClients: 4_096, clientTtlMs: 900_000, maxAuditObservations: 4_096 });
+  for (const value of ['NaN', 'Infinity', 'not-a-number']) {
+    assert.deepEqual(connectionMonitorSettings({
+      MQTT_CONN_MONITOR_POLL_MS: value, MQTT_CONN_MONITOR_MAX_CLIENTS: value,
+      MQTT_CONN_MONITOR_CLIENT_TTL_MS: value, MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: value,
+    }), defaults);
+  }
+  assert.deepEqual(connectionMonitorSettings({
+    MQTT_CONN_MONITOR_POLL_MS: '-1', MQTT_CONN_MONITOR_MAX_CLIENTS: '-1',
+    MQTT_CONN_MONITOR_CLIENT_TTL_MS: '-1', MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: '-1',
+  }), { pollMs: 100, maxClients: 1, clientTtlMs: 1_000, maxAuditObservations: 1 });
+  assert.deepEqual(connectionMonitorSettings({
+    MQTT_CONN_MONITOR_POLL_MS: '1e20', MQTT_CONN_MONITOR_MAX_CLIENTS: '1e20',
+    MQTT_CONN_MONITOR_CLIENT_TTL_MS: '1e20', MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: '1e20',
+  }), { pollMs: 60_000, maxClients: 65_536, clientTtlMs: 86_400_000, maxAuditObservations: 65_536 });
+});
+
+test('correlations evict oldest clients at capacity and physically expire on an idle poll', async (t) => {
+  const now = Date.now();
+  for (let i = 0; i <= 4_096; i++) observeBrokerLogLine(onboardConnect(`bounded-${i}`, `user-${i}`), now);
+  assert.equal((await mqttConnectionMonitorClients.get()).values[0].value, 4_096);
+  assert.equal(observeBrokerLogLine(timedDenial('bounded-0'), now)?.mqttUsername, null);
+  assert.equal(observeBrokerLogLine(timedDenial('bounded-4096'), now)?.mqttUsername, 'user-4096');
+  const monitor = createMqttConnectionMonitor({ logPath: fixture(t) });
+  t.after(() => monitor.stop());
+  t.mock.method(Date, 'now', () => now + 900_001);
+  await monitor.pollOnce();
+  assert.equal((await mqttConnectionMonitorClients.get()).values[0].value, 0);
+});
 
 function fixture(t: TestContext, lines?: string[]): string {
   const cache = path.resolve('node_modules/.cache');

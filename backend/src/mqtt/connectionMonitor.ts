@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import {
   mqttConnectionMonitorErrorsTotal,
   mqttConnectionMonitorHealthy,
+  mqttConnectionMonitorClients,
   mqttDeniedPublishesTotal,
 } from '../metrics.js';
 import {
@@ -11,17 +12,24 @@ import {
   parseOwnerNodeTopic,
 } from './brokerLog.js';
 import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
+import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 
 const LOG_PATH = process.env['MOSQUITTO_LOG_PATH'] ?? '/mosquitto/log/mosquitto.log';
-const POLL_INTERVAL_MS = Number(process.env['MQTT_CONN_MONITOR_POLL_MS'] ?? 2_000);
+export function connectionMonitorSettings(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    pollMs: boundedEnvInteger('MQTT_CONN_MONITOR_POLL_MS', 2_000, 100, 60_000, env['MQTT_CONN_MONITOR_POLL_MS'] ?? '2000'),
+    maxClients: boundedEnvInteger('MQTT_CONN_MONITOR_MAX_CLIENTS', 4_096, 1, 65_536, env['MQTT_CONN_MONITOR_MAX_CLIENTS'] ?? '4096'),
+    clientTtlMs: boundedEnvInteger('MQTT_CONN_MONITOR_CLIENT_TTL_MS', 15 * 60_000, 1_000, 24 * 60 * 60_000, env['MQTT_CONN_MONITOR_CLIENT_TTL_MS'] ?? '900000'),
+    maxAuditObservations: boundedEnvInteger('MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN', 4_096, 1, 65_536, env['MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN'] ?? '4096'),
+  };
+}
+const settings = connectionMonitorSettings();
+const POLL_INTERVAL_MS = settings.pollMs;
 const HISTORICAL_SCAN_BYTES = 50_000_000;
 const MAX_DENIAL_DETAILS_PER_SCAN = 64;
-const MAX_TRACKED_CLIENTS = Number(process.env['MQTT_CONN_MONITOR_MAX_CLIENTS'] ?? 4_096);
-const CLIENT_TTL_MS = Number(process.env['MQTT_CONN_MONITOR_CLIENT_TTL_MS'] ?? 15 * 60_000);
-const MAX_AUDIT_OBSERVATIONS_PER_SCAN = Math.min(
-  65_536,
-  Math.max(1, Number(process.env['MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN'] ?? 4_096) || 4_096),
-);
+const MAX_TRACKED_CLIENTS = settings.maxClients;
+const CLIENT_TTL_MS = settings.clientTtlMs;
+const MAX_AUDIT_OBSERVATIONS_PER_SCAN = settings.maxAuditObservations;
 
 type ClientObservation = {
   mqttUsername: string;
@@ -39,6 +47,7 @@ function pruneClientObservations(now = Date.now()): void {
     if (!oldest) break;
     clientToUsername.delete(oldest);
   }
+  mqttConnectionMonitorClients.set(clientToUsername.size);
 }
 
 export type BrokerSecurityObservation =
@@ -90,6 +99,7 @@ export function observeBrokerLogLine(line: string, now = Date.now()): BrokerSecu
   const observation = clientToUsername.get(denied.clientId);
   if (observation && now - observation.seenAt > CLIENT_TTL_MS) {
     clientToUsername.delete(denied.clientId);
+    mqttConnectionMonitorClients.set(clientToUsername.size);
   }
   const mqttUsername = clientToUsername.get(denied.clientId)?.mqttUsername ?? null;
   const logTimestamp = /^(\d+(?:\.\d+)?):\s/.exec(line);

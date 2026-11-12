@@ -255,6 +255,12 @@ export const mqttConnectionMonitorHealthy = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const mqttConnectionMonitorClients = new Gauge({
+  name: 'meshcore_mqtt_connection_monitor_clients',
+  help: 'Retained bounded broker client correlations; log observations never grant ownership.',
+  registers: [metricsRegistry],
+});
+
 export const mqttConnectionMonitorErrorsTotal = new Counter({
   name: 'meshcore_mqtt_connection_monitor_errors_total',
   help: 'Broker-log monitor failures by bounded phase.',

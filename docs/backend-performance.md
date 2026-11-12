@@ -84,3 +84,15 @@ Local settings were 512 MiB shared buffers, about 10 MiB `work_mem`, autovacuum
 enabled with ten workers, and 100 connections. These reflect the pinned
 image's local memory tuner, not recommended production settings. Preserve
 the actual job/configuration inventory in each upgrade and rollback rehearsal.
+
+## Broker correlation bounds
+
+The audit-only broker-log monitor retains at most 4,096 client correlations
+by default and physically expires them after 15 minutes, including idle polls.
+`MQTT_CONN_MONITOR_MAX_CLIENTS` is clamped to 1–65,536,
+`MQTT_CONN_MONITOR_CLIENT_TTL_MS` to 1,000–86,400,000 ms, and
+`MQTT_CONN_MONITOR_POLL_MS` to 100–60,000 ms. Nonfinite settings fall back to
+the defaults. The previous direct numeric reads could let `NaN` or `Infinity`
+disable pruning. `meshcore_mqtt_connection_monitor_clients` exposes retained
+count without client or username labels. These observations never authorize
+ownership; the owner-auth database remains authoritative.
