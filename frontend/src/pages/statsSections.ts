@@ -1,14 +1,7 @@
+import { STATS_SECTION_FIELDS } from '../contracts/publicData.generated.js';
 import type { ChartData, StatsTabId } from '../components/stats/StatsPrimitives.js';
 
-// The delivery contract mirrors the backend projection. Keep the full default
-// response compatible; partial responses must identify their complete scope.
-export const STATS_SECTION_FIELDS = {
-  overview: ['packetsPerHour', 'packetsPerDay', 'radiosPerHour', 'radiosPerDay', 'observerDiversity'],
-  traffic: ['packetTypes', 'channelTraffic', 'routeTypes', 'transportCodes'],
-  observers: ['observerRegions', 'observerDiversity'],
-  paths: ['pathHashes', 'hopDistribution', 'prefixCollisions', 'pathDecodeTrend'],
-  signal: ['signalSummary'],
-} as const;
+export { STATS_SECTION_FIELDS } from '../contracts/publicData.generated.js';
 
 type Check = (value: unknown) => boolean;
 const record = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);

@@ -1,3 +1,4 @@
+import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 /**
  * Channel registry — explicitly public defaults plus confidential environment keys.
  *
@@ -27,51 +28,52 @@ export interface ChannelEntry {
  * channels from the 2026-08-06 derivation audit, validated against real UK Mesh
  * group text. Confidential channel keys belong in MESHCORE_CHANNEL_SECRETS.
  */
-export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> = [
-  { name: 'Public',    secret: '8b3387e9c5cdea6ac9e5edbaa115cd72' },
-  { name: 'test',      secret: '9cd8fcf22a47333b591d96a2b848b73f' },
-  { name: 'bot',       secret: 'eb50a1bcb3e4e5d7bf69a57c9dada211' },
-  { name: 'yorkshire', secret: 'ea19e9567eec1b148c174f0cb9d04dd7' },
-  { name: 'liverpool', secret: '2a223c8f7b4190b329f46d54d3a9c350' },
-  { name: 'london',    secret: '9881d2b7ab9105a41a8d0f6ba449447e' },
-  { name: 'nottingham', secret: '90f554aa06b30c705e7ed3bdd59b38e2' },
-  { name: 'northeast', secret: '3b1ca0ae6003193eb9f91984eefef5dc' },
-  { name: 'repeaters', secret: '89db441e2814dccf0dbd2e8cc5f501a3' },
-  { name: 'kent',      secret: 'dea8bb392991eeee26806e4d2cdf8dd4' },
-  { name: 'wales',     secret: '809573d8134fa262d284400a788f63d9' },
-  { name: 'cornwall',  secret: '88b113ee8130e832d0bf15a5c7be0ddd' },
-  { name: 'crawley',   secret: 'adee277d04fe73f1bfc43ce8a19f351e' },
-  { name: 'devon',     secret: 'cbd7337937131f7db971cfdb24431ae3' },
-  { name: 'dorset',    secret: 'd2de225d13760cf2e13aa368ef9e5b6b' },
-  { name: 'cumbria',   secret: 'ec3be8009f600059d6cd1dca32c74e1c' },
-  { name: 'yorks',     secret: '81eb980a4884e5859bb42b135261200e' },
-  { name: 'leicester', secret: '2ca4f626387ca26ec7c2ae45641f9628' },
-  { name: 'dartford',  secret: '848469a776c39f8bf2b774def5cd697b' },
-  { name: 'uckfield',  secret: '15ab8ecee7b54d18adffd4b83be33682' },
-  { name: 'huddersfield', secret: '549a4cd97d96c130d359748c72f0e321' },
-  { name: 'derbyshire', secret: '4c3e09555ad74fde17f3a82febb610c4' },
-  { name: 'lincolnshire', secret: '2db23106132a517f0b9ea47b4d822c4f' },
-  { name: 'surrey',    secret: '5e12bb2d2b8f660ab179676cbc663cd1' },
-  { name: 'midlands',  secret: 'ba3707a0760d156169aea2a6c82e2d6a' },
-  { name: 'hamradio',  secret: '83c8b01997654265938da8765cbc7db9' },
-  { name: 'mesh',      secret: '5b664cde0b08b220612113db980650f3' },
-  { name: 'public2',   secret: '8b4b705b080c0d943b1c80f6b3ef6b6d' },
-  { name: 'test2',     secret: '9f86d081884c7d659a2feaa0c55ad015' },
-  { name: 'thenorf',   secret: '1f19cc976112b77f623ec970e4805e87' },
-  { name: 'g8py',      secret: 'f4624be48a6c80309b4c2f6f3eb36e99' },
-  { name: 'echo',      secret: '5d25cf40b1f5b4a7eb0cf9703634a948' },
-  { name: 'denhaag',   secret: '84eed36f62c7b22527dbf8883585ad14' },
-  { name: 'dublin',    secret: '8792638977132bc05a1f72d6bb913694' },
-  { name: 'glasgow',   secret: 'ea6b521f794e7a0e4ff41fe5d0e3f838' },
-  { name: 'york',      secret: 'd90a1f4941a7892855e473c8f9a10195' },
-  { name: 'ireland',   secret: '1b2a12acc5db1517d9d407946756b1da' },
-  { name: 'scilly',    secret: 'eb9ca9764bd08712f596a054e32e336c' },
-  { name: 'brentwood', secret: 'b4e5450da06c21e5338b91b3b18206ad' },
-  { name: 'marple',    secret: '3238ea75dcefd77a31ce907037901f61' },
-  { name: 'uk',        secret: '22b2eed34b5cc429ce1dc5e88635ff84' },
-];
+const PUBLIC_CHANNEL_KEYS: Readonly<Record<string, string>> = {
+  'public': '8b3387e9c5cdea6ac9e5edbaa115cd72',
+  'test': '9cd8fcf22a47333b591d96a2b848b73f',
+  'bot': 'eb50a1bcb3e4e5d7bf69a57c9dada211',
+  'yorkshire': 'ea19e9567eec1b148c174f0cb9d04dd7',
+  'liverpool': '2a223c8f7b4190b329f46d54d3a9c350',
+  'london': '9881d2b7ab9105a41a8d0f6ba449447e',
+  'nottingham': '90f554aa06b30c705e7ed3bdd59b38e2',
+  'northeast': '3b1ca0ae6003193eb9f91984eefef5dc',
+  'repeaters': '89db441e2814dccf0dbd2e8cc5f501a3',
+  'kent': 'dea8bb392991eeee26806e4d2cdf8dd4',
+  'wales': '809573d8134fa262d284400a788f63d9',
+  'cornwall': '88b113ee8130e832d0bf15a5c7be0ddd',
+  'crawley': 'adee277d04fe73f1bfc43ce8a19f351e',
+  'devon': 'cbd7337937131f7db971cfdb24431ae3',
+  'dorset': 'd2de225d13760cf2e13aa368ef9e5b6b',
+  'cumbria': 'ec3be8009f600059d6cd1dca32c74e1c',
+  'yorks': '81eb980a4884e5859bb42b135261200e',
+  'leicester': '2ca4f626387ca26ec7c2ae45641f9628',
+  'dartford': '848469a776c39f8bf2b774def5cd697b',
+  'uckfield': '15ab8ecee7b54d18adffd4b83be33682',
+  'huddersfield': '549a4cd97d96c130d359748c72f0e321',
+  'derbyshire': '4c3e09555ad74fde17f3a82febb610c4',
+  'lincolnshire': '2db23106132a517f0b9ea47b4d822c4f',
+  'surrey': '5e12bb2d2b8f660ab179676cbc663cd1',
+  'midlands': 'ba3707a0760d156169aea2a6c82e2d6a',
+  'hamradio': '83c8b01997654265938da8765cbc7db9',
+  'mesh': '5b664cde0b08b220612113db980650f3',
+  'public2': '8b4b705b080c0d943b1c80f6b3ef6b6d',
+  'test2': '9f86d081884c7d659a2feaa0c55ad015',
+  'thenorf': '1f19cc976112b77f623ec970e4805e87',
+  'g8py': 'f4624be48a6c80309b4c2f6f3eb36e99',
+  'echo': '5d25cf40b1f5b4a7eb0cf9703634a948',
+  'denhaag': '84eed36f62c7b22527dbf8883585ad14',
+  'dublin': '8792638977132bc05a1f72d6bb913694',
+  'glasgow': 'ea6b521f794e7a0e4ff41fe5d0e3f838',
+  'york': 'd90a1f4941a7892855e473c8f9a10195',
+  'ireland': '1b2a12acc5db1517d9d407946756b1da',
+  'scilly': 'eb9ca9764bd08712f596a054e32e336c',
+  'brentwood': 'b4e5450da06c21e5338b91b3b18206ad',
+  'marple': '3238ea75dcefd77a31ce907037901f61',
+  'uk': '22b2eed34b5cc429ce1dc5e88635ff84',
+};
 
-/** @deprecated Use PUBLIC_CHANNELS to make the source classification explicit. */
+export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> =
+  PUBLIC_CHANNEL_METADATA.map(({ label, slug }) => ({ name: label, secret: PUBLIC_CHANNEL_KEYS[slug]! }));
 
 /** Build the channel entry list: committed defaults + env extras (dedup by secret). */
 export function buildChannelEntries(envValue?: string): ChannelEntry[] {

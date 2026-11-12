@@ -1,27 +1,8 @@
+import { LINK_V3_KEYS, LINK_V3_ADMIT_SCRIPT, LINK_V3_ADMIT_KEYS as ADMIT_KEYS, LINK_V3_LIMITS } from '../contracts/linkProtocol.generated.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
 
-export const LINK_V3_KEYS = {
-  ready: 'meshcore:link:v3:ready',
-  deferred: 'meshcore:link:v3:deferred',
-  payloads: 'meshcore:link:v3:payloads',
-  states: 'meshcore:link:v3:states',
-  attempts: 'meshcore:link:v3:attempts',
-  bytes: 'meshcore:link:v3:bytes',
-  dedupe: 'meshcore:link:v3:dedupe',
-  dedupeByJob: 'meshcore:link:v3:dedupe_by_job',
-  leases: 'meshcore:link:v3:leases',
-  tokens: 'meshcore:link:v3:tokens',
-  dead: 'meshcore:link:v3:dead',
-  deadReasons: 'meshcore:link:v3:dead_reasons',
-  enqueued: 'meshcore:link:v3:enqueued',
-  completed: 'meshcore:link:v3:completed',
-  counters: 'meshcore:link:v3:counters',
-  rebuild: 'meshcore:link:v3:rebuild',
-  workerHeartbeat: 'meshcore:link:v3:worker_heartbeat',
-  events: 'meshcore:link:v3:events',
-  wake: 'meshcore:link:v3:wake',
-} as const;
+export { LINK_V3_KEYS, LINK_V3_ADMIT_SCRIPT } from '../contracts/linkProtocol.generated.js';
 
 export type LinkQueueAdmission =
   | { status: 'accepted'; jobId: string }
@@ -53,62 +34,6 @@ export type LinkJobPayload =
       generation?: string;
     };
 
-export const LINK_V3_ADMIT_SCRIPT = `
-local existing = redis.call('HGET', KEYS[6], ARGV[2])
-if existing then
-  local existing_state = redis.call('HGET', KEYS[3], existing)
-  if existing == ARGV[1] and existing_state == 'complete' then
-    return {'duplicate', existing}
-  end
-  if existing_state == 'queued' or existing_state == 'in_flight' or existing_state == 'dead' then
-    return {'coalesced', existing}
-  end
-end
-local payload_bytes = tonumber(ARGV[4])
-if payload_bytes > tonumber(ARGV[7]) then
-  return {'oversized', ''}
-end
-local count = tonumber(redis.call('HGET', KEYS[10], 'count') or '0')
-local bytes = tonumber(redis.call('HGET', KEYS[10], 'bytes') or '0')
-if count + 1 > tonumber(ARGV[5]) or bytes + payload_bytes > tonumber(ARGV[6]) then
-  return {'full', ''}
-end
-redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
-redis.call('HSET', KEYS[3], ARGV[1], 'queued')
-redis.call('HSET', KEYS[4], ARGV[1], '0')
-redis.call('HSET', KEYS[5], ARGV[1], tostring(payload_bytes))
-redis.call('HSET', KEYS[6], ARGV[2], ARGV[1])
-redis.call('HSET', KEYS[7], ARGV[1], ARGV[2])
-redis.call('HINCRBY', KEYS[10], 'count', 1)
-redis.call('HINCRBY', KEYS[10], 'bytes', payload_bytes)
-redis.call('ZADD', KEYS[12], ARGV[9], ARGV[1])
-if ARGV[8] == '' and redis.call('EXISTS', KEYS[9]) == 1 then
-  redis.call('LPUSH', KEYS[8], ARGV[1])
-else
-  redis.call('LPUSH', KEYS[1], ARGV[1])
-end
-redis.call('LPUSH', KEYS[11], 'admit')
-redis.call('LTRIM', KEYS[11], 0, 255)
-redis.call('LPUSH', KEYS[13], '1')
-redis.call('LTRIM', KEYS[13], 0, 0)
-return {'accepted', ARGV[1]}
-`;
-
-const ADMIT_KEYS = [
-  LINK_V3_KEYS.ready,
-  LINK_V3_KEYS.payloads,
-  LINK_V3_KEYS.states,
-  LINK_V3_KEYS.attempts,
-  LINK_V3_KEYS.bytes,
-  LINK_V3_KEYS.dedupe,
-  LINK_V3_KEYS.dedupeByJob,
-  LINK_V3_KEYS.deferred,
-  LINK_V3_KEYS.rebuild,
-  LINK_V3_KEYS.counters,
-  LINK_V3_KEYS.events,
-  LINK_V3_KEYS.enqueued,
-  LINK_V3_KEYS.wake,
-];
 
 function positiveInt(value: string | undefined, fallback: number, max: number): number {
   const parsed = Number(value ?? fallback);
@@ -116,9 +41,9 @@ function positiveInt(value: string | undefined, fallback: number, max: number): 
 }
 
 export const linkQueueLimits = {
-  maxJobs: positiveInt(process.env['LINK_QUEUE_V3_MAX_JOBS'], 5_000, 100_000),
-  maxBytes: positiveInt(process.env['LINK_QUEUE_V3_MAX_BYTES'], 64 * 1024 * 1024, 1024 * 1024 * 1024),
-  maxPayloadBytes: positiveInt(process.env['LINK_QUEUE_V3_MAX_PAYLOAD_BYTES'], 32 * 1024, 1024 * 1024),
+  maxJobs: positiveInt(process.env[LINK_V3_LIMITS.maxJobs.env], LINK_V3_LIMITS.maxJobs.default, LINK_V3_LIMITS.maxJobs.max),
+  maxBytes: positiveInt(process.env[LINK_V3_LIMITS.maxBytes.env], LINK_V3_LIMITS.maxBytes.default, LINK_V3_LIMITS.maxBytes.max),
+  maxPayloadBytes: positiveInt(process.env[LINK_V3_LIMITS.maxPayloadBytes.env], LINK_V3_LIMITS.maxPayloadBytes.default, LINK_V3_LIMITS.maxPayloadBytes.max),
 };
 
 export function linkObservationIdentity(packetHash: string, rxNodeId: string, generation?: string): {

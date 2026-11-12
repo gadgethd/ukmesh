@@ -8,74 +8,25 @@ import threading
 import time
 import uuid
 
-READY = 'meshcore:link:v3:ready'
-DEFERRED = 'meshcore:link:v3:deferred'
-PAYLOADS = 'meshcore:link:v3:payloads'
-STATES = 'meshcore:link:v3:states'
-ATTEMPTS = 'meshcore:link:v3:attempts'
-BYTES = 'meshcore:link:v3:bytes'
-DEDUPE = 'meshcore:link:v3:dedupe'
-DEDUPE_BY_JOB = 'meshcore:link:v3:dedupe_by_job'
-LEASES = 'meshcore:link:v3:leases'
-TOKENS = 'meshcore:link:v3:tokens'
-DEAD = 'meshcore:link:v3:dead'
-DEAD_REASONS = 'meshcore:link:v3:dead_reasons'
-ENQUEUED = 'meshcore:link:v3:enqueued'
-COMPLETED = 'meshcore:link:v3:completed'
-COUNTERS = 'meshcore:link:v3:counters'
-REBUILD = 'meshcore:link:v3:rebuild'
-WORKER_HEARTBEAT = 'meshcore:link:v3:worker_heartbeat'
-EVENTS = 'meshcore:link:v3:events'
-WAKE = 'meshcore:link:v3:wake'
+from link_protocol_generated import (
+    READY, DEFERRED, PAYLOADS, STATES, ATTEMPTS, BYTES, DEDUPE, DEDUPE_BY_JOB, LEASES, TOKENS, DEAD, DEAD_REASONS, ENQUEUED, COMPLETED, COUNTERS, REBUILD, WORKER_HEARTBEAT, EVENTS, WAKE,
+    ADMIT_KEYS, ADMIT_SCRIPT, LINK_V3_LIMITS,
+)
 
-MAX_JOBS = max(1, min(100_000, int(os.environ.get('LINK_QUEUE_V3_MAX_JOBS', '5000'))))
-MAX_BYTES = max(1, min(1024 * 1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_MAX_BYTES', str(64 * 1024 * 1024)))))
-MAX_PAYLOAD_BYTES = max(1, min(1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_MAX_PAYLOAD_BYTES', str(32 * 1024)))))
+def _shared_limit(name):
+    spec = LINK_V3_LIMITS[name]
+    return max(spec['min'], min(spec['max'], int(os.environ.get(spec['env'], str(spec['default'])))))
+
+
+MAX_JOBS = _shared_limit('maxJobs')
+MAX_BYTES = _shared_limit('maxBytes')
+MAX_PAYLOAD_BYTES = _shared_limit('maxPayloadBytes')
 MAX_ATTEMPTS = max(1, min(20, int(os.environ.get('LINK_QUEUE_V3_MAX_ATTEMPTS', '5'))))
 LEASE_MS = max(10_000, min(30 * 60_000, int(os.environ.get('LINK_QUEUE_V3_LEASE_MS', '120000'))))
 COMPLETED_RETENTION_MS = max(60_000, int(os.environ.get('LINK_QUEUE_V3_COMPLETED_RETENTION_MS', str(7 * 24 * 60 * 60_000))))
 DEAD_MAX_JOBS = max(1, min(10_000, int(os.environ.get('LINK_QUEUE_V3_DEAD_MAX_JOBS', '1000'))))
 DEAD_MAX_BYTES = max(1, min(256 * 1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_DEAD_MAX_BYTES', str(32 * 1024 * 1024)))))
 DEAD_RETENTION_MS = max(60_000, int(os.environ.get('LINK_QUEUE_V3_DEAD_RETENTION_MS', str(30 * 24 * 60 * 60_000))))
-
-ADMIT_SCRIPT = """
-local existing = redis.call('HGET', KEYS[6], ARGV[2])
-if existing then
-  local existing_state = redis.call('HGET', KEYS[3], existing)
-  if existing == ARGV[1] and existing_state == 'complete' then
-    return {'duplicate', existing}
-  end
-  if existing_state == 'queued' or existing_state == 'in_flight' or existing_state == 'dead' then
-    return {'coalesced', existing}
-  end
-end
-local payload_bytes = tonumber(ARGV[4])
-if payload_bytes > tonumber(ARGV[7]) then return {'oversized', ''} end
-local count = tonumber(redis.call('HGET', KEYS[10], 'count') or '0')
-local bytes = tonumber(redis.call('HGET', KEYS[10], 'bytes') or '0')
-if count + 1 > tonumber(ARGV[5]) or bytes + payload_bytes > tonumber(ARGV[6]) then
-  return {'full', ''}
-end
-redis.call('HSET', KEYS[2], ARGV[1], ARGV[3])
-redis.call('HSET', KEYS[3], ARGV[1], 'queued')
-redis.call('HSET', KEYS[4], ARGV[1], '0')
-redis.call('HSET', KEYS[5], ARGV[1], tostring(payload_bytes))
-redis.call('HSET', KEYS[6], ARGV[2], ARGV[1])
-redis.call('HSET', KEYS[7], ARGV[1], ARGV[2])
-redis.call('HINCRBY', KEYS[10], 'count', 1)
-redis.call('HINCRBY', KEYS[10], 'bytes', payload_bytes)
-redis.call('ZADD', KEYS[12], ARGV[9], ARGV[1])
-if ARGV[8] == '' and redis.call('EXISTS', KEYS[9]) == 1 then
-  redis.call('LPUSH', KEYS[8], ARGV[1])
-else
-  redis.call('LPUSH', KEYS[1], ARGV[1])
-end
-redis.call('LPUSH', KEYS[11], 'admit')
-redis.call('LTRIM', KEYS[11], 0, 255)
-redis.call('LPUSH', KEYS[13], '1')
-redis.call('LTRIM', KEYS[13], 0, 0)
-return {'accepted', ARGV[1]}
-"""
 
 CLAIM_SCRIPT = """
 if redis.call('EXISTS', KEYS[8]) == 0 then
@@ -430,9 +381,7 @@ def physical_identity(node_a_id: str, node_b_id: str, generation: str | None = N
 def admit(client, job: dict) -> tuple[str, str | None]:
     payload = json.dumps(job, separators=(',', ':'), sort_keys=True)
     result = client.eval(
-        ADMIT_SCRIPT, 13,
-        READY, PAYLOADS, STATES, ATTEMPTS, BYTES, DEDUPE, DEDUPE_BY_JOB,
-        DEFERRED, REBUILD, COUNTERS, EVENTS, ENQUEUED, WAKE,
+        ADMIT_SCRIPT, len(ADMIT_KEYS), *ADMIT_KEYS,
         job['job_id'], job['dedupe_key'], payload, _payload_bytes(payload),
         MAX_JOBS, MAX_BYTES, MAX_PAYLOAD_BYTES, job.get('generation') or '',
         int(time.time() * 1000),

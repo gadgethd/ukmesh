@@ -1,11 +1,5 @@
-/** Project only at delivery; the canonical, generation-keyed snapshot stays full. */
-export const CHART_SECTIONS = {
-  overview: ['packetsPerHour', 'packetsPerDay', 'radiosPerHour', 'radiosPerDay', 'observerDiversity'],
-  traffic: ['packetTypes', 'channelTraffic', 'routeTypes', 'transportCodes'],
-  observers: ['observerRegions', 'observerDiversity'],
-  paths: ['pathHashes', 'hopDistribution', 'prefixCollisions', 'pathDecodeTrend'],
-  signal: ['signalSummary'],
-} as const;
+import { CHART_SECTIONS } from '../contracts/publicData.generated.js';
+export { CHART_SECTIONS } from '../contracts/publicData.generated.js';
 
 export type ChartSection = keyof typeof CHART_SECTIONS;
 
