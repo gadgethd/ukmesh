@@ -134,6 +134,8 @@ the loading/error placeholder reserves the same map height. A failed chunk leave
 the rest of the page available and offers a reload. Static route-graph budgets
 exclude that dynamic renderer, so they are not the total bytes for an interactive
 map visit. Lighthouse still exercises the populated route and its map work.
+Renderer mounting yields one painted frame to the static content before the
+download/evaluation starts; it uses animation frames and cancels on unmount.
 
 The stats page requests `GET /api/stats/charts?sections=overview` initially and
 selects `traffic`, `observers`, `paths` or `signal` when its tab changes. The API
