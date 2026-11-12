@@ -37,6 +37,9 @@ export function publicFixture(path, query = new URLSearchParams()) {
       ...member, status: 'green', evidence: 'scoped', scopedPackets: 100, unscopedPackets7d: 10,
       regions: { 'synthetic-region': 100 } })) };
     case '/api/regions/unattributed': return { generatedAt: at, windowDays: 92, clusters: [], totals: { clusters: 0, packets: 0, nodes: 0 } };
+    case '/api/rf-validation': return { methodology: 'Invented CI evidence',
+      summary: { evaluated: 0, matches: 0, mismatches: 0, observedUnexpected: 0, operatorOverrides: 0, weakModelEvidence: 0 },
+      mismatches: [] };
     case '/api/nodes/map': return { nodes: members.map(member => ({ node_id: member.nodeId, name: member.name,
       lat: member.lat, lon: member.lon, role: 2, is_online: true, last_seen: at })),
       page: { complete: true, nextCursor: null, snapshot: at } };

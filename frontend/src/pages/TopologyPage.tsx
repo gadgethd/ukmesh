@@ -1,10 +1,12 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { lazy, useEffect, useMemo, useState } from 'react';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
-import { TopologyMap } from '../components/Map/TopologyMap.js';
+import { LazyMapBoundary } from '../components/Map/LazyMapBoundary.js';
 import { getCurrentSite } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { fetchJson, withScopeParams } from '../utils/api.js';
 import './network-intelligence.css';
+
+const TopologyMap = lazy(() => import('../components/Map/TopologyMap.js').then(module => ({ default: module.TopologyMap })));
 
 type TopologyNode = {
   nodeId: string;
@@ -162,6 +164,7 @@ export const TopologyPage: React.FC = () => {
           </div>
 
           <div className="topology-page__workspace">
+            <LazyMapBoundary className="topology-page__map" label="Geographic repeater topology map">
             <TopologyMap
               nodes={plot.nodes}
               links={plot.links}
@@ -174,6 +177,7 @@ export const TopologyPage: React.FC = () => {
               privacyGeneration={privacyGeneration}
               onNodeSelect={setSelectedNodeId}
             />
+            </LazyMapBoundary>
 
             <aside className="topology-page__hubs">
               <h2>{selected ? 'Selected repeater' : 'Most connected'}</h2>

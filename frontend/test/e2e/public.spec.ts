@@ -1,11 +1,68 @@
 import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+import { installMapRoutes } from './mapFixtures.js';
+import { publicFixture } from '../../scripts/lighthouse-fixtures.mjs';
 
 async function installPublicPolicy(page: Page) {
   await page.route('**/api/runtime-config', route => route.fulfill({ json: {
     version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
   } }));
 }
+
+test.describe('lazy public map delivery', () => {
+test.use({ serviceWorkers: 'block' });
+for (const name of ['Regions', 'Topology'] as const) {
+  for (const failure of [false, true]) {
+    test(`${name} content survives a ${failure ? 'failed' : 'pending'} renderer chunk`, async ({ page }) => {
+      await installMapRoutes(page);
+      await page.route('**/api/**', route => {
+        const url = new URL(route.request().url());
+        const payload = url.pathname === '/api/topology' ? {
+          generatedAt: new Date().toISOString(), windowDays: 30, limited: false,
+          summary: { nodes: 2, links: 1, observations: 25, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
+          analysis: { connectedComponents: 1, bridgeNodeIds: [], isolatedNodeIds: [] },
+          nodes: [
+            { nodeId: 'A'.repeat(64), name: 'Invented Alpha', lat: 52, lon: -1, degree: 1, observations: 25 },
+            { nodeId: 'B'.repeat(64), name: 'Invented Bravo', lat: 53, lon: -2, degree: 1, observations: 25 },
+          ],
+          links: [{ source: 'A'.repeat(64), target: 'B'.repeat(64), observations: 25,
+            strongObservations: 5, pathLossDb: 110, lastObserved: new Date().toISOString() }],
+        } : publicFixture(url.pathname, url.searchParams) ?? {};
+        return route.fulfill({ json: payload });
+      });
+      let release = () => {};
+      let requested = 0;
+      const held = new Promise<void>(resolve => { release = resolve; });
+      await page.route(new RegExp(`/assets/${name}Map-[^/]+\\.js$`), async route => {
+        requested++;
+        await held;
+        return failure ? route.abort('failed') : route.continue();
+      });
+      try {
+        await page.goto(`/${name.toLowerCase()}`);
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+        await expect(page.getByRole('heading', { name: name === 'Regions' ? 'Most active regions' : 'Most connected' })).toBeVisible();
+        await expect(page.getByText('Loading map…', { exact: true })).toBeVisible();
+        expect(requested).toBeGreaterThan(0);
+        const container = page.locator(`.${name.toLowerCase()}-page__map`);
+        const before = await container.boundingBox();
+        expect(before!.height).toBeGreaterThanOrEqual(430);
+        release();
+        if (failure) {
+          await expect(page.getByRole('alert')).toContainText('The map could not be loaded.');
+          await expect(page.getByRole('button', { name: 'Reload map' })).toBeVisible();
+        } else {
+          await expect(container.locator('canvas')).toBeVisible();
+          await expect(page.getByText('Loading map…', { exact: true })).toHaveCount(0);
+        }
+        const after = await container.boundingBox();
+        expect(after!.height).toBeCloseTo(before!.height, 0);
+        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      } finally { release(); }
+    });
+  }
+}
+});
 
 test('former node names resolve to the current name in repeater search', async ({ page }) => {
   const current = {

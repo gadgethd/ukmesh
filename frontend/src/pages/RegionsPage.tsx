@@ -1,6 +1,6 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { lazy, useCallback, useEffect, useMemo, useState } from 'react';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
-import { RegionsMap } from '../components/Map/RegionsMap.js';
+import { LazyMapBoundary } from '../components/Map/LazyMapBoundary.js';
 import { getCurrentSite } from '../config/site.js';
 import type { SiteConfig } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
@@ -20,6 +20,8 @@ import {
   type UnattributedPayload,
 } from './regionsModel.js';
 import './regions-page.css';
+
+const RegionsMap = lazy(() => import('../components/Map/RegionsMap.js').then(module => ({ default: module.RegionsMap })));
 
 const CONFIDENCE_LABELS: Record<string, string> = {
   confirmed: 'Strong evidence — 4 or more scoped packets',
@@ -248,6 +250,7 @@ export const RegionsPage: React.FC = () => {
           </div>
 
           <div className="regions-page__workspace">
+            <LazyMapBoundary className="regions-page__map" label="Regional repeater map">
             <RegionsMap
               regions={displayRegions}
               includeLowConfidence={includeLowConfidence}
@@ -268,6 +271,7 @@ export const RegionsPage: React.FC = () => {
               onRegionSelect={handleRegionSelect}
               onRepeaterSelect={handleRepeaterSelect}
             />
+            </LazyMapBoundary>
 
             <aside className="regions-page__side">
               {selectedRepeater ? (

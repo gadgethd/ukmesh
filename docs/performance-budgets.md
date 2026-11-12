@@ -128,6 +128,13 @@ than the first baseline; its route ceiling records that restoration. The total
 CSS artifact limits still apply. Public native labels use the provider's
 [Noto Sans glyphs](https://github.com/hyperknot/openfreemap-styles).
 
+Regions and topology load their map renderers behind local Suspense boundaries.
+Their headings, controls and rankings can render while a renderer downloads;
+the loading/error placeholder reserves the same map height. A failed chunk leaves
+the rest of the page available and offers a reload. Static route-graph budgets
+exclude that dynamic renderer, so they are not the total bytes for an interactive
+map visit. Lighthouse still exercises the populated route and its map work.
+
 The stats page requests `GET /api/stats/charts?sections=overview` initially and
 selects `traffic`, `observers`, `paths` or `signal` when its tab changes. The API
 accepts up to five distinct comma-separated names, always includes summary and
