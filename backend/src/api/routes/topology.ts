@@ -1,4 +1,5 @@
 import { publicJson } from '../../http/publicJson.js';
+import { readInitialVisibilityGeneration } from '../../privacy/initialGeneration.js';
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
@@ -197,7 +198,7 @@ type TopologyRouteDeps = {
 };
 
 type TopologyLoader = {
-  load: (network: string, limit: number) => Promise<TopologyDto>;
+  load: (network: string, limit: number, initialGeneration?: number) => Promise<TopologyDto>;
   shutdown: () => void;
 };
 
@@ -215,8 +216,8 @@ export function createTopologyLoader(
   const inflight = new Map<string, Promise<TopologyDto>>();
   let observedGeneration: number | null = null;
 
-  const load = async (network: string, limit: number): Promise<TopologyDto> => {
-    const visibilityGeneration = await deps.getPublicVisibilityGeneration();
+  const load = async (network: string, limit: number, initialGeneration?: number): Promise<TopologyDto> => {
+    const visibilityGeneration = await readInitialVisibilityGeneration(deps.getPublicVisibilityGeneration, initialGeneration);
     if (observedGeneration !== visibilityGeneration) {
       cache.clear();
       observedGeneration = visibilityGeneration;
@@ -266,7 +267,7 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      await publicJson(res, deps.getPublicVisibilityGeneration, () => topologyLoader.load(network, limit));
+      await publicJson(res, deps.getPublicVisibilityGeneration, generation => topologyLoader.load(network, limit, generation));
     } catch (err) {
       console.error('[api] GET /topology', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

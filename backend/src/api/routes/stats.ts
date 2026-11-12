@@ -84,7 +84,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getStatsSummary(network, observer));
+      await publicJson(res, deps.getPublicVisibilityGeneration, generation => service.getStatsSummary(network, observer, generation));
     } catch (err) {
       if (err instanceof StatsWorkOverloadedError) {
         res.status(503).json({ error: 'Statistics are busy', retryable: true });
@@ -104,7 +104,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       await publicJson(res, deps.getPublicVisibilityGeneration, async generation => projectChartSections(
-        await service.getCharts(network, observer), sections,
+        await service.getCharts(network, observer, generation), sections,
         { network: network ?? 'ukmesh', observer: observer ?? null }, generation,
       ));
     } catch (err) {
@@ -120,7 +120,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   router.get('/observer-activity', deps.expensiveLimiter, async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getObserverActivity(network));
+      await publicJson(res, deps.getPublicVisibilityGeneration, generation => service.getObserverActivity(network, generation));
     } catch (err) {
       console.error('[api] GET /observer-activity', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

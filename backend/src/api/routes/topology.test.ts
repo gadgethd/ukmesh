@@ -136,3 +136,30 @@ test('failed combined topology loads are never cached', async () => {
     loader.shutdown();
   }
 });
+
+test('topology reuses an enclosing initial read while cache and publication checks stay fresh', async () => {
+  let generation = 1;
+  let unavailable = false;
+  let reads = 0;
+  let queries = 0;
+  const loader = createTopologyLoader({
+    query: (async () => { queries++; return { rows: combinedRows }; }) as never,
+    networkFilters: () => ({ params: [], nodesAlias: () => '' }) as never,
+    getPublicVisibilityGeneration: async () => { reads++; if (unavailable) throw new Error('authority unavailable'); return generation; },
+  });
+  try {
+    const first = await loader.load('ukmesh', 300, 1);
+    assert.equal(reads, 1, 'publication is checked even with a supplied initial read');
+    reads = 0;
+    assert.strictEqual(await loader.load('ukmesh', 300, 1), first);
+    assert.equal(reads, 1, 'a cached body still checks current authority');
+    unavailable = true;
+    await assert.rejects(loader.load('ukmesh', 300, 1), /authority unavailable/);
+    unavailable = false;
+    generation = 2;
+    const current = await loader.load('ukmesh', 300, 1);
+    assert.notStrictEqual(current, first);
+    assert.equal(queries, 2, 'a changed generation forces a fresh load');
+    await assert.rejects(loader.load('ukmesh', 300, Number.NaN), /PUBLIC_VISIBILITY_GENERATION_UNAVAILABLE/);
+  } finally { loader.shutdown(); }
+});

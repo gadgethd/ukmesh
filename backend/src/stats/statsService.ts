@@ -1,4 +1,5 @@
 import type { StatsRepository } from './statsRepository.js';
+import { readInitialVisibilityGeneration } from '../privacy/initialGeneration.js';
 import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import {
@@ -583,13 +584,13 @@ export function createStatsService(deps: StatsServiceDeps) {
     return refresh;
   }
 
-  async function getCharts(network: string | undefined, observer: string | undefined): Promise<unknown> {
+  async function getCharts(network: string | undefined, observer: string | undefined, initialGeneration?: number): Promise<unknown> {
     if (observer) {
       if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
       activeObserverWork += 1;
       try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          const visibilityGeneration = await getPublicVisibilityGeneration();
+          const visibilityGeneration = await readInitialVisibilityGeneration(getPublicVisibilityGeneration, attempt === 0 ? initialGeneration : undefined);
           const data = await computeChartsData(network, observer, visibilityGeneration);
           if (await getPublicVisibilityGeneration() === visibilityGeneration) return data;
         }
@@ -599,7 +600,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     }
     const scope = `${network ?? 'ukmesh'}`;
-    const visibilityGeneration = await getPublicVisibilityGeneration();
+    const visibilityGeneration = await readInitialVisibilityGeneration(getPublicVisibilityGeneration, initialGeneration);
     const key = `${scope}:v${visibilityGeneration}`;
     let cached = getCachedCharts(key);
     if (!cached) {
@@ -715,13 +716,13 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   }
 
-  async function getStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
+  async function getStatsSummary(network: string | undefined, observer: string | undefined, initialGeneration?: number): Promise<unknown> {
     if (observer) {
       if (activeObserverWork >= MAX_UNIQUE_STATS_INFLIGHT) throw new StatsWorkOverloadedError();
       activeObserverWork += 1;
       try {
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          const visibilityGeneration = await getPublicVisibilityGeneration();
+          const visibilityGeneration = await readInitialVisibilityGeneration(getPublicVisibilityGeneration, attempt === 0 ? initialGeneration : undefined);
           const data = await computeStatsSummary(network, observer);
           if (await getPublicVisibilityGeneration() === visibilityGeneration) return data;
         }
@@ -731,7 +732,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     }
     const scope = `${network ?? 'ukmesh'}`;
-    const visibilityGeneration = await getPublicVisibilityGeneration();
+    const visibilityGeneration = await readInitialVisibilityGeneration(getPublicVisibilityGeneration, initialGeneration);
     const key = `${scope}:v${visibilityGeneration}`;
     const cached = statsCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
@@ -771,8 +772,8 @@ export function createStatsService(deps: StatsServiceDeps) {
     return promise;
   }
 
-  async function getObserverActivity(network: string | undefined): Promise<unknown> {
-    const generation = await getPublicVisibilityGeneration();
+  async function getObserverActivity(network: string | undefined, initialGeneration?: number): Promise<unknown> {
+    const generation = await readInitialVisibilityGeneration(getPublicVisibilityGeneration, initialGeneration);
     const key = `${network ?? 'ukmesh'}:v${generation}`;
     const cached = observerActivityCache.get(key);
     if (cached && Date.now() - cached.ts < statsCacheTtlMs) {
