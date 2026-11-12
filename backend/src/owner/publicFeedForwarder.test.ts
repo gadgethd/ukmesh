@@ -159,3 +159,46 @@ test('public feed does not enqueue a packet while the broker is not operator-ena
   }
   assert.equal(enqueues, 0);
 });
+
+
+test('an expired ownership lookup cannot clean up the succeeding retry publisher', async () => {
+  const previous = { ...process.env };
+  Object.assign(process.env, configuredEnv());
+  let ownershipReady!: (value: boolean) => void;
+  let ownershipReads = 0, publishes = 0, closes = 0;
+  const tokens: string[] = [], failed: string[] = [], succeeded: string[] = [];
+  const repository = {
+    discardInactiveDeliveries: async () => 0,
+    reclaimExpiredClaims: async () => 0,
+    claimDue: async (_limit: number, token: string) => {
+      tokens.push(token);
+      return tokens.length <= 2 ? [{ id: 'expired', node_id: packet.rxNodeId, attempts: 1,
+        destination_topic: `public/LHR/${packet.rxNodeId}/packets`, payload: { raw: '0102' } }] : [];
+    },
+    hasActiveNode: () => ++ownershipReads === 1
+      ? new Promise<boolean>(resolve => { ownershipReady = resolve; }) : Promise.resolve(true),
+    markFailed: async (_id: string, token: string) => { failed.push(token); },
+    markSucceeded: async (_id: string, token: string) => { succeeded.push(token); },
+  } as unknown as PublicFeedRepository;
+  const worker = createPublicFeedForwarder({
+    repository, getOwnerAuthorizationSnapshot: async () => [], deliveryTimeoutMs: 20,
+    publisherFactory: () => ({ publish: async () => { publishes++; }, close: async () => { closes++; } }),
+  });
+  try {
+    await worker.processDue();
+    assert.deepEqual(failed, [tokens[0]]);
+    await worker.processDue();
+    assert.equal(publishes, 1);
+    assert.deepEqual(succeeded, [tokens[1]]);
+    ownershipReady(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.equal(publishes, 1);
+    assert.deepEqual(succeeded, [tokens[1]]);
+    assert.deepEqual(failed, [tokens[0]], 'expired authority work cannot release an already-released claim');
+    assert.equal(closes, 0, 'expired authority work cannot close the current publisher');
+  } finally {
+    await worker.stop();
+    for (const key of Object.keys(process.env)) if (!(key in previous)) delete process.env[key];
+    Object.assign(process.env, previous);
+  }
+});

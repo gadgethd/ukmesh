@@ -181,8 +181,11 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
       await deps.repository.markSucceeded(row.id, claimToken);
       publicFeedOutcomesTotal.inc({ outcome: 'delivered' });
     } catch (error) {
+      // The deadline handler already released this claim; leave its retry alone.
+      if (signal.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       await publishers.discard('public-feed');
+      signal.throwIfAborted();
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
     }

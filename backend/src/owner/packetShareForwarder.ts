@@ -207,8 +207,9 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     void processDue();
   }
 
-  async function deliver(row: PacketShareDeliveryRow, claimToken: string): Promise<void> {
+  async function deliver(row: PacketShareDeliveryRow, claimToken: string, signal: AbortSignal): Promise<void> {
     const grantState = await ownerGrantState(row.owner_username, row.node_id);
+    signal.throwIfAborted();
     if (grantState === 'inactive') {
       // Revocation is terminal for everything already queued for this node.
       try {
@@ -227,6 +228,7 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
       return;
     }
     const destination = await deps.repository.getDestination(row.destination_id);
+    signal.throwIfAborted();
     if (!destination || !destinationAllowedForOwner(destination, row.owner_username, row.node_id)
       || !destinationConfigured(destination, hasPacketShareEncryptionKey())) {
       await deps.repository.markFailed(row.id, claimToken, row.attempts, 'destination is missing or incomplete');
@@ -235,16 +237,23 @@ export function createPacketShareForwarder(deps: PacketShareForwarderDeps) {
     }
     try {
       const publisher = await publisherFor(destination);
+      signal.throwIfAborted();
       await withDeadline(
         publisher.publish(row.destination_topic, JSON.stringify(row.payload)),
         publishAckTimeoutMs,
         'destination MQTT publish',
       );
+      signal.throwIfAborted();
       await deps.repository.markSucceeded(row.id, claimToken);
+      signal.throwIfAborted();
       packetShareOutcomesTotal.inc({ outcome: 'delivered' });
     } catch (error) {
+      // The loop owns claim release after its deadline. A late attempt must
+      // neither disturb the retry's publisher nor transition the expired claim.
+      if (signal.aborted) throw error;
       const message = error instanceof Error ? error.message : String(error);
       await publishers.discard(row.destination_id);
+      signal.throwIfAborted();
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       packetShareOutcomesTotal.inc({ outcome: 'delivery_error' });
     }

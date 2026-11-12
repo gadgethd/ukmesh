@@ -297,3 +297,72 @@ test('forwarder aborts a delivery past the per-row deadline even when the publis
   assert.equal(failed.length, 1, 'the per-row deadline must release the claim');
   assert.match(failed[0]!.message, /delivery timed out/);
 });
+
+
+test('a destination lookup completing after claim expiry cannot publish or complete the expired attempt', async t => {
+  let destinationReady!: (value: typeof wedgeDestination) => void;
+  let destinationReads = 0, publishes = 0, closes = 0;
+  const tokens: string[] = [], failed: string[] = [], succeeded: string[] = [];
+  const repository = {
+    reclaimExpiredClaims: async () => 0,
+    claimDue: async (_limit: number, token: string) => {
+      tokens.push(token); return tokens.length <= 2 ? [wedgeRow] : [];
+    },
+    getDestination: () => ++destinationReads === 1
+      ? new Promise<typeof wedgeDestination>(resolve => { destinationReady = resolve; })
+      : Promise.resolve(wedgeDestination),
+    markFailed: async (_id: string, token: string) => { failed.push(token); },
+    markSucceeded: async (_id: string, token: string) => { succeeded.push(token); },
+  } as unknown as PacketShareRepository;
+  const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true, repository, deliverTimeoutMs: 20,
+    publisherFactory: () => ({ publish: async () => { publishes++; }, close: async () => { closes++; } }),
+  });
+  t.after(forwarder.stop);
+  await withGuard(forwarder.processDue(), 'held destination deadline');
+  assert.deepEqual(failed, [tokens[0]]);
+  assert.equal(publishes, 0);
+  await withGuard(forwarder.processDue(), 'retry after claim release');
+  assert.equal(publishes, 1);
+  assert.deepEqual(succeeded, [tokens[1]]);
+  destinationReady(wedgeDestination);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(publishes, 1, 'late destination lookup cannot issue a second publish');
+  assert.deepEqual(succeeded, [tokens[1]], 'only the current claim can complete');
+  assert.deepEqual(failed, [tokens[0]], 'the expired attempt cannot release its claim again');
+  assert.equal(closes, 0, 'the expired attempt cannot close the retry publisher');
+});
+
+test('a publish settling after claim expiry cannot mark success or invalidate the retry publisher', async t => {
+  let publishReady!: () => void;
+  let publishes = 0, closes = 0;
+  const tokens: string[] = [], failed: string[] = [], succeeded: string[] = [];
+  const repository = {
+    reclaimExpiredClaims: async () => 0,
+    claimDue: async (_limit: number, token: string) => {
+      tokens.push(token); return tokens.length <= 2 ? [wedgeRow] : [];
+    },
+    getDestination: async () => wedgeDestination,
+    markFailed: async (_id: string, token: string) => { failed.push(token); },
+    markSucceeded: async (_id: string, token: string) => { succeeded.push(token); },
+  } as unknown as PacketShareRepository;
+  const forwarder = createPacketShareForwarder({
+    isOwnerNodeGrantActive: async () => true, repository,
+    deliverTimeoutMs: 20, publishAckTimeoutMs: 1_000,
+    publisherFactory: () => ({
+      publish: () => ++publishes === 1 ? new Promise<void>(resolve => { publishReady = resolve; }) : Promise.resolve(),
+      close: async () => { closes++; },
+    }),
+  });
+  t.after(forwarder.stop);
+  await withGuard(forwarder.processDue(), 'held publish deadline');
+  assert.deepEqual(failed, [tokens[0]]);
+  await withGuard(forwarder.processDue(), 'publish retry');
+  assert.deepEqual(succeeded, [tokens[1]]);
+  publishReady();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(publishes, 2);
+  assert.deepEqual(succeeded, [tokens[1]], 'late publication completion cannot complete an expired claim');
+  assert.deepEqual(failed, [tokens[0]]);
+  assert.equal(closes, 0);
+});
