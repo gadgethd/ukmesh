@@ -156,7 +156,7 @@ jobs:
         env:
           POSTGRES_PASSWORD: audit-fixture-password
         ports:
-          - 55434:5432
+          - 5432
         options: >-
           --shm-size=1g
           --health-cmd "pg_isready -U postgres"
@@ -164,8 +164,6 @@ jobs:
           --health-timeout 3s
           --health-retries 10
     env:
-      TEST_INGEST_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
-      TEST_BACKFILL_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
       AUDIT_TEST_FILES: >-
         src/db/identity-decryptions.audit.test.ts
         src/tools/backfillIdentity.audit.test.ts
@@ -181,6 +179,13 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - name: Select the owned audit database port
+        env:
+          AUDIT_DATABASE_PORT: ${{ job.services.postgres.ports[5432] }}
+        run: |
+          test -n "$AUDIT_DATABASE_PORT"
+          printf 'TEST_INGEST_DATABASE_URL=postgresql://postgres:audit-fixture-password@127.0.0.1:%s/postgres\n' "$AUDIT_DATABASE_PORT" >> "$GITHUB_ENV"
+          printf 'TEST_BACKFILL_DATABASE_URL=postgresql://postgres:audit-fixture-password@127.0.0.1:%s/postgres\n' "$AUDIT_DATABASE_PORT" >> "$GITHUB_ENV"
       - name: Verify the audit fixture database is reachable
         run: |
           node --input-type=module <<'JS'
