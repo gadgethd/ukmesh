@@ -18,7 +18,8 @@ function defaultWeight(value: unknown): number {
   try {
     return Buffer.byteLength(JSON.stringify(value));
   } catch {
-    return 1;
+    // An unmeasurable value cannot safely fit a byte-bounded cache.
+    return Number.POSITIVE_INFINITY;
   }
 }
 
@@ -96,12 +97,18 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
   }
 
   override set(key: K, value: V): this {
-    const weight = Math.max(1, Math.trunc(this.options.weightOf?.(key, value) ?? defaultWeight(value)));
-    if (weight > this.options.maxWeight) {
+    let estimatedWeight: number;
+    try {
+      estimatedWeight = this.options.weightOf ? this.options.weightOf(key, value) : defaultWeight(value);
+    } catch {
+      estimatedWeight = Number.POSITIVE_INFINITY;
+    }
+    if (!Number.isFinite(estimatedWeight) || estimatedWeight < 0 || estimatedWeight > this.options.maxWeight) {
       this.rejections += 1;
       this.recordMetric('rejected');
       return this;
     }
+    const weight = Math.max(1, Math.trunc(estimatedWeight));
     this.sweep();
     this.delete(key);
     super.set(key, value);

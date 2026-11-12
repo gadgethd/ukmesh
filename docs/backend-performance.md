@@ -187,6 +187,43 @@ TEST_INGEST_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore 
 The test creates and drops its own named database. The final sustained soak
 must still qualify the complete candidate after the last runtime change.
 
+## Resolver context reuse and accounting
+
+Each resolver worker retains at most 16 network contexts for 15 minutes, within
+128 MiB of estimated retained data. The estimate walks node, link, learned-model
+and champion-prior maps and counts shared object references once. The previous
+JSON estimate omitted Map contents. Unserializable default values and invalid
+custom weights are rejected rather than charged one byte or poisoning the
+cache's total with `NaN`. This is an estimate, not a process RSS ceiling.
+
+A read-only copy of the retained local snapshot contained 6,177 nodes, 44,100
+links and 157,801 packets. Four alternating fresh-process trials per version
+included one discarded warm-up; each performed one cold and 50 repeated direct
+resolutions of a real three-byte path with 14 decoded nodes. Corrected context accounting was
+28.7 MiB versus the old 0.9 MiB. All normalized decoded-output hashes matched.
+Median cold loading was 189 versus 196 ms, with CPU 228 versus 246 ms. Warm
+p95 was 11.5 versus 10.8 ms; these small differences do not establish a speedup.
+
+The existing context cache reduced 14 cold SQL calls to two per repeated call:
+packet evidence and the fresh visibility check. The nine prior queries ran only
+on context loading. Network/privacy scope, expiry, final publication fences and
+caller cancellation remain unchanged. The context is network-wide; observer
+and region projections are applied during decoding. Worker messages carry
+packet/scope and bounded sticky/held-path inputs, then the decoded result;
+they do not clone the complete context between threads.
+
+Offline accuracy replay also matched every eligible held-out case: 389 development
+and 412 test routes in both single- and multi-observer modes. Predictions and
+three-byte truth checks were identical; this establishes regression parity on
+the retained fixture, not production traffic accuracy.
+
+An additional model memo or shared context-transfer mechanism was not selected:
+the existing reuse already removes repeated prior loads in this fixture. The
+cache-weight correction preserves complete evidence instead of truncating a
+model to fit. Oversized contexts can be used by the current operation but are
+not retained. The final sustained soak still needs to measure complete-process
+memory across the configured worker count.
+
 ## Link-worker startup and memory
 
 Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.

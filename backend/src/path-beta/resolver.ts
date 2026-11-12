@@ -5,6 +5,7 @@ import {
   touchNodesPredictedOnline,
 } from '../db/index.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import { PATH_CONTEXT_MAX_WEIGHT, pathContextWeight } from './contextWeight.js';
 import { packetExcludesPrivateNodesSql, privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import { normalizePathHash, nodePathHash } from '../path-hash/utils.js';
 import type { DecodedHop } from '../path-core/decoder.js';
@@ -39,7 +40,8 @@ function resolverScope(network: string): string[] | null {
 const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
   name: 'path_context',
   maxEntries: 16,
-  maxWeight: 128 * 1024 * 1024,
+  maxWeight: PATH_CONTEXT_MAX_WEIGHT,
+  weightOf: pathContextWeight,
   ttlMs: pathingConfig.contextTtlMs,
 });
 const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(

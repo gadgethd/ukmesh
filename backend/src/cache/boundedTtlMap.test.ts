@@ -142,3 +142,32 @@ test('LRU reads do not postpone TTL and expired entries leave room before evicti
     assert.equal(cache.metrics().evictions, 0);
   } finally { cache.shutdown(); }
 });
+
+test('invalid and unmeasurable weights cannot disable byte bounds', () => {
+  for (const weight of [NaN, Infinity, -Infinity, -1]) {
+    const cache = new BoundedTtlMap<string, string>({ maxEntries: 2, maxWeight: 100, ttlMs: 1000, weightOf: () => weight });
+    try { cache.set('invalid', 'value'); assert.equal(cache.size, 0); assert.equal(cache.weight(), 0); assert.equal(cache.metrics().rejections, 1); }
+    finally { cache.shutdown(); }
+  }
+  const cache = new BoundedTtlMap<string, unknown>({ maxEntries: 2, maxWeight: 100, ttlMs: 1000 });
+  const cyclic = { self: null as unknown }; cyclic.self = cyclic;
+  try {
+    cache.set('cyclic', cyclic).set('undefined', undefined).set('bigint', 1n);
+    assert.equal(cache.size, 0); assert.equal(cache.weight(), 0); assert.equal(cache.metrics().rejections, 3);
+    cache.set('valid', 'value'); assert.equal(cache.get('valid'), 'value');
+  } finally { cache.shutdown(); }
+});
+
+
+test('a rejected custom estimate leaves existing accounting usable', () => {
+  const cache = new BoundedTtlMap<string, string>({
+    maxEntries: 10, maxWeight: 100, ttlMs: 1000,
+    weightOf: key => { if (key === 'throw') throw new Error('injected estimator failure'); return key === 'nan' ? NaN : 50; },
+  });
+  try {
+    cache.set('first', 'one').set('throw', 'bad').set('nan', 'bad').set('second', 'two').set('third', 'three');
+    assert.equal(cache.weight(), 100);
+    assert.deepEqual([...cache.keys()], ['second', 'third']);
+    assert.equal(cache.metrics().rejections, 2);
+  } finally { cache.shutdown(); }
+});
