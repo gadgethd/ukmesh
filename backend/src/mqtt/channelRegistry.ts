@@ -72,6 +72,12 @@ const PUBLIC_CHANNEL_KEYS: Readonly<Record<string, string>> = {
   'uk': '22b2eed34b5cc429ce1dc5e88635ff84',
 };
 
+const publicSlugs = new Set<string>(PUBLIC_CHANNEL_METADATA.map(channel => channel.slug));
+if (Object.keys(PUBLIC_CHANNEL_KEYS).length !== publicSlugs.size
+  || Object.keys(PUBLIC_CHANNEL_KEYS).some(slug => !publicSlugs.has(slug))) {
+  throw new Error('PUBLIC_CHANNEL_KEY_METADATA_MISMATCH');
+}
+
 export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> =
   PUBLIC_CHANNEL_METADATA.map(({ label, slug }) => ({ name: label, secret: PUBLIC_CHANNEL_KEYS[slug]! }));
 
