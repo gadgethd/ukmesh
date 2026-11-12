@@ -12,6 +12,12 @@ migrates owned local databases and checks MQTT persistence and live delivery.
 Open `http://127.0.0.1:5173`. See the [local stack runbook](scripts/local-sample/README.md)
 for profiles, explicit reset/cleanup, benchmarks and the optional private archive.
 
+## 2.0 candidate
+
+Read the [candidate changelog](CHANGELOG.md) and [upgrade guide](docs/upgrade-2.0.md)
+for schema, owner-session and rollback requirements. Release publication and
+production cutover remain pending candidate qualification and authorization.
+
 ## Features
 
 - Real-time node map with animated packet arcs and live WebSocket updates

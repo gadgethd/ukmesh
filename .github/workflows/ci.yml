@@ -62,6 +62,8 @@ jobs:
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - name: Check package and local image release identity
+        run: node ../scripts/check-release-identity.mjs
       - name: Check living documentation without executing runbooks
         run: node --test ../scripts/check-docs.test.mjs && node ../scripts/check-docs.mjs
       - name: Audit backend dependencies

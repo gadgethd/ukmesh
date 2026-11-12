@@ -16,7 +16,7 @@ function walk(directory) {
     return entry.isDirectory() ? walk(name) : name.endsWith('.md') ? [name] : [];
   });
 }
-const documents = ['README.md', 'INSTALL.md', ...walk('docs')].filter((name) => !historical(name));
+const documents = ['README.md', 'INSTALL.md', ...(fs.existsSync(path.join(root, 'CHANGELOG.md')) ? ['CHANGELOG.md'] : []), ...walk('docs')].filter((name) => !historical(name));
 const issues = [];
 const cache = new Map();
 const stale = new Map([

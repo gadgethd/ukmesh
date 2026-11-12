@@ -21,6 +21,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version-file: .nvmrc
+      - name: Verify package and local image release identity
+        run: node scripts/check-release-identity.mjs
       - name: Verify release component coverage
         run: scripts/check-release-components.sh
       - name: Validate vulnerability waivers
@@ -113,6 +115,12 @@ jobs:
       SOURCE_REVISION: ${{ github.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version-file: .nvmrc
+      - name: Read validated release identity
+        id: identity
+        run: node scripts/check-release-identity.mjs >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -125,6 +133,7 @@ jobs:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           labels: |
             org.opencontainers.image.revision=${{ env.SOURCE_REVISION }}
+            io.ukmesh.release.version=${{ steps.identity.outputs.version }}
           tags: |
             type=sha,format=long
             type=ref,event=tag
@@ -139,6 +148,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_REVISION=${{ env.SOURCE_REVISION }}
+            UKMESH_VERSION=${{ steps.identity.outputs.version }}
             ${{ matrix.build_args }}
           provenance: false
           sbom: false

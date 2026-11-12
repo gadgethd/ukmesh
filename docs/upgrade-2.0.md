@@ -4,6 +4,24 @@ Status: candidate preparation. Publication, production migration, cutover and
 cleanup require a separately authorized release. Local branch qualification
 does not authorize those operations.
 
+## Release identity
+
+The backend, frontend and contributor scripts identify version `2.0.0`, including
+the root metadata in their lockfiles. Dependency versions are unchanged by this
+identity bump. Run `node scripts/check-release-identity.mjs` from the repository
+root to check package/lock consistency and the eight owned Dockerfile defaults.
+
+Local images report `org.opencontainers.image.version=2.0.0` and the supplied
+`SOURCE_REVISION` through their OCI labels. Build them with the actual clean
+candidate SHA. The release workflow adds `io.ukmesh.release.version=2.0.0` to all
+bundle images; Docker metadata supplies the published tag/SHA version label.
+The vendored HopReach build keeps its own upstream `VERSION` argument. A label
+alone proves neither the image contents nor a signature: inspect the actual
+local image and retain its immutable ID, then verify published digests and
+provenance only during the authorized release.
+
+See the [candidate changelog](../CHANGELOG.md) for user and operator changes.
+
 ## Identify the starting deployment
 
 Record the actual deployed source revision, immutable image digests for every
@@ -49,6 +67,13 @@ Privacy publication must remain fenced while materialization is incomplete.
 Use the [privacy convergence runbook](privacy-convergence.md) and retain the
 fresh generation checks before and after computation/publication. Cache keys
 alone cannot revoke an already-fresh browser/CDN response.
+
+Region snapshots and stored spam geometry now carry a privacy generation (migration
+136). Existing rows remain uncertified and are withheld until their producer rebuilds
+them. Run `npm run regions:rebuild` after privacy preparation; the spam analyzer
+publishes its own certified incidents. A privacy change during a rebuild rejects its
+publication. Public derived reads fail closed while privacy rematerialization is
+pending and require HTTP revalidation, including conditional requests.
 
 ## Owner authorization and configuration
 
@@ -121,9 +146,10 @@ rollback results, security/SBOM checks, sustained nonduplicate soak, public
 mobile/desktop quality checks and explicit unmet gates. Local/private evidence
 belongs under ignored `plans/measurements/`, never in tracked sample fixtures.
 
-Region snapshots and stored spam geometry now carry a privacy generation (migration
-136). Existing rows remain uncertified and are withheld until their producer rebuilds
-them. Run `npm run regions:rebuild` after privacy preparation; the spam analyzer
-publishes its own certified incidents. A privacy change during a rebuild rejects its
-publication. Public derived reads fail closed while privacy rematerialization is
-pending and require HTTP revalidation, including conditional requests.
+The current-schema synthetic disaster-restore rehearsal verified signed receipts,
+Timescale restore-mode exit and disabled drill jobs in both databases, complete
+packet/path/ledger row fingerprints, Redis stream pending state and a retained
+MQTT message. Its owner tables were empty. That evidence does not establish
+production role grants, nonempty owner/session recovery, off-host durability,
+production recovery objectives or compatibility with the actual previous images.
+Those remain part of the deployment-specific rehearsal above.

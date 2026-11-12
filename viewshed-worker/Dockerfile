@@ -25,7 +25,9 @@ RUN useradd --system --uid 10001 --home-dir /app meshcore \
     && chown -R meshcore:meshcore /app /data/srtm /opt/venv
 USER 10001:10001
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+ARG UKMESH_VERSION=2.0.0
+LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
 EXPOSE 9091
 CMD ["python3", "-u", "worker.py"]

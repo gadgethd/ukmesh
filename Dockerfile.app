@@ -30,7 +30,9 @@ FROM nginx:alpine@sha256:785835ea65db4bba6f021acc0f3be91b0fef76a53fe41f8588c6698
 # Keep the newer pinned base and apply the verified Brotli security update.
 RUN apk add --no-cache --upgrade brotli-libs=1.2.1-r0
 ARG SOURCE_REVISION=unknown
-LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
+ARG UKMESH_VERSION=2.0.0
+LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \
+      org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
 COPY --from=frontend-builder /build/frontend/dist /usr/share/nginx/html
 COPY nginx.app.conf /etc/nginx/conf.d/default.conf
