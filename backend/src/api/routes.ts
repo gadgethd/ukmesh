@@ -170,7 +170,7 @@ registerNodeRoutes(router, {
   nodeRepository: createNodeRepository(query),
   requireLocalOnly,
   networkFilters,
-  getPublicVisibilityGeneration,
+  getPublicVisibilityGeneration: getPublicResponseGeneration,
   inferredNodesCache,
   inferredNodesInflight,
   inferredNodesCacheTtlMs: INFERRED_NODES_CACHE_TTL_MS,

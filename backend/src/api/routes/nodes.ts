@@ -1,6 +1,7 @@
 import type { Request, Response, Router } from 'express';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
+import { publicJson, PUBLIC_REVALIDATE } from '../../http/publicJson.js';
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../../privacy/privateNode.js';
@@ -142,10 +143,12 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      const nodes = region
-        ? await getNodes(network, observer, fields, undefined, region, { mapVisible: true })
-        : await getNodes(network, observer, fields, undefined, undefined, { mapVisible: true });
-      res.json(nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode));
+      await publicJson(res, getPublicVisibilityGeneration, async () => {
+        const nodes = region
+          ? await getNodes(network, observer, fields, undefined, region, { mapVisible: true })
+          : await getNodes(network, observer, fields, undefined, undefined, { mapVisible: true });
+        return nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode);
+      });
     } catch (err) {
       console.error('[api] GET /nodes', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -165,34 +168,35 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
       const cursor = parsePublicMapCursor(req.query['cursor']);
       const search = parsePublicMapQuery(req.query['q']);
-      const result = await nodeRepository.listPublicMapRows(
-        fields,
-        filters,
-        snapshot,
-        cursor,
-        limit,
-        search,
-      );
-      const hasExtraRow = result.length > limit;
-      const fitted = fitPublicMapRowsToByteBudget(result, limit);
-      const rows = fitted.rows;
-      const complete = !hasExtraRow && !fitted.truncatedByBytes;
-      const nextCursor = complete || rows.length < 1
-        ? null
-        : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
-      res.setHeader('Cache-Control', search ? 'no-store' : 'public, max-age=30, stale-while-revalidate=60');
-      res.setHeader('X-Map-Snapshot', snapshot);
-      res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
-      res.json({
-        nodes: rows,
-        page: {
+      await publicJson(res, getPublicVisibilityGeneration, async () => {
+        const result = await nodeRepository.listPublicMapRows(
+          fields,
+          filters,
           snapshot,
-          nextCursor,
-          complete,
-          returned: rows.length,
-          rowLimit: limit,
-        },
-      });
+          cursor,
+          limit,
+          search,
+        );
+        const hasExtraRow = result.length > limit;
+        const fitted = fitPublicMapRowsToByteBudget(result, limit);
+        const rows = fitted.rows;
+        const complete = !hasExtraRow && !fitted.truncatedByBytes;
+        const nextCursor = complete || rows.length < 1
+          ? null
+          : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
+        res.setHeader('X-Map-Snapshot', snapshot);
+        res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
+        return {
+          nodes: rows,
+          page: {
+            snapshot,
+            nextCursor,
+            complete,
+            returned: rows.length,
+            rowLimit: limit,
+          },
+        };
+      }, search ? 'no-store' : PUBLIC_REVALIDATE);
     } catch (err) {
       if (err instanceof PublicMapInputError) {
         res.status(400).json({ error: err.message });
@@ -220,36 +224,35 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
         max: 25,
         defaultValue: 10,
       })!;
-      const generation = await getPublicVisibilityGeneration();
-      const cacheKey = `${network ?? 'all'}:${hours}:${limit}:v${generation}`;
-      const cached = topAdvertsCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) {
-        res.json(cached.data);
-        return;
-      }
-      let pending = topAdvertsInflight.get(cacheKey);
-      if (!pending) {
-        if (topAdvertsInflight.size >= 32) {
-          res.status(503).json({ error: 'Top adverts are busy', retryable: true });
-          return;
+      await publicJson(res, getPublicVisibilityGeneration, async generation => {
+        const cacheKey = `${network ?? 'all'}:${hours}:${limit}:v${generation}`;
+        const cached = topAdvertsCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < TOP_ADVERTS_CACHE_TTL_MS) {
+          return cached.data;
         }
-        pending = (async () => {
-          const rows = await getTopAdvertingRepeaters(hours, limit, network);
-          if (await getPublicVisibilityGeneration() !== generation) {
-            throw new Error('TOP_ADVERTS_PRIVACY_CHANGED');
+        let pending = topAdvertsInflight.get(cacheKey);
+        if (!pending) {
+          if (topAdvertsInflight.size >= 32) {
+            throw new Error('TOP_ADVERTS_BUSY');
           }
-          const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
-            ...row, adverts_in_window: Number(row.adverts_in_window ?? 0),
-          }));
-          topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
-          return normalized;
-        })().finally(() => topAdvertsInflight.delete(cacheKey));
-        topAdvertsInflight.set(cacheKey, pending);
-      }
-      res.json(await pending);
+          pending = (async () => {
+            const rows = await getTopAdvertingRepeaters(hours, limit, network);
+            if (await getPublicVisibilityGeneration() !== generation) {
+              throw new Error('TOP_ADVERTS_PRIVACY_CHANGED');
+            }
+            const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
+              ...row, adverts_in_window: Number(row.adverts_in_window ?? 0),
+            }));
+            topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
+            return normalized;
+          })().finally(() => topAdvertsInflight.delete(cacheKey));
+          topAdvertsInflight.set(cacheKey, pending);
+        }
+        return pending;
+      }, 'no-store');
     } catch (err) {
-      if (err instanceof Error && err.message === 'TOP_ADVERTS_PRIVACY_CHANGED') {
-        res.status(503).json({ error: 'Public visibility changed; retry the request', retryable: true });
+      if (err instanceof Error && ['TOP_ADVERTS_PRIVACY_CHANGED', 'TOP_ADVERTS_BUSY', 'PUBLIC_VISIBILITY_CHANGED'].includes(err.message)) {
+        res.status(503).json({ error: 'Public node data is temporarily unavailable; retry the request', retryable: true });
         return;
       }
       console.error('[api] GET /nodes/top-adverts', (err as Error).message);
@@ -262,203 +265,208 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
       const scope = networkFilters(network, observer);
-      const visibilityGeneration = await getPublicVisibilityGeneration();
+      await publicJson(res, getPublicVisibilityGeneration, async visibilityGeneration => {
 
-      const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}:visibility-${visibilityGeneration}`;
-      const inferredCached = inferredNodesCache.get(inferredCacheKey);
-      if (inferredCached && Date.now() - inferredCached.ts < inferredNodesCacheTtlMs) {
-        res.json(inferredCached.data);
-        return;
-      }
-      const existingWork = inferredNodesInflight.get(inferredCacheKey);
-      if (existingWork) {
-        if (inferredCached) {
-          res.json(inferredCached.data);
-          return;
+        const inferredCacheKey = `${network ?? 'all'}:${observer ?? ''}:visibility-${visibilityGeneration}`;
+        const inferredCached = inferredNodesCache.get(inferredCacheKey);
+        if (inferredCached && Date.now() - inferredCached.ts < inferredNodesCacheTtlMs) {
+          return inferredCached.data;
         }
-        await existingWork;
-        const refreshed = inferredNodesCache.get(inferredCacheKey);
-        if (!refreshed) throw new Error('INFERRED_NODES_REFRESH_FAILED');
-        res.json(refreshed.data);
-        return;
-      }
-
-      let finishWork: () => void = () => {};
-      const work = new Promise<void>((resolve) => {
-        finishWork = resolve;
-      });
-      inferredNodesInflight.set(inferredCacheKey, work);
-      const servingStale = Boolean(inferredCached);
-      if (inferredCached) res.json(inferredCached.data);
-
-      try {
-        const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
-          getNodes(network, observer, 'slim').then((nodes) =>
-          nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
-          nodeRepository.listAllNodeIds(),
-          nodeRepository.listInferredPackets(scope, MAX_INFERRED_PACKET_ROWS),
-        ]);
-
-      const exactNodes = visibleNodes.filter((node) =>
-        node.role === undefined || node.role === 2,
-      );
-      const exactNodePrefixes = new Map<string, (typeof exactNodes)[number] | null>();
-      for (const node of exactNodes) {
-        if (typeof node.lat !== 'number' || typeof node.lon !== 'number') continue;
-        const nodeId = node.node_id.toUpperCase();
-        for (const prefixLength of [4, 6]) {
-          const prefix = nodeId.slice(0, prefixLength);
-          if (prefix.length !== prefixLength) continue;
-          exactNodePrefixes.set(prefix, exactNodePrefixes.has(prefix) ? null : node);
+        const existingWork = inferredNodesInflight.get(inferredCacheKey);
+        if (existingWork) {
+          if (inferredCached) {
+            return inferredCached.data;
+          }
+          await existingWork;
+          const refreshed = inferredNodesCache.get(inferredCacheKey);
+          if (!refreshed) throw new Error('INFERRED_NODES_REFRESH_FAILED');
+          return refreshed.data;
         }
-      }
 
-      const inferredUnknowns = new Map<string, {
-        prefix: string;
-        hashSizeBytes: number;
-        packetHashes: Set<string>;
-        observations: number;
-        latestSeen: string;
-        sumLat: number;
-        sumLon: number;
-        prevNameCounts: Map<string, number>;
-        nextNameCounts: Map<string, number>;
-      }>();
-      const inferredKnowns = new Map<string, {
-        nodeId: string;
-        packetHashes: Set<string>;
-        observations: number;
-        latestSeen: string;
-      }>();
+        if (inferredNodesInflight.size >= 32) throw new Error('INFERRED_NODES_BUSY');
 
-      const exactMatch = (pathHash: string) => {
-        const normalized = pathHash.toUpperCase();
-        return exactNodePrefixes.get(normalized) ?? null;
-      };
+        let finishWork: () => void = () => {};
+        const work = new Promise<void>((resolve) => {
+          finishWork = resolve;
+        });
+        inferredNodesInflight.set(inferredCacheKey, work);
+        const refresh = (async () => {
+          try {
+            const [visibleNodes, allNodeIds, packetsResult] = await Promise.all([
+              getNodes(network, observer, 'slim').then((nodes) =>
+              nodes.filter((node) => !isPrivateNode(node.name)).map(redactPrivateNode)),
+              nodeRepository.listAllNodeIds(),
+              nodeRepository.listInferredPackets(scope, MAX_INFERRED_PACKET_ROWS),
+            ]);
 
-      for (const row of packetsResult) {
-        const pathHashes = Array.isArray(row.path_hashes) ? row.path_hashes : [];
-        if (pathHashes.length < 3) continue;
-        const hashSizeBytes = Number(row.path_hash_size_bytes ?? 0);
-        if (hashSizeBytes < 2 || hashSizeBytes > 3) continue;
+            const exactNodes = visibleNodes.filter((node) =>
+              node.role === undefined || node.role === 2,
+            );
+            const exactNodePrefixes = new Map<string, (typeof exactNodes)[number] | null>();
+            for (const node of exactNodes) {
+              if (typeof node.lat !== 'number' || typeof node.lon !== 'number') continue;
+              const nodeId = node.node_id.toUpperCase();
+              for (const prefixLength of [4, 6]) {
+                const prefix = nodeId.slice(0, prefixLength);
+                if (prefix.length !== prefixLength) continue;
+                exactNodePrefixes.set(prefix, exactNodePrefixes.has(prefix) ? null : node);
+              }
+            }
 
-        for (let idx = 1; idx < pathHashes.length - 1; idx += 1) {
-          const current = pathHashes[idx];
-          const prev = pathHashes[idx - 1];
-          const next = pathHashes[idx + 1];
-          if (!current || !prev || !next) continue;
-          if (current.length !== hashSizeBytes * 2) continue;
+            const inferredUnknowns = new Map<string, {
+              prefix: string;
+              hashSizeBytes: number;
+              packetHashes: Set<string>;
+              observations: number;
+              latestSeen: string;
+              sumLat: number;
+              sumLon: number;
+              prevNameCounts: Map<string, number>;
+              nextNameCounts: Map<string, number>;
+            }>();
+            const inferredKnowns = new Map<string, {
+              nodeId: string;
+              packetHashes: Set<string>;
+              observations: number;
+              latestSeen: string;
+            }>();
 
-          const currentMatch = exactMatch(current);
-          if (currentMatch) {
-            const key = currentMatch.node_id;
-            const existing = inferredKnowns.get(key) ?? {
-              nodeId: currentMatch.node_id,
-              packetHashes: new Set<string>(),
-              observations: 0,
-              latestSeen: row.time,
+            const exactMatch = (pathHash: string) => {
+              const normalized = pathHash.toUpperCase();
+              return exactNodePrefixes.get(normalized) ?? null;
             };
-            existing.packetHashes.add(row.packet_hash);
-            existing.observations += 1;
-            existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
-            inferredKnowns.set(key, existing);
-            continue;
+
+            for (const row of packetsResult) {
+              const pathHashes = Array.isArray(row.path_hashes) ? row.path_hashes : [];
+              if (pathHashes.length < 3) continue;
+              const hashSizeBytes = Number(row.path_hash_size_bytes ?? 0);
+              if (hashSizeBytes < 2 || hashSizeBytes > 3) continue;
+
+              for (let idx = 1; idx < pathHashes.length - 1; idx += 1) {
+                const current = pathHashes[idx];
+                const prev = pathHashes[idx - 1];
+                const next = pathHashes[idx + 1];
+                if (!current || !prev || !next) continue;
+                if (current.length !== hashSizeBytes * 2) continue;
+
+                const currentMatch = exactMatch(current);
+                if (currentMatch) {
+                  const key = currentMatch.node_id;
+                  const existing = inferredKnowns.get(key) ?? {
+                    nodeId: currentMatch.node_id,
+                    packetHashes: new Set<string>(),
+                    observations: 0,
+                    latestSeen: row.time,
+                  };
+                  existing.packetHashes.add(row.packet_hash);
+                  existing.observations += 1;
+                  existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
+                  inferredKnowns.set(key, existing);
+                  continue;
+                }
+
+                const prevMatch = exactMatch(prev);
+                const nextMatch = exactMatch(next);
+                if (!prevMatch || !nextMatch) continue;
+
+                const estimateLat = (Number(prevMatch.lat) + Number(nextMatch.lat)) / 2;
+                const estimateLon = (Number(prevMatch.lon) + Number(nextMatch.lon)) / 2;
+                const key = `${hashSizeBytes}:${current.toUpperCase()}`;
+                const existing = inferredUnknowns.get(key) ?? {
+                  prefix: current.toUpperCase(),
+                  hashSizeBytes,
+                  packetHashes: new Set<string>(),
+                  observations: 0,
+                  latestSeen: row.time,
+                  sumLat: 0,
+                  sumLon: 0,
+                  prevNameCounts: new Map<string, number>(),
+                  nextNameCounts: new Map<string, number>(),
+                };
+
+                existing.packetHashes.add(row.packet_hash);
+                existing.observations += 1;
+                existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
+                existing.sumLat += estimateLat;
+                existing.sumLon += estimateLon;
+                const prevLabel = prevMatch.name?.trim() || prevMatch.node_id.slice(0, 8);
+                const nextLabel = nextMatch.name?.trim() || nextMatch.node_id.slice(0, 8);
+                existing.prevNameCounts.set(prevLabel, (existing.prevNameCounts.get(prevLabel) ?? 0) + 1);
+                existing.nextNameCounts.set(nextLabel, (existing.nextNameCounts.get(nextLabel) ?? 0) + 1);
+                inferredUnknowns.set(key, existing);
+              }
+            }
+
+            const bestLabel = (counts: Map<string, number>): string | null => {
+              let best: string | null = null;
+              let bestCount = -1;
+              for (const [label, count] of counts) {
+                if (count > bestCount) {
+                  best = label;
+                  bestCount = count;
+                }
+              }
+              return best;
+            };
+
+            const knownNodePrefixes = new Set<string>();
+            for (const node of allNodeIds) {
+              const nodeId = node.node_id.toUpperCase();
+              if (nodeId.length >= 4) knownNodePrefixes.add(nodeId.slice(0, 4));
+              if (nodeId.length >= 6) knownNodePrefixes.add(nodeId.slice(0, 6));
+            }
+            const inferredNodes: InferredMultibyteNode[] = Array.from(inferredUnknowns.values())
+              .filter((entry) => entry.packetHashes.size >= 2
+                && !knownNodePrefixes.has(entry.prefix.toUpperCase()))
+              .map((entry) => ({
+                node_id: `inferred:${entry.hashSizeBytes}:${entry.prefix}`,
+                name: `Inferred ${entry.prefix}`,
+                lat: entry.sumLat / entry.observations,
+                lon: entry.sumLon / entry.observations,
+                last_seen: new Date(entry.latestSeen).toISOString(),
+                is_online: true,
+                role: 2,
+                inferred_prefix: entry.prefix,
+                inferred_hash_size_bytes: entry.hashSizeBytes,
+                inferred_observations: entry.observations,
+                inferred_packet_count: entry.packetHashes.size,
+                inferred_prev_name: bestLabel(entry.prevNameCounts),
+                inferred_next_name: bestLabel(entry.nextNameCounts),
+              }))
+              .sort((a, b) => (
+                b.inferred_packet_count - a.inferred_packet_count
+                || b.inferred_observations - a.inferred_observations
+                || b.last_seen.localeCompare(a.last_seen)
+              ))
+              .slice(0, MAX_INFERRED_NODES);
+            const inferredActiveNodeIds = Array.from(inferredKnowns.values())
+              .filter((entry) => entry.packetHashes.size >= 2)
+              .sort((a, b) => (
+                b.packetHashes.size - a.packetHashes.size
+                || b.observations - a.observations
+                || b.latestSeen.localeCompare(a.latestSeen)
+              ))
+              .map((entry) => entry.nodeId)
+              .slice(0, MAX_INFERRED_ACTIVE_NODE_IDS);
+
+            const payload: InferredActiveResponse = {
+              inferredNodes,
+              inferredActiveNodeIds,
+            };
+            if (await getPublicVisibilityGeneration() !== visibilityGeneration) throw new Error('PUBLIC_VISIBILITY_CHANGED');
+            inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
+            return payload;
+          } finally {
+            inferredNodesInflight.delete(inferredCacheKey);
+            finishWork();
           }
-
-          const prevMatch = exactMatch(prev);
-          const nextMatch = exactMatch(next);
-          if (!prevMatch || !nextMatch) continue;
-
-          const estimateLat = (Number(prevMatch.lat) + Number(nextMatch.lat)) / 2;
-          const estimateLon = (Number(prevMatch.lon) + Number(nextMatch.lon)) / 2;
-          const key = `${hashSizeBytes}:${current.toUpperCase()}`;
-          const existing = inferredUnknowns.get(key) ?? {
-            prefix: current.toUpperCase(),
-            hashSizeBytes,
-            packetHashes: new Set<string>(),
-            observations: 0,
-            latestSeen: row.time,
-            sumLat: 0,
-            sumLon: 0,
-            prevNameCounts: new Map<string, number>(),
-            nextNameCounts: new Map<string, number>(),
-          };
-
-          existing.packetHashes.add(row.packet_hash);
-          existing.observations += 1;
-          existing.latestSeen = existing.latestSeen > row.time ? existing.latestSeen : row.time;
-          existing.sumLat += estimateLat;
-          existing.sumLon += estimateLon;
-          const prevLabel = prevMatch.name?.trim() || prevMatch.node_id.slice(0, 8);
-          const nextLabel = nextMatch.name?.trim() || nextMatch.node_id.slice(0, 8);
-          existing.prevNameCounts.set(prevLabel, (existing.prevNameCounts.get(prevLabel) ?? 0) + 1);
-          existing.nextNameCounts.set(nextLabel, (existing.nextNameCounts.get(nextLabel) ?? 0) + 1);
-          inferredUnknowns.set(key, existing);
+        })();
+        if (inferredCached) {
+          void refresh.catch(error => console.error('[api] inferred refresh failed:', (error as Error).message));
+          return inferredCached.data;
         }
-      }
-
-      const bestLabel = (counts: Map<string, number>): string | null => {
-        let best: string | null = null;
-        let bestCount = -1;
-        for (const [label, count] of counts) {
-          if (count > bestCount) {
-            best = label;
-            bestCount = count;
-          }
-        }
-        return best;
-      };
-
-      const knownNodePrefixes = new Set<string>();
-      for (const node of allNodeIds) {
-        const nodeId = node.node_id.toUpperCase();
-        if (nodeId.length >= 4) knownNodePrefixes.add(nodeId.slice(0, 4));
-        if (nodeId.length >= 6) knownNodePrefixes.add(nodeId.slice(0, 6));
-      }
-      const inferredNodes: InferredMultibyteNode[] = Array.from(inferredUnknowns.values())
-        .filter((entry) => entry.packetHashes.size >= 2
-          && !knownNodePrefixes.has(entry.prefix.toUpperCase()))
-        .map((entry) => ({
-          node_id: `inferred:${entry.hashSizeBytes}:${entry.prefix}`,
-          name: `Inferred ${entry.prefix}`,
-          lat: entry.sumLat / entry.observations,
-          lon: entry.sumLon / entry.observations,
-          last_seen: new Date(entry.latestSeen).toISOString(),
-          is_online: true,
-          role: 2,
-          inferred_prefix: entry.prefix,
-          inferred_hash_size_bytes: entry.hashSizeBytes,
-          inferred_observations: entry.observations,
-          inferred_packet_count: entry.packetHashes.size,
-          inferred_prev_name: bestLabel(entry.prevNameCounts),
-          inferred_next_name: bestLabel(entry.nextNameCounts),
-        }))
-        .sort((a, b) => (
-          b.inferred_packet_count - a.inferred_packet_count
-          || b.inferred_observations - a.inferred_observations
-          || b.last_seen.localeCompare(a.last_seen)
-        ))
-        .slice(0, MAX_INFERRED_NODES);
-      const inferredActiveNodeIds = Array.from(inferredKnowns.values())
-        .filter((entry) => entry.packetHashes.size >= 2)
-        .sort((a, b) => (
-          b.packetHashes.size - a.packetHashes.size
-          || b.observations - a.observations
-          || b.latestSeen.localeCompare(a.latestSeen)
-        ))
-        .map((entry) => entry.nodeId)
-        .slice(0, MAX_INFERRED_ACTIVE_NODE_IDS);
-
-      const payload: InferredActiveResponse = {
-        inferredNodes,
-        inferredActiveNodeIds,
-      };
-        inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
-        if (!servingStale) res.json(payload);
-      } finally {
-        inferredNodesInflight.delete(inferredCacheKey);
-        finishWork();
-      }
+        return refresh;
+      });
     } catch (err) {
       console.error('[api] GET /inferred-nodes', (err as Error).message);
       if (!res.headersSent) res.status(500).json({ error: 'Internal server error' });
@@ -475,32 +483,35 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = region ? networkFilters(network, undefined, { region }) : networkFilters(network);
-      const cacheKey = `${network}:${id.toUpperCase()}${region ? `:region-${region}` : ''}`;
-      const cached = nodeLinksCache.get(cacheKey);
-      if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
-        res.json(cached.data);
-        return;
-      }
-      const loadLinks = () => nodeRepository.listNodeLinks(id, filters);
-      let inflight = nodeLinksInflight.get(cacheKey);
-      if (!inflight) {
-        const tracked = loadLinks()
-          .then((rows) => {
-            nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
-            return rows;
-          })
-          .finally(() => {
-            if (nodeLinksInflight.get(cacheKey) === tracked) nodeLinksInflight.delete(cacheKey);
-          });
-        inflight = tracked;
-        nodeLinksInflight.set(cacheKey, tracked);
-      }
-      if (cached) {
-        res.setHeader('Warning', '110 - "Response is stale"');
-        res.json(cached.data);
-        return;
-      }
-      res.json(await inflight);
+      await publicJson(res, getPublicVisibilityGeneration, async generation => {
+        const cacheKey = `${network}:${id.toUpperCase()}${region ? `:region-${region}` : ''}:v${generation}`;
+        const cached = nodeLinksCache.get(cacheKey);
+        if (cached && Date.now() - cached.ts < nodeLinksCacheTtlMs) {
+          return cached.data;
+        }
+        const loadLinks = () => nodeRepository.listNodeLinks(id, filters);
+        let inflight = nodeLinksInflight.get(cacheKey);
+        if (!inflight) {
+          if (nodeLinksInflight.size >= 32) throw new Error('NODE_LINKS_BUSY');
+          const tracked = loadLinks()
+            .then(async (rows) => {
+              if (await getPublicVisibilityGeneration() !== generation) throw new Error('PUBLIC_VISIBILITY_CHANGED');
+              nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
+              return rows;
+            })
+            .finally(() => {
+              if (nodeLinksInflight.get(cacheKey) === tracked) nodeLinksInflight.delete(cacheKey);
+            });
+          inflight = tracked;
+          nodeLinksInflight.set(cacheKey, tracked);
+        }
+        if (cached) {
+          res.setHeader('Warning', '110 - "Response is stale"');
+          void inflight.catch(error => console.error('[api] links refresh failed:', (error as Error).message));
+          return cached.data;
+        }
+        return inflight;
+      });
     } catch (err) {
       console.error('[api] GET /nodes/:id/links', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -521,8 +532,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const history = await getNodeHistory(id, hours, network);
-      res.json(history);
+      await publicJson(res, getPublicVisibilityGeneration, () => getNodeHistory(id, hours, network));
     } catch (err) {
       console.error('[api] GET /nodes/:id/history', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -543,8 +553,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const adverts = await getNodeAdverts(publicKey, hours, 100, network);
-      res.json(adverts);
+      await publicJson(res, getPublicVisibilityGeneration, () => getNodeAdverts(publicKey, hours, 100, network));
     } catch (err) {
       console.error('[api] GET /nodes/:id/adverts', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

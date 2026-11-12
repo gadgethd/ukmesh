@@ -8,6 +8,7 @@ export async function publicJson(
   res: Response,
   readGeneration: () => Promise<number>,
   load: (generation: number) => Promise<unknown>,
+  cacheControl: typeof PUBLIC_REVALIDATE | 'no-store' = PUBLIC_REVALIDATE,
 ): Promise<void> {
   res.setHeader('Cache-Control', 'no-store');
   const generation = await readGeneration();
@@ -16,6 +17,6 @@ export async function publicJson(
   }
   const payload = await load(generation);
   if (await readGeneration() !== generation) throw new Error('PUBLIC_VISIBILITY_CHANGED');
-  res.setHeader('Cache-Control', PUBLIC_REVALIDATE);
+  res.setHeader('Cache-Control', cacheControl);
   res.json(payload);
 }
