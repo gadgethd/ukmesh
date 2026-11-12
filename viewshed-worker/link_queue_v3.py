@@ -1,32 +1,76 @@
 """Crash-safe Redis protocol for MeshCore link jobs."""
 
-import hashlib
 import json
 import os
 import secrets
 import threading
 import time
 import uuid
+from queue_lease import LeaseProtocol
 
 from link_protocol_generated import (
-    READY, DEFERRED, PAYLOADS, STATES, ATTEMPTS, BYTES, DEDUPE, DEDUPE_BY_JOB, LEASES, TOKENS, DEAD, DEAD_REASONS, ENQUEUED, COMPLETED, COUNTERS, REBUILD, WORKER_HEARTBEAT, EVENTS, WAKE,
-    ADMIT_KEYS, ADMIT_SCRIPT, LINK_V3_LIMITS,
+    READY,
+    DEFERRED,
+    PAYLOADS,
+    STATES,
+    ATTEMPTS,
+    BYTES,
+    DEDUPE,
+    DEDUPE_BY_JOB,
+    LEASES,
+    TOKENS,
+    DEAD,
+    DEAD_REASONS,
+    ENQUEUED,
+    COMPLETED,
+    COUNTERS,
+    REBUILD,
+    WORKER_HEARTBEAT,
+    EVENTS,
+    WAKE as WAKE,
+    ADMIT_KEYS,
+    ADMIT_SCRIPT,
+    LINK_V3_LIMITS,
 )
+
 
 def _shared_limit(name):
     spec = LINK_V3_LIMITS[name]
-    return max(spec['min'], min(spec['max'], int(os.environ.get(spec['env'], str(spec['default'])))))
+    return max(
+        spec["min"],
+        min(spec["max"], int(os.environ.get(spec["env"], str(spec["default"])))),
+    )
 
 
-MAX_JOBS = _shared_limit('maxJobs')
-MAX_BYTES = _shared_limit('maxBytes')
-MAX_PAYLOAD_BYTES = _shared_limit('maxPayloadBytes')
-MAX_ATTEMPTS = max(1, min(20, int(os.environ.get('LINK_QUEUE_V3_MAX_ATTEMPTS', '5'))))
-LEASE_MS = max(10_000, min(30 * 60_000, int(os.environ.get('LINK_QUEUE_V3_LEASE_MS', '120000'))))
-COMPLETED_RETENTION_MS = max(60_000, int(os.environ.get('LINK_QUEUE_V3_COMPLETED_RETENTION_MS', str(7 * 24 * 60 * 60_000))))
-DEAD_MAX_JOBS = max(1, min(10_000, int(os.environ.get('LINK_QUEUE_V3_DEAD_MAX_JOBS', '1000'))))
-DEAD_MAX_BYTES = max(1, min(256 * 1024 * 1024, int(os.environ.get('LINK_QUEUE_V3_DEAD_MAX_BYTES', str(32 * 1024 * 1024)))))
-DEAD_RETENTION_MS = max(60_000, int(os.environ.get('LINK_QUEUE_V3_DEAD_RETENTION_MS', str(30 * 24 * 60 * 60_000))))
+MAX_JOBS = _shared_limit("maxJobs")
+MAX_BYTES = _shared_limit("maxBytes")
+MAX_PAYLOAD_BYTES = _shared_limit("maxPayloadBytes")
+MAX_ATTEMPTS = max(1, min(20, int(os.environ.get("LINK_QUEUE_V3_MAX_ATTEMPTS", "5"))))
+LEASE_MS = max(
+    10_000, min(30 * 60_000, int(os.environ.get("LINK_QUEUE_V3_LEASE_MS", "120000")))
+)
+COMPLETED_RETENTION_MS = max(
+    60_000,
+    int(
+        os.environ.get(
+            "LINK_QUEUE_V3_COMPLETED_RETENTION_MS", str(7 * 24 * 60 * 60_000)
+        )
+    ),
+)
+DEAD_MAX_JOBS = max(
+    1, min(10_000, int(os.environ.get("LINK_QUEUE_V3_DEAD_MAX_JOBS", "1000")))
+)
+DEAD_MAX_BYTES = max(
+    1,
+    min(
+        256 * 1024 * 1024,
+        int(os.environ.get("LINK_QUEUE_V3_DEAD_MAX_BYTES", str(32 * 1024 * 1024))),
+    ),
+)
+DEAD_RETENTION_MS = max(
+    60_000,
+    int(os.environ.get("LINK_QUEUE_V3_DEAD_RETENTION_MS", str(30 * 24 * 60 * 60_000))),
+)
 
 CLAIM_SCRIPT = """
 if redis.call('EXISTS', KEYS[8]) == 0 then
@@ -292,7 +336,8 @@ return {
 
 def audit_invariants(client, apply: bool = False) -> dict[str, int | bool]:
     values = [
-        int(value) for value in client.eval(
+        int(value)
+        for value in client.eval(
             AUDIT_REPAIR_SCRIPT,
             10,
             STATES,
@@ -305,7 +350,7 @@ def audit_invariants(client, apply: bool = False) -> dict[str, int | bool]:
             TOKENS,
             EVENTS,
             ENQUEUED,
-            '1' if apply else '0',
+            "1" if apply else "0",
             int(time.time() * 1000),
         )
     ]
@@ -330,30 +375,30 @@ def audit_invariants(client, apply: bool = False) -> dict[str, int | bool]:
         oldest_enqueued_at_ms,
     ) = values
     return {
-        'applied': apply,
-        'recorded_count': old_count,
-        'actual_count': actual_count,
-        'count_delta': actual_count - old_count,
-        'recorded_bytes': old_bytes,
-        'actual_bytes': actual_bytes,
-        'bytes_delta': actual_bytes - old_bytes,
-        'recorded_dead_count': old_dead_count,
-        'actual_dead_count': actual_dead_count,
-        'dead_count_delta': actual_dead_count - old_dead_count,
-        'recorded_dead_bytes': old_dead_bytes,
-        'actual_dead_bytes': actual_dead_bytes,
-        'dead_bytes_delta': actual_dead_bytes - old_dead_bytes,
-        'queued': queued,
-        'in_flight': in_flight,
-        'ready_entries': ready_entries,
-        'deferred_entries': deferred_entries,
-        'dead_entries': dead_entries,
-        'retries': retries,
-        'invalid_states': invalid_states,
-        'lease_tokens': token_count,
-        'enqueued_entries': enqueued_entries,
-        'oldest_enqueued_at_ms': oldest_enqueued_at_ms,
-        'consistent': (
+        "applied": apply,
+        "recorded_count": old_count,
+        "actual_count": actual_count,
+        "count_delta": actual_count - old_count,
+        "recorded_bytes": old_bytes,
+        "actual_bytes": actual_bytes,
+        "bytes_delta": actual_bytes - old_bytes,
+        "recorded_dead_count": old_dead_count,
+        "actual_dead_count": actual_dead_count,
+        "dead_count_delta": actual_dead_count - old_dead_count,
+        "recorded_dead_bytes": old_dead_bytes,
+        "actual_dead_bytes": actual_dead_bytes,
+        "dead_bytes_delta": actual_dead_bytes - old_dead_bytes,
+        "queued": queued,
+        "in_flight": in_flight,
+        "ready_entries": ready_entries,
+        "deferred_entries": deferred_entries,
+        "dead_entries": dead_entries,
+        "retries": retries,
+        "invalid_states": invalid_states,
+        "lease_tokens": token_count,
+        "enqueued_entries": enqueued_entries,
+        "oldest_enqueued_at_ms": oldest_enqueued_at_ms,
+        "consistent": (
             old_count == actual_count
             and old_bytes == actual_bytes
             and old_dead_count == actual_dead_count
@@ -365,25 +410,35 @@ def audit_invariants(client, apply: bool = False) -> dict[str, int | bool]:
 
 
 def _payload_bytes(payload: str) -> int:
-    return len(payload.encode('utf-8'))
+    return len(payload.encode("utf-8"))
 
 
-def observation_identity(packet_hash: str, rx_node_id: str) -> tuple[str, str]:
-    digest = hashlib.sha256(f'observe\0{packet_hash.lower()}\0{rx_node_id.lower()}'.encode()).hexdigest()
-    return f'lo_{digest}', f'observe:{digest}'
-
-
-def physical_identity(node_a_id: str, node_b_id: str, generation: str | None = None) -> tuple[str, str, str, str]:
+def physical_identity(
+    node_a_id: str, node_b_id: str, generation: str | None = None
+) -> tuple[str, str, str, str]:
     a_id, b_id = sorted((node_a_id, node_b_id))
-    return f'lp_{uuid.uuid4()}', f'physical:{generation or "live"}:{a_id}:{b_id}', a_id, b_id
+    return (
+        f"lp_{uuid.uuid4()}",
+        f"physical:{generation or 'live'}:{a_id}:{b_id}",
+        a_id,
+        b_id,
+    )
 
 
 def admit(client, job: dict) -> tuple[str, str | None]:
-    payload = json.dumps(job, separators=(',', ':'), sort_keys=True)
+    payload = json.dumps(job, separators=(",", ":"), sort_keys=True)
     result = client.eval(
-        ADMIT_SCRIPT, len(ADMIT_KEYS), *ADMIT_KEYS,
-        job['job_id'], job['dedupe_key'], payload, _payload_bytes(payload),
-        MAX_JOBS, MAX_BYTES, MAX_PAYLOAD_BYTES, job.get('generation') or '',
+        ADMIT_SCRIPT,
+        len(ADMIT_KEYS),
+        *ADMIT_KEYS,
+        job["job_id"],
+        job["dedupe_key"],
+        payload,
+        _payload_bytes(payload),
+        MAX_JOBS,
+        MAX_BYTES,
+        MAX_PAYLOAD_BYTES,
+        job.get("generation") or "",
         int(time.time() * 1000),
     )
     status = str(result[0])
@@ -391,23 +446,39 @@ def admit(client, job: dict) -> tuple[str, str | None]:
     return status, job_id
 
 
-def admit_physical(client, node_a_id: str, node_b_id: str, generation: str | None = None) -> tuple[str, str | None]:
+def admit_physical(
+    client, node_a_id: str, node_b_id: str, generation: str | None = None
+) -> tuple[str, str | None]:
     job_id, dedupe_key, a_id, b_id = physical_identity(node_a_id, node_b_id, generation)
     job = {
-        'version': 3, 'type': 'physical_pair', 'job_id': job_id,
-        'dedupe_key': dedupe_key, 'node_a_id': a_id, 'node_b_id': b_id,
+        "version": 3,
+        "type": "physical_pair",
+        "job_id": job_id,
+        "dedupe_key": dedupe_key,
+        "node_a_id": a_id,
+        "node_b_id": b_id,
     }
     if generation:
-        job['generation'] = generation
+        job["generation"] = generation
     return admit(client, job)
 
 
 def claim(client) -> tuple[str, str, dict, int] | None:
     token = secrets.token_hex(16)
     result = client.eval(
-        CLAIM_SCRIPT, 9, READY, PAYLOADS, STATES, ATTEMPTS, LEASES, TOKENS,
-        DEFERRED, REBUILD, EVENTS,
-        token, int(time.time() * 1000) + LEASE_MS,
+        CLAIM_SCRIPT,
+        9,
+        READY,
+        PAYLOADS,
+        STATES,
+        ATTEMPTS,
+        LEASES,
+        TOKENS,
+        DEFERRED,
+        REBUILD,
+        EVENTS,
+        token,
+        int(time.time() * 1000) + LEASE_MS,
     )
     if not result:
         return None
@@ -416,124 +487,165 @@ def claim(client) -> tuple[str, str, dict, int] | None:
 
 def ack(client, job_id: str, token: str) -> bool:
     result = client.eval(
-        ACK_SCRIPT, 12,
-        READY, PAYLOADS, STATES, ATTEMPTS, BYTES, TOKENS, LEASES, DEAD,
-        COUNTERS, COMPLETED, EVENTS, ENQUEUED,
-        job_id, token, int(time.time() * 1000) + COMPLETED_RETENTION_MS,
+        ACK_SCRIPT,
+        12,
+        READY,
+        PAYLOADS,
+        STATES,
+        ATTEMPTS,
+        BYTES,
+        TOKENS,
+        LEASES,
+        DEAD,
+        COUNTERS,
+        COMPLETED,
+        EVENTS,
+        ENQUEUED,
+        job_id,
+        token,
+        int(time.time() * 1000) + COMPLETED_RETENTION_MS,
     )
     return int(result) == 1
 
 
-def nack(client, job_id: str, token: str, reason: str = 'attempt_limit_exceeded') -> str:
-    return str(client.eval(
-        NACK_SCRIPT, 14,
-        READY, PAYLOADS, STATES, ATTEMPTS, BYTES, TOKENS, LEASES, DEAD, EVENTS,
-        COUNTERS, DEDUPE, DEDUPE_BY_JOB, ENQUEUED, DEAD_REASONS,
-        job_id, token, MAX_ATTEMPTS, DEAD_MAX_JOBS, DEAD_MAX_BYTES, int(time.time() * 1000),
-        str(reason)[:100],
-    ))
+def nack(
+    client, job_id: str, token: str, reason: str = "attempt_limit_exceeded"
+) -> str:
+    return str(
+        client.eval(
+            NACK_SCRIPT,
+            14,
+            READY,
+            PAYLOADS,
+            STATES,
+            ATTEMPTS,
+            BYTES,
+            TOKENS,
+            LEASES,
+            DEAD,
+            EVENTS,
+            COUNTERS,
+            DEDUPE,
+            DEDUPE_BY_JOB,
+            ENQUEUED,
+            DEAD_REASONS,
+            job_id,
+            token,
+            MAX_ATTEMPTS,
+            DEAD_MAX_JOBS,
+            DEAD_MAX_BYTES,
+            int(time.time() * 1000),
+            str(reason)[:100],
+        )
+    )
 
 
 def owns_lease(client, job_id: str, token: str) -> bool:
-    return int(client.eval(
-        VERIFY_LEASE_SCRIPT, 3, STATES, TOKENS, LEASES,
-        job_id, token, int(time.time() * 1000),
-    )) == 1
+    return (
+        int(
+            client.eval(
+                VERIFY_LEASE_SCRIPT,
+                3,
+                STATES,
+                TOKENS,
+                LEASES,
+                job_id,
+                token,
+                int(time.time() * 1000),
+            )
+        )
+        == 1
+    )
 
 
 def purge_dead(client, job_id: str) -> bool:
-    return int(client.eval(
-        PURGE_DEAD_SCRIPT, 9,
-        DEAD, STATES, PAYLOADS, BYTES, ATTEMPTS, DEDUPE, DEDUPE_BY_JOB, COUNTERS,
-        DEAD_REASONS,
-        job_id,
-    )) == 1
+    return (
+        int(
+            client.eval(
+                PURGE_DEAD_SCRIPT,
+                9,
+                DEAD,
+                STATES,
+                PAYLOADS,
+                BYTES,
+                ATTEMPTS,
+                DEDUPE,
+                DEDUPE_BY_JOB,
+                COUNTERS,
+                DEAD_REASONS,
+                job_id,
+            )
+        )
+        == 1
+    )
 
 
 def requeue_dead(client, job_id: str) -> str:
-    result = int(client.eval(
-        REQUEUE_DEAD_SCRIPT, 8,
-        DEAD, STATES, ATTEMPTS, BYTES, READY, COUNTERS, ENQUEUED,
-        DEAD_REASONS,
-        job_id, MAX_JOBS, MAX_BYTES, int(time.time() * 1000),
-    ))
-    return 'requeued' if result == 1 else 'full' if result == -1 else 'not_found'
+    result = int(
+        client.eval(
+            REQUEUE_DEAD_SCRIPT,
+            8,
+            DEAD,
+            STATES,
+            ATTEMPTS,
+            BYTES,
+            READY,
+            COUNTERS,
+            ENQUEUED,
+            DEAD_REASONS,
+            job_id,
+            MAX_JOBS,
+            MAX_BYTES,
+            int(time.time() * 1000),
+        )
+    )
+    return "requeued" if result == 1 else "full" if result == -1 else "not_found"
 
 
 def cleanup_dead(client, limit: int = 100) -> int:
-    expired = client.zrangebyscore(DEAD, '-inf', int(time.time() * 1000) - DEAD_RETENTION_MS, start=0, num=limit)
+    expired = client.zrangebyscore(
+        DEAD, "-inf", int(time.time() * 1000) - DEAD_RETENTION_MS, start=0, num=limit
+    )
     return sum(1 for job_id in expired if purge_dead(client, job_id))
 
 
 def reap(client, limit: int = 100) -> int:
-    return int(client.eval(
-        REAP_SCRIPT, 5, LEASES, STATES, TOKENS, READY, EVENTS,
-        int(time.time() * 1000), limit,
-    ))
+    return int(
+        client.eval(
+            REAP_SCRIPT,
+            5,
+            LEASES,
+            STATES,
+            TOKENS,
+            READY,
+            EVENTS,
+            int(time.time() * 1000),
+            limit,
+        )
+    )
 
 
 def cleanup_completed(client, limit: int = 500) -> int:
-    return int(client.eval(
-        CLEAN_COMPLETED_SCRIPT, 4, COMPLETED, STATES, DEDUPE_BY_JOB, DEDUPE,
-        int(time.time() * 1000), limit,
-    ))
+    return int(
+        client.eval(
+            CLEAN_COMPLETED_SCRIPT,
+            4,
+            COMPLETED,
+            STATES,
+            DEDUPE_BY_JOB,
+            DEDUPE,
+            int(time.time() * 1000),
+            limit,
+        )
+    )
 
 
-class LeaseRenewer:
-    def __init__(self, redis_factory, job_id: str, token: str):
-        self.redis_factory = redis_factory
-        self.job_id = job_id
-        self.token = token
-        self.stop_event = threading.Event()
-        self.lease_lost = threading.Event()
-        self.thread = threading.Thread(target=self._run, name=f'link-lease-{job_id[:8]}', daemon=True)
-
-    def _run(self):
-        client = None
-        last_success = time.monotonic()
-        backoff = 0.25
-        while not self.stop_event.wait(max(0.25, min(backoff, LEASE_MS / 3000))):
-            try:
-                if client is None:
-                    client = self.redis_factory()
-                renewed = client.eval(
-                    RENEW_SCRIPT, 3, STATES, TOKENS, LEASES,
-                    self.job_id, self.token, int(time.time() * 1000) + LEASE_MS,
-                )
-                if int(renewed) != 1:
-                    self.lease_lost.set()
-                    break
-                last_success = time.monotonic()
-                backoff = max(1.0, LEASE_MS / 3000)
-            except Exception:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
-                client = None
-                if (time.monotonic() - last_success) * 1000 >= LEASE_MS:
-                    self.lease_lost.set()
-                    break
-                backoff = min(5.0, backoff * 2)
-        if client is not None:
-            client.close()
-
-    def assert_owned(self):
-        if self.lease_lost.is_set():
-            raise RuntimeError(f'LINK_LEASE_LOST:{self.job_id}')
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.stop_event.set()
-        self.thread.join(timeout=5)
-        self.assert_owned()
+LEASE_PROTOCOL = LeaseProtocol("link", LEASE_MS, RENEW_SCRIPT, STATES, TOKENS, LEASES)
 
 
-def start_worker_heartbeat(redis_factory, stop_event: threading.Event) -> threading.Thread:
+def start_worker_heartbeat(
+    redis_factory, stop_event: threading.Event
+) -> threading.Thread:
     def run():
         client = None
         while not stop_event.is_set():
@@ -550,6 +662,6 @@ def start_worker_heartbeat(redis_factory, stop_event: threading.Event) -> thread
         if client is not None:
             client.close()
 
-    thread = threading.Thread(target=run, name='link-worker-heartbeat', daemon=True)
+    thread = threading.Thread(target=run, name="link-worker-heartbeat", daemon=True)
     thread.start()
     return thread

@@ -3,43 +3,53 @@
 import json
 import os
 import secrets
-import threading
+from queue_lease import LeaseProtocol
 import time
 
-READY = 'meshcore:viewshed:v2:ready'
-PAYLOADS = 'meshcore:viewshed:v2:payloads'
-STATES = 'meshcore:viewshed:v2:states'
-ATTEMPTS = 'meshcore:viewshed:v2:attempts'
-BYTES = 'meshcore:viewshed:v2:bytes'
-PENDING = 'meshcore:viewshed_pending'
-TOKENS = 'meshcore:viewshed:v2:tokens'
-LEASES = 'meshcore:viewshed:v2:leases'
-DEAD = 'meshcore:viewshed:v2:dead'
-DEAD_REASONS = 'meshcore:viewshed:v2:dead_reasons'
-COUNTERS = 'meshcore:viewshed:v2:counters'
-EVENTS = 'meshcore:viewshed:v2:events'
-ENQUEUED = 'meshcore:viewshed:v2:enqueued'
-DIRTY = 'meshcore:viewshed:v2:dirty'
+READY = "meshcore:viewshed:v2:ready"
+PAYLOADS = "meshcore:viewshed:v2:payloads"
+STATES = "meshcore:viewshed:v2:states"
+ATTEMPTS = "meshcore:viewshed:v2:attempts"
+BYTES = "meshcore:viewshed:v2:bytes"
+PENDING = "meshcore:viewshed_pending"
+TOKENS = "meshcore:viewshed:v2:tokens"
+LEASES = "meshcore:viewshed:v2:leases"
+DEAD = "meshcore:viewshed:v2:dead"
+DEAD_REASONS = "meshcore:viewshed:v2:dead_reasons"
+COUNTERS = "meshcore:viewshed:v2:counters"
+EVENTS = "meshcore:viewshed:v2:events"
+ENQUEUED = "meshcore:viewshed:v2:enqueued"
+DIRTY = "meshcore:viewshed:v2:dirty"
 
-MAX_JOBS = max(1, min(10_000, int(os.environ.get('VIEWSHED_QUEUE_MAX', '1000'))))
+MAX_JOBS = max(1, min(10_000, int(os.environ.get("VIEWSHED_QUEUE_MAX", "1000"))))
 MAX_BYTES = max(
     64 * 1024,
-    min(256 * 1024 * 1024, int(os.environ.get('VIEWSHED_QUEUE_MAX_BYTES', str(16 * 1024 * 1024)))),
+    min(
+        256 * 1024 * 1024,
+        int(os.environ.get("VIEWSHED_QUEUE_MAX_BYTES", str(16 * 1024 * 1024))),
+    ),
 )
 MAX_PAYLOAD_BYTES = max(
     256,
-    min(64 * 1024, int(os.environ.get('VIEWSHED_MAX_PAYLOAD_BYTES', str(4 * 1024)))),
+    min(64 * 1024, int(os.environ.get("VIEWSHED_MAX_PAYLOAD_BYTES", str(4 * 1024)))),
 )
-MAX_ATTEMPTS = max(1, min(20, int(os.environ.get('VIEWSHED_QUEUE_MAX_ATTEMPTS', '5'))))
-LEASE_MS = max(30_000, min(60 * 60_000, int(os.environ.get('VIEWSHED_QUEUE_LEASE_MS', '900000'))))
-DEAD_MAX_JOBS = max(1, min(1_000, int(os.environ.get('VIEWSHED_QUEUE_DEAD_MAX_JOBS', '100'))))
+MAX_ATTEMPTS = max(1, min(20, int(os.environ.get("VIEWSHED_QUEUE_MAX_ATTEMPTS", "5"))))
+LEASE_MS = max(
+    30_000, min(60 * 60_000, int(os.environ.get("VIEWSHED_QUEUE_LEASE_MS", "900000")))
+)
+DEAD_MAX_JOBS = max(
+    1, min(1_000, int(os.environ.get("VIEWSHED_QUEUE_DEAD_MAX_JOBS", "100")))
+)
 DEAD_MAX_BYTES = max(
     1,
-    min(64 * 1024 * 1024, int(os.environ.get('VIEWSHED_QUEUE_DEAD_MAX_BYTES', str(16 * 1024 * 1024)))),
+    min(
+        64 * 1024 * 1024,
+        int(os.environ.get("VIEWSHED_QUEUE_DEAD_MAX_BYTES", str(16 * 1024 * 1024))),
+    ),
 )
 DEAD_RETENTION_MS = max(
     60_000,
-    int(os.environ.get('VIEWSHED_QUEUE_DEAD_RETENTION_MS', str(30 * 24 * 60 * 60_000))),
+    int(os.environ.get("VIEWSHED_QUEUE_DEAD_RETENTION_MS", str(30 * 24 * 60 * 60_000))),
 )
 
 ADMIT_SCRIPT = """
@@ -243,11 +253,11 @@ return 1
 
 
 def admit(client, job: dict) -> tuple[str, str | None]:
-    job_id = str(job.get('node_id') or '').strip()
+    job_id = str(job.get("node_id") or "").strip()
     if not job_id:
-        return 'invalid', None
-    payload = json.dumps(job, separators=(',', ':'), sort_keys=True)
-    payload_bytes = len(payload.encode('utf-8'))
+        return "invalid", None
+    payload = json.dumps(job, separators=(",", ":"), sort_keys=True)
+    payload_bytes = len(payload.encode("utf-8"))
     result = client.eval(
         ADMIT_SCRIPT,
         10,
@@ -293,31 +303,33 @@ def claim(client):
         return None
     payload = json.loads(result[1])
     if not isinstance(payload, dict):
-        raise ValueError('viewshed queue payload must be an object')
+        raise ValueError("viewshed queue payload must be an object")
     return str(result[0]), token, payload, int(result[2])
 
 
 def ack(client, job_id: str, token: str) -> str:
-    result = int(client.eval(
-        ACK_SCRIPT,
-        13,
-        STATES,
-        TOKENS,
-        LEASES,
-        PAYLOADS,
-        ATTEMPTS,
-        BYTES,
-        PENDING,
-        COUNTERS,
-        DEAD,
-        EVENTS,
-        ENQUEUED,
-        READY,
-        DIRTY,
-        job_id,
-        token,
-    ))
-    return 'complete' if result == 1 else 'requeued' if result == 2 else 'invalid'
+    result = int(
+        client.eval(
+            ACK_SCRIPT,
+            13,
+            STATES,
+            TOKENS,
+            LEASES,
+            PAYLOADS,
+            ATTEMPTS,
+            BYTES,
+            PENDING,
+            COUNTERS,
+            DEAD,
+            EVENTS,
+            ENQUEUED,
+            READY,
+            DIRTY,
+            job_id,
+            token,
+        )
+    )
+    return "complete" if result == 1 else "requeued" if result == 2 else "invalid"
 
 
 def nack(
@@ -326,162 +338,124 @@ def nack(
     token: str,
     *,
     permanent: bool = False,
-    reason: str = 'attempt_limit_exceeded',
+    reason: str = "attempt_limit_exceeded",
 ) -> str:
-    return str(client.eval(
-        NACK_SCRIPT,
-        14,
-        STATES,
-        TOKENS,
-        LEASES,
-        READY,
-        ATTEMPTS,
-        BYTES,
-        PENDING,
-        COUNTERS,
-        EVENTS,
-        DEAD,
-        ENQUEUED,
-        PAYLOADS,
-        DIRTY,
-        DEAD_REASONS,
-        job_id,
-        token,
-        MAX_ATTEMPTS,
-        DEAD_MAX_JOBS,
-        DEAD_MAX_BYTES,
-        int(time.time() * 1000),
-        '1' if permanent else '0',
-        str(reason)[:100],
-    ))
+    return str(
+        client.eval(
+            NACK_SCRIPT,
+            14,
+            STATES,
+            TOKENS,
+            LEASES,
+            READY,
+            ATTEMPTS,
+            BYTES,
+            PENDING,
+            COUNTERS,
+            EVENTS,
+            DEAD,
+            ENQUEUED,
+            PAYLOADS,
+            DIRTY,
+            DEAD_REASONS,
+            job_id,
+            token,
+            MAX_ATTEMPTS,
+            DEAD_MAX_JOBS,
+            DEAD_MAX_BYTES,
+            int(time.time() * 1000),
+            "1" if permanent else "0",
+            str(reason)[:100],
+        )
+    )
 
 
 def owns_lease(client, job_id: str, token: str) -> bool:
-    return int(client.eval(
-        VERIFY_SCRIPT,
-        3,
-        STATES,
-        TOKENS,
-        LEASES,
-        job_id,
-        token,
-        int(time.time() * 1000),
-    )) == 1
+    return (
+        int(
+            client.eval(
+                VERIFY_SCRIPT,
+                3,
+                STATES,
+                TOKENS,
+                LEASES,
+                job_id,
+                token,
+                int(time.time() * 1000),
+            )
+        )
+        == 1
+    )
 
 
 def reap(client, limit: int = 100) -> int:
-    return int(client.eval(
-        REAP_SCRIPT,
-        6,
-        LEASES,
-        STATES,
-        TOKENS,
-        READY,
-        EVENTS,
-        DIRTY,
-        int(time.time() * 1000),
-        max(1, min(1_000, limit)),
-    ))
+    return int(
+        client.eval(
+            REAP_SCRIPT,
+            6,
+            LEASES,
+            STATES,
+            TOKENS,
+            READY,
+            EVENTS,
+            DIRTY,
+            int(time.time() * 1000),
+            max(1, min(1_000, limit)),
+        )
+    )
 
 
 def purge_dead(client, job_id: str) -> bool:
-    return int(client.eval(
-        PURGE_DEAD_SCRIPT,
-        8,
-        STATES,
-        DEAD,
-        PAYLOADS,
-        BYTES,
-        ATTEMPTS,
-        PENDING,
-        COUNTERS,
-        DEAD_REASONS,
-        job_id,
-    )) == 1
+    return (
+        int(
+            client.eval(
+                PURGE_DEAD_SCRIPT,
+                8,
+                STATES,
+                DEAD,
+                PAYLOADS,
+                BYTES,
+                ATTEMPTS,
+                PENDING,
+                COUNTERS,
+                DEAD_REASONS,
+                job_id,
+            )
+        )
+        == 1
+    )
 
 
 def requeue_dead(client, job_id: str, max_jobs: int, max_bytes: int) -> str:
-    result = int(client.eval(
-        REQUEUE_DEAD_SCRIPT,
-        8,
-        STATES,
-        DEAD,
-        ATTEMPTS,
-        BYTES,
-        READY,
-        COUNTERS,
-        ENQUEUED,
-        DEAD_REASONS,
-        job_id,
-        max_jobs,
-        max_bytes,
-        int(time.time() * 1000),
-    ))
-    return 'requeued' if result == 1 else 'full' if result == -1 else 'not_found'
+    result = int(
+        client.eval(
+            REQUEUE_DEAD_SCRIPT,
+            8,
+            STATES,
+            DEAD,
+            ATTEMPTS,
+            BYTES,
+            READY,
+            COUNTERS,
+            ENQUEUED,
+            DEAD_REASONS,
+            job_id,
+            max_jobs,
+            max_bytes,
+            int(time.time() * 1000),
+        )
+    )
+    return "requeued" if result == 1 else "full" if result == -1 else "not_found"
 
 
 def cleanup_dead(client, limit: int = 100) -> int:
     cutoff = int(time.time() * 1000) - DEAD_RETENTION_MS
-    expired = client.zrangebyscore(DEAD, '-inf', cutoff, start=0, num=max(1, min(1_000, limit)))
+    expired = client.zrangebyscore(
+        DEAD, "-inf", cutoff, start=0, num=max(1, min(1_000, limit))
+    )
     return sum(1 for job_id in expired if purge_dead(client, str(job_id)))
 
 
-class LeaseRenewer:
-    def __init__(self, redis_factory, job_id: str, token: str):
-        self.redis_factory = redis_factory
-        self.job_id = job_id
-        self.token = token
-        self.stop_event = threading.Event()
-        self.lease_lost = threading.Event()
-        self.thread = threading.Thread(target=self._run, name=f'viewshed-lease-{job_id[:8]}', daemon=True)
-
-    def _run(self):
-        client = None
-        last_success = time.monotonic()
-        backoff = 0.25
-        interval = max(0.25, LEASE_MS / 3000)
-        while not self.stop_event.wait(min(backoff, interval)):
-            try:
-                if client is None:
-                    client = self.redis_factory()
-                renewed = client.eval(
-                    RENEW_SCRIPT,
-                    3,
-                    STATES,
-                    TOKENS,
-                    LEASES,
-                    self.job_id,
-                    self.token,
-                    int(time.time() * 1000) + LEASE_MS,
-                )
-                if int(renewed) != 1:
-                    self.lease_lost.set()
-                    break
-                last_success = time.monotonic()
-                backoff = interval
-            except Exception:
-                if client is not None:
-                    try:
-                        client.close()
-                    except Exception:
-                        pass
-                client = None
-                if (time.monotonic() - last_success) * 1000 >= LEASE_MS:
-                    self.lease_lost.set()
-                    break
-                backoff = min(5.0, backoff * 2)
-        if client is not None:
-            client.close()
-
-    def assert_owned(self):
-        if self.lease_lost.is_set():
-            raise RuntimeError(f'VIEWSHED_LEASE_LOST:{self.job_id}')
-
-    def __enter__(self):
-        self.thread.start()
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        self.stop_event.set()
-        self.thread.join(timeout=5)
-        self.assert_owned()
+LEASE_PROTOCOL = LeaseProtocol(
+    "viewshed", LEASE_MS, RENEW_SCRIPT, STATES, TOKENS, LEASES
+)

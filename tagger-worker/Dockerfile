@@ -6,7 +6,7 @@ LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
       org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
 WORKDIR /app
-COPY tagger_worker.py /app/tagger_worker.py
+COPY tagger_worker.py tagger_config.py tagger_client.py tagger_repository.py tagger_service.py /app/
 ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 RUN useradd -m -u 10001 tagger && chown -R tagger:tagger /app
 USER tagger

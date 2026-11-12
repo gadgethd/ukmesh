@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 #!/usr/bin/env python3
 import argparse
 import json
@@ -12,7 +14,10 @@ from unittest import mock
 import numpy as np
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
-import worker
+from worker_context import WorkerContext
+import coverage_model as worker
+
+context = WorkerContext()
 
 
 def percentile(values, percentile_value):
@@ -21,15 +26,15 @@ def percentile(values, percentile_value):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--rays', type=int, default=360)
-    parser.add_argument('--steps', type=int, default=1000)
-    parser.add_argument('--repeats', type=int, default=3)
+    parser.add_argument("--rays", type=int, default=360)
+    parser.add_argument("--steps", type=int, default=1000)
+    parser.add_argument("--repeats", type=int, default=3)
     args = parser.parse_args()
     rays = max(12, min(360, args.rays))
     steps = max(100, min(1000, args.steps))
     repeats = max(1, min(10, args.repeats))
-    wall_budget_s = float(os.environ.get('RF_RADIAL_KERNEL_BUDGET_S', '5'))
-    rss_budget_mb = float(os.environ.get('RF_WORKER_RSS_BUDGET_MB', '1024'))
+    wall_budget_s = float(os.environ.get("RF_RADIAL_KERNEL_BUDGET_S", "5"))
+    rss_budget_mb = float(os.environ.get("RF_WORKER_RSS_BUDGET_MB", "1024"))
 
     # The flat synthetic raster isolates the maximum-size RF kernel from tile
     # downloads, GDAL VRT construction, and database/Redis latency.
@@ -41,15 +46,27 @@ def main():
     radius_m = 0.0
 
     with (
-        mock.patch.object(worker, 'RF_N_RAYS', rays),
-        mock.patch.object(worker, 'RF_RADIAL_STEP_M', 100.0),
-        mock.patch.object(worker, 'RF_MIN_RADIUS_M', search_radius_m),
-        mock.patch.object(worker, 'MAX_RADIUS_M', search_radius_m),
-        mock.patch.object(worker, 'RF_RADIUS_MULTIPLIER', 1.0),
+        mock.patch.object(
+            context, "settings", replace(context.settings, RF_N_RAYS=rays)
+        ),
+        mock.patch.object(
+            context, "settings", replace(context.settings, RF_RADIAL_STEP_M=100.0)
+        ),
+        mock.patch.object(
+            context,
+            "settings",
+            replace(context.settings, RF_MIN_RADIUS_M=search_radius_m),
+        ),
+        mock.patch.object(
+            context, "settings", replace(context.settings, MAX_RADIUS_M=search_radius_m)
+        ),
+        mock.patch.object(
+            context, "settings", replace(context.settings, RF_RADIUS_MULTIPLIER=1.0)
+        ),
         mock.patch.object(
             worker,
-            'support_penalty_db',
-            side_effect=lambda _node_id, lats, _lons: np.zeros(
+            "support_penalty_db",
+            side_effect=lambda _node_id, lats, _lons, **_kwargs: np.zeros(
                 len(lats),
                 dtype=np.float32,
             ),
@@ -58,7 +75,7 @@ def main():
         for _ in range(repeats):
             started = time.perf_counter()
             boundaries, radius_m = worker.resolve_rf_radial_boundaries(
-                'synthetic-benchmark-node',
+                "synthetic-benchmark-node",
                 51.5,
                 -0.5,
                 elev,
@@ -66,6 +83,7 @@ def main():
                 140.0,
                 search_radius_m,
                 deadline_monotonic=time.monotonic() + max(30.0, wall_budget_s * 3),
+                context=context,
             )
             durations_s.append(time.perf_counter() - started)
 
@@ -74,35 +92,38 @@ def main():
     points_per_band = {key: len(value) for key, value in boundaries.items()}
     if any(count != expected_points for count in points_per_band.values()):
         raise SystemExit(
-            f'RF radial benchmark returned non-closed boundaries: {points_per_band}'
+            f"RF radial benchmark returned non-closed boundaries: {points_per_band}"
         )
 
     p50_s = statistics.median(durations_s)
     p95_s = percentile(durations_s, 95)
     rss_mb = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) / 1024.0
-    print(json.dumps({
-        'p50_seconds': round(p50_s, 3),
-        'p95_seconds': round(p95_s, 3),
-        'peak_rss_mb': round(rss_mb, 3),
-        'points_per_band': points_per_band,
-        'ray_batch_size': worker.RF_PREFIX_RAY_BATCH,
-        'rays': rays,
-        'repeats': repeats,
-        'reported_radius_m': radius_m,
-        'rss_budget_mb': rss_budget_mb,
-        'steps_per_ray': steps,
-        'wall_budget_s': wall_budget_s,
-    }, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "p50_seconds": round(p50_s, 3),
+                "p95_seconds": round(p95_s, 3),
+                "peak_rss_mb": round(rss_mb, 3),
+                "points_per_band": points_per_band,
+                "ray_batch_size": context.settings.RF_PREFIX_RAY_BATCH,
+                "rays": rays,
+                "repeats": repeats,
+                "reported_radius_m": radius_m,
+                "rss_budget_mb": rss_budget_mb,
+                "steps_per_ray": steps,
+                "wall_budget_s": wall_budget_s,
+            },
+            sort_keys=True,
+        )
+    )
 
     if p95_s > wall_budget_s:
-        raise SystemExit(
-            f'RF radial p95 {p95_s:.3f}s exceeded {wall_budget_s:.3f}s'
-        )
+        raise SystemExit(f"RF radial p95 {p95_s:.3f}s exceeded {wall_budget_s:.3f}s")
     if rss_mb > rss_budget_mb:
         raise SystemExit(
-            f'RF radial benchmark RSS {rss_mb:.1f}MiB exceeded {rss_budget_mb:.1f}MiB'
+            f"RF radial benchmark RSS {rss_mb:.1f}MiB exceeded {rss_budget_mb:.1f}MiB"
         )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

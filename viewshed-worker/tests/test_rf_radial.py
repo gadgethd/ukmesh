@@ -1,3 +1,5 @@
+from worker_context import WorkerContext
+from dataclasses import replace
 import time
 import unittest
 from unittest import mock
@@ -6,11 +8,15 @@ import numpy as np
 from scipy.ndimage import minimum_filter
 from shapely.geometry import Point, shape
 
-import worker
+import coverage_model as worker
+from worker_types import JobDeadlineExceeded, Cancelled
 from rf.terrain import tiles_for_radius
 
 
 class RfRadialBudgetTests(unittest.TestCase):
+    def setUp(self):
+        self.context = WorkerContext()
+
     def test_in_place_dtm_filter_matches_out_of_place_result(self):
         rng = np.random.default_rng(20260801)
         elevation = rng.integers(0, 500, size=(32, 31)).astype(np.float32)
@@ -36,28 +42,60 @@ class RfRadialBudgetTests(unittest.TestCase):
     def test_empty_land_mask_intersection_is_terminal(self):
         with self.assertRaisesRegex(
             worker.PermanentOutOfScope,
-            'does not intersect the map land mask',
+            "does not intersect the map land mask",
         ):
-            worker.require_mapped_coverage('node-a', None, 'RF')
+            worker.require_mapped_coverage("node-a", None, "RF", context=self.context)
 
     def test_rf_search_radius_matches_terrain_fetch_and_ray_cap(self):
         with (
-            mock.patch.object(worker, 'RF_MIN_RADIUS_M', 20_000),
-            mock.patch.object(worker, 'RF_RADIUS_MULTIPLIER', 1.35),
-            mock.patch.object(worker, 'MAX_RADIUS_M', 100_000),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_MIN_RADIUS_M=20_000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_RADIUS_MULTIPLIER=1.35),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, MAX_RADIUS_M=100_000),
+            ),
         ):
-            self.assertEqual(worker.rf_search_radius_m(5_000), 20_000)
-            self.assertEqual(worker.rf_search_radius_m(40_000), 54_000)
-            self.assertEqual(worker.rf_search_radius_m(90_000), 100_000)
+            self.assertEqual(
+                worker.rf_search_radius_m(5_000, context=self.context), 20_000
+            )
+            self.assertEqual(
+                worker.rf_search_radius_m(40_000, context=self.context), 54_000
+            )
+            self.assertEqual(
+                worker.rf_search_radius_m(90_000, context=self.context), 100_000
+            )
 
     def test_rf_expansion_fetches_a_tile_needed_beyond_geometric_horizon(self):
         with (
-            mock.patch.object(worker, 'RF_MIN_RADIUS_M', 20_000),
-            mock.patch.object(worker, 'RF_RADIUS_MULTIPLIER', 1.35),
-            mock.patch.object(worker, 'MAX_RADIUS_M', 100_000),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_MIN_RADIUS_M=20_000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_RADIUS_MULTIPLIER=1.35),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, MAX_RADIUS_M=100_000),
+            ),
         ):
             base_radius_m = 16_000
-            expanded_radius_m = worker.rf_search_radius_m(base_radius_m)
+            expanded_radius_m = worker.rf_search_radius_m(
+                base_radius_m, context=self.context
+            )
 
         base_tiles = set(tiles_for_radius(51.81, -0.5, base_radius_m))
         expanded_tiles = set(tiles_for_radius(51.81, -0.5, expanded_radius_m))
@@ -66,63 +104,72 @@ class RfRadialBudgetTests(unittest.TestCase):
 
     def test_strength_bands_are_exclusive_and_reconstruct_outer_coverage(self):
         nested = {
-            'green': Point(0, 0).buffer(1),
-            'amber': Point(0, 0).buffer(2),
-            'red': Point(0, 0).buffer(3),
+            "green": Point(0, 0).buffer(1),
+            "amber": Point(0, 0).buffer(2),
+            "red": Point(0, 0).buffer(3),
         }
 
         with (
-            mock.patch.object(worker, 'UK_MAINLAND', None),
-            mock.patch.object(worker, 'SIMPLIFY_DEG', 0),
+            mock.patch.object(self.context, "mainland", None),
+            mock.patch.object(
+                self.context, "settings", replace(self.context.settings, SIMPLIFY_DEG=0)
+            ),
         ):
-            result = worker.build_exclusive_strength_geoms(nested)
+            result = worker.build_exclusive_strength_geoms(nested, context=self.context)
 
-        green = shape(result['green'])
-        amber = shape(result['amber'])
-        red = shape(result['red'])
+        green = shape(result["green"])
+        amber = shape(result["amber"])
+        red = shape(result["red"])
         self.assertAlmostEqual(green.intersection(amber).area, 0.0, places=9)
         self.assertAlmostEqual(green.intersection(red).area, 0.0, places=9)
         self.assertAlmostEqual(amber.intersection(red).area, 0.0, places=9)
         self.assertLessEqual(
-            green.union(amber).union(red).symmetric_difference(
-                nested['red']
-            ).area / nested['red'].area,
+            green.union(amber).union(red).symmetric_difference(nested["red"]).area
+            / nested["red"].area,
             1e-8,
         )
 
     def test_simplified_nearby_boundaries_remain_an_exact_partition(self):
         nested = {
-            'green': Point(0, 0).buffer(1.00, resolution=64),
-            'amber': Point(0, 0).buffer(1.02, resolution=64),
-            'red': Point(0, 0).buffer(1.04, resolution=64),
+            "green": Point(0, 0).buffer(1.00, resolution=64),
+            "amber": Point(0, 0).buffer(1.02, resolution=64),
+            "red": Point(0, 0).buffer(1.04, resolution=64),
         }
 
         with (
-            mock.patch.object(worker, 'UK_MAINLAND', None),
-            mock.patch.object(worker, 'SIMPLIFY_DEG', 0.1),
+            mock.patch.object(self.context, "mainland", None),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, SIMPLIFY_DEG=0.1),
+            ),
         ):
-            outer = worker.clip_and_simplify_polygon(nested['red'])
+            outer = worker.clip_and_simplify_polygon(
+                nested["red"], context=self.context
+            )
             result = worker.build_exclusive_strength_geoms(
-                nested,
-                red_outer_geom=outer,
+                nested, red_outer_geom=outer, context=self.context
             )
 
-        bands = [shape(result[name]) for name in ('green', 'amber', 'red')]
+        bands = [shape(result[name]) for name in ("green", "amber", "red")]
         self.assertTrue(all(band.is_valid for band in bands))
         self.assertAlmostEqual(bands[0].intersection(bands[1]).area, 0.0, places=12)
         self.assertAlmostEqual(bands[0].intersection(bands[2]).area, 0.0, places=12)
         self.assertAlmostEqual(bands[1].intersection(bands[2]).area, 0.0, places=12)
         self.assertLessEqual(
-            bands[0].union(bands[1]).union(bands[2]).symmetric_difference(
-                shape(outer)
-            ).area / shape(outer).area,
+            bands[0]
+            .union(bands[1])
+            .union(bands[2])
+            .symmetric_difference(shape(outer))
+            .area
+            / shape(outer).area,
             1e-8,
         )
 
     def test_deadline_is_checked_before_radial_allocation(self):
-        with self.assertRaises(worker.JobDeadlineExceeded):
+        with self.assertRaises(JobDeadlineExceeded):
             worker.resolve_rf_radial_boundaries(
-                'node-a',
+                "node-a",
                 51.5,
                 -0.5,
                 np.full((20, 20), 100.0, dtype=np.float32),
@@ -130,6 +177,7 @@ class RfRadialBudgetTests(unittest.TestCase):
                 110.0,
                 1000.0,
                 deadline_monotonic=time.monotonic() - 1,
+                context=self.context,
             )
 
     def test_lease_cancellation_is_checked_inside_radial_work(self):
@@ -139,25 +187,39 @@ class RfRadialBudgetTests(unittest.TestCase):
             nonlocal checks
             checks += 1
             if checks >= 3:
-                raise RuntimeError('lease lost')
+                raise RuntimeError("lease lost")
 
         with (
-            mock.patch.object(worker, 'RF_N_RAYS', 8),
-            mock.patch.object(worker, 'RF_MIN_RADIUS_M', 1000),
-            mock.patch.object(worker, 'MAX_RADIUS_M', 2000),
-            mock.patch.object(worker, 'RF_RADIAL_STEP_M', 100.0),
+            mock.patch.object(
+                self.context, "settings", replace(self.context.settings, RF_N_RAYS=8)
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_MIN_RADIUS_M=1000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, MAX_RADIUS_M=2000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_RADIAL_STEP_M=100.0),
+            ),
             mock.patch.object(
                 worker,
-                'support_penalty_db',
-                side_effect=lambda _node_id, lats, _lons: np.zeros(
+                "support_penalty_db",
+                side_effect=lambda _node_id, lats, _lons, **_kwargs: np.zeros(
                     len(lats),
                     dtype=np.float32,
                 ),
             ),
-            self.assertRaisesRegex(worker.Cancelled, 'lease lost'),
+            self.assertRaisesRegex(Cancelled, "lease lost"),
         ):
             worker.resolve_rf_radial_boundaries(
-                'node-a',
+                "node-a",
                 51.5,
                 -0.5,
                 np.full((100, 100), 100.0, dtype=np.float32),
@@ -166,27 +228,42 @@ class RfRadialBudgetTests(unittest.TestCase):
                 1000.0,
                 deadline_monotonic=time.monotonic() + 30,
                 cancellation_check=cancel_after_start,
+                context=self.context,
             )
 
         self.assertGreaterEqual(checks, 3)
 
     def test_flat_terrain_produces_closed_boundary_for_each_band(self):
         with (
-            mock.patch.object(worker, 'RF_N_RAYS', 12),
-            mock.patch.object(worker, 'RF_MIN_RADIUS_M', 1000),
-            mock.patch.object(worker, 'MAX_RADIUS_M', 2000),
-            mock.patch.object(worker, 'RF_RADIAL_STEP_M', 100.0),
+            mock.patch.object(
+                self.context, "settings", replace(self.context.settings, RF_N_RAYS=12)
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_MIN_RADIUS_M=1000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, MAX_RADIUS_M=2000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_RADIAL_STEP_M=100.0),
+            ),
             mock.patch.object(
                 worker,
-                'support_penalty_db',
-                side_effect=lambda _node_id, lats, _lons: np.zeros(
+                "support_penalty_db",
+                side_effect=lambda _node_id, lats, _lons, **_kwargs: np.zeros(
                     len(lats),
                     dtype=np.float32,
                 ),
             ),
         ):
             boundaries, radius = worker.resolve_rf_radial_boundaries(
-                'node-a',
+                "node-a",
                 51.5,
                 -0.5,
                 np.full((100, 100), 100.0, dtype=np.float32),
@@ -194,6 +271,7 @@ class RfRadialBudgetTests(unittest.TestCase):
                 110.0,
                 1000.0,
                 deadline_monotonic=time.monotonic() + 30,
+                context=self.context,
             )
 
         self.assertGreater(radius, 0)
@@ -211,30 +289,45 @@ class RfRadialBudgetTests(unittest.TestCase):
         geotransform = (-2.0, 0.01, 0.0, 53.0, 0.0, -0.01)
 
         with (
-            mock.patch.object(worker, 'RF_N_RAYS', 12),
-            mock.patch.object(worker, 'RF_MIN_RADIUS_M', 1000),
-            mock.patch.object(worker, 'MAX_RADIUS_M', 2000),
-            mock.patch.object(worker, 'RF_RADIAL_STEP_M', 100.0),
+            mock.patch.object(
+                self.context, "settings", replace(self.context.settings, RF_N_RAYS=12)
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_MIN_RADIUS_M=1000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, MAX_RADIUS_M=2000),
+            ),
+            mock.patch.object(
+                self.context,
+                "settings",
+                replace(self.context.settings, RF_RADIAL_STEP_M=100.0),
+            ),
             mock.patch.object(
                 worker,
-                'support_penalty_db',
-                side_effect=lambda _node_id, lats, _lons: np.zeros(
+                "support_penalty_db",
+                side_effect=lambda _node_id, lats, _lons, **_kwargs: np.zeros(
                     len(lats),
                     dtype=np.float32,
                 ),
             ),
         ):
             full_result = worker.resolve_rf_radial_boundaries(
-                'node-a',
+                "node-a",
                 52.0,
                 -1.0,
                 full,
                 geotransform,
                 110.0,
                 1000.0,
+                context=self.context,
             )
             window_result = worker.resolve_rf_radial_boundaries(
-                'node-a',
+                "node-a",
                 52.0,
                 -1.0,
                 window,
@@ -243,10 +336,11 @@ class RfRadialBudgetTests(unittest.TestCase):
                 1000.0,
                 raster_x_offset=x_offset,
                 raster_y_offset=y_offset,
+                context=self.context,
             )
 
         self.assertEqual(full_result, window_result)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

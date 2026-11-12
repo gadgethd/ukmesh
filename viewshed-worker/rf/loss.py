@@ -13,11 +13,13 @@ from rf.config import (
     LINK_LOS_MAX_V,
     PROFILE_STEP_M,
     R_EARTH_M,
-    current_usable_path_loss_db,
+    DEFAULT_USABLE_PATH_LOSS_DB,
 )
 
-PATH_LOSS_BIAS_DB = float(os.environ.get('RF_PATH_LOSS_BIAS_DB', '0'))
-TERRAIN_ROUGHNESS_FACTOR = max(0.0, min(1.0, float(os.environ.get('RF_TERRAIN_ROUGHNESS_FACTOR', '0.08'))))
+PATH_LOSS_BIAS_DB = float(os.environ.get("RF_PATH_LOSS_BIAS_DB", "0"))
+TERRAIN_ROUGHNESS_FACTOR = max(
+    0.0, min(1.0, float(os.environ.get("RF_TERRAIN_ROUGHNESS_FACTOR", "0.08")))
+)
 
 
 @dataclass(frozen=True)
@@ -69,6 +71,7 @@ def compute_prefix_path_losses(
     *,
     endpoint_batch_size: int = 64,
     ray_batch_size: int = 8,
+    usable_threshold_db: float = DEFAULT_USABLE_PATH_LOSS_DB,
 ) -> PrefixPathLossResult:
     """Calculate growing path prefixes for one ray or a batch of rays.
 
@@ -87,9 +90,9 @@ def compute_prefix_path_losses(
         heights = heights[None, :]
         h_rx = h_rx[None, :]
     if heights.ndim != 2 or h_rx.ndim != 2:
-        raise ValueError('height inputs must both be one- or two-dimensional')
+        raise ValueError("height inputs must both be one- or two-dimensional")
     if heights.shape != h_rx.shape or len(dists) != heights.shape[1]:
-        raise ValueError('distance, height, and receiver-height arrays must match')
+        raise ValueError("distance, height, and receiver-height arrays must match")
     if len(dists) < 1:
         empty_shape = (heights.shape[0], 0)
         empty_float = np.empty(empty_shape, dtype=np.float64)
@@ -105,18 +108,15 @@ def compute_prefix_path_losses(
         and np.all(np.isfinite(heights))
         and np.all(np.isfinite(h_rx))
     ):
-        raise ValueError('prefix path inputs must be finite')
+        raise ValueError("prefix path inputs must be finite")
     if np.any(np.diff(dists) < 0):
-        raise ValueError('prefix path distances must be ordered')
+        raise ValueError("prefix path distances must be ordered")
 
-    usable_threshold_db = current_usable_path_loss_db()
     base_losses = np.zeros(len(dists), dtype=np.float64)
 
     positive = dists >= 1.0
-    base_losses[positive] = 20 * np.log10(
-        4 * math.pi * dists[positive] / LAMBDA_M
-    )
-    base_losses[0] = float('inf')
+    base_losses[positive] = 20 * np.log10(4 * math.pi * dists[positive] / LAMBDA_M)
+    base_losses[0] = float("inf")
     losses = np.broadcast_to(base_losses, heights.shape).copy()
     max_vs = np.full(heights.shape, -999.0, dtype=np.float64)
     viable = losses < usable_threshold_db
@@ -132,11 +132,10 @@ def compute_prefix_path_losses(
         roughness_p75 = _running_percentile_75(np.abs(np.diff(ray_heights)))
         # Endpoint i has i height differences in its prefix.
         endpoint_roughness = np.zeros(len(dists), dtype=np.float64)
-        endpoint_roughness[3:] = roughness_p75[3:len(dists)]
+        endpoint_roughness[3:] = roughness_p75[3 : len(dists)]
         roughness_loss[ray_index] = np.minimum(
             6.0,
-            np.log1p(np.maximum(0.0, endpoint_roughness))
-            * TERRAIN_ROUGHNESS_FACTOR,
+            np.log1p(np.maximum(0.0, endpoint_roughness)) * TERRAIN_ROUGHNESS_FACTOR,
         )
 
     obstacle_indices = np.arange(1, len(dists) - 1, dtype=np.int32)
@@ -164,12 +163,11 @@ def compute_prefix_path_losses(
             )
 
             los_h = h_tx + (
-                (receivers[:, :, None] - h_tx)
-                * (d1 / totals[None, :, None])
+                (receivers[:, :, None] - h_tx) * (d1 / totals[None, :, None])
             )
             earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
             excess_h = obstacle_heights[:, None, :] + earth_bulge - los_h
-            with np.errstate(divide='ignore', invalid='ignore'):
+            with np.errstate(divide="ignore", invalid="ignore"):
                 fresnel_v = excess_h * np.sqrt(
                     2 * totals[None, :, None] / (LAMBDA_M * d1 * d2)
                 )
@@ -187,9 +185,7 @@ def compute_prefix_path_losses(
             v = batch_max_v[diffracted]
             diffraction_loss[diffracted] = np.maximum(
                 0.0,
-                6.9 + 20 * np.log10(
-                    np.sqrt((v - 0.1) ** 2 + 1) + v - 0.1
-                ),
+                6.9 + 20 * np.log10(np.sqrt((v - 0.1) ** 2 + 1) + v - 0.1),
             )
             fspl = losses[ray_start:ray_end, :][:, endpoint_indices]
             total_loss = fspl + diffraction_loss
@@ -200,9 +196,8 @@ def compute_prefix_path_losses(
             bounded_loss = np.maximum(fspl, total_loss)
             losses[ray_start:ray_end, endpoint_indices] = bounded_loss
             viable[ray_start:ray_end, endpoint_indices] = (
-                (batch_max_v <= LINK_LOS_MAX_V)
-                & (bounded_loss < usable_threshold_db)
-            )
+                batch_max_v <= LINK_LOS_MAX_V
+            ) & (bounded_loss < usable_threshold_db)
 
     if single_ray:
         return PrefixPathLossResult(losses[0], viable[0], max_vs[0])
@@ -219,11 +214,13 @@ def compute_path_loss(
     vrt_path: str,
     antenna_height_m_tx: float = ANTENNA_HEIGHT_M,
     antenna_height_m_rx: float = ANTENNA_HEIGHT_M,
+    *,
+    usable_threshold_db: float = DEFAULT_USABLE_PATH_LOSS_DB,
 ) -> PathLossResult:
     cos_mid = math.cos(math.radians((lat1 + lat2) / 2))
     dlat = (lat2 - lat1) * 111_320
     dlon = (lon2 - lon1) * 111_320 * cos_mid
-    d_total = math.sqrt(dlat ** 2 + dlon ** 2)
+    d_total = math.sqrt(dlat**2 + dlon**2)
 
     if d_total < 1.0:
         return PathLossResult(0.0, True, ((0.0, max(0.0, elev1)),))
@@ -234,17 +231,17 @@ def compute_path_loss(
 
     ds = gdal.Open(vrt_path)
     if ds is None:
-        raise RuntimeError('failed to open terrain VRT')
+        raise RuntimeError("failed to open terrain VRT")
 
     gt = ds.GetGeoTransform()
     inv_gt = gdal.InvGeoTransform(gt)
     if inv_gt is None:
         ds = None
-        raise RuntimeError('terrain VRT has no invertible geotransform')
+        raise RuntimeError("terrain VRT has no invertible geotransform")
     band = ds.GetRasterBand(1)
     if band is None:
         ds = None
-        raise RuntimeError('terrain VRT has no elevation band')
+        raise RuntimeError("terrain VRT has no elevation band")
 
     heights: list[float] = []
     dists: list[float] = []
@@ -258,7 +255,7 @@ def compute_path_loss(
         data = band.ReadAsArray(px, py, 1, 1)
         if data is None:
             ds = None
-            raise RuntimeError('failed to sample terrain VRT')
+            raise RuntimeError("failed to sample terrain VRT")
         h = float(data[0][0])
         if not math.isfinite(h) or h < -500 or h > 9_000:
             h = 0.0
@@ -276,6 +273,7 @@ def compute_path_loss(
         h_tx,
         h_rx,
         include_profile=True,
+        usable_threshold_db=usable_threshold_db,
     )
 
 
@@ -286,27 +284,30 @@ def compute_path_loss_from_profile(
     h_rx: float,
     *,
     include_profile: bool = True,
+    usable_threshold_db: float = DEFAULT_USABLE_PATH_LOSS_DB,
 ) -> PathLossResult:
     def result(path_loss_db: float, viable: bool) -> PathLossResult:
         profile = (
-            tuple((round(float(distance), 1), round(float(height), 1)) for distance, height in zip(dists, heights))
+            tuple(
+                (round(float(distance), 1), round(float(height), 1))
+                for distance, height in zip(dists, heights)
+            )
             if include_profile
             else ()
         )
         return PathLossResult(float(path_loss_db), bool(viable), profile)
 
     if len(dists) != len(heights) or len(dists) == 0:
-        return result(float('inf'), False)
+        return result(float("inf"), False)
     finite = np.isfinite(dists) & np.isfinite(heights)
     if np.count_nonzero(finite) < 2:
-        return result(float('inf'), False)
+        return result(float("inf"), False)
     dists = dists[finite]
     heights = heights[finite]
     order = np.argsort(dists)
     dists = dists[order]
     heights = heights[order]
     d_total = float(dists[-1])
-    usable_threshold_db = current_usable_path_loss_db()
     if d_total < 1.0:
         return result(0.0, True)
 
@@ -329,21 +330,25 @@ def compute_path_loss_from_profile(
     los_h = h_tx + (h_rx - h_tx) * (d1 / d_total)
     earth_bulge = (d1 * d2) / (2 * K_FACTOR * R_EARTH_M)
     excess_h = profile_h + earth_bulge - los_h
-    with np.errstate(divide='ignore', invalid='ignore'):
+    with np.errstate(divide="ignore", invalid="ignore"):
         vs = excess_h * np.sqrt(2 * (d1 + d2) / (LAMBDA_M * d1 * d2))
     max_v = float(np.max(vs)) if vs.size else -999.0
 
     if max_v <= -0.78:
         diff_loss = 0.0
     else:
-        diff_loss = max(0.0, 6.9 + 20 * math.log10(
-            math.sqrt((max_v - 0.1) ** 2 + 1) + max_v - 0.1
-        ))
+        diff_loss = max(
+            0.0, 6.9 + 20 * math.log10(math.sqrt((max_v - 0.1) ** 2 + 1) + max_v - 0.1)
+        )
 
     # A small robust roughness term improves agreement with observed UK links
     # without allowing a single SRTM spike to dominate the knife-edge loss.
-    terrain_roughness = float(np.percentile(np.abs(np.diff(heights)), 75)) if len(heights) > 3 else 0.0
-    roughness_loss = min(6.0, math.log1p(max(0.0, terrain_roughness)) * TERRAIN_ROUGHNESS_FACTOR)
+    terrain_roughness = (
+        float(np.percentile(np.abs(np.diff(heights)), 75)) if len(heights) > 3 else 0.0
+    )
+    roughness_loss = min(
+        6.0, math.log1p(max(0.0, terrain_roughness)) * TERRAIN_ROUGHNESS_FACTOR
+    )
     total_loss = max(fspl, fspl + diff_loss + roughness_loss + PATH_LOSS_BIAS_DB)
     clear_los = max_v <= LINK_LOS_MAX_V
     viable = clear_los and total_loss < usable_threshold_db

@@ -29,10 +29,16 @@ import numpy as np
 from shapely.geometry import shape
 from shapely.ops import unary_union
 
-import worker
+import coverage_model as worker
+import rf_context
+from worker_settings import parse_settings
+from worker_context import WorkerContext
+import os
+
+from worker_math import is_viewshed_eligible_coordinate, project_xy_km
 
 
-EXPECTED_BANDS = frozenset(('green', 'amber', 'red'))
+EXPECTED_BANDS = frozenset(("green", "amber", "red"))
 
 
 @dataclass(frozen=True)
@@ -52,18 +58,18 @@ class LinkInput:
     b_lon: float
 
 
-def parse_input(stream: TextIO) -> tuple[list[NodeInput], list[LinkInput]]:
+def parse_input(stream: TextIO, *, context) -> tuple[list[NodeInput], list[LinkInput]]:
     nodes: list[NodeInput] = []
     links: list[LinkInput] = []
     seen_node_ids: set[str] = set()
     for line_number, raw_line in enumerate(stream, start=1):
-        line = raw_line.rstrip('\n')
+        line = raw_line.rstrip("\n")
         if not line:
             continue
-        fields = line.split('\t')
+        fields = line.split("\t")
         kind = fields[0]
         try:
-            if kind == 'N' and len(fields) == 4:
+            if kind == "N" and len(fields) == 4:
                 node_id = fields[1].strip()
                 lat = float(fields[2])
                 lon = float(fields[3])
@@ -71,43 +77,38 @@ def parse_input(stream: TextIO) -> tuple[list[NodeInput], list[LinkInput]]:
                     not node_id
                     or len(node_id) > 128
                     or node_id in seen_node_ids
-                    or not worker.is_viewshed_eligible_coordinate(lat, lon)
+                    or not is_viewshed_eligible_coordinate(lat, lon, context=context)
                 ):
-                    raise ValueError('invalid or duplicate node row')
+                    raise ValueError("invalid or duplicate node row")
                 seen_node_ids.add(node_id)
                 nodes.append(NodeInput(node_id, lat, lon))
-            elif kind == 'L' and len(fields) == 7:
+            elif kind == "L" and len(fields) == 7:
                 coordinates = tuple(float(value) for value in fields[3:])
                 if (
                     not fields[1]
                     or not fields[2]
                     or not all(math.isfinite(value) for value in coordinates)
                 ):
-                    raise ValueError('invalid link row')
+                    raise ValueError("invalid link row")
                 links.append(LinkInput(fields[1], fields[2], *coordinates))
             else:
-                raise ValueError('unknown row type or field count')
+                raise ValueError("unknown row type or field count")
         except (TypeError, ValueError) as exc:
-            raise ValueError(f'invalid dry-run input at line {line_number}') from exc
+            raise ValueError(f"invalid dry-run input at line {line_number}") from exc
     if not nodes:
-        raise ValueError('dry-run input contains no nodes')
+        raise ValueError("dry-run input contains no nodes")
     return nodes, links
 
 
-def install_support_context(nodes: list[NodeInput], links: list[LinkInput]) -> None:
-    from scipy.spatial import cKDTree
+def install_support_context(
+    nodes: list[NodeInput], links: list[LinkInput], *, context
+) -> None:
     node_ids = [node.node_id for node in nodes]
-    xy = worker.project_xy_km(
+    xy = project_xy_km(
         [node.lat for node in nodes],
         [node.lon for node in nodes],
+        context=context,
     )
-    worker.SUPPORT_CONTEXT['coordinates'] = xy
-    worker.SUPPORT_CONTEXT['tree'] = cKDTree(xy)
-    worker.SUPPORT_CONTEXT['node_ids'] = node_ids
-    worker.SUPPORT_CONTEXT['node_index_by_id'] = {
-        node_id: index for index, node_id in enumerate(node_ids)
-    }
-
     max_link_km_by_node: dict[str, float] = {}
     for link in links:
         cos_mid = math.cos(math.radians((link.a_lat + link.b_lat) / 2.0))
@@ -125,43 +126,43 @@ def install_support_context(nodes: list[NodeInput], links: list[LinkInput]) -> N
             max_link_km_by_node.get(link.node_b_id, 0.0),
             distance_km,
         )
-    worker.SUPPORT_CONTEXT['max_link_km_by_node'] = max_link_km_by_node
-    worker.SUPPORT_CONTEXT['updated_at'] = time.time()
+    context.rf.install_support(xy, node_ids, max_link_km_by_node, time.time())
+    rf_context.get_support_tree(context=context)
 
 
-def validate_result(result: worker.Computed) -> list[str]:
+def validate_result(result: worker.Computed, *, context) -> list[str]:
     issues: list[str] = []
-    if not math.isfinite(result.radius_m) or not 0 < result.radius_m <= worker.MAX_RADIUS_M:
-        issues.append('radius')
+    if (
+        not math.isfinite(result.radius_m)
+        or not 0 < result.radius_m <= context.settings.MAX_RADIUS_M
+    ):
+        issues.append("radius")
     present_bands = set(result.strength_geoms)
     # Exclusive bands with zero area are intentionally omitted. For example,
     # an amber and red RF boundary can be identical when terrain, rather than
     # receiver sensitivity, is the limiting factor. Reconstruction below is
     # the authoritative completeness check.
     if not present_bands or not present_bands.issubset(EXPECTED_BANDS):
-        issues.append('bands')
+        issues.append("bands")
         return issues
 
     try:
         outer = shape(result.geom)
-        bands = {
-            name: shape(result.strength_geoms[name])
-            for name in present_bands
-        }
+        bands = {name: shape(result.strength_geoms[name]) for name in present_bands}
     except Exception:
-        issues.append('geometry_parse')
+        issues.append("geometry_parse")
         return issues
 
     geometries = [outer, *bands.values()]
     if any(
         geometry.is_empty
         or not geometry.is_valid
-        or geometry.geom_type not in ('Polygon', 'MultiPolygon')
+        or geometry.geom_type not in ("Polygon", "MultiPolygon")
         or not math.isfinite(geometry.area)
         or geometry.area <= 0
         for geometry in geometries
     ):
-        issues.append('geometry_validity')
+        issues.append("geometry_validity")
         return issues
 
     names = tuple(sorted(present_bands))
@@ -172,11 +173,11 @@ def validate_result(result: worker.Computed) -> list[str]:
     )
     outer_area = max(outer.area, 1e-12)
     if overlap_area / outer_area > 1e-6:
-        issues.append('band_overlap')
+        issues.append("band_overlap")
 
     reconstructed = unary_union(tuple(bands.values()))
     if outer.symmetric_difference(reconstructed).area / outer_area > 0.005:
-        issues.append('band_reconstruction')
+        issues.append("band_reconstruction")
     return issues
 
 
@@ -199,14 +200,14 @@ def select_jobs(nodes: list[NodeInput], max_jobs: int | None) -> list[NodeInput]
 
 
 def report_is_complete(report: dict, *, accept_permanent: bool = False) -> bool:
-    outcomes = report['outcomes']
-    accepted = {'computed'}
+    outcomes = report["outcomes"]
+    accepted = {"computed"}
     if accept_permanent:
-        accepted.add('permanent')
+        accepted.add("permanent")
     return (
-        not report['validation_issues']
+        not report["validation_issues"]
         and set(outcomes).issubset(accepted)
-        and sum(outcomes.values()) == report['input_nodes']
+        and sum(outcomes.values()) == report["input_nodes"]
     )
 
 
@@ -216,12 +217,13 @@ def run(
     progress_every: int,
     *,
     max_jobs: int | None = None,
+    context,
 ) -> dict:
     nodes = select_jobs(support_nodes, max_jobs)
     # Aggregate-only output avoids exposing node identifiers or coordinates in
     # rehearsal logs while still retaining progress and failure categories.
     worker.log.disabled = True
-    install_support_context(support_nodes, links)
+    install_support_context(support_nodes, links, context=context)
     durations: list[float] = []
     geometry_bytes: list[float] = []
     radii_m: list[float] = []
@@ -238,25 +240,26 @@ def run(
                 node.node_id,
                 node.lat,
                 node.lon,
+                context=context,
                 deadline_monotonic=time.monotonic()
-                + worker.COVERAGE_JOB_DEADLINE_SECONDS,
+                + context.settings.COVERAGE_JOB_DEADLINE_SECONDS,
             )
-            issues = validate_result(result)
+            issues = validate_result(result, context=context)
             if issues:
-                outcomes['invalid'] += 1
+                outcomes["invalid"] += 1
                 validation_issues.update(issues)
             else:
-                outcomes['computed'] += 1
+                outcomes["computed"] += 1
             encoded = json.dumps(
                 {
-                    'geom': result.geom,
-                    'strength_geoms': result.strength_geoms,
+                    "geom": result.geom,
+                    "strength_geoms": result.strength_geoms,
                 },
                 sort_keys=True,
-                separators=(',', ':'),
+                separators=(",", ":"),
             ).encode()
             aggregate_hash.update(node.node_id.encode())
-            aggregate_hash.update(b'\0')
+            aggregate_hash.update(b"\0")
             aggregate_hash.update(encoded)
             durations.append(time.perf_counter() - started)
             geometry_bytes.append(float(len(encoded)))
@@ -264,87 +267,100 @@ def run(
             for stage, seconds in result.stage_seconds.items():
                 stage_totals[stage] += float(seconds)
         except worker.PermanentOutOfScope:
-            outcomes['permanent'] += 1
+            outcomes["permanent"] += 1
         except Exception as exc:
-            outcomes[f'error:{type(exc).__name__}'] += 1
+            outcomes[f"error:{type(exc).__name__}"] += 1
 
         if index % progress_every == 0 or index == len(nodes):
-            print(json.dumps({
-                'event': 'progress',
-                'processed': index,
-                'total': len(nodes),
-                'elapsed_seconds': round(time.perf_counter() - started_all, 1),
-                'outcomes': dict(sorted(outcomes.items())),
-                'peak_rss_mb': round(
-                    resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
-                    1,
+            print(
+                json.dumps(
+                    {
+                        "event": "progress",
+                        "processed": index,
+                        "total": len(nodes),
+                        "elapsed_seconds": round(time.perf_counter() - started_all, 1),
+                        "outcomes": dict(sorted(outcomes.items())),
+                        "peak_rss_mb": round(
+                            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024.0,
+                            1,
+                        ),
+                    },
+                    sort_keys=True,
                 ),
-            }, sort_keys=True), file=sys.stderr, flush=True)
+                file=sys.stderr,
+                flush=True,
+            )
 
     successful = len(durations)
     elapsed = time.perf_counter() - started_all
     usage = resource.getrusage(resource.RUSAGE_SELF)
     return {
-        'model': worker.COVERAGE_MODEL,
-        'model_version': worker.COVERAGE_MODEL_VERSION,
-        'support_nodes': len(support_nodes),
-        'input_nodes': len(nodes),
-        'input_viable_links': len(links),
-        'support_capped_nodes': len(worker.SUPPORT_CONTEXT['max_link_km_by_node']),
-        'outcomes': dict(sorted(outcomes.items())),
-        'validation_issues': dict(sorted(validation_issues.items())),
-        'elapsed_seconds': round(elapsed, 3),
-        'throughput_nodes_per_second': rounded(len(nodes) / elapsed),
-        'duration_seconds': {
-            'mean': rounded(statistics.mean(durations) if durations else None),
-            'p50': rounded(percentile(durations, 50)),
-            'p95': rounded(percentile(durations, 95)),
-            'p99': rounded(percentile(durations, 99)),
-            'max': rounded(max(durations) if durations else None),
+        "model": context.settings.COVERAGE_MODEL,
+        "model_version": context.settings.COVERAGE_MODEL_VERSION,
+        "support_nodes": len(support_nodes),
+        "input_nodes": len(nodes),
+        "input_viable_links": len(links),
+        "support_capped_nodes": len(context.rf.support.max_link_km_by_node),
+        "outcomes": dict(sorted(outcomes.items())),
+        "validation_issues": dict(sorted(validation_issues.items())),
+        "elapsed_seconds": round(elapsed, 3),
+        "throughput_nodes_per_second": rounded(len(nodes) / elapsed),
+        "duration_seconds": {
+            "mean": rounded(statistics.mean(durations) if durations else None),
+            "p50": rounded(percentile(durations, 50)),
+            "p95": rounded(percentile(durations, 95)),
+            "p99": rounded(percentile(durations, 99)),
+            "max": rounded(max(durations) if durations else None),
         },
-        'geometry_bytes': {
-            'mean': rounded(statistics.mean(geometry_bytes) if geometry_bytes else None, 1),
-            'p95': rounded(percentile(geometry_bytes, 95), 1),
-            'max': rounded(max(geometry_bytes) if geometry_bytes else None, 1),
+        "geometry_bytes": {
+            "mean": rounded(
+                statistics.mean(geometry_bytes) if geometry_bytes else None, 1
+            ),
+            "p95": rounded(percentile(geometry_bytes, 95), 1),
+            "max": rounded(max(geometry_bytes) if geometry_bytes else None, 1),
         },
-        'radius_km': {
-            'mean': rounded(statistics.mean(radii_m) / 1000.0 if radii_m else None),
-            'p95': rounded(percentile(radii_m, 95) / 1000.0 if radii_m else None),
-            'max': rounded(max(radii_m) / 1000.0 if radii_m else None),
+        "radius_km": {
+            "mean": rounded(statistics.mean(radii_m) / 1000.0 if radii_m else None),
+            "p95": rounded(percentile(radii_m, 95) / 1000.0 if radii_m else None),
+            "max": rounded(max(radii_m) / 1000.0 if radii_m else None),
         },
-        'mean_stage_seconds': {
+        "mean_stage_seconds": {
             stage: round(seconds / successful, 4)
             for stage, seconds in sorted(stage_totals.items())
-        } if successful else {},
-        'peak_rss_mb': round(usage.ru_maxrss / 1024.0, 3),
-        'cpu_user_seconds': round(usage.ru_utime, 3),
-        'cpu_system_seconds': round(usage.ru_stime, 3),
-        'aggregate_geometry_sha256': aggregate_hash.hexdigest(),
+        }
+        if successful
+        else {},
+        "peak_rss_mb": round(usage.ru_maxrss / 1024.0, 3),
+        "cpu_user_seconds": round(usage.ru_utime, 3),
+        "cpu_system_seconds": round(usage.ru_stime, 3),
+        "aggregate_geometry_sha256": aggregate_hash.hexdigest(),
     }
 
 
 def main() -> None:
+    context = WorkerContext(settings=parse_settings(os.environ))
     parser = argparse.ArgumentParser()
-    parser.add_argument('--expected-nodes', type=int)
-    parser.add_argument('--max-jobs', type=int)
-    parser.add_argument('--progress-every', type=int, default=50)
+    parser.add_argument("--expected-nodes", type=int)
+    parser.add_argument("--max-jobs", type=int)
+    parser.add_argument("--progress-every", type=int, default=50)
     parser.add_argument(
-        '--accept-permanent',
-        action='store_true',
-        help='accept deterministic out-of-land-mask outcomes as complete',
+        "--accept-permanent",
+        action="store_true",
+        help="accept deterministic out-of-land-mask outcomes as complete",
     )
-    parser.add_argument('--allow-incomplete', action='store_true')
+    parser.add_argument("--allow-incomplete", action="store_true")
     args = parser.parse_args()
-    nodes, links = parse_input(sys.stdin)
+    nodes, links = parse_input(sys.stdin, context=context)
     if args.expected_nodes is not None and len(nodes) != args.expected_nodes:
         raise SystemExit(
-            f'expected {args.expected_nodes} nodes but received {len(nodes)}'
+            f"expected {args.expected_nodes} nodes but received {len(nodes)}"
         )
     report = run(
         nodes,
         links,
         max(1, args.progress_every),
         max_jobs=args.max_jobs,
+        context=context,
     )
     print(json.dumps(report, sort_keys=True), flush=True)
     if not args.allow_incomplete and not report_is_complete(
@@ -354,5 +370,5 @@ def main() -> None:
         raise SystemExit(2)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()
