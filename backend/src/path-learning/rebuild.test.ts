@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
 import test from 'node:test';
-import { pathLearningInputHash, resolvePathForPacket } from './rebuild.js';
+import { pathLearningInputHash } from './rebuild.js';
+import { resolvePathForPacket } from './evidence.js';
 import { buildNodePathHashIndex } from '../path-hash/utils.js';
 
 const baseInput = {
@@ -45,15 +45,4 @@ test('training keeps original positions across missing relays and preserves veri
   assert.deepEqual(gap.map((hop) => hop.position), [0, 2]);
   const loop = resolvePathForPacket(['AA0011', 'BB0022', 'AA0011'], undefined, rx, index, new Set());
   assert.deepEqual(loop.map((hop) => hop.node.node_id), ['AA0011', 'BB0022', 'AA0011']);
-});
-
-test('rebuild has no full-table-per-network replacement path and retains all fallback', async () => {
-  const source = await readFile(new URL('./rebuild.ts', import.meta.url), 'utf8');
-  assert.doesNotMatch(source, /DELETE FROM path_[a-z_]+_priors WHERE network = \$1/);
-  assert.doesNotMatch(source, /NOW\(\) - INTERVAL '30 days'/);
-  assert.match(source, /rebuildNetwork\('all', undefined, windowStart, windowEnd\)/);
-  assert.match(source, /skipped-empty-selected-window/);
-  assert.match(source, /updated_at = NOW\(\)/);
-  assert.match(source, /analyticsPool\.connect\(\)/);
-  assert.doesNotMatch(source, /const client = await pool\.connect\(\)/);
 });

@@ -1,3 +1,4 @@
+import { API_CACHE_POLICIES } from '../cachePolicies.js';
 import type { Request, Response, Router } from 'express';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
@@ -46,7 +47,7 @@ type GetTopAdvertingRepeatersFn = (hours: number, limit: number, network: string
 type RequireLocalOnlyFn = (req: Request, res: Response) => boolean;
 
 /** Top-adverting repeater list is public and changes slowly — 1h in-memory cache. */
-const TOP_ADVERTS_CACHE_TTL_MS = 60 * 60 * 1000;
+const TOP_ADVERTS_CACHE_TTL_MS = API_CACHE_POLICIES.topAdvertsCache.ttlMs;
 
 type InferredMultibyteNode = {
   node_id: string;
@@ -93,9 +94,7 @@ type NodesRouteDeps = {
 
 export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => void {
   let closed = false;
-  const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>({
-    maxEntries: 32, maxWeight: 256 << 10, ttlMs: TOP_ADVERTS_CACHE_TTL_MS,
-  });
+  const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>(API_CACHE_POLICIES.topAdvertsCache);
   const topAdvertsInflight = new Map<string, Promise<unknown[]>>();
   const {
     getNodes,

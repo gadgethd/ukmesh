@@ -15,6 +15,4 @@ export function hasCoords(n: MeshNode | null | undefined): n is MeshNode {
   return Boolean(n && isValidMapCoord(n.lat, n.lon));
 }
 
-export function linkKey(a: string, b: string): string {
-  return a < b ? `${a}:${b}` : `${b}:${a}`;
-}
+export { undirectedLinkKey as linkKey } from '../path-shared/priorKeys.js';

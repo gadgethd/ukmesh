@@ -1,206 +1,63 @@
-export type CachePolicyRecord = Readonly<{
-  source: string;
-  disposition: 'bounded-cache' | 'request-local-exclusion';
-  maxEntries?: number;
-  maxBytes?: number;
-  ttlMs?: number;
-  scope: string;
-  invalidation: string;
-  negativeCaching: string;
-  singleFlight: string;
-}>;
+import type { CachePolicyRecord } from './policy.js';
+import { MQTT_CACHE_POLICIES } from '../mqtt/cachePolicies.js';
+import { API_CACHE_POLICIES } from '../api/cachePolicies.js';
+import { API_BOOTSTRAP_CACHE_POLICIES } from '../api/bootstrap/cachePolicies.js';
+import { STATS_CACHE_POLICIES } from '../stats/cachePolicies.js';
+import { PATH_CACHE_POLICIES } from '../path-beta/cachePolicies.js';
+import { TIMELINE_CACHE_POLICIES } from '../timeline/cachePolicies.js';
+import { OWNER_CACHE_POLICIES } from '../owner/cachePolicies.js';
+import { WS_CACHE_POLICIES } from '../ws/cachePolicies.js';
 
-/**
- * Reviewed registry for process-lifetime data caches.
- *
- * Coordination-only in-flight maps are excluded because their admission caps
- * and resolve/reject cleanup live beside the work they coordinate. Algorithmic
- * maps are request/run-local. The static registry test discovers every
- * BoundedTtlMap and every Map identifier containing "cache", so a new cache
- * cannot land without an explicit policy or exclusion.
- */
+export type { CachePolicyRecord } from './policy.js';
+
+export const REQUEST_LOCAL_CACHE_EXCLUSIONS: readonly CachePolicyRecord[] = Object.freeze([
+  {
+    source: 'src/tools/benchmarkBoundedCacheAudit.ts',
+    disposition: 'request-local-exclusion',
+    scope: 'one benchmark repetition',
+    invalidation: 'cleared and shut down after each repetition',
+    negativeCaching: 'not applicable',
+    singleFlight: 'not applicable',
+    id: 'benchmarkBoundedCacheAudit:cache',
+  },
+  {
+    source: 'src/tools/benchmarkBoundedCache.ts',
+    disposition: 'request-local-exclusion',
+    scope: 'one benchmark repetition',
+    invalidation: 'cleared and shut down after each repetition',
+    negativeCaching: 'not applicable',
+    singleFlight: 'not applicable',
+    id: 'benchmarkBoundedCache:cache',
+  },
+  {
+    source: 'src/path-beta/resolver.ts',
+    disposition: 'request-local-exclusion',
+    scope: 'one resolver invocation',
+    invalidation: 'discarded with invocation',
+    negativeCaching: 'local null memoization',
+    singleFlight: 'not applicable',
+    id: 'resolver:hopCache',
+  },
+  {
+    id: 'mqtt-sweep-benchmark',
+    source: 'src/tools/benchmarkMqttCacheSweeps.ts',
+    disposition: 'request-local-exclusion',
+    scope: 'one benchmark trial',
+    invalidation: 'cleared and shut down per trial',
+    negativeCaching: 'not applicable',
+    singleFlight: 'not applicable',
+  },
+]);
+
+/** Inventory is composed from the same policies that configure storage. */
 export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze([
-  {
-    source: 'src/tools/benchmarkBoundedCacheAudit.ts#cache',
-    disposition: 'request-local-exclusion',
-    scope: 'one benchmark repetition', invalidation: 'cleared and shut down after each repetition',
-    negativeCaching: 'not applicable', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/mqtt/onboardingDiagnostics.ts#recent',
-    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 4 << 20, ttlMs: 15 * 60_000,
-    scope: 'authenticated MQTT username; diagnostic hints only',
-    invalidation: 'event-time expiry + storage TTL; lost on process restart',
-    negativeCaching: 'none', singleFlight: 'synchronous broker-log observations',
-  },
-  {
-    source: 'src/tools/benchmarkBoundedCache.ts#cache',
-    disposition: 'request-local-exclusion',
-    scope: 'one benchmark repetition', invalidation: 'cleared and shut down after each repetition',
-    negativeCaching: 'not applicable', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/api/hopreachCompatibility.ts#nodeCountCache',
-    disposition: 'bounded-cache', maxEntries: 1, maxBytes: 1_024, ttlMs: 30_000,
-    scope: 'internal HopReach adapter + public repeater predicate', invalidation: 'TTL',
-    negativeCaching: 'zero is a completed count', singleFlight: 'nodeCountInFlight (cap 64)',
-  },
-  {
-    source: 'src/api/hopreachCompatibility.ts#nodePageCache',
-    disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 30_000,
-    scope: 'internal HopReach adapter + limit + offset', invalidation: 'TTL',
-    negativeCaching: 'completed empty terminal page', singleFlight: 'nodePageInFlight (cap 64)',
-  },
-  {
-    source: 'src/api/hopreachCompatibility.ts#reachCache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 32 << 20, ttlMs: 60_000,
-    scope: 'internal HopReach adapter + sorted public keys + observation window', invalidation: 'TTL',
-    negativeCaching: 'completed empty observed-link set', singleFlight: 'reachInFlight (cap 64)',
-  },
-  {
-    source: 'src/api/routes/topology.ts#cache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 16 << 20, ttlMs: 60_000,
-    scope: 'effective public network + link limit + visibility generation',
-    invalidation: 'identity/privacy generation check + TTL',
-    negativeCaching: 'successful complete DTOs only', singleFlight: 'inflight (cap 64)',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#statsCache',
-    disposition: 'bounded-cache', maxEntries: 256, maxBytes: 16 << 20, ttlMs: 15 * 60_000,
-    scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',
-    negativeCaching: 'completed responses only', singleFlight: 'statsService statsInflight',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#inferredNodesCache',
-    disposition: 'bounded-cache', maxEntries: 128, maxBytes: 16 << 20, ttlMs: 30 * 60_000,
-    scope: 'network + observer + visibility generation', invalidation: 'TTL',
-    negativeCaching: 'none', singleFlight: 'inferredNodesInflight',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#nodeLinksCache',
-    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 32 << 20, ttlMs: 5 * 60_000,
-    scope: 'network + observer + node', invalidation: 'TTL',
-    negativeCaching: 'empty link response allowed', singleFlight: 'nodeLinksInflight',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#chartsCache',
-    disposition: 'bounded-cache', maxEntries: 256, maxBytes: 32 << 20, ttlMs: 6 * 60 * 60_000,
-    scope: 'network + visibility generation; observer responses are not cached', invalidation: 'generation check + stale-while-revalidate TTL',
-    negativeCaching: 'last successful snapshot only', singleFlight: 'chartsInflight',
-  },
-  {
-    source: 'src/api/bootstrap/caches.ts#ownerLiveCache',
-    disposition: 'bounded-cache', maxEntries: 512, maxBytes: 16 << 20, ttlMs: 15_000,
-    scope: 'authorized owner node', invalidation: 'TTL + logout',
-    negativeCaching: 'none', singleFlight: 'request-bound repository work',
-  },
-  {
-    source: 'src/stats/statsService.ts#channelTrafficCache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 2 << 20, ttlMs: 60 * 60_000,
-    scope: 'network + visibility generation; observer responses are not cached', invalidation: 'generation check + TTL',
-    negativeCaching: 'empty completed response', singleFlight: 'channelTrafficInflight',
-  },
-  {
-    source: 'src/stats/statsService.ts#observerActivityCache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 16 << 20, ttlMs: 5 * 60_000,
-    scope: 'network + visibility generation', invalidation: 'generation check + TTL/stale-while-revalidate',
-    negativeCaching: 'empty completed response', singleFlight: 'observerActivityInflight',
-  },
-  {
-    source: 'src/stats/statsService.ts#liveObserverCache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 2 << 20, ttlMs: 60_000,
-    scope: 'network + observer + visibility generation', invalidation: 'generation check + TTL',
-    negativeCaching: 'empty completed response', singleFlight: 'liveObserverInflight',
-  },
-  {
-    source: 'src/path-beta/resolveCache.ts#cache',
-    disposition: 'bounded-cache', maxEntries: 4_096, maxBytes: 64 << 20, ttlMs: 10 * 60_000,
-    scope: 'packet + network + observer + visibility generation', invalidation: 'packet generation token',
-    negativeCaching: 'none', singleFlight: 'pathingService resolve maps',
-  },
-  {
-    source: 'src/timeline/snapshotCache.ts#cache',
-    disposition: 'bounded-cache', maxEntries: 16, maxBytes: 8 << 20, ttlMs: 90_000,
-    scope: 'network + window minutes + bucket minutes + ready privacy generation',
-    invalidation: 'fresh authority before/after delivery + generation-keyed 30s refresh/90s maximum age',
-    negativeCaching: 'empty complete snapshot', singleFlight: 'at most four coalesced/background fills; other cold requests retain awaited SQL',
-  },
-  {
-    source: 'src/path-beta/resolveCache.ts#invalidationVersions',
-    disposition: 'bounded-cache', maxEntries: 50_000, maxBytes: 4 << 20, ttlMs: 60 * 60_000,
-    scope: 'packet', invalidation: 'TTL after cache result expiry',
-    negativeCaching: 'zero generation is implicit', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/path-beta/resolveCache.ts#stickyNodeCache',
-    disposition: 'bounded-cache', maxEntries: 2_048, maxBytes: 16 << 20, ttlMs: 30 * 60_000,
-    scope: 'packet + network; public projection remains visibility-fenced', invalidation: 'TTL',
-    negativeCaching: 'none', singleFlight: 'worker pool',
-  },
-  {
-    source: 'src/path-beta/resolveCache.ts#heldPathCache',
-    disposition: 'bounded-cache', maxEntries: 2_048, maxBytes: 16 << 20, ttlMs: 30 * 60_000,
-    scope: 'packet + network; public projection remains visibility-fenced', invalidation: 'TTL only; packet observations do not clear held paths',
-    negativeCaching: 'none', singleFlight: 'pathingService resolve maps + worker pool',
-  },
-  {
-    source: 'src/path-beta/resolver.ts#contextCache',
-    disposition: 'bounded-cache', maxEntries: 16, maxBytes: 128 << 20, ttlMs: 15 * 60_000,
-    scope: 'network + embedded visibility generation', invalidation: 'generation check + TTL',
-    negativeCaching: 'none', singleFlight: 'bounded worker pool',
-  },
-  {
-    source: 'src/owner/ownerAccess.ts#ownerNodeIdCache',
-    disposition: 'bounded-cache', maxEntries: 2_048, maxBytes: 4 << 20, ttlMs: 30_000,
-    scope: 'owner username', invalidation: 'authorization reconciliation + TTL',
-    negativeCaching: 'empty verified grant list', singleFlight: 'ownerNodeIdInflight (cap 128)',
-  },
-  {
-    source: 'src/owner/ownerService.ts#ownerLastHopCache',
-    disposition: 'bounded-cache', maxEntries: 1_024, maxBytes: 64 << 20, ttlMs: 60 * 60_000,
-    scope: 'authorized node', invalidation: 'logout + TTL',
-    negativeCaching: 'completed empty series', singleFlight: 'owner route limiter',
-  },
-  {
-    source: 'src/owner/ownerService.ts#ownerDashboardCache',
-    disposition: 'bounded-cache', maxEntries: 512, maxBytes: 16 << 20, ttlMs: 20_000,
-    scope: 'owner username', invalidation: 'logout + TTL',
-    negativeCaching: 'none', singleFlight: 'owner route limiter',
-  },
-  {
-    source: 'src/ws/server.ts#viableLinksCache',
-    disposition: 'bounded-cache', maxEntries: 50, maxBytes: 16 << 20, ttlMs: 5 * 60_000,
-    scope: 'network + observer', invalidation: 'TTL',
-    negativeCaching: 'completed empty link set', singleFlight: 'initialStateInflight',
-  },
-  {
-    source: 'src/ws/server.ts#initialStateCache',
-    disposition: 'bounded-cache', maxEntries: 128, maxBytes: 48 << 20, ttlMs: 60_000,
-    scope: 'network + observer + privacy projection', invalidation: 'TTL + live updates',
-    negativeCaching: 'completed empty state', singleFlight: 'initialStateInflight (cap 128)',
-  },
-  {
-    source: 'src/mqtt/channelRegistry.ts#channelCache',
-    disposition: 'bounded-cache', maxEntries: 200, maxBytes: 2 << 20, ttlMs: 10 * 60_000,
-    scope: 'raw packet within immutable configured channel set', invalidation: 'TTL/LRU capacity',
-    negativeCaching: 'failed channel decode is cached', singleFlight: 'single MQTT ingest task',
-  },
-  {
-    source: 'src/mqtt/channelRegistry.ts#channelHashCache',
-    disposition: 'bounded-cache', maxEntries: 64, maxBytes: 64 << 10, ttlMs: 30 * 60_000,
-    scope: 'configured channel label + channel-secret configuration', invalidation: 'TTL/LRU capacity',
-    negativeCaching: 'unknown labels cache as empty hash lists', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/path-beta/resolver.ts#hopCache',
-    disposition: 'request-local-exclusion',
-    scope: 'one resolver invocation', invalidation: 'discarded with invocation',
-    negativeCaching: 'local null memoization', singleFlight: 'not applicable',
-  },
-  {
-    source: 'src/api/routes/nodes.ts#topAdvertsCache',
-    disposition: 'bounded-cache', maxEntries: 32, maxBytes: 256 << 10, ttlMs: 60 * 60_000,
-    scope: 'network + hours + limit + visibility generation', invalidation: 'generation check + TTL',
-    negativeCaching: 'completed rows only', singleFlight: 'topAdvertsInflight (cap 32)',
-  },
+  ...Object.values(MQTT_CACHE_POLICIES),
+  ...Object.values(API_CACHE_POLICIES),
+  ...Object.values(API_BOOTSTRAP_CACHE_POLICIES),
+  ...Object.values(STATS_CACHE_POLICIES),
+  ...Object.values(PATH_CACHE_POLICIES),
+  ...Object.values(TIMELINE_CACHE_POLICIES),
+  ...Object.values(OWNER_CACHE_POLICIES),
+  ...Object.values(WS_CACHE_POLICIES),
+  ...REQUEST_LOCAL_CACHE_EXCLUSIONS,
 ]);

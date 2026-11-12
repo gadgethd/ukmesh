@@ -1,3 +1,4 @@
+import { OWNER_CACHE_POLICIES } from './cachePolicies.js';
 import mqtt from 'mqtt';
 import { randomBytes } from 'node:crypto';
 import { Redis } from 'ioredis';
@@ -18,12 +19,7 @@ function normalizeNodeIds(nodeIds: string[]): string[] {
 }
 
 const OWNER_ACCESS_CACHE_TTL_MS = Number(process.env['OWNER_ACCESS_CACHE_TTL_MS'] ?? 30_000);
-const ownerNodeIdCache = new BoundedTtlMap<string, { ts: number; nodeIds: string[] }>({
-  name: 'owner_nodes',
-  maxEntries: 2048,
-  maxWeight: 4 * 1024 * 1024,
-  ttlMs: OWNER_ACCESS_CACHE_TTL_MS,
-});
+const ownerNodeIdCache = new BoundedTtlMap<string, { ts: number; nodeIds: string[] }>(OWNER_CACHE_POLICIES.ownerNodeIdCache, { ttlMs: OWNER_ACCESS_CACHE_TTL_MS });
 const ownerNodeIdInflight = new Map<string, Promise<string[]>>();
 const OWNER_NODE_ID_INFLIGHT_MAX = 128;
 

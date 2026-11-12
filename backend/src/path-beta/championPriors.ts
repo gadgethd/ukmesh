@@ -1,19 +1,4 @@
-/** Count-based evidence published by the multibyte path learner. */
-export type ChampionPriorRows = {
-  positionPrefixes: { prefix: string; position: number; node_id: string; count: number | string }[];
-  corridors: { src_node_id: string; rx_node_id: string; position: number; node_id: string; count: number | string }[];
-  transitions: { from_node_id: string; to_node_id: string; count: number | string }[];
-  positionTransitions: { position: number; from_node_id: string; to_node_id: string; count: number | string }[];
-};
-
-export type ChampionPriors = {
-  prefixCounts: Map<string, number>;
-  positionPrefixCounts: Map<string, number>;
-  corridorCounts: Map<string, number>;
-  transitionCounts: Map<string, number>;
-  positionTransitionCounts: Map<string, number>;
-  verifiedEdgeCounts: Map<string, number>;
-};
+import { buildChampionPriors, type ChampionPriorRows, type ChampionPriors } from '../path-shared/priors.js';
 
 type PriorQuery = <T extends Record<string, unknown>>(
   sql: string, params: unknown[], signal?: AbortSignal,
@@ -39,35 +24,4 @@ export async function loadChampionPriors(network: string, query: PriorQuery, sig
       'SELECT position, from_node_id, to_node_id, count FROM analytics.path_position_transition_priors WHERE network = $1'),
   ]);
   return buildChampionPriors({ positionPrefixes, corridors, transitions, positionTransitions });
-}
-
-export function buildChampionPriors(rows: ChampionPriorRows): ChampionPriors {
-  const result: ChampionPriors = {
-    prefixCounts: new Map(),
-    positionPrefixCounts: new Map(),
-    corridorCounts: new Map(),
-    transitionCounts: new Map(),
-    positionTransitionCounts: new Map(),
-    verifiedEdgeCounts: new Map(),
-  };
-  const add = (map: Map<string, number>, key: string, value: number | string) => {
-    const count = Number(value);
-    if (Number.isFinite(count) && count > 0) map.set(key, (map.get(key) ?? 0) + count);
-  };
-  for (const row of rows.positionPrefixes) {
-    const prefix = row.prefix.toUpperCase().slice(0, 2);
-    add(result.prefixCounts, `${prefix}|${row.node_id}`, row.count);
-    add(result.positionPrefixCounts, `${prefix}|${row.position}|${row.node_id}`, row.count);
-  }
-  for (const row of rows.corridors) {
-    add(result.corridorCounts, `${row.src_node_id}|${row.rx_node_id}|${row.position}|${row.node_id}`, row.count);
-  }
-  for (const row of rows.transitions) {
-    add(result.transitionCounts, `${row.from_node_id}|${row.to_node_id}`, row.count);
-  }
-  for (const row of rows.positionTransitions) {
-    add(result.positionTransitionCounts, `${row.position}|${row.from_node_id}|${row.to_node_id}`, row.count);
-    add(result.verifiedEdgeCounts, `${row.from_node_id}|${row.to_node_id}`, row.count);
-  }
-  return result;
 }

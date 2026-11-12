@@ -1,3 +1,4 @@
+import { STATS_CACHE_POLICIES } from './cachePolicies.js';
 import type { StatsRepository } from './statsRepository.js';
 import { readInitialVisibilityGeneration } from '../privacy/initialGeneration.js';
 import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics/stats.js';
@@ -22,7 +23,7 @@ type StatsServiceDeps = {
   runHeavyWork?: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
-const CHANNEL_TRAFFIC_CACHE_TTL_MS = 60 * 60_000;
+const CHANNEL_TRAFFIC_CACHE_TTL_MS = STATS_CACHE_POLICIES.channelTrafficCache.ttlMs;
 const MAX_UNIQUE_STATS_INFLIGHT = Math.min(
   128,
   Math.max(1, Number(process.env['STATS_UNIQUE_INFLIGHT_MAX'] ?? 32) || 32),
@@ -122,20 +123,13 @@ export function createStatsService(deps: StatsServiceDeps) {
   const channelTrafficCache = new BoundedTtlMap<string, {
     ts: number;
     data: CachedChannelTraffic;
-  }>({
-    name: 'stats_channel',
-    maxEntries: 64,
-    maxWeight: 2 * 1024 * 1024,
-    ttlMs: CHANNEL_TRAFFIC_CACHE_TTL_MS,
-  });
+  }>(STATS_CACHE_POLICIES.channelTrafficCache);
   const channelTrafficInflight = new Map<string, Promise<CachedChannelTraffic>>();
   // Coordination-only maps have a hard admission cap below and entries are
   // removed in both resolve and reject paths.
   const statsInflight = new Map<string, Promise<unknown>>();
   const liveObserverCache = new BoundedTtlMap<string, { generatedAt: string; windowMinutes: number;
-    regions: Array<{ iata: string; activeObservers: number; lastPacketAt: string }> }>({
-    name: 'stats_observer_live', maxEntries: 64, maxWeight: 2 * 1024 * 1024, ttlMs: 60_000,
-  });
+    regions: Array<{ iata: string; activeObservers: number; lastPacketAt: string }> }>(STATS_CACHE_POLICIES.liveObserverCache);
   const liveObserverInflight = new Map<string, Promise<unknown>>();
 
   async function getLiveObserverRegions(network: string | undefined, observer: string | undefined): Promise<unknown> {
@@ -163,12 +157,7 @@ export function createStatsService(deps: StatsServiceDeps) {
   const observerActivityCache = new BoundedTtlMap<string, {
     ts: number;
     data: unknown;
-  }>({
-    name: 'stats_observer',
-    maxEntries: 64,
-    maxWeight: 16 * 1024 * 1024,
-    ttlMs: Math.max(statsCacheTtlMs * 5, 5 * 60_000),
-  });
+  }>(STATS_CACHE_POLICIES.observerActivityCache, { ttlMs: Math.max(statsCacheTtlMs * 5, 5 * 60_000) });
   const observerActivityInflight = new Map<string, Promise<unknown>>();
   const chartSnapshotLoads = new Map<
     string,

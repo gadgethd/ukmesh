@@ -1,3 +1,4 @@
+import { MQTT_CACHE_POLICIES } from './cachePolicies.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 export type MqttOnboardingDiagnostic = {
@@ -6,14 +7,11 @@ export type MqttOnboardingDiagnostic = {
   observedAt: string;
 };
 
-export const MQTT_ONBOARDING_DIAGNOSTIC_TTL_MS = 15 * 60_000;
+export const MQTT_ONBOARDING_DIAGNOSTIC_TTL_MS = MQTT_CACHE_POLICIES.onboardingRecent.ttlMs;
 
 // Diagnostic hints only. A client ID or a claimed topic never proves ownership.
-export function createMqttOnboardingDiagnostics(now = Date.now, maxEntries = 4_096) {
-  const recent = new BoundedTtlMap<string, MqttOnboardingDiagnostic>({
-    name: 'mqtt_onboarding', maxEntries, maxWeight: 4 * 1024 * 1024,
-    ttlMs: MQTT_ONBOARDING_DIAGNOSTIC_TTL_MS, now,
-  });
+export function createMqttOnboardingDiagnostics(now = Date.now, maxEntries = MQTT_CACHE_POLICIES.onboardingRecent.maxEntries) {
+  const recent = new BoundedTtlMap<string, MqttOnboardingDiagnostic>(MQTT_CACHE_POLICIES.onboardingRecent, { maxEntries, now });
 
   function record(mqttUsername: string, topic: string, observedAt: number): void {
     if (!/^[A-Za-z0-9_.@-]{1,128}$/.test(mqttUsername)) return;

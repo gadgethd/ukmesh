@@ -1,16 +1,14 @@
+import { TIMELINE_CACHE_POLICIES } from './cachePolicies.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { activityTimelineRefreshInflight } from '../metrics/stats.js';
 
-const FRESH_MS = 30_000;
-const RETAIN_MS = 90_000;
-const MAX_REFRESHES = 4;
+const FRESH_MS = TIMELINE_CACHE_POLICIES.completedSnapshot.freshMs;
+const MAX_REFRESHES = TIMELINE_CACHE_POLICIES.completedSnapshot.maxRefreshes;
 
 /** Completed snapshots only. Delivery still passes through publicJson's fresh
  * authority reads; callers include the generation and every query scope in key. */
 export function createActivityTimelineCache() {
-  const cache = new BoundedTtlMap<string, { ts: number; data: unknown }>({
-    name: 'api_activity_timeline', maxEntries: 16, maxWeight: 8 << 20, ttlMs: RETAIN_MS,
-  });
+  const cache = new BoundedTtlMap<string, { ts: number; data: unknown }>(TIMELINE_CACHE_POLICIES.completedSnapshot);
   const inflight = new Map<string, Promise<unknown>>();
   let closed = false;
 

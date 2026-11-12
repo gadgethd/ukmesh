@@ -1,3 +1,4 @@
+import { undirectedLinkKey, prefixCountKey, positionPrefixKey, corridorKey, transitionKey, positionTransitionKey } from '../path-shared/priorKeys.js';
 /**
  * Previous lazy resolver, retained for read-only accuracy comparisons.
  * Production packet details use resolveLazyPathForPacketHash and the same
@@ -56,7 +57,6 @@ import {
   NULL_BASELINE,
   AMBIG_DELTA,
   MAX_COL,
-  transitionKey,
 } from '../path-shared/scoring.js';
 import {
   buildObserverBounds,
@@ -481,24 +481,18 @@ export async function lazyResolvePath(
   const knownLinks = new Set<string>();
   const itmViableLinks = new Set<string>();
   for (const row of linkResult.rows) {
-    const mn = row.node_a_id < row.node_b_id ? row.node_a_id : row.node_b_id;
-    const mx = row.node_a_id < row.node_b_id ? row.node_b_id : row.node_a_id;
-    const key = `${mn}:${mx}`;
+    const key = undirectedLinkKey(row.node_a_id, row.node_b_id);
     if (Number(row.observed_count) >= 2) knownLinks.add(key);
     if (row.itm_viable === true || row.force_viable === true) itmViableLinks.add(key);
   }
 
   function hasLink(a: string, b: string): boolean {
     if (ABLATE_LEAKY_PRIORS) return false;
-    const mn = a < b ? a : b;
-    const mx = a < b ? b : a;
-    return knownLinks.has(`${mn}:${mx}`);
+    return knownLinks.has(undirectedLinkKey(a, b));
   }
   const isItmViable = (a: string, b: string): boolean => {
     if (ABLATE_LEAKY_PRIORS || !ENABLE_ITM_BONUS) return false;
-    const mn = a < b ? a : b;
-    const mx = a < b ? b : a;
-    return itmViableLinks.has(`${mn}:${mx}`);
+    return itmViableLinks.has(undirectedLinkKey(a, b));
   };
 
   const positionPrefixCounts = new Map<string, number>();
@@ -507,23 +501,23 @@ export async function lazyResolvePath(
     const prefix = row.prefix.toUpperCase();
     const count = Number(row.count) || 0;
     positionPrefixCounts.set(
-      `${prefix}|${row.position}|${row.node_id}`,
+      positionPrefixKey(prefix, row.position, row.node_id),
       count,
     );
-    const prefixKey = `${prefix}|${row.node_id}`;
+    const prefixKey = prefixCountKey(prefix, row.node_id);
     prefixCounts.set(prefixKey, (prefixCounts.get(prefixKey) ?? 0) + count);
   }
   const getPrefixCount = (nodeId: string, hash: string): number =>
     ABLATE_LEAKY_PRIORS ? 0
-      : prefixCounts.get(`${hash.slice(0, 2).toUpperCase()}|${nodeId}`) ?? 0;
+      : prefixCounts.get(prefixCountKey(hash.slice(0, 2).toUpperCase(), nodeId)) ?? 0;
   const getPositionPrefixCount = (position: number, nodeId: string, hash: string): number =>
     ABLATE_LEAKY_PRIORS ? 0
-      : positionPrefixCounts.get(`${hash.slice(0, 2).toUpperCase()}|${position}|${nodeId}`) ?? 0;
+      : positionPrefixCounts.get(positionPrefixKey(hash.slice(0, 2).toUpperCase(), position, nodeId)) ?? 0;
 
   const corridorCounts = new Map<string, number>();
   for (const row of corridorPriorRows.rows) {
     corridorCounts.set(
-      `${row.src_node_id}|${row.rx_node_id}|${row.position}|${row.node_id}`,
+      corridorKey(row.src_node_id, row.rx_node_id, row.position, row.node_id),
       Number(row.count) || 0,
     );
   }
@@ -539,13 +533,13 @@ export async function lazyResolvePath(
   const positionTransitionCounts = new Map<string, number>();
   for (const row of positionTransitionRows.rows) {
     positionTransitionCounts.set(
-      `${row.position}|${transitionKey(row.from_node_id, row.to_node_id)}`,
+      positionTransitionKey(row.position, row.from_node_id, row.to_node_id),
       Number(row.count) || 0,
     );
   }
   const getPositionTransitionCount = (position: number, a: string, b: string): number =>
     ABLATE_LEAKY_PRIORS ? 0
-      : positionTransitionCounts.get(`${position}|${transitionKey(a, b)}`) ?? 0;
+      : positionTransitionCounts.get(positionTransitionKey(position, a, b)) ?? 0;
 
   // Model calibration (prefer exact network, fall back to 'all').
   let confidenceScale = 1;
@@ -625,7 +619,7 @@ export async function lazyResolvePath(
         : [];
     });
     const corridorPairs = members.flatMap((member) => member.src_node_id
-      ? [`${member.src_node_id}|${member.rx_node_id}`]
+      ? [[member.src_node_id, member.rx_node_id] as const]
       : []);
 
     const groupEvidence: PathDecoderEvidence = {
@@ -635,8 +629,8 @@ export async function lazyResolvePath(
       corridorPriorCount: (position, nodeId) => {
         if (ABLATE_LEAKY_PRIORS || !ENABLE_CORRIDOR_PRIORS) return 0;
         let best = 0;
-        for (const pair of corridorPairs) {
-          best = Math.max(best, corridorCounts.get(`${pair}|${position}|${nodeId}`) ?? 0);
+        for (const [source, receiver] of corridorPairs) {
+          best = Math.max(best, corridorCounts.get(corridorKey(source, receiver, position, nodeId)) ?? 0);
         }
         return best;
       },

@@ -1,0 +1,11 @@
+export const MAX_PREFIX_CHOICES_PER_GROUP = 3;
+export const MAX_TRANSITIONS_PER_GROUP = 5;
+export const MAX_EDGE_CHOICES_PER_GROUP = 8;
+export const MAX_MOTIF2_CHOICES_PER_GROUP = 6;
+export const MAX_MOTIF3_CHOICES_PER_GROUP = 4;
+export const MAX_POSITION_PREFIX_CHOICES_PER_GROUP = 64;
+export const MAX_CORRIDOR_CHOICES_PER_GROUP = 16;
+export const MAX_POSITION_TRANSITIONS_PER_GROUP = 16;
+export const HOUR_BUCKET_SIZE = 6;
+export const PREFIX_AMBIGUITY_RADIUS_KM = 45;
+export const PATH_LEARNING_ALGORITHM_VERSION = 'path-learning-v5-contiguous';

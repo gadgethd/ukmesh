@@ -1,4 +1,4 @@
-import type { ChampionPriors } from './championPriors.js';
+import type { ChampionPriors } from '../path-shared/priors.js';
 
 export type MeshNode = {
   node_id: string;

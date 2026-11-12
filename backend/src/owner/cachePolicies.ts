@@ -1,0 +1,43 @@
+import { defineCachePolicy } from '../cache/policy.js';
+
+export const OWNER_CACHE_POLICIES = Object.freeze({
+  ownerNodeIdCache: defineCachePolicy({
+    id: 'owner_nodes',
+    source: 'src/owner/ownerAccess.ts',
+    disposition: 'bounded-cache',
+    name: 'owner_nodes',
+    maxEntries: 2_048,
+    maxWeight: 4_194_304,
+    ttlMs: 30_000,
+    scope: 'owner username',
+    invalidation: 'authorization reconciliation + TTL',
+    negativeCaching: 'empty verified grant list',
+    singleFlight: 'ownerNodeIdInflight (cap 128)',
+  }),
+  ownerLastHopCache: defineCachePolicy({
+    id: 'owner_last_hop',
+    source: 'src/owner/ownerService.ts',
+    disposition: 'bounded-cache',
+    name: 'owner_last_hop',
+    maxEntries: 1_024,
+    maxWeight: 67_108_864,
+    ttlMs: 3_600_000,
+    scope: 'authorized node',
+    invalidation: 'logout + TTL',
+    negativeCaching: 'completed empty series',
+    singleFlight: 'owner route limiter',
+  }),
+  ownerDashboardCache: defineCachePolicy({
+    id: 'owner_dashboard',
+    source: 'src/owner/ownerService.ts',
+    disposition: 'bounded-cache',
+    name: 'owner_dashboard',
+    maxEntries: 512,
+    maxWeight: 16_777_216,
+    ttlMs: Number(process.env['OWNER_DASHBOARD_CACHE_TTL_MS'] ?? 20_000),
+    scope: 'owner username',
+    invalidation: 'logout + TTL',
+    negativeCaching: 'none',
+    singleFlight: 'owner route limiter',
+  }),
+});

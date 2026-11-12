@@ -1,11 +1,10 @@
 /**
- * Shared scoring weights and prior key-formats for the path resolvers.
+ * Shared scoring weights for the path resolvers.
  *
  * All production path surfaces use the shared decoder and count-based
  * multibyte priors, observer anchors, geographic and terrain evidence.
  *
  * This module is the single source of truth for:
- *   - the prior key formats (must match how `path-learning/rebuild.ts` stores them);
  *   - the relative scoring weights used by the Viterbi decoder.
  *
  * Evidence providers should import this table rather than duplicating weights.
@@ -13,15 +12,6 @@
 
 /** Generous but realistic upper bound for a single LoRa hop, in km. */
 export const MAX_HOP_KM = 150;
-
-/**
- * Directed transition / edge key: source-side node → receiver-side node.
- * `rebuild.ts` stores priors with from = node closer to the source and
- * to = node closer to the receiver (fullNodes = [src, relay0..relayN, rx]).
- */
-export function transitionKey(fromNodeId: string, toNodeId: string): string {
-  return `${fromNodeId}|${toNodeId}`;
-}
 
 /**
  * Weights consumed by the shared Viterbi decoder. Evidence providers may pass

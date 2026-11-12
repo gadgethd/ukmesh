@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { pathContextWeight, PATH_CONTEXT_MAX_WEIGHT } from './contextWeight.js';
-import { buildChampionPriors } from './championPriors.js';
+import { buildChampionPriors } from '../path-shared/priors.js';
 import type { BetaResolveContext, MeshNode } from './types.js';
 
 function fixture(): BetaResolveContext {

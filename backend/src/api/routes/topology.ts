@@ -1,3 +1,4 @@
+import { API_CACHE_POLICIES } from '../cachePolicies.js';
 import { publicJson } from '../../http/publicJson.js';
 import { readInitialVisibilityGeneration } from '../../privacy/initialGeneration.js';
 import type { Router } from 'express';
@@ -207,12 +208,7 @@ export function createTopologyLoader(
     now?: () => Date;
   },
 ): TopologyLoader {
-  const cache = new BoundedTtlMap<string, TopologyDto>({
-    name: 'topology_dto',
-    maxEntries: 64,
-    maxWeight: 16 * 1024 * 1024,
-    ttlMs: 60_000,
-  });
+  const cache = new BoundedTtlMap<string, TopologyDto>(API_CACHE_POLICIES.topologyCache);
   const inflight = new Map<string, Promise<TopologyDto>>();
   let closed = false;
   let observedGeneration: number | null = null;

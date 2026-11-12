@@ -1,6 +1,24 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { TIMELINE_CACHE_POLICIES } from '../timeline/cachePolicies.js';
 import { BoundedTtlMap } from './boundedTtlMap.js';
+
+test('executable policy bounds combine with an owned clock and value accounting', t => {
+  const policy = TIMELINE_CACHE_POLICIES.completedSnapshot;
+  let now = 0;
+  const cache = new BoundedTtlMap<string, string>(policy, {
+    now: () => now, weightOf: () => policy.maxWeight,
+  });
+  t.after(() => cache.shutdown());
+  cache.set('first', 'one'); cache.set('second', 'two');
+  assert.equal(cache.has('first'), false);
+  assert.equal(cache.get('second'), 'two');
+  assert.equal(cache.weight(), policy.maxWeight);
+  now = policy.ttlMs;
+  cache.sweep();
+  assert.equal(cache.size, 0);
+  assert.equal(cache.weight(), 0);
+});
 
 test('bounded cache evicts LRU entries and physically sweeps cold expiry', () => {
   let now = 0;

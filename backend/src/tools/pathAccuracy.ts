@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import pg from 'pg';
-import { buildChampionPriors, type ChampionPriorRows } from '../path-beta/championPriors.js';
+import { buildChampionPriors, type ChampionPriorRows } from '../path-shared/priors.js';
 import type { BetaResolveContext, MeshNode, PathPacket, LinkMetrics } from '../path-beta/types.js';
 import type { BetaObserverEntry } from '../path-beta/sharedDecoder.js';
 import { linkKey } from '../path-beta/geometry.js';
@@ -271,6 +271,9 @@ async function replay(file: string, output: string, decoderFile?: string, split 
   const sourceFiles = ['path-beta/sharedDecoder.ts', 'path-beta/resolver.ts', 'path-core/decoder.ts', 'path-shared/scoring.ts', 'platform/config/pathing.ts'];
   const sourceHashes = Object.fromEntries(await Promise.all(sourceFiles.map(async (name) => [name,
     createHash('sha256').update(await readFile(new URL(name, sourceRoot))).digest('hex')])));
+  for (const name of ['path-shared/priorKeys.ts', 'path-shared/priors.ts']) {
+    sourceHashes[`evidence/${name}`] = createHash('sha256').update(await readFile(new URL(`../${name}`, import.meta.url))).digest('hex');
+  }
   await writeFile(output, JSON.stringify({ summary, sourceHashes, cases }, null, 2));
   console.log(JSON.stringify(summary, null, 2));
 }

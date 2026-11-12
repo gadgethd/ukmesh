@@ -1,0 +1,43 @@
+import { defineCachePolicy } from '../cache/policy.js';
+
+export const STATS_CACHE_POLICIES = Object.freeze({
+  channelTrafficCache: defineCachePolicy({
+    id: 'stats_channel',
+    source: 'src/stats/statsService.ts',
+    disposition: 'bounded-cache',
+    name: 'stats_channel',
+    maxEntries: 64,
+    maxWeight: 2_097_152,
+    ttlMs: 3_600_000,
+    scope: 'network + visibility generation; observer responses are not cached',
+    invalidation: 'generation check + TTL',
+    negativeCaching: 'empty completed response',
+    singleFlight: 'channelTrafficInflight',
+  }),
+  observerActivityCache: defineCachePolicy({
+    id: 'stats_observer',
+    source: 'src/stats/statsService.ts',
+    disposition: 'bounded-cache',
+    name: 'stats_observer',
+    maxEntries: 64,
+    maxWeight: 16_777_216,
+    ttlMs: 1_500_000,
+    scope: 'network + visibility generation',
+    invalidation: 'generation check + TTL/stale-while-revalidate',
+    negativeCaching: 'empty completed response',
+    singleFlight: 'observerActivityInflight',
+  }),
+  liveObserverCache: defineCachePolicy({
+    id: 'stats_observer_live',
+    source: 'src/stats/statsService.ts',
+    disposition: 'bounded-cache',
+    name: 'stats_observer_live',
+    maxEntries: 64,
+    maxWeight: 2_097_152,
+    ttlMs: 60_000,
+    scope: 'network + observer + visibility generation',
+    invalidation: 'generation check + TTL',
+    negativeCaching: 'empty completed response',
+    singleFlight: 'liveObserverInflight',
+  }),
+});

@@ -1,3 +1,5 @@
+import { PATH_CACHE_POLICIES } from './cachePolicies.js';
+import { edgeKey, regionalPrefixGroupKey, regionalPrefixKey, regionalTransitionKey, motifKey } from '../path-shared/priorKeys.js';
 import { touchNodesPredictedOnline } from '../repositories/nodeState.js';
 import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
 import { namedQuery, query } from '../db/runtime.js';
@@ -34,13 +36,7 @@ function resolverScope(network: string): string[] | null {
   return network === 'all' ? null : expandResolverScope(network);
 }
 
-const contextCache = new BoundedTtlMap<string, BetaResolveContext>({
-  name: 'path_context',
-  maxEntries: 16,
-  maxWeight: PATH_CONTEXT_MAX_WEIGHT,
-  weightOf: pathContextWeight,
-  ttlMs: pathingConfig.contextTtlMs,
-});
+const contextCache = new BoundedTtlMap<string, BetaResolveContext>(PATH_CACHE_POLICIES.contextCache, { maxWeight: PATH_CONTEXT_MAX_WEIGHT, weightOf: pathContextWeight, ttlMs: pathingConfig.contextTtlMs });
 const PATH_MULTI_HISTORY_WINDOW_HOURS = Math.min(
   24 * 365,
   Math.max(1, Number(process.env['PATH_MULTI_HISTORY_WINDOW_HOURS'] ?? 168) || 168),
@@ -53,10 +49,6 @@ const PATH_MULTI_MAX_OBSERVERS = Math.min(
   512,
   Math.max(1, Number(process.env['PATH_MULTI_MAX_OBSERVERS'] ?? 128) || 128),
 );
-
-function edgeKey(receiverRegion: string, bucket: number, fromId: string, toId: string): string {
-  return `${receiverRegion}|${bucket}|${fromId}|${toId}`;
-}
 
 export type PathPrefixPriorEvidence = {
   prefix: string;
@@ -77,8 +69,8 @@ export function buildOneBytePrefixProbabilities(
     const previous = normalizePathHash(row.prev_prefix).slice(0, 2);
     const count = Math.max(0, Number(row.count) || 0);
     if (prefix.length !== 2 || !row.receiver_region || !row.node_id || count === 0) continue;
-    const group = `${row.receiver_region}|${prefix}|${previous}`;
-    const choice = `${group}|${row.node_id}`;
+    const group = regionalPrefixGroupKey(row.receiver_region, prefix, previous);
+    const choice = regionalPrefixKey(row.receiver_region, prefix, previous, row.node_id);
     choiceCounts.set(choice, (choiceCounts.get(choice) ?? 0) + count);
     groupTotals.set(group, (groupTotals.get(group) ?? 0) + count);
   }
@@ -166,7 +158,7 @@ async function buildLearningModel(
   const transitionProbabilities = new Map<string, number>();
   for (const row of transitionRows.rows) {
     transitionProbabilities.set(
-      `${row.receiver_region}|${row.from_node_id}|${row.to_node_id}`,
+      regionalTransitionKey(row.receiver_region, row.from_node_id, row.to_node_id),
       Number(row.probability),
     );
   }
@@ -176,7 +168,7 @@ async function buildLearningModel(
   for (const row of edgeRows.rows) {
     const score = Number(row.score);
     edgeScores.set(edgeKey(row.receiver_region, Number(row.hour_bucket), row.from_node_id, row.to_node_id), score);
-    const aggregateKey = `${row.receiver_region}|${row.from_node_id}|${row.to_node_id}`;
+    const aggregateKey = regionalTransitionKey(row.receiver_region, row.from_node_id, row.to_node_id);
     const aggregate = edgeTotals.get(aggregateKey) ?? { count: 0, sum: 0 };
     aggregate.count += 1;
     aggregate.sum += score;
@@ -193,7 +185,7 @@ async function buildLearningModel(
   for (const row of motifRows.rows) {
     const probability = Number(row.probability);
     motifProbabilities.set(
-      `${row.receiver_region}|${Number(row.hour_bucket)}|${Number(row.motif_len)}|${row.node_ids}`,
+      motifKey(row.receiver_region, Number(row.hour_bucket), Number(row.motif_len), row.node_ids),
       probability,
     );
     const aggregateKey = `${row.receiver_region}|${Number(row.motif_len)}|${row.node_ids}`;
@@ -205,7 +197,7 @@ async function buildLearningModel(
   for (const [aggregateKey, aggregate] of motifTotals) {
     const [region, motifLength, nodeIds] = aggregateKey.split('|');
     if (!region || !motifLength || !nodeIds || aggregate.count === 0) continue;
-    motifProbabilities.set(`${region}|-1|${motifLength}|${nodeIds}`, aggregate.sum / aggregate.count);
+    motifProbabilities.set(motifKey(region, -1, Number(motifLength), nodeIds), aggregate.sum / aggregate.count);
   }
 
   const calibration = calibrationRows.rows[0];

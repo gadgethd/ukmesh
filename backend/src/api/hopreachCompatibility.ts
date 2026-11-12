@@ -1,3 +1,4 @@
+import { API_CACHE_POLICIES } from './cachePolicies.js';
 import { isIP } from 'node:net';
 import { Router, type Request, type Response } from 'express';
 import type { QueryResultRow } from 'pg';
@@ -218,15 +219,9 @@ async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
  */
 export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
   const router = Router();
-  const nodeCountCache = new BoundedTtlMap<string, number>({
-    name: 'hopreach-node-count', maxEntries: 1, maxWeight: 1_024, ttlMs: 30_000,
-  });
-  const nodePageCache = new BoundedTtlMap<string, HopReachNodeRow[]>({
-    name: 'hopreach-node-pages', maxEntries: 256, maxWeight: 16 * 1024 * 1024, ttlMs: 30_000,
-  });
-  const reachCache = new BoundedTtlMap<string, HopReachLinkRow[]>({
-    name: 'hopreach-observed-links', maxEntries: 64, maxWeight: 32 * 1024 * 1024, ttlMs: 60_000,
-  });
+  const nodeCountCache = new BoundedTtlMap<string, number>(API_CACHE_POLICIES.nodeCountCache);
+  const nodePageCache = new BoundedTtlMap<string, HopReachNodeRow[]>(API_CACHE_POLICIES.nodePageCache);
+  const reachCache = new BoundedTtlMap<string, HopReachLinkRow[]>(API_CACHE_POLICIES.reachCache);
   const nodeCountInFlight = new Map<string, Promise<number>>();
   const nodePageInFlight = new Map<string, Promise<HopReachNodeRow[]>>();
   const reachInFlight = new Map<string, Promise<HopReachLinkRow[]>>();

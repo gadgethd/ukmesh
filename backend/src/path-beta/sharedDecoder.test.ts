@@ -9,7 +9,7 @@ import {
   type BetaSharedDecode,
 } from './sharedDecoder.js';
 import type { BetaResolveContext, MeshNode, PathPacket } from './types.js';
-import { buildChampionPriors } from './championPriors.js';
+import { buildChampionPriors } from '../path-shared/priors.js';
 
 const meshNode = (node_id: string, lat: number, lon: number, iata: string | null = null): MeshNode => ({
   node_id,

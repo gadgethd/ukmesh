@@ -11,7 +11,7 @@ import {
 } from './resolver.js';
 import type { PathPacket } from './types.js';
 import type { BetaResolveContext, MeshNode } from './types.js';
-import { buildChampionPriors } from './championPriors.js';
+import { buildChampionPriors } from '../path-shared/priors.js';
 
 function prepared(size: number, hops: string[]): PreparedPacketObservation {
   const packet: PathPacket = {

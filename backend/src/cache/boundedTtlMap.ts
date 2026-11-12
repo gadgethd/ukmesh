@@ -35,8 +35,12 @@ export class BoundedTtlMap<K, V> extends Map<K, V> {
   private rejections = 0;
   private readonly metricName: string;
 
-  constructor(private readonly options: BoundedTtlMapOptions<K, V>) {
+  private readonly options: BoundedTtlMapOptions<K, V>;
+
+  constructor(policy: BoundedTtlMapOptions<K, V>, overrides?: Partial<BoundedTtlMapOptions<K, V>>) {
     super();
+    const options = { ...policy, ...overrides };
+    this.options = options;
     if (
       !Number.isFinite(options.maxEntries) || options.maxEntries < 1
       || !Number.isFinite(options.maxWeight) || options.maxWeight < 1

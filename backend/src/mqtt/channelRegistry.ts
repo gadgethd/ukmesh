@@ -1,3 +1,4 @@
+import { MQTT_CACHE_POLICIES } from './cachePolicies.js';
 import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 /**
  * Channel registry — explicitly public defaults plus confidential environment keys.
@@ -106,13 +107,7 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
   return entries;
 }
 
-const channelHashCache = new BoundedTtlMap<string, string[]>({
-  name: 'mqtt_channel_hashes',
-  maxEntries: 64,
-  maxWeight: 64 * 1024,
-  ttlMs: 30 * 60_000,
-  weightOf: (key, value) => key.length * 2 + value.length * 4,
-});
+const channelHashCache = new BoundedTtlMap<string, string[]>(MQTT_CACHE_POLICIES.channelHashCache, { weightOf: (key, value) => key.length * 2 + value.length * 4 });
 
 /** Return the wire-level channel hashes for a configured channel label. */
 export function channelHashesForName(name: string, envValue = process.env['MESHCORE_CHANNEL_SECRETS']): string[] {
@@ -198,13 +193,7 @@ export function sanitizePublicPacketPayload(
 }
 
 // Small cache so relay copies of the same GroupText don't trigger re-decodes
-const channelCache = new BoundedTtlMap<string, string | null>({
-  name: 'mqtt_channels',
-  maxEntries: 200,
-  maxWeight: 2 * 1024 * 1024,
-  ttlMs: 10 * 60_000,
-  weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2,
-});
+const channelCache = new BoundedTtlMap<string, string | null>(MQTT_CACHE_POLICIES.channelCache, { weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2 });
 
 /** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
 export function identifyChannel(rawHex: string, entries: ChannelEntry[]): string | undefined {

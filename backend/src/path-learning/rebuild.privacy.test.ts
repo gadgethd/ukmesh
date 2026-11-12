@@ -1,9 +1,8 @@
+import { dropPrivatePrefixRows, isPrivatePathPrefix } from './evidence.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { QueryResultRow } from 'pg';
 import {
-  dropPrivatePrefixRows,
-  isPrivatePathPrefix,
   pathLearningNetworksSql,
   pathLearningTrainingPacketsSql,
 } from './rebuild.js';

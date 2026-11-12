@@ -1,3 +1,4 @@
+import { OWNER_CACHE_POLICIES } from './cachePolicies.js';
 import type { OwnerRepository } from './ownerRepository.js';
 import type { OwnerSession } from './ownerSession.js';
 import { estimateAirUtilisation } from '../stats/telemetryEstimate.js';
@@ -127,22 +128,12 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     repository,
     invalidateOwnerNodeIdCache,
   } = deps;
-  const ownerLastHopCache = new BoundedTtlMap<string, OwnerLastHopCacheEntry>({
-    name: 'owner_last_hop',
-    maxEntries: 1_024,
-    maxWeight: 64 * 1024 * 1024,
-    ttlMs: ownerLastHopCacheTtlMs,
-  });
+  const ownerLastHopCache = new BoundedTtlMap<string, OwnerLastHopCacheEntry>(OWNER_CACHE_POLICIES.ownerLastHopCache, { ttlMs: ownerLastHopCacheTtlMs });
   const ownerDashboardCache = new BoundedTtlMap<string, {
     ts: number;
     dashboard: OwnerDashboard;
     nodeIds: string[];
-  }>({
-    name: 'owner_dashboard',
-    maxEntries: 512,
-    maxWeight: 16 * 1024 * 1024,
-    ttlMs: ownerDashboardCacheTtlMs,
-  });
+  }>(OWNER_CACHE_POLICIES.ownerDashboardCache, { ttlMs: ownerDashboardCacheTtlMs });
 
   function dashboardCacheKey(mqttUsername: string): string {
     return `u:${mqttUsername.trim()}`;

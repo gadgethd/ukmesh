@@ -1,3 +1,4 @@
+import { PATH_CACHE_POLICIES } from './cachePolicies.js';
 /**
  * Short-lived in-process cache for path-beta resolve results.
  * Entries are kept until a new MQTT observation arrives for that packet hash,
@@ -10,23 +11,13 @@
 
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
-const RESOLVE_CACHE_TTL_MS = 10 * 60 * 1000;
+const RESOLVE_CACHE_TTL_MS = PATH_CACHE_POLICIES.resolutionCache.ttlMs;
 const cache = new BoundedTtlMap<string, {
   data: unknown;
   packetHash: string;
   invalidationVersion: number;
-}>({
-  name: 'path_resolution',
-  maxEntries: 4_096,
-  maxWeight: 64 * 1024 * 1024,
-  ttlMs: RESOLVE_CACHE_TTL_MS,
-});
-const invalidationVersions = new BoundedTtlMap<string, number>({
-  name: 'path_invalidation',
-  maxEntries: 50_000,
-  maxWeight: 4 * 1024 * 1024,
-  ttlMs: 60 * 60_000,
-});
+}>(PATH_CACHE_POLICIES.resolutionCache, { ttlMs: RESOLVE_CACHE_TTL_MS });
+const invalidationVersions = new BoundedTtlMap<string, number>(PATH_CACHE_POLICIES.invalidationVersions);
 
 function packetHashFromKey(key: string): string {
   return key.split('|')[1]?.trim() ?? '';
@@ -107,13 +98,7 @@ export type HeldPathEntry = {
 };
 
 const HELD_PATH_TTL_MS = 30 * 60 * 1000;
-const heldPathCache = new BoundedTtlMap<string, HeldPathEntry>({
-  name: 'path_held_paths',
-  maxEntries: 2_048,
-  maxWeight: 16 * 1024 * 1024,
-  ttlMs: HELD_PATH_TTL_MS,
-  weightOf: (key, value) => key.length * 2 + value.path.length * 128,
-});
+const heldPathCache = new BoundedTtlMap<string, HeldPathEntry>(PATH_CACHE_POLICIES.heldPathCache, { ttlMs: HELD_PATH_TTL_MS, weightOf: (key, value) => key.length * 2 + value.path.length * 128 });
 
 export function getHeldPath(packetHash: string, network: string): HeldPathEntry | undefined {
   const entry = heldPathCache.get(`${packetHash}|${network}`);
@@ -140,13 +125,7 @@ export function setHeldPath(
  */
 const STICKY_NODE_TTL_MS = 30 * 60 * 1000; // 30 minutes
 type StickyEntry = { hashToNodeId: Map<string, string>; updatedAt: number };
-const stickyNodeCache = new BoundedTtlMap<string, StickyEntry>({
-  name: 'path_sticky_nodes',
-  maxEntries: 2_048,
-  maxWeight: 16 * 1024 * 1024,
-  ttlMs: STICKY_NODE_TTL_MS,
-  weightOf: (key, value) => key.length * 2 + value.hashToNodeId.size * 256,
-});
+const stickyNodeCache = new BoundedTtlMap<string, StickyEntry>(PATH_CACHE_POLICIES.stickyNodeCache, { ttlMs: STICKY_NODE_TTL_MS, weightOf: (key, value) => key.length * 2 + value.hashToNodeId.size * 256 });
 const STICKY_NODES_PER_PACKET_MAX = 64;
 
 export function getStickyNodeMap(

@@ -1,0 +1,43 @@
+import { defineCachePolicy } from '../cache/policy.js';
+
+export const MQTT_CACHE_POLICIES = Object.freeze({
+  onboardingRecent: defineCachePolicy({
+    id: 'mqtt_onboarding',
+    source: 'src/mqtt/onboardingDiagnostics.ts',
+    disposition: 'bounded-cache',
+    name: 'mqtt_onboarding',
+    maxEntries: 4_096,
+    maxWeight: 4_194_304,
+    ttlMs: 900_000,
+    scope: 'authenticated MQTT username; diagnostic hints only',
+    invalidation: 'event-time expiry + storage TTL; lost on process restart',
+    negativeCaching: 'none',
+    singleFlight: 'synchronous broker-log observations',
+  }),
+  channelCache: defineCachePolicy({
+    id: 'mqtt_channels',
+    source: 'src/mqtt/channelRegistry.ts',
+    disposition: 'bounded-cache',
+    name: 'mqtt_channels',
+    maxEntries: 200,
+    maxWeight: 2_097_152,
+    ttlMs: 600_000,
+    scope: 'raw packet within immutable configured channel set',
+    invalidation: 'TTL/LRU capacity',
+    negativeCaching: 'failed channel decode is cached',
+    singleFlight: 'single MQTT ingest task',
+  }),
+  channelHashCache: defineCachePolicy({
+    id: 'mqtt_channel_hashes',
+    source: 'src/mqtt/channelRegistry.ts',
+    disposition: 'bounded-cache',
+    name: 'mqtt_channel_hashes',
+    maxEntries: 64,
+    maxWeight: 65_536,
+    ttlMs: 1_800_000,
+    scope: 'configured channel label + channel-secret configuration',
+    invalidation: 'TTL/LRU capacity',
+    negativeCaching: 'unknown labels cache as empty hash lists',
+    singleFlight: 'not applicable',
+  }),
+});

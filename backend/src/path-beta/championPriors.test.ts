@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { buildChampionPriors, loadChampionPriors } from './championPriors.js';
+import { loadChampionPriors } from './championPriors.js';
+import { buildChampionPriors } from '../path-shared/priors.js';
 
 test('combines regional counts and keeps position indices aligned with source edges', () => {
   const priors = buildChampionPriors({

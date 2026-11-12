@@ -1,3 +1,4 @@
+import { prefixCountKey, positionPrefixKey, corridorKey, transitionKey, positionTransitionKey, regionalPrefixKey, regionalTransitionKey, edgeKey, motifKey } from '../path-shared/priorKeys.js';
 import {
   buildObserverBounds,
   decodePathWithScore,
@@ -261,13 +262,13 @@ export function decodeBetaCanonicalGroup(
   for (let position = 1; position < canonicalHashes.length; position++) {
     const from = confirmed.get(position - 1);
     const to = confirmed.get(position);
-    if (from && to) confirmedEdges.add(`${from}|${to}`);
+    if (from && to) confirmedEdges.add(transitionKey(from, to));
   }
   for (const member of group.members) {
     const first = confirmed.get(0);
     const last = confirmed.get(member.hops.length - 1);
-    if (first && member.packet.src_node_id) confirmedEdges.add(`${member.packet.src_node_id}|${first}`);
-    if (last) confirmedEdges.add(`${last}|${member.observerId}`);
+    if (first && member.packet.src_node_id) confirmedEdges.add(transitionKey(member.packet.src_node_id, first));
+    if (last) confirmedEdges.add(transitionKey(last, member.observerId));
   }
 
   const evidence: PathDecoderEvidence = {
@@ -292,24 +293,24 @@ export function decodeBetaCanonicalGroup(
     directAnchors: (position) => anchors.get(position) ?? [],
     prefixProbability: (nodeId, hash, previousHash) => {
       const prefix = normalizePathHash(hash).slice(0, 2);
-      if (champion) return champion.prefixCounts.get(`${prefix}|${nodeId}`) ?? 0;
+      if (champion) return champion.prefixCounts.get(prefixCountKey(prefix, nodeId)) ?? 0;
       const previous = normalizePathHash(previousHash).slice(0, 2);
       const learned = regionalMaximum(regions, (region) => (
-        context.learningModel.prefixProbabilities.get(`${region}|${prefix}|${previous}|${nodeId}`)
-        ?? context.learningModel.prefixProbabilities.get(`${region}|${prefix}||${nodeId}`)
+        context.learningModel.prefixProbabilities.get(regionalPrefixKey(region, prefix, previous, nodeId))
+        ?? context.learningModel.prefixProbabilities.get(regionalPrefixKey(region, prefix, '', nodeId))
       ));
       const sticky = stickyMap?.get(prefix) === nodeId ? stickyStrength : 0;
       return Math.max(learned, sticky);
     },
     positionPrefixCount: (position, nodeId, hash) => (
-      champion?.positionPrefixCounts.get(`${hash.slice(0, 2)}|${position}|${nodeId}`) ?? 0
+      champion?.positionPrefixCounts.get(positionPrefixKey(hash.slice(0, 2), position, nodeId)) ?? 0
     ),
     corridorPriorCount: (position, nodeId) => {
       let best = 0;
       for (const member of group.members) {
         if (position >= member.hops.length || !member.packet.src_node_id) continue;
         best = Math.max(best, champion?.corridorCounts.get(
-          `${member.packet.src_node_id}|${member.observerId}|${position}|${nodeId}`,
+          corridorKey(member.packet.src_node_id, member.observerId, position, nodeId),
         ) ?? 0);
       }
       return best;
@@ -337,22 +338,22 @@ export function decodeBetaCanonicalGroup(
     },
     mlPrefixScore: () => 0,
     directedEdgeScore: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
-      context.learningModel.edgeScores.get(`${region}|${bucket}|${fromNodeId}|${toNodeId}`)
-      ?? context.learningModel.edgeScores.get(`${region}|-1|${fromNodeId}|${toNodeId}`)
+      context.learningModel.edgeScores.get(edgeKey(region, bucket, fromNodeId, toNodeId))
+      ?? context.learningModel.edgeScores.get(edgeKey(region, -1, fromNodeId, toNodeId))
     )),
     transitionProbability: (fromNodeId, toNodeId) => champion
-      ? champion.transitionCounts.get(`${fromNodeId}|${toNodeId}`) ?? 0
+      ? champion.transitionCounts.get(transitionKey(fromNodeId, toNodeId)) ?? 0
       : regionalMaximum(regions, (region) => (
-      context.learningModel.transitionProbabilities.get(`${region}|${fromNodeId}|${toNodeId}`)
+      context.learningModel.transitionProbabilities.get(regionalTransitionKey(region, fromNodeId, toNodeId))
     )),
     positionConditionalTransition: (position, fromNodeId, toNodeId) => (
-      champion?.positionTransitionCounts.get(`${position}|${fromNodeId}|${toNodeId}`) ?? 0
+      champion?.positionTransitionCounts.get(positionTransitionKey(position, fromNodeId, toNodeId)) ?? 0
     ),
     isItmViable: (fromNodeId, toNodeId) => champion != null
       && context.linkMetrics.get(linkKey(fromNodeId, toNodeId))?.itm_viable === true,
     motifProbability: (fromNodeId, toNodeId) => regionalMaximum(regions, (region) => (
-      context.learningModel.motifProbabilities.get(`${region}|${bucket}|2|${fromNodeId}>${toNodeId}`)
-      ?? context.learningModel.motifProbabilities.get(`${region}|-1|2|${fromNodeId}>${toNodeId}`)
+      context.learningModel.motifProbabilities.get(motifKey(region, bucket, 2, `${fromNodeId}>${toNodeId}`))
+      ?? context.learningModel.motifProbabilities.get(motifKey(region, -1, 2, `${fromNodeId}>${toNodeId}`))
     )),
     hasObservedLink: (fromNodeId, toNodeId) => {
       const metrics = context.linkMetrics.get(linkKey(fromNodeId, toNodeId));

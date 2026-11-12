@@ -1,3 +1,4 @@
+import { WS_CACHE_POLICIES } from './cachePolicies.js';
 import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
@@ -179,23 +180,18 @@ function publishLiveMessage(message: WSMessage): void {
 // Viable links change slowly (based on historical packet accumulation).
 // Keep the scoped link snapshot off the connect path for five minutes per
 // network/observer combination.
-const VIABLE_LINK_CACHE_TTL_MS = 5 * 60_000;
+const VIABLE_LINK_CACHE_TTL_MS = WS_CACHE_POLICIES.viableLinksCache.ttlMs;
 const viableLinksCache = new BoundedTtlMap<string, {
   ts: number;
   data: Awaited<ReturnType<typeof getViableLinks>>;
-}>({
-  name: 'ws_viable_links',
-  maxEntries: 50,
-  maxWeight: 16 * 1024 * 1024,
-  ttlMs: VIABLE_LINK_CACHE_TTL_MS,
-});
+}>(WS_CACHE_POLICIES.viableLinksCache);
 
 /**
  * Initial-state cache — all connecting clients share one cached snapshot per
  * network/observer key, refreshed every 30 seconds in the background.
  * Eliminates the DB pool spike caused by N clients each firing 3 queries on connect.
  */
-const INITIAL_STATE_TTL_MS = 60_000; // 60 s — live WS updates keep clients current
+const INITIAL_STATE_TTL_MS = WS_CACHE_POLICIES.initialStateCache.ttlMs; // 60 s — live WS updates keep clients current
 type InitialStateEntry = {
   ts: number;
   generation: number;
@@ -204,12 +200,7 @@ type InitialStateEntry = {
   messages: InitialStateRow[];
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
-const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>({
-  name: 'ws_initial_state',
-  maxEntries: 128,
-  maxWeight: 48 * 1024 * 1024,
-  ttlMs: INITIAL_STATE_TTL_MS,
-});
+const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>(WS_CACHE_POLICIES.initialStateCache);
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
 const publicPrivacy = new PublicWsPrivacyIndex();
 let privacyRefreshInFlight: Promise<void> | null = null;
