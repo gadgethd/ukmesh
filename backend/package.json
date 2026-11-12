@@ -54,7 +54,8 @@
     "test:sample-integration": "node --import tsx --test src/tools/samplePipeline.integration.test.ts",
     "check": "npm run typecheck && npm test && npm run contract:check",
     "bench:api": "tsx src/tools/benchmarkApi.ts",
-    "bench:ingest": "tsx src/tools/benchmarkIngest.ts"
+    "bench:ingest": "tsx src/tools/benchmarkIngest.ts",
+    "sample:refresh-recent": "tsx src/tools/refreshSampleRecent.ts"
   },
   "dependencies": {
     "@michaelhart/meshcore-decoder": "^0.3.0",

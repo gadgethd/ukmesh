@@ -114,6 +114,9 @@ if [[ -n $shift_to ]]; then load_args+=(--shift-to "$shift_to"); fi
 if [[ $redact_content == true ]]; then load_args+=(--redact-content); fi
 if [[ $profile == ingest ]]; then load_args+=(--omit-packets); fi
 "${tsx[@]}" "$repo/backend/src/tools/loadSampleDataset.ts" "${load_args[@]}"
+if [[ $profile == snapshot ]]; then
+  "${tsx[@]}" "$repo/backend/src/tools/refreshSampleRecent.ts"
+fi
 "${tsx[@]}" "$repo/backend/src/tools/prepareSampleDataset.ts" > "$state/prepare.log" 2>&1 || { tail -30 "$state/prepare.log" >&2; exit 1; }
 "${tsx[@]}" "$repo/backend/src/tools/backfillStatsRollups.ts" --apply --pause-ms 1 \
   > "$state/rollups.log" 2>&1 || { tail -30 "$state/rollups.log" >&2; exit 1; }

@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
 import { assertLocalDatabaseUrl, option } from './sampleData.js';
+import { refreshSampleRecent } from './refreshSampleRecent.js';
 
 const routes = ['/stats/charts', '/nodes/map', '/regions/summary', '/regions/repeaters', '/topology',
   '/spam/messages/status', '/runtime-config', '/packets/recent', '/observer-activity', '/stats'];
@@ -26,6 +27,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 try {
   await mkdir(directory, { recursive: true });
+  await refreshSampleRecent(database);
   const commit = execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
   const diff = execFileSync('git', ['diff', 'HEAD'], { maxBuffer: 16 * 1024 * 1024 });
   const counts = (await pool.query(`SELECT 'nodes' AS relation, COUNT(*)::text AS rows FROM core.nodes
@@ -42,6 +44,7 @@ try {
   const before = new Map((await queryStats()).map((row) => [row.queryid, row]));
   const measurements = [];
   for (const route of routes) {
+    if (route === '/packets/recent') await refreshSampleRecent(database);
     const samples = [];
     let rateWaits = 0;
     for (let index = -warmups; index < runs; index += 1) {
@@ -68,6 +71,9 @@ try {
       if (!response.ok) throw new Error(`${route} returned ${response.status}`);
       const parseStart = performance.now();
       const value = JSON.parse(body.toString()) as unknown;
+      if (route === '/packets/recent' && (!Array.isArray(value) || value.length === 0)) {
+        throw new Error('recent-packets fixture is empty; no valid benchmark result can be recorded');
+      }
       const parseMs = performance.now() - parseStart;
       if (index >= 0) samples.push({ ms: parseStart - started, parseMs, decodedBytes: bytes,
         transferredBytes: Number(response.headers.get('content-length')) || null,

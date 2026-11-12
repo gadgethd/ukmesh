@@ -28,6 +28,8 @@ for (const mode of ['mobile', 'desktop']) {
       const chrome = await launch({ chromePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
         chromeFlags: ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
       try {
+        execFileSync(process.execPath, ['--import', path.resolve('../backend/node_modules/tsx/dist/loader.mjs'),
+          path.resolve('../backend/src/tools/refreshSampleRecent.ts')], { stdio: 'pipe' });
         const result = await lighthouse(new URL(route, base).href,
           { port: chrome.port, output: 'json', logLevel: 'error', onlyCategories: ['performance', 'accessibility', 'seo'] },
           mode === 'desktop' ? desktopConfig : undefined);

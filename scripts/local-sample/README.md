@@ -156,3 +156,10 @@ the enqueue-to-commit histogram's p95 upper bound. It does not label the broker
 acknowledgement latency as persistence latency. `--speed 1` reproduces the
 synthetic fixture's one-packet-per-second timing. Package `check` commands run
 normal correctness checks; benchmarks stay out of the unit suite.
+
+Snapshot benchmarks add a fixed overlay of 50 invented ACK receptions and one
+invented observer. The measurement tools re-anchor only those receptions before
+recent-API and browser reads, because the API's recent window is five minutes.
+Their UUIDs and count stay fixed; the source archive is unchanged. Inventory
+counts include this overlay, and it is excluded from clean ingest benchmarks.
+This avoids interpreting an expired, empty feed as a performance improvement.

@@ -10,6 +10,7 @@ import { generateSampleDataset } from './generateSampleDataset.js';
 import { loadSampleDataset } from './loadSampleDataset.js';
 import { prepareSampleDataset } from './prepareSampleDataset.js';
 import { assertLocalDatabaseUrl } from './sampleData.js';
+import { refreshSampleRecent } from './refreshSampleRecent.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 
@@ -63,4 +64,11 @@ test('synthetic loader and derived-state preparation work on the complete migrat
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.ingest_observation_ledger')).rows[0].n, 25);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM core.private_node_prefixes')).rows[0].n, 0);
   assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p WHERE ${publicPacketPrivacySql('p')}`)).rows[0].n, 25);
+  await refreshSampleRecent(url.href);
+  await refreshSampleRecent(url.href);
+  assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.packets')).rows[0].n, 75,
+    'the recent overlay must refresh a fixed set, not accumulate new packets');
+  assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p
+    WHERE p.time > NOW() - INTERVAL '5 minutes' AND payload->>'_local_fixture' = 'recent-v1'
+      AND ${publicPacketPrivacySql('p')}`)).rows[0].n, 50);
 });
