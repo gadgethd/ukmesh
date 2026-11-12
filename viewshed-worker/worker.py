@@ -5,6 +5,8 @@ viewshed, clips to the UK mainland, stores the result polygon in
 node_coverage, then notifies the frontend.
 """
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -20,19 +22,17 @@ import time
 import datetime as dt
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Callable, Optional, TYPE_CHECKING
 
 import numpy as np
 import psycopg2
 import requests
-import shapely
-from scipy.ndimage import minimum_filter as _min_filter
-from scipy.spatial import cKDTree
 import redis
 from psycopg2 import sql
 from osgeo import gdal
-from shapely.geometry import mapping, shape as shapely_shape, Polygon as ShapelyPolygon
-from shapely.ops import unary_union
+if TYPE_CHECKING:
+    from scipy.spatial import cKDTree
+    from shapely.geometry import Polygon as ShapelyPolygon
 from rf.config import (
     ANTENNA_HEIGHT_M,
     CALIBRATION_EXTRA_MARGIN_DB,
@@ -190,6 +190,7 @@ RADIO_NEIGHBOR_MAX_AGE_HOURS = float(os.environ.get('RADIO_NEIGHBOR_MAX_AGE_HOUR
 
 SUPPORT_CONTEXT = {
     'tree': None,
+    'coordinates': None,
     'node_ids': [],
     'node_index_by_id': {},
     'max_link_km_by_node': {},
@@ -564,7 +565,13 @@ def refresh_support_context(db, force: bool = False) -> None:
 
     node_ids = [row[0] for row in repeater_rows]
     xy = project_xy_km([row[1] for row in repeater_rows], [row[2] for row in repeater_rows]) if repeater_rows else np.empty((0, 2))
-    SUPPORT_CONTEXT['tree'] = cKDTree(xy) if len(node_ids) > 0 else None
+    SUPPORT_CONTEXT['coordinates'] = xy
+    SUPPORT_CONTEXT['tree'] = None
+    # Observed-link jobs need the link radius metadata, not the coverage tree.
+    # Retain coordinates so a coverage/planned calculation can build it once
+    # on demand, including when invoked by a link-mode diagnostic.
+    if WORKER_MODE != 'link' and len(node_ids) > 0:
+        get_support_tree()
     SUPPORT_CONTEXT['node_ids'] = node_ids
     SUPPORT_CONTEXT['node_index_by_id'] = {node_id: idx for idx, node_id in enumerate(node_ids)}
 
@@ -598,8 +605,18 @@ def source_support_radius_m(node_id: str, fallback_radius_m: float) -> float:
     )
 
 
+def get_support_tree() -> Optional[cKDTree]:
+    tree = SUPPORT_CONTEXT['tree']
+    coordinates = SUPPORT_CONTEXT.get('coordinates')
+    if tree is None and coordinates is not None and len(coordinates) > 0:
+        from scipy.spatial import cKDTree
+        tree = cKDTree(coordinates)
+        SUPPORT_CONTEXT['tree'] = tree
+    return tree
+
+
 def support_penalty_db(source_node_id: str, sample_lats: np.ndarray, sample_lons: np.ndarray) -> np.ndarray:
-    tree: Optional[cKDTree] = SUPPORT_CONTEXT['tree']
+    tree = get_support_tree()
     node_ids: list[str] = SUPPORT_CONTEXT['node_ids']
     source_index = SUPPORT_CONTEXT['node_index_by_id'].get(source_node_id)
     if tree is None or len(node_ids) < 1:
@@ -633,7 +650,8 @@ def approximate_dtm_in_place(elevation: np.ndarray) -> np.ndarray:
     """Strip narrow DSM spikes without allocating another full-size raster."""
     if elevation.ndim != 2 or elevation.dtype not in (np.dtype(np.int16), np.dtype(np.float32)):
         raise ValueError('DTM raster must be a two-dimensional int16 or float32 array')
-    _min_filter(elevation, size=9, output=elevation)
+    from scipy.ndimage import minimum_filter
+    minimum_filter(elevation, size=9, output=elevation)
     return elevation
 
 
@@ -734,12 +752,14 @@ def resolve_rf_radial_boundaries(node_id: str,
 
 
 def clip_and_simplify_polygon(poly) -> Optional[dict]:
+    from shapely.geometry import mapping
     if poly.is_empty:
         return None
     if not poly.is_valid:
         poly = poly.buffer(0)
-    if UK_MAINLAND is not None:
-        poly = poly.intersection(UK_MAINLAND)
+    mainland = get_uk_mainland()
+    if mainland is not None:
+        poly = poly.intersection(mainland)
         if poly.is_empty:
             return None
     result = poly.simplify(SIMPLIFY_DEG, preserve_topology=True)
@@ -772,11 +792,13 @@ def _polygonal_geometry(poly):
             if part.geom_type in ('Polygon', 'MultiPolygon') and not part.is_empty
         ]
         if polygon_parts:
+            from shapely.ops import unary_union
             return unary_union(polygon_parts)
     return None
 
 
 def _clipped_simplified_polygon(poly):
+    from shapely.geometry import shape as shapely_shape
     if poly is None:
         return None
     geom = clip_and_simplify_polygon(poly)
@@ -794,6 +816,8 @@ def build_exclusive_strength_geoms(
     frontend ends up stacking green over amber over red and the center reads as
     muddy yellow instead of a clean strength gradient.
     """
+    import shapely
+    from shapely.geometry import mapping, shape as shapely_shape
     red_outer = (
         _polygonal_geometry(shapely_shape(red_outer_geom))
         if red_outer_geom is not None
@@ -858,7 +882,15 @@ def build_exclusive_strength_geoms(
     return {name: mapping(poly) for name, poly in exclusive_shapes.items()}
 
 
-UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
+_UNLOADED_MAINLAND = object()
+UK_MAINLAND = _UNLOADED_MAINLAND
+
+
+def get_uk_mainland():
+    global UK_MAINLAND
+    if UK_MAINLAND is _UNLOADED_MAINLAND:
+        UK_MAINLAND = load_uk_mainland(Path(__file__).parent, log)
+    return UK_MAINLAND
 
 
 # ── Viewshed calculation ──────────────────────────────────────────────────────
@@ -872,6 +904,7 @@ def calculate_viewshed(
     deadline_monotonic: Optional[float] = None,
     cancellation_check: Optional[Callable[[], None]] = None,
 ) -> Computed:
+    from shapely.geometry import Polygon as ShapelyPolygon
     calculation_started = time.monotonic()
     stage_seconds: dict[str, float] = {}
 
@@ -1403,7 +1436,7 @@ def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
 
     peer_lookup_started = time.monotonic()
     all_nodes, _physical_pairs = get_link_topology(db)
-    support_tree: Optional[cKDTree] = SUPPORT_CONTEXT['tree']
+    support_tree = get_support_tree()
     support_node_ids: list[str] = SUPPORT_CONTEXT['node_ids']
     if support_tree is not None and support_node_ids:
         origin_xy = project_xy_km([lat], [lon])[0]

@@ -3,6 +3,7 @@ import unittest
 from unittest import mock
 
 import numpy as np
+from scipy.ndimage import minimum_filter
 from shapely.geometry import Point, shape
 
 import worker
@@ -13,7 +14,7 @@ class RfRadialBudgetTests(unittest.TestCase):
     def test_in_place_dtm_filter_matches_out_of_place_result(self):
         rng = np.random.default_rng(20260801)
         elevation = rng.integers(0, 500, size=(32, 31)).astype(np.float32)
-        expected = worker._min_filter(elevation, size=9)
+        expected = minimum_filter(elevation, size=9)
         actual = elevation.copy()
 
         returned = worker.approximate_dtm_in_place(actual)
@@ -24,7 +25,7 @@ class RfRadialBudgetTests(unittest.TestCase):
     def test_native_int16_dtm_filter_matches_float32_result(self):
         rng = np.random.default_rng(20260802)
         native = rng.integers(0, 500, size=(32, 31), dtype=np.int16)
-        expected = worker._min_filter(native.astype(np.float32), size=9)
+        expected = minimum_filter(native.astype(np.float32), size=9)
 
         returned = worker.approximate_dtm_in_place(native)
 

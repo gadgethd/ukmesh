@@ -95,12 +95,14 @@ def parse_input(stream: TextIO) -> tuple[list[NodeInput], list[LinkInput]]:
 
 
 def install_support_context(nodes: list[NodeInput], links: list[LinkInput]) -> None:
+    from scipy.spatial import cKDTree
     node_ids = [node.node_id for node in nodes]
     xy = worker.project_xy_km(
         [node.lat for node in nodes],
         [node.lon for node in nodes],
     )
-    worker.SUPPORT_CONTEXT['tree'] = worker.cKDTree(xy)
+    worker.SUPPORT_CONTEXT['coordinates'] = xy
+    worker.SUPPORT_CONTEXT['tree'] = cKDTree(xy)
     worker.SUPPORT_CONTEXT['node_ids'] = node_ids
     worker.SUPPORT_CONTEXT['node_index_by_id'] = {
         node_id: index for index, node_id in enumerate(node_ids)

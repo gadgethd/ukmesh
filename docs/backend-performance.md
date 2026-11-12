@@ -96,3 +96,44 @@ the defaults. The previous direct numeric reads could let `NaN` or `Infinity`
 disable pruning. `meshcore_mqtt_connection_monitor_clients` exposes retained
 count without client or username labels. These observations never authorize
 ownership; the owner-auth database remains authoritative.
+
+## Link-worker startup and memory
+
+Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.
+Coverage geometry, mainland clipping and raster filtering load on first use.
+The support context still refreshes coordinates and link-radius metadata;
+its spatial tree is built when a coverage or planned diagnostic needs it and
+invalidated when the source context changes. Other worker modes build that
+tree during their normal context refresh. First coverage use still pays the
+deferred initialization cost.
+
+The November 2026 comparison used the pinned GDAL 3.13.3 image with Python
+3.14.4, one worker, two CPUs and a 1 GiB container limit. Each of three
+readiness trials began with the same isolated database containing 1,000
+invented positioned nodes and 200 links, plus an isolated Redis instance.
+Median Docker-start-to-ready time fell from 0.766 to 0.619 seconds (19%),
+and steady RSS from 148.9 to 117.0 MiB (21%). Fresh-process module imports
+fell from 0.436 to 0.212 seconds (51%).
+
+Three alternating before/after queue trials each processed 264 unique jobs:
+200 cached physical links and 64 fresh calculations using a local invented
+HGT raster and real GDAL. Every trial had 264 SQL commits, computed metrics
+for all 264 links, and no remaining leases. Median throughput was 92.33
+versus 92.63 jobs/s. Cached-job p95 was 3.69 versus 3.79 ms, and fresh-terrain
+p95 was 38.42 versus 37.63 ms. Job RSS fell from 152.2 to 122.2 MiB. These
+short fixture runs establish comparable behavior, not sustained production
+capacity. The image suite passed 57 tests; one optional external-repository
+SQL-root check was skipped. RF prefix/radial budgets and parity also passed.
+
+Build and run the import probe from the repository root:
+
+```bash
+docker build -f viewshed-worker/Dockerfile -t ukmesh-worker-bench:local viewshed-worker
+docker run --rm --network none --cpus 2 --memory 1g --entrypoint python \
+  ukmesh-worker-bench:local /app/tests/benchmark_worker_import.py --mode link --runs 3
+```
+
+The probe discards one warm-up, starts a fresh Python process per run and
+prints timings, current/peak RSS, Python/GDAL versions and loaded modules as
+JSON. It opens no database or Redis connection. Full worker readiness and
+job measurements require the separate populated services described above.
