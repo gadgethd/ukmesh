@@ -86,9 +86,7 @@ type OwnerRouteDeps = {
   withTransaction?: PacketShareTransactionFn;
 };
 
-let registeredOwnerService: OwnerService | null = null;
-
-export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void {
+export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): OwnerService {
   const repository = createOwnerRepository({
     query: deps.query,
   });
@@ -107,7 +105,6 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     repository,
     invalidateOwnerNodeIdCache: deps.invalidateOwnerNodeIdCache,
   });
-  registeredOwnerService = service;
 
   const csrfCookieName = 'meshcore_owner_csrf';
   const csrfProtection = requireDoubleSubmitCsrf(csrfCookieName);
@@ -705,11 +702,5 @@ export function registerOwnerRoutes(router: Router, deps: OwnerRouteDeps): void 
     }
     res.json({ ok: true });
   });
-}
-
-// Exposes the registered owner service so the app bootstrap can start background
-// work (e.g. the owner last-hop cache prewarm) against the same instance the
-// routes use. Returns null when the routes have not been registered yet.
-export function getRegisteredOwnerService(): OwnerService | null {
-  return registeredOwnerService;
+  return service;
 }

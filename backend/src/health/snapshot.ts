@@ -5,6 +5,7 @@ export type HealthSnapshotRead<T> =
 export class HealthSnapshotCache<T> {
   private snapshot: { generatedAt: number; data: T } | null = null;
   private inflight: Promise<void> | null = null;
+  private closed = false;
   private lastError: string | null = null;
 
   constructor(
@@ -14,9 +15,11 @@ export class HealthSnapshotCache<T> {
   ) {}
 
   refresh(): Promise<void> {
+    if (this.closed) return Promise.resolve();
     if (this.inflight) return this.inflight;
     const tracked = this.load()
       .then((data) => {
+        if (this.closed) return;
         this.snapshot = { generatedAt: this.now(), data };
         this.lastError = null;
       })
@@ -30,6 +33,8 @@ export class HealthSnapshotCache<T> {
     this.inflight = tracked;
     return tracked;
   }
+
+  close(): void { this.closed = true; this.snapshot = null; }
 
   read(): HealthSnapshotRead<T> {
     const current = this.snapshot;

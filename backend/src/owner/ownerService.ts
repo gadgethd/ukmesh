@@ -114,6 +114,7 @@ type OwnerServiceDeps = {
 };
 
 export function createOwnerService(deps: OwnerServiceDeps) {
+  let closed = false;
   const {
     ownerLiveCacheTtlMs,
     ownerLiveCache,
@@ -153,6 +154,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   const PREWARM_MAX_NODES = 6;
   async function prewarmOwnerLiveData(ownedNodeIds: string[]): Promise<void> {
     for (const nodeId of ownedNodeIds.slice(0, PREWARM_MAX_NODES)) {
+      if (closed) return;
       const cached = ownerLiveCache.get(nodeId);
       if (cached && Date.now() - cached.ts < ownerLiveCacheTtlMs) continue;
       try {
@@ -233,7 +235,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
 
     // Seed the session-dashboard cache so the first /owner/session poll (15s later)
     // is a hit, and warm the live cache so the first node switch is instant.
-    ownerDashboardCache.set(dashboardCacheKey(mqttUsername), {
+    if (!closed) ownerDashboardCache.set(dashboardCacheKey(mqttUsername), {
       ts: Date.now(),
       dashboard,
       nodeIds: mappedNodeIds,
@@ -259,7 +261,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
     if (dashboard.nodes.length < 1) {
       throw new Error('NO_ACTIVE_OWNER_NODE');
     }
-    ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds: freshNodeIds });
+    if (!closed) ownerDashboardCache.set(cacheKey, { ts: Date.now(), dashboard, nodeIds: freshNodeIds });
     return { dashboard, nodeIds: freshNodeIds };
   }
 
@@ -506,7 +508,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
         time: new Date(row.time).toISOString(),
       })),
     };
-    ownerLiveCache.set(selectedNodeId, { ts: Date.now(), data: responseData });
+    if (!closed) ownerLiveCache.set(selectedNodeId, { ts: Date.now(), data: responseData });
     return responseData;
   }
 
@@ -540,7 +542,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       };
     }
 
-    ownerLastHopCache.set(cacheKey, {
+    if (!closed) ownerLastHopCache.set(cacheKey, {
       ts: Date.now(),
       data: responseData,
       latestBucket: latestBucketOf(responseData.points),
@@ -572,7 +574,7 @@ export function createOwnerService(deps: OwnerServiceDeps) {
       responseData = await buildOwnerLastHopResponse(nodeId, ownedNodeIds, undefined, windowDays);
     }
 
-    ownerLastHopCache.set(cacheKey, {
+    if (!closed) ownerLastHopCache.set(cacheKey, {
       ts: Date.now(),
       data: responseData,
       latestBucket: latestBucketOf(responseData.points),
@@ -596,6 +598,12 @@ export function createOwnerService(deps: OwnerServiceDeps) {
   }
 
   return {
+    close() {
+      if (closed) return;
+      closed = true;
+      ownerLastHopCache.shutdown(); ownerLastHopCache.clear();
+      ownerDashboardCache.shutdown(); ownerDashboardCache.clear();
+    },
     authenticateOwner,
     getSessionDashboard,
     getOwnerLiveData,

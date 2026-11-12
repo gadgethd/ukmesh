@@ -91,7 +91,8 @@ type NodesRouteDeps = {
   nodesLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
-export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
+export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => void {
+  let closed = false;
   const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>({
     maxEntries: 32, maxWeight: 256 << 10, ttlMs: TOP_ADVERTS_CACHE_TTL_MS,
   });
@@ -243,7 +244,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
             const normalized = (rows as Array<Record<string, unknown>>).map((row) => ({
               ...row, adverts_in_window: Number(row.adverts_in_window ?? 0),
             }));
-            topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
+            if (!closed) topAdvertsCache.set(cacheKey, { ts: Date.now(), data: normalized });
             return normalized;
           })().finally(() => topAdvertsInflight.delete(cacheKey));
           topAdvertsInflight.set(cacheKey, pending);
@@ -454,7 +455,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
               inferredActiveNodeIds,
             };
             if (await getPublicVisibilityGeneration() !== visibilityGeneration) throw new Error('PUBLIC_VISIBILITY_CHANGED');
-            inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
+            if (!closed) inferredNodesCache.set(inferredCacheKey, { ts: Date.now(), data: payload });
             return payload;
           } finally {
             inferredNodesInflight.delete(inferredCacheKey);
@@ -496,7 +497,7 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
           const tracked = loadLinks()
             .then(async (rows) => {
               if (await getPublicVisibilityGeneration() !== generation) throw new Error('PUBLIC_VISIBILITY_CHANGED');
-              nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
+              if (!closed) nodeLinksCache.set(cacheKey, { ts: Date.now(), data: rows });
               return rows;
             })
             .finally(() => {
@@ -559,4 +560,5 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): void {
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+  return () => { closed = true; topAdvertsCache.shutdown(); topAdvertsCache.clear(); topAdvertsInflight.clear(); };
 }

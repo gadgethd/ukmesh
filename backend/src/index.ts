@@ -24,8 +24,7 @@ import {
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import { createPublicRamSource } from './ram/publicSource.js';
-import apiRoutes from './api/routes.js';
-import { startRegisteredStatsWarmup } from './api/routes/stats.js';
+import { createApiRuntime } from './api/routes.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
   closeQueuePublisher,
@@ -36,7 +35,6 @@ import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
 import { getConvergedOwnerAclReadiness, startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
-import { getRegisteredOwnerService } from './api/routes/owner.js';
 import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
@@ -276,12 +274,14 @@ async function main() {
   nodeIdentityRefreshTimer.unref();
   // Visibility-dependent chart work must pin its generation only after the
   // initial identity reconciliation has settled the alias mapping.
-  startRegisteredStatsWarmup();
+  const apiRuntime = createApiRuntime();
+  lifecycle.register({ name: 'api-runtime', stage: 30, close: apiRuntime.close });
+  apiRuntime.startBackgroundWork();
   await initOwnerAuthDb();
   await startOwnerAuthorizationReconciler();
   // Keep the owner dashboard RX-strength cache warm for every active MQTT owner
   // so the panel (and its 7d/30d toggle) never pays for a cold scan on open.
-  const ownerService = getRegisteredOwnerService();
+  const ownerService = apiRuntime.ownerService;
   if (ownerService) {
     ownerLastHopPrewarmStop = createOwnerLastHopPrewarm({
       listOwnerNodes: getOwnerAuthorizationSnapshot,
@@ -399,7 +399,7 @@ async function main() {
   app.use('/api', createGlobalApiLimiter());
 
   // API routes
-  app.use('/api', apiRoutes);
+  app.use('/api', apiRuntime.router);
   app.use('/internal/ingest/public', createPublicRamSource());
 
   // Health check

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createActivityTimelineCache } from './activityTimelineCache.js';
+import { createActivityTimelineCache } from '../../timeline/snapshotCache.js';
 
 const settle = () => new Promise<void>(resolve => setImmediate(resolve));
 function deferred<T>() {

@@ -6,14 +6,7 @@ import { createStatsService, StatsWorkOverloadedError } from '../../stats/statsS
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
-import { createDeferredOnce } from '../../lifecycle/deferredOnce.js';
 import { parseChartSections, projectChartSections } from '../../stats/chartSections.js';
-
-const chartsWarmup = createDeferredOnce('stats chart warmup');
-
-export function startRegisteredStatsWarmup(): boolean {
-  return chartsWarmup.start();
-}
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -39,7 +32,7 @@ type StatsRouteDeps = {
   runHeavyWork: <T>(workload: string, task: () => Promise<T>) => Promise<T>;
 };
 
-export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void {
+export function registerStatsRoutes(router: Router, deps: StatsRouteDeps) {
   const repository = createStatsRepository({
     networkFilters: deps.networkFilters,
     query: deps.query,
@@ -66,7 +59,6 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     runHeavyWork: deps.runHeavyWork,
   });
 
-  chartsWarmup.register(service.startChartsWarmup);
 
   router.get('/stats/observers/live', async (req, res) => {
     try {
@@ -126,4 +118,5 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+  return service;
 }

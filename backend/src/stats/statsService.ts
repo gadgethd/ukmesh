@@ -151,7 +151,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       const data = { generatedAt: new Date().toISOString(), windowMinutes: 15,
         regions: result.rows.map(row => ({ iata: row.iata,
           activeObservers: Number(row.active_observers), lastPacketAt: new Date(row.last_packet_at).toISOString() })) };
-      liveObserverCache.set(key, data);
+      if (!closed) liveObserverCache.set(key, data);
       return data;
     }).finally(() => { liveObserverInflight.delete(key); });
     liveObserverInflight.set(key, work);
@@ -174,6 +174,10 @@ export function createStatsService(deps: StatsServiceDeps) {
     string,
     Promise<{ ts: number; data: unknown } | undefined>
   >();
+  let closed = false;
+  let warmupStarted = false;
+  const warmTimers = new Set<ReturnType<typeof setTimeout>>();
+  let settleInitialDelay: (() => void) | undefined;
   let initialStatsWarmup: Promise<void> | undefined;
   let activeObserverWork = 0;
 
@@ -497,7 +501,7 @@ export function createStatsService(deps: StatsServiceDeps) {
           return undefined;
         }
         const cached = { ts: validated.generatedAtMs, data: validated.payload };
-        chartsCache.set(key, cached);
+        if (!closed) chartsCache.set(key, cached);
         return cached;
       })
       .catch((error: unknown) => {
@@ -566,7 +570,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       if (!published) {
         throw new Error('chart snapshot privacy generation changed before publication');
       }
-      chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
+      if (!closed) chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
       console.log(
         `[stats] chart refresh published scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}`,
       );
@@ -621,7 +625,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       // The normal cadence governs regeneration. The longer durable lifetime
       // permits an immediate stale response while one background refresh runs.
       const refreshed = refreshCachedRegionHealth(cached.data);
-      chartsCache.set(key, { ts: cached.ts, data: refreshed });
+      if (!closed) chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
     }
 
@@ -647,17 +651,21 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   function startChartsWarmup(): void {
+    if (closed || warmupStarted) return;
+    warmupStarted = true;
     const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'ukmesh,test')
       .split(',').map((s: string) => s.trim()).filter(Boolean);
 
     const warmCharts = async () => {
       for (const net of warmupNetworks) {
+        if (closed) return;
         await getCharts(net, undefined).catch(() => { /* best-effort */ });
       }
     };
 
     const warmStats = async () => {
       for (const net of warmupNetworks) {
+        if (closed) return;
         await getStatsSummary(net, undefined).catch(() => { /* best-effort */ });
       }
     };
@@ -671,13 +679,21 @@ export function createStatsService(deps: StatsServiceDeps) {
     // check. Fresh durable rows never regenerate; missing or genuinely stale
     // rows can regenerate after WS initial-state has had time to warm.
     initialStatsWarmup = new Promise<void>((resolve) => {
-      setTimeout(resolve, 5_000);
+      settleInitialDelay = resolve;
+      const timer = setTimeout(() => { warmTimers.delete(timer); resolve(); }, 5_000);
+      timer.unref();
+      warmTimers.add(timer);
     }).then(warmStats);
     void initialStatsWarmup.finally(() => {
-      setTimeout(() => void warmCharts(), coldRegenDeferMs).unref();
+      if (closed) return;
+      const timer = setTimeout(() => { warmTimers.delete(timer); void warmCharts(); }, coldRegenDeferMs);
+      timer.unref();
+      warmTimers.add(timer);
     });
-    setInterval(warmStats, statsCacheTtlMs);
-    setInterval(warmCharts, Math.min(60_000, chartsCacheTtlMs));
+    const statsTimer = setInterval(() => void warmStats(), statsCacheTtlMs);
+    const chartTimer = setInterval(() => void warmCharts(), Math.min(60_000, chartsCacheTtlMs));
+    statsTimer.unref(); chartTimer.unref();
+    warmTimers.add(statsTimer); warmTimers.add(chartTimer);
   }
 
   async function computeStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
@@ -754,7 +770,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
       stopTimer({ status: 'success' });
       statsRecomputeTotal.inc({ network: metricNetwork, status: 'success' });
-      statsCache.set(key, { ts: Date.now(), data });
+      if (!closed) statsCache.set(key, { ts: Date.now(), data });
       statsInflight.delete(key);
       return data;
     }).catch((err) => {
@@ -793,7 +809,7 @@ export function createStatsService(deps: StatsServiceDeps) {
           throw new Error('observer activity privacy generation changed before publication');
         }
         const data = result.rows.map((r) => ({ ...r, rx_24h: Number(r.rx_24h), tx_24h: Number(r.tx_24h) }));
-        observerActivityCache.set(key, { ts: Date.now(), data });
+        if (!closed) observerActivityCache.set(key, { ts: Date.now(), data });
         observerActivityInflight.delete(key);
         return data;
       })
@@ -811,6 +827,15 @@ export function createStatsService(deps: StatsServiceDeps) {
   }
 
   return {
+    close() {
+      if (closed) return;
+      closed = true;
+      for (const timer of warmTimers) clearTimeout(timer);
+      warmTimers.clear();
+      settleInitialDelay?.();
+      for (const cache of [channelTrafficCache, observerActivityCache, liveObserverCache]) { cache.shutdown(); cache.clear(); }
+      channelTrafficInflight.clear(); observerActivityInflight.clear(); liveObserverInflight.clear(); statsInflight.clear(); chartSnapshotLoads.clear();
+    },
     startChartsWarmup,
     getCharts,
     getStatsSummary,

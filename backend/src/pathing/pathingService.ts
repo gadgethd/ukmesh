@@ -25,9 +25,6 @@ type PathingServiceDeps = {
   repository: PathingRepository;
 };
 
-const resolveInflightSingle = new Map<string, Promise<PublicBetaResultDto>>();
-const resolveInflightMulti = new Map<string, Promise<PublicMultiObserverDto>>();
-const observerVariantsByPacket = new Map<string, Set<string>>();
 const RESOLVE_UNIQUE_INFLIGHT_MAX = Math.min(
   256,
   Math.max(1, Number(process.env['PATH_RESOLVE_UNIQUE_INFLIGHT_MAX'] ?? 34) || 34),
@@ -36,24 +33,6 @@ const OBSERVER_VARIANTS_PER_PACKET_MAX = Math.min(
   16,
   Math.max(1, Number(process.env['PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX'] ?? 4) || 4),
 );
-
-function reserveResolve(packetHash: string, network: string, observer?: string | null): () => void {
-  if (resolveInflightSingle.size + resolveInflightMulti.size >= RESOLVE_UNIQUE_INFLIGHT_MAX) {
-    throw new Error('PATH_RESOLVE_OVERLOADED');
-  }
-  if (!observer) return () => undefined;
-  const packetKey = `${packetHash}|${network}`;
-  const variants = observerVariantsByPacket.get(packetKey) ?? new Set<string>();
-  if (!variants.has(observer) && variants.size >= OBSERVER_VARIANTS_PER_PACKET_MAX) {
-    throw new Error('PATH_RESOLVE_OVERLOADED');
-  }
-  variants.add(observer);
-  observerVariantsByPacket.set(packetKey, variants);
-  return () => {
-    variants.delete(observer);
-    if (variants.size === 0) observerVariantsByPacket.delete(packetKey);
-  };
-}
 
 type ResolvePayload = {
   mode?: 'resolved' | 'fallback' | 'none';
@@ -113,6 +92,28 @@ export function addPathExplanation(value: unknown): unknown {
 }
 
 export function createPathingService(deps: PathingServiceDeps) {
+const resolveInflightSingle = new Map<string, Promise<PublicBetaResultDto>>();
+const resolveInflightMulti = new Map<string, Promise<PublicMultiObserverDto>>();
+const observerVariantsByPacket = new Map<string, Set<string>>();
+function reserveResolve(packetHash: string, network: string, observer?: string | null): () => void {
+  if (resolveInflightSingle.size + resolveInflightMulti.size >= RESOLVE_UNIQUE_INFLIGHT_MAX) {
+    throw new Error('PATH_RESOLVE_OVERLOADED');
+  }
+  if (!observer) return () => undefined;
+  const packetKey = `${packetHash}|${network}`;
+  const variants = observerVariantsByPacket.get(packetKey) ?? new Set<string>();
+  if (!variants.has(observer) && variants.size >= OBSERVER_VARIANTS_PER_PACKET_MAX) {
+    throw new Error('PATH_RESOLVE_OVERLOADED');
+  }
+  variants.add(observer);
+  observerVariantsByPacket.set(packetKey, variants);
+  return () => {
+    variants.delete(observer);
+    if (variants.size === 0) observerVariantsByPacket.delete(packetKey);
+  };
+}
+
+
   const {
     getResolveCache,
     setResolveCache,

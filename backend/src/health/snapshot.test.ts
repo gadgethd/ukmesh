@@ -2,6 +2,20 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { HealthSnapshotCache } from './snapshot.js';
 
+test('closed health runtimes discard a late refresh and cannot restart it', async () => {
+  let finish!: (value: { ok: boolean }) => void;
+  let loads = 0;
+  const cache = new HealthSnapshotCache(() => {
+    loads++;
+    return new Promise<{ ok: boolean }>(resolve => { finish = resolve; });
+  }, 100);
+  const pending = cache.refresh();
+  cache.close(); finish({ ok: true }); await pending;
+  await cache.refresh();
+  assert.equal(cache.read().ready, false);
+  assert.equal(loads, 1);
+});
+
 test('health snapshot coalesces refreshes and serves only fresh completed data', async () => {
   let now = 10;
   let loads = 0;

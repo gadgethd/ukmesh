@@ -119,7 +119,7 @@ export const CACHE_POLICY_REGISTRY: readonly CachePolicyRecord[] = Object.freeze
     negativeCaching: 'none', singleFlight: 'pathingService resolve maps',
   },
   {
-    source: 'src/api/routes/activityTimelineCache.ts#cache',
+    source: 'src/timeline/snapshotCache.ts#cache',
     disposition: 'bounded-cache', maxEntries: 16, maxBytes: 8 << 20, ttlMs: 90_000,
     scope: 'network + window minutes + bucket minutes + ready privacy generation',
     invalidation: 'fresh authority before/after delivery + generation-keyed 30s refresh/90s maximum age',

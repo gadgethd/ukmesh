@@ -7,14 +7,7 @@ import {
   OWNER_DASHBOARD_CACHE_TTL_MS,
   OWNER_LIVE_CACHE_TTL_MS,
   STATS_CACHE_TTL_MS,
-  chartsCache,
-  chartsInflight,
-  inferredNodesCache,
-  inferredNodesInflight,
-  nodeLinksCache,
-  nodeLinksInflight,
-  ownerLiveCache,
-  statsCache,
+  createApiCaches,
 } from './bootstrap/caches.js';
 import { getMultibytePathSegments } from '../repositories/topologyReads.js';
 import { getNodes, getNodeHistory, getNodeAdverts, getTopAdvertingRepeaters } from '../repositories/nodeReads.js';
@@ -44,7 +37,7 @@ import {
   PATH_LEARNING_LIMITER,
   STATS_CHARTS_LIMITER,
 } from './bootstrap/limiters.js';
-import healthRoutes from './routes/health.js';
+import { createHealthRoutes } from './routes/health.js';
 import { registerMiscRoutes } from './routes/misc.js';
 import { registerNodeRoutes } from './routes/nodes.js';
 import nodeStatusRoutes from './routes/nodeStatus.js';
@@ -86,188 +79,215 @@ import { ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { createOwnerSessionGuard } from './ownerSessionGuard.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
-const router = Router();
-// Anonymous cross-network aggregation is not a public API capability. Operator
-// diagnostics must use separately authenticated/local-only entry points.
-router.use((req, res, next) => {
-  try {
-    resolvePublicNetworkScope(req.query['network'], req.headers);
-    normalizeObserverQuery(req.query['observer']);
-  } catch (error) {
-    if (
-      !(error instanceof PublicAllScopeForbiddenError)
-      && !(error instanceof InvalidPublicNetworkScopeError)
-      && !(error instanceof ApiInputError)
-    ) {
-      next(error);
+export function createApiRuntime() {
+  const router = Router();
+  const caches = createApiCaches();
+  const { statsCache, inferredNodesCache, inferredNodesInflight, nodeLinksCache, nodeLinksInflight, chartsCache, chartsInflight, ownerLiveCache } = caches;
+  const health = createHealthRoutes();
+  // Anonymous cross-network aggregation is not a public API capability. Operator
+  // diagnostics must use separately authenticated/local-only entry points.
+  router.use((req, res, next) => {
+    try {
+      resolvePublicNetworkScope(req.query['network'], req.headers);
+      normalizeObserverQuery(req.query['observer']);
+    } catch (error) {
+      if (
+        !(error instanceof PublicAllScopeForbiddenError)
+        && !(error instanceof InvalidPublicNetworkScopeError)
+        && !(error instanceof ApiInputError)
+      ) {
+        next(error);
+        return;
+      }
+      res.status(400).json({
+        error: error instanceof PublicAllScopeForbiddenError
+          ? 'The all-network scope is not available on public endpoints'
+          : 'Invalid public request scope',
+      });
       return;
     }
-    res.status(400).json({
-      error: error instanceof PublicAllScopeForbiddenError
-        ? 'The all-network scope is not available on public endpoints'
-        : 'Invalid public request scope',
-    });
-    return;
+    next();
+  });
+  router.use(health.router);
+  router.use(nodeStatusRoutes);
+  router.use(radioRoutes);
+  registerProductFeatureRoutes(router, query, getPublicResponseGeneration);
+  const OWNER_COOKIE_NAME = 'meshcore_owner_session';
+  // 7 days: revocation is now immediate via the credential-generation check
+  // (BUG-010), so a long cookie lifetime no longer delays incident response.
+  const OWNER_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+  const OWNER_LAST_HOP_CACHE_TTL_MS = 60 * 60 * 1000;
+  const MQTT_USERNAME_MAX_LEN = 128;
+  const MQTT_PASSWORD_MAX_LEN = 128;
+
+  function hasControlChars(value: string): boolean {
+    return /[\u0000-\u001F\u007F]/.test(value);
   }
-  next();
-});
-router.use(healthRoutes);
-router.use(nodeStatusRoutes);
-router.use(radioRoutes);
-registerProductFeatureRoutes(router, query, getPublicResponseGeneration);
-const OWNER_COOKIE_NAME = 'meshcore_owner_session';
-// 7 days: revocation is now immediate via the credential-generation check
-// (BUG-010), so a long cookie lifetime no longer delays incident response.
-const OWNER_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const OWNER_LAST_HOP_CACHE_TTL_MS = 60 * 60 * 1000;
-const MQTT_USERNAME_MAX_LEN = 128;
-const MQTT_PASSWORD_MAX_LEN = 128;
 
-function hasControlChars(value: string): boolean {
-  return /[\u0000-\u001F\u007F]/.test(value);
+  function getRouteOwnerSession(req: Request) {
+    return getOwnerSession(req, OWNER_COOKIE_NAME);
+  }
+
+  const requireOwnerSession = createOwnerSessionGuard({
+    ownerCookieName: OWNER_COOKIE_NAME,
+    getOwnerSession: getRouteOwnerSession,
+    getOwnerCredentialGeneration,
+    isOwnerSessionActive,
+    touchOwnerSession,
+    resolveOwnerNodeIds,
+  });
+
+  registerCoverageRoutes(router, {
+    coverageLimiter: COVERAGE_LIMITER,
+    networkFilters,
+    query,
+  });
+  registerPlannedCoverageRoutes(router, {
+    coverageLimiter: COVERAGE_LIMITER,
+    plannedCoverageRepository: createPlannedCoverageRepository(pool),
+  });
+  const closeNodes = registerNodeRoutes(router, {
+    getNodes,
+    getNodeHistory,
+    getNodeAdverts,
+    getTopAdvertingRepeaters,
+    nodeRepository: createNodeRepository(query),
+    requireLocalOnly,
+    networkFilters,
+    getPublicVisibilityGeneration: getPublicResponseGeneration,
+    inferredNodesCache,
+    inferredNodesInflight,
+    inferredNodesCacheTtlMs: INFERRED_NODES_CACHE_TTL_MS,
+    nodeLinksCache,
+    nodeLinksInflight,
+    nodeLinksCacheTtlMs: NODE_LINKS_CACHE_TTL_MS,
+    nodesLimiter: NODES_LIMITER,
+  });
+  registerMiscRoutes(router, {
+    query,
+    getRecentPackets,
+    getRecentPacketEvents,
+    getPacketDetail,
+    getChannelMessageHistory,
+    getRecentMessageTags,
+    getPublicVisibilityGeneration,
+    packetDetailLimiter: PACKET_DETAIL_LIMITER,
+  });
+  const ownerService = registerOwnerRoutes(router, {
+    ownerCookieName: OWNER_COOKIE_NAME,
+    ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
+    ownerLiveCache,
+    ownerDashboardCacheTtlMs: OWNER_DASHBOARD_CACHE_TTL_MS,
+    ownerLastHopCacheTtlMs: OWNER_LAST_HOP_CACHE_TTL_MS,
+    ownerSessionTtlMs: OWNER_SESSION_TTL_MS,
+    mqttUsernameMaxLen: MQTT_USERNAME_MAX_LEN,
+    mqttPasswordMaxLen: MQTT_PASSWORD_MAX_LEN,
+    ownerLoginLimiter: OWNER_LOGIN_LIMITER,
+    hasControlChars,
+    verifyMqttCredentials,
+    resolveOwnerNodeIds,
+    autoLinkOwnerNodeIds,
+    buildOwnerDashboard,
+    encryptOwnerSession,
+    isSecureRequest,
+    getOwnerSession: getRouteOwnerSession,
+    requireOwnerSession,
+    getOwnerCredentialGeneration,
+    createOwnerSession,
+    isOwnerSessionActive,
+    touchOwnerSession,
+    revokeOwnerSession,
+    revokeOwnerSessionsForUsername,
+    invalidateOwnerNodeIdCache,
+    reconcileOwnerAuthorization,
+    query,
+    withTransaction,
+  });
+  registerPathingRoutes(router, {
+    pathBetaLimiter: PATH_BETA_LIMITER,
+    pathLearningLimiter: PATH_LEARNING_LIMITER,
+    getResolveCache,
+    setResolveCache,
+    getHeldPath,
+    setHeldPath,
+    resolvePool,
+    getPublicVisibilityGeneration,
+    getMultibytePathSegments,
+    query,
+  });
+  const statsService = registerStatsRoutes(router, {
+    statsCache,
+    statsCacheTtlMs: STATS_CACHE_TTL_MS,
+    chartsCache,
+    chartsCacheTtlMs: CHARTS_CACHE_TTL_MS,
+    chartsSnapshotStaleTtlMs: CHARTS_CACHE_STALE_TTL_MS,
+    chartsInflight,
+    expensiveLimiter: EXPENSIVE_LIMITER,
+    statsChartsLimiter: STATS_CHARTS_LIMITER,
+    networkFilters,
+    query,
+    analyticsQuery,
+    getPublicVisibilityGeneration: getPublicResponseGeneration,
+    maskDecodedPathNodes,
+    runHeavyWork: (workload, task) => withHeavyWorkAdmission({ pool, workload, task }),
+  });
+  registerTelemetryRoutes(router, { query });
+  registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER, getPublicVisibilityGeneration: getPublicResponseGeneration });
+  const closeTopology = registerTopologyRoutes(router, {
+    query,
+    networkFilters,
+    getPublicVisibilityGeneration: getPublicResponseGeneration,
+    limiter: EXPENSIVE_LIMITER,
+  });
+  registerRegionsRoutes(router, {
+    query,
+    networkFilters,
+    limiter: EXPENSIVE_LIMITER,
+    getPublicVisibilityGeneration: getPublicResponseGeneration,
+  });
+  const closeTimeline = registerActivityTimelineRoutes(router, {
+    query,
+    networkFilters,
+    limiter: STATS_CHARTS_LIMITER,
+    getPublicVisibilityGeneration: getPublicResponseGeneration,
+  });
+  registerRfValidationRoutes(router, {
+    query,
+    networkFilters,
+    limiter: EXPENSIVE_LIMITER,
+  });
+  registerExportRoutes(router, {
+    query,
+    networkFilters,
+    exportLimiter: EXPORT_LIMITER,
+    getPublicVisibilityGeneration,
+  });
+
+  assertUniqueRouteRegistry(router);
+  assertContractCoverage(router);
+  wrapAsyncHandlers(router);
+
+  let started = false;
+  let closed = false;
+  return {
+    router,
+    ownerService,
+    startBackgroundWork() {
+      if (started || closed) return;
+      started = true;
+      statsService.startChartsWarmup();
+      health.start();
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      health.close();
+      statsService.close();
+      ownerService.close();
+      closeTimeline();
+      closeNodes();
+      closeTopology();
+      caches.close();
+    },
+  };
 }
-
-function getRouteOwnerSession(req: Request) {
-  return getOwnerSession(req, OWNER_COOKIE_NAME);
-}
-
-const requireOwnerSession = createOwnerSessionGuard({
-  ownerCookieName: OWNER_COOKIE_NAME,
-  getOwnerSession: getRouteOwnerSession,
-  getOwnerCredentialGeneration,
-  isOwnerSessionActive,
-  touchOwnerSession,
-  resolveOwnerNodeIds,
-});
-
-registerCoverageRoutes(router, {
-  coverageLimiter: COVERAGE_LIMITER,
-  networkFilters,
-  query,
-});
-registerPlannedCoverageRoutes(router, {
-  coverageLimiter: COVERAGE_LIMITER,
-  plannedCoverageRepository: createPlannedCoverageRepository(pool),
-});
-registerNodeRoutes(router, {
-  getNodes,
-  getNodeHistory,
-  getNodeAdverts,
-  getTopAdvertingRepeaters,
-  nodeRepository: createNodeRepository(query),
-  requireLocalOnly,
-  networkFilters,
-  getPublicVisibilityGeneration: getPublicResponseGeneration,
-  inferredNodesCache,
-  inferredNodesInflight,
-  inferredNodesCacheTtlMs: INFERRED_NODES_CACHE_TTL_MS,
-  nodeLinksCache,
-  nodeLinksInflight,
-  nodeLinksCacheTtlMs: NODE_LINKS_CACHE_TTL_MS,
-  nodesLimiter: NODES_LIMITER,
-});
-registerMiscRoutes(router, {
-  query,
-  getRecentPackets,
-  getRecentPacketEvents,
-  getPacketDetail,
-  getChannelMessageHistory,
-  getRecentMessageTags,
-  getPublicVisibilityGeneration,
-  packetDetailLimiter: PACKET_DETAIL_LIMITER,
-});
-registerOwnerRoutes(router, {
-  ownerCookieName: OWNER_COOKIE_NAME,
-  ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
-  ownerLiveCache,
-  ownerDashboardCacheTtlMs: OWNER_DASHBOARD_CACHE_TTL_MS,
-  ownerLastHopCacheTtlMs: OWNER_LAST_HOP_CACHE_TTL_MS,
-  ownerSessionTtlMs: OWNER_SESSION_TTL_MS,
-  mqttUsernameMaxLen: MQTT_USERNAME_MAX_LEN,
-  mqttPasswordMaxLen: MQTT_PASSWORD_MAX_LEN,
-  ownerLoginLimiter: OWNER_LOGIN_LIMITER,
-  hasControlChars,
-  verifyMqttCredentials,
-  resolveOwnerNodeIds,
-  autoLinkOwnerNodeIds,
-  buildOwnerDashboard,
-  encryptOwnerSession,
-  isSecureRequest,
-  getOwnerSession: getRouteOwnerSession,
-  requireOwnerSession,
-  getOwnerCredentialGeneration,
-  createOwnerSession,
-  isOwnerSessionActive,
-  touchOwnerSession,
-  revokeOwnerSession,
-  revokeOwnerSessionsForUsername,
-  invalidateOwnerNodeIdCache,
-  reconcileOwnerAuthorization,
-  query,
-  withTransaction,
-});
-registerPathingRoutes(router, {
-  pathBetaLimiter: PATH_BETA_LIMITER,
-  pathLearningLimiter: PATH_LEARNING_LIMITER,
-  getResolveCache,
-  setResolveCache,
-  getHeldPath,
-  setHeldPath,
-  resolvePool,
-  getPublicVisibilityGeneration,
-  getMultibytePathSegments,
-  query,
-});
-registerStatsRoutes(router, {
-  statsCache,
-  statsCacheTtlMs: STATS_CACHE_TTL_MS,
-  chartsCache,
-  chartsCacheTtlMs: CHARTS_CACHE_TTL_MS,
-  chartsSnapshotStaleTtlMs: CHARTS_CACHE_STALE_TTL_MS,
-  chartsInflight,
-  expensiveLimiter: EXPENSIVE_LIMITER,
-  statsChartsLimiter: STATS_CHARTS_LIMITER,
-  networkFilters,
-  query,
-  analyticsQuery,
-  getPublicVisibilityGeneration: getPublicResponseGeneration,
-  maskDecodedPathNodes,
-  runHeavyWork: (workload, task) => withHeavyWorkAdmission({ pool, workload, task }),
-});
-registerTelemetryRoutes(router, { query });
-registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER, getPublicVisibilityGeneration: getPublicResponseGeneration });
-registerTopologyRoutes(router, {
-  query,
-  networkFilters,
-  getPublicVisibilityGeneration: getPublicResponseGeneration,
-  limiter: EXPENSIVE_LIMITER,
-});
-registerRegionsRoutes(router, {
-  query,
-  networkFilters,
-  limiter: EXPENSIVE_LIMITER,
-  getPublicVisibilityGeneration: getPublicResponseGeneration,
-});
-registerActivityTimelineRoutes(router, {
-  query,
-  networkFilters,
-  limiter: STATS_CHARTS_LIMITER,
-  getPublicVisibilityGeneration: getPublicResponseGeneration,
-});
-registerRfValidationRoutes(router, {
-  query,
-  networkFilters,
-  limiter: EXPENSIVE_LIMITER,
-});
-registerExportRoutes(router, {
-  query,
-  networkFilters,
-  exportLimiter: EXPORT_LIMITER,
-  getPublicVisibilityGeneration,
-});
-
-assertUniqueRouteRegistry(router);
-assertContractCoverage(router);
-wrapAsyncHandlers(router);
-
-export default router;

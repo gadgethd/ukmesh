@@ -158,4 +158,3 @@ export { pool, analyticsPool };
 export async function closeDb(): Promise<void> {
   await Promise.all([pool.end(), analyticsPool.end(), ingestPool.end()]);
 }
-

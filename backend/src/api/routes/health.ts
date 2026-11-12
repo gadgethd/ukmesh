@@ -1,33 +1,41 @@
 import { Router } from 'express';
-import { HEALTH_CACHE_TTL_MS, healthSnapshot } from '../bootstrap/caches.js';
-import { toPublicHealthOverview } from '../../health/status.js';
+import { HEALTH_CACHE_TTL_MS } from '../bootstrap/caches.js';
+import { HealthSnapshotCache } from '../../health/snapshot.js';
+import { getWorkerHealthOverview, toPublicHealthOverview } from '../../health/status.js';
 import { getMqttRuntimeStatus } from '../../mqtt/client.js';
 import { withMqttDeliveryHealth } from '../../health/mqttDelivery.js';
 
-const router = Router();
-const refreshTimer = setInterval(() => {
-  void healthSnapshot.refresh();
-}, HEALTH_CACHE_TTL_MS);
-refreshTimer.unref();
-setImmediate(() => {
-  void healthSnapshot.refresh();
-});
+export function createHealthRoutes() {
+    const router = Router();
+    const healthSnapshot = new HealthSnapshotCache(getWorkerHealthOverview, Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000));
+    let timer: ReturnType<typeof setInterval> | undefined;
+    let closed = false;
+  router.get('/health', (_req, res) => {
+    const current = healthSnapshot.read();
+    if (!current.ready) {
+      res.setHeader('Cache-Control', 'public, max-age=5');
+      res.status(503).json({
+        status: 'initializing',
+        generatedAt: current.generatedAt == null
+          ? null
+          : new Date(current.generatedAt).toISOString(),
+        lastError: current.lastError,
+      });
+      return;
+    }
+    res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
+    res.json(withMqttDeliveryHealth(toPublicHealthOverview(current.data), getMqttRuntimeStatus().delivery));
+  });
 
-router.get('/health', (_req, res) => {
-  const current = healthSnapshot.read();
-  if (!current.ready) {
-    res.setHeader('Cache-Control', 'public, max-age=5');
-    res.status(503).json({
-      status: 'initializing',
-      generatedAt: current.generatedAt == null
-        ? null
-        : new Date(current.generatedAt).toISOString(),
-      lastError: current.lastError,
-    });
-    return;
-  }
-  res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-  res.json(withMqttDeliveryHealth(toPublicHealthOverview(current.data), getMqttRuntimeStatus().delivery));
-});
 
-export default router;
+    return {
+      router,
+      start() {
+        if (timer || closed) return;
+        timer = setInterval(() => void healthSnapshot.refresh(), HEALTH_CACHE_TTL_MS);
+        timer.unref();
+        void healthSnapshot.refresh();
+      },
+      close() { closed = true; healthSnapshot.close(); if (timer) clearInterval(timer); timer = undefined; },
+    };
+}

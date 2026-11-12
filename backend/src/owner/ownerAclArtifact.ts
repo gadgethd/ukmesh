@@ -18,4 +18,3 @@ export function validAppliedOwnerAclArtifact(artifact: AppliedOwnerAclArtifact, 
     && markers.length === 1
     && markers[0] === `# BEGIN MESHCORE OWNER ACL v1 generation=${generation}`;
 }
-

@@ -214,6 +214,7 @@ export function createTopologyLoader(
     ttlMs: 60_000,
   });
   const inflight = new Map<string, Promise<TopologyDto>>();
+  let closed = false;
   let observedGeneration: number | null = null;
 
   const load = async (network: string, limit: number, initialGeneration?: number): Promise<TopologyDto> => {
@@ -242,7 +243,7 @@ export function createTopologyLoader(
       if (await deps.getPublicVisibilityGeneration() !== visibilityGeneration) {
         throw new Error('TOPOLOGY_VISIBILITY_CHANGED');
       }
-      cache.set(key, dto);
+      if (!closed) cache.set(key, dto);
       return dto;
     })();
     inflight.set(key, run);
@@ -253,10 +254,10 @@ export function createTopologyLoader(
     }
   };
 
-  return { load, shutdown: () => cache.shutdown() };
+  return { load, shutdown: () => { closed = true; cache.shutdown(); cache.clear(); inflight.clear(); } };
 }
 
-export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps): void {
+export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps): () => void {
   const topologyLoader = createTopologyLoader(deps);
   router.get('/topology', deps.limiter, async (req, res) => {
     const limit = parseBoundedInteger(req.query['limit'], {
@@ -273,4 +274,5 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
       res.status(500).json({ error: 'Internal server error' });
     }
   });
+  return topologyLoader.shutdown;
 }

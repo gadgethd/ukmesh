@@ -10,6 +10,3 @@ export function initializePacketPersistence(): void {
 export async function insertPacket(p: InsertPacketInput): Promise<PacketBatchResult> {
   return enqueuePacket(buildPacketBatchInput(p));
 }
-
-
-

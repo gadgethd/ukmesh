@@ -1,5 +1,5 @@
-import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
-import { activityTimelineRefreshInflight } from '../../metrics.js';
+import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import { activityTimelineRefreshInflight } from '../metrics.js';
 
 const FRESH_MS = 30_000;
 const RETAIN_MS = 90_000;
