@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 
 const testOwnerDatabaseUrl = String(process.env['TEST_OWNER_DATABASE_URL'] ?? '').trim();
 
@@ -28,6 +29,34 @@ if (testOwnerDatabaseUrl) {
   process.env['DATABASE_URL'] = adminUrlFor(testOwnerDatabaseUrl);
   process.env['OWNER_SESSION_MAX_PER_USER'] = '2';
 }
+
+// P1-9 removed runtime schema DDL, so this suite owns its fixture the same way
+// the other integration suites do: create the database if the service did not,
+// seed the shipped base schema, and replay the migration band (073/075 create
+// core.owner_*).
+async function provisionOwnerFixture(): Promise<void> {
+  const admin = new pg.Pool({ connectionString: adminUrlFor(testOwnerDatabaseUrl), max: 1 });
+  const name = new URL(testOwnerDatabaseUrl).pathname.replace(/^\//, '');
+  try {
+    const found = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [name]);
+    if (!found.rowCount) {
+      await admin.query(`CREATE DATABASE "${name}"`);
+    }
+  } finally {
+    await admin.end();
+  }
+  const pool = new pg.Pool({ connectionString: testOwnerDatabaseUrl, options: POST_MOVE_SEARCH_PATH });
+  try {
+    await bootstrapBaseSchemaFixture(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+test.before(async () => {
+  if (!testOwnerDatabaseUrl) return;
+  await provisionOwnerFixture();
+});
 
 const skip = testOwnerDatabaseUrl ? false : 'TEST_OWNER_DATABASE_URL required';
 
