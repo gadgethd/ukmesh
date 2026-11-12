@@ -5,5 +5,5 @@ export function startWorkerMetrics(): void {
   const port = Number.isSafeInteger(parsed) && parsed >= 1 && parsed <= 65_535
     ? parsed
     : 9091;
-  startMetricsServer(port);
+  startMetricsServer(port, process.env['METRICS_HOST'] ?? '0.0.0.0');
 }

@@ -17,7 +17,9 @@ recent-packets API. The website is at `http://127.0.0.1:5173`; its `/api` and
 No private dataset is needed for onboarding.
 
 The script starts digest-pinned TimescaleDB (5433), Redis (6380), Mosquitto
-(MQTT 1884 and WebSocket 9002), backend (3100) and Vite (5173). Container
+(MQTT 1884 and WebSocket 9002), backend (3100), region snapshot worker
+(loopback metrics 9092) and Vite (5173). Startup waits for a fresh, certified
+region snapshot, including a valid empty result for an empty public corpus. Container
 ports bind to loopback. It uses an allowlisted environment, never reads a
 project `.env`, and sets every active role DSN to the owned local database.
 The separate `meshcore_owner_auth` database contains structure only, without

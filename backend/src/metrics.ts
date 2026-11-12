@@ -431,6 +431,22 @@ export const spamAnalysisTruncationsTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const regionSnapshotHealthy = new Gauge({
+  name: 'meshcore_region_snapshot_healthy',
+  help: 'Latest background poll found a fresh region snapshot certified for the ready privacy generation.',
+  registers: [metricsRegistry],
+});
+export const regionSnapshotPublishedSeconds = new Gauge({
+  name: 'meshcore_region_snapshot_published_seconds',
+  help: 'Unix time of the most recently observed region publication.',
+  registers: [metricsRegistry],
+});
+export const regionSnapshotRunning = new Gauge({
+  name: 'meshcore_region_snapshot_running',
+  help: 'Whether this worker is running one bounded region rebuild child.',
+  registers: [metricsRegistry],
+});
+
 let workerHeartbeatCollector: (() => Promise<void>) | null = null;
 
 export function setWorkerHeartbeatCollector(collector: (() => Promise<void>) | null): void {
@@ -568,6 +584,7 @@ const METRIC_WORKERS = new Set([
   'forwarding_outbox',
   'health',
   'privacy_remat',
+  'region_scope',
   'path_learning',
   'synthetic',
   'link_backfill',

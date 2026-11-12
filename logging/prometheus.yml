@@ -18,6 +18,9 @@ scrape_configs:
 
   - job_name: meshcore-workers
     static_configs:
+      - targets: [region-snapshot-worker:9091]
+        labels:
+          role: region_scope
       - targets: [health-worker:9091]
         labels:
           role: health

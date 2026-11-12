@@ -637,3 +637,27 @@ tests:
               summary: Durable packet path growth exceeds 60,000 rows per day
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
+
+  - name: region snapshot warning waits for convergence and recovers
+    interval: 1m
+    input_series:
+      - series: 'meshcore_region_snapshot_healthy{job="meshcore-workers",role="region_scope"}'
+        values: 0x15 1x5
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: RegionSnapshotUnavailable
+        exp_alerts: []
+      - eval_time: 11m
+        alertname: RegionSnapshotUnavailable
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-workers
+              role: region_scope
+              severity: warning
+            exp_annotations:
+              summary: Region snapshots have not converged to a fresh privacy-certified result
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#regionsnapshotunavailable
+      - eval_time: 17m
+        alertname: RegionSnapshotUnavailable
+        exp_alerts: []

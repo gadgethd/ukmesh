@@ -41,11 +41,16 @@ command -v docker >/dev/null || { echo 'Docker Engine and Compose are required' 
 docker info >/dev/null
 
 stop_processes() {
-  for service in backend frontend; do
+  for service in region-snapshot backend frontend; do
     if [[ -f "$state/$service.pid" ]]; then
       pid=$(cat "$state/$service.pid")
-      # Match our absolute entrypoint before signalling a saved PID.
-      if [[ -r /proc/$pid/cmdline ]] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -Fq "$repo"; then
+      # Match this service's absolute entrypoint before signalling a saved PID.
+      case "$service" in
+        backend) expected_entry="$repo/backend/dist/index.js" ;;
+        frontend) expected_entry="$repo/frontend/node_modules/vite/bin/vite.js" ;;
+        region-snapshot) expected_entry="$repo/backend/dist/workers/region-snapshot.js" ;;
+      esac
+      if [[ -r /proc/$pid/cmdline ]] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -F "$expected_entry" > /dev/null; then
         kill "$pid" 2>/dev/null || true
         for ((attempt=0; attempt<100; attempt++)); do
           kill -0 "$pid" 2>/dev/null || break
@@ -152,6 +157,16 @@ if [[ $ready != true ]]; then tail -40 "$state/backend.log" >&2; exit 1; fi
 if [[ $profile == ingest && $action != start && $replay_limit -gt 0 ]]; then
   "${tsx[@]}" "$repo/backend/src/tools/smokeSampleReplay.ts" --data-dir "$data_dir" --limit "$replay_limit"
 fi
+METRICS_PORT=9092 setsid nohup node --max-old-space-size=128 "$repo/backend/dist/workers/region-snapshot.js" \
+  > "$state/region-snapshot.log" 2>&1 < /dev/null &
+echo $! > "$state/region-snapshot.pid"
+region_ready=false
+for ((attempt=0; attempt<180; attempt++)); do
+  if curl --fail --silent --max-time 2 http://127.0.0.1:9092/metrics | grep '^meshcore_region_snapshot_healthy 1$' > /dev/null; then region_ready=true; break; fi
+  kill -0 "$(cat "$state/region-snapshot.pid")" 2>/dev/null || break
+  sleep 1
+done
+if [[ $region_ready != true ]]; then tail -30 "$state/region-snapshot.log" >&2; exit 1; fi
 (
   cd "$repo/frontend"
   setsid nohup node "$repo/frontend/node_modules/vite/bin/vite.js" --host 127.0.0.1 --port 5173 --strictPort \

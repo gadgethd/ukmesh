@@ -175,6 +175,16 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#healthworkerheartbeatstale
 
+      - alert: RegionSnapshotUnavailable
+        expr: meshcore_region_snapshot_healthy{job="meshcore-workers",role="region_scope"} == 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Region snapshots have not converged to a fresh privacy-certified result
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#regionsnapshotunavailable
+
       - alert: WorkerMetricsDown
         expr: up{job="meshcore-workers"} == 0
         for: 3m

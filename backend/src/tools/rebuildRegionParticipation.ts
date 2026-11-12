@@ -8,7 +8,7 @@
  * Then tally node -> region -> distinct packets, plus unscoped relay evidence
  * (route 1, multibyte, 7d) for the green/red classification, and refresh:
  *   core.region_scope_stats, core.region_scope_members, core.repeater_scope_status,
- *   core.region_scope_run
+ *   core.region_scope_run, core.region_scope_unattributed
  *
  * Membership floor: a node counts as a region member only when it relayed at
  * least MEMBER_MIN_SHARE_PCT (regions/memberShare.ts, currently 10%) of that
@@ -20,19 +20,26 @@
  * or via:  npm run regions:rebuild
  *
  * Env:
- *   DATABASE_URL                 required (same as the backend)
+ *   MESHCORE_WORKER_DATABASE_URL  worker DSN (DATABASE_URL fallback)
  *   REGION_SCOPE_WINDOW_DAYS     scoped window in days (default 92, 7..365)
  *   MESHCORE_REGION_NAMES        extra probe names (comma-separated)
  *   MESHCORE_CHANNEL_SECRETS     extra channel secrets for the decoder keyStore
  *   REGION_SCOPE_DRY_RUN=1       compute + log but do not write
+ *   REGION_SCOPE_ALLOW_EMPTY=1   publish a complete empty corpus (worker sets it)
+ *   REGION_SCOPE_MAX_PACKETS     distinct scoped packet cap (default 500000)
+ *   REGION_SCOPE_MAX_NODES       node cap (default 100000)
+ *   REGION_SCOPE_STATEMENT_TIMEOUT_MS SQL deadline (default 120000)
  *
- * All four tables are refreshed wholesale inside ONE transaction (delete +
+ * All five tables are refreshed wholesale inside ONE transaction (delete +
  * insert), so readers never observe an empty or partial state. If the scoped
  * corpus is non-empty but nothing decodes, the tool aborts without writing
  * (a broken probe list must never wipe good data).
  */
 
 import pg from 'pg';
+import { pathToFileURL } from 'node:url';
+import { databaseUrlForRole } from '../platform/config/database.js';
+import { regionRebuildSettings } from '../regions/rebuildSettings.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
@@ -48,7 +55,6 @@ const { Pool } = pg;
 
 // Documented MeshCore public channel material, not an application credential.
 const DEFAULT_PUBLIC_CHANNEL_KEY = '8b3387e9c5cdea6ac9e5edbaa115cd72';
-const DEFAULT_WINDOW_DAYS = 92;
 const UNRESOLVED_ELEMENT_LOG_LIMIT = 12;
 
 interface ScopedPacketRow {
@@ -73,12 +79,6 @@ interface UnscopedElementRow {
   c: string;
 }
 
-function boundedWindowDays(raw: string | undefined): number {
-  const value = Number(raw ?? DEFAULT_WINDOW_DAYS);
-  if (!Number.isFinite(value)) return DEFAULT_WINDOW_DAYS;
-  return Math.max(7, Math.min(365, Math.trunc(value)));
-}
-
 function buildChannelSecrets(): string[] {
   const secrets = [DEFAULT_PUBLIC_CHANNEL_KEY];
   for (const entry of (process.env['MESHCORE_CHANNEL_SECRETS'] ?? '')
@@ -98,22 +98,32 @@ function resolveElement(prefixIndex: Map<string, string[]>, element: string): st
   return hits.length === 1 ? hits[0] : null;
 }
 
-async function main(): Promise<void> {
-  if (!process.env['DATABASE_URL']) throw new Error('DATABASE_URL is required');
-  const windowDays = boundedWindowDays(process.env['REGION_SCOPE_WINDOW_DAYS']);
+export async function rebuildRegionParticipation(): Promise<void> {
+  const databaseUrl = databaseUrlForRole('worker');
+  if (!databaseUrl) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
+  const settings = regionRebuildSettings();
+  const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';
   const probeNames = regionProbeNamesWithEnv(process.env['MESHCORE_REGION_NAMES']);
   const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: buildChannelSecrets() });
 
   const pool = new Pool({
-    connectionString: process.env['DATABASE_URL'],
+    connectionString: databaseUrl,
     application_name: 'meshcore-regions-rebuild',
     max: 2,
-    statement_timeout: 0,
-    query_timeout: 0,
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: settings.statementTimeoutMs,
+    query_timeout: settings.statementTimeoutMs + 1_000,
   });
 
+  let publisher: pg.PoolClient | undefined;
+  let ownsLock = false;
   try {
+    publisher = await pool.connect();
+    ownsLock = (await publisher.query<{ locked: boolean }>(
+      "SELECT pg_try_advisory_lock(hashtext('meshcore-region-snapshot-publish')) AS locked",
+    )).rows[0]?.locked === true;
+    if (!ownsLock) throw new Error('REGION_SNAPSHOT_PUBLISHER_BUSY');
     const visibilityGeneration = await readPublicResponseGeneration((sql) => pool.query(sql));
     const startedAt = Date.now();
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
@@ -132,11 +142,14 @@ async function main(): Promise<void> {
           AND ${publicPacketPrivacySql('p')}
           AND p.route_type IN (0, 3)
           AND p.time > now() - make_interval(days => $1)
-        GROUP BY p.packet_hash`,
-      [windowDays],
+        GROUP BY p.packet_hash
+        ORDER BY p.packet_hash
+        LIMIT $2`,
+      [windowDays, settings.maxPackets + 1],
     );
     console.log(`[regions] scoped packets: ${scopedRows.length} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
-    if (scopedRows.length === 0) throw new Error('no scoped packets found in window; refusing to wipe tables');
+    if (scopedRows.length > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
+    if (scopedRows.length === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
 
     const regionTotals = new Map<string, number>();
     const regionFirstSeen = new Map<string, Date>();
@@ -171,14 +184,16 @@ async function main(): Promise<void> {
     }
     const unknownCount = scopedRows.length - decodedCount;
     console.log(`[regions] decoded ${decodedCount}/${scopedRows.length} (${unknownCount} unknown)`);
-    if (decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
+    if (scopedRows.length > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
          FROM core.nodes
         WHERE network IN (${UKMESH_NETWORK_SQL_LIST})
-        ORDER BY node_id, last_seen DESC NULLS LAST`,
+        ORDER BY node_id, last_seen DESC NULLS LAST
+        LIMIT $1`, [settings.maxNodes + 1],
     );
+    if (nodeRows.length > settings.maxNodes) throw new Error('REGION_SCOPE_NODE_CAPACITY');
     const nodeRoles = new Map<string, number | null>();
     const prefixIndex = new Map<string, string[]>();
     for (const row of nodeRows) {
@@ -241,12 +256,13 @@ async function main(): Promise<void> {
       `${unattributedClusters.discardedPackets} below floor, ` +
       `${unattributedClusters.unlocatedPackets} unlocated)`);
 
-    const scopedByNode = new Map<string, Map<string, Set<string>>>();
-    const scopedTotal = new Map<string, Set<string>>();
+    const scopedByNode = new Map<string, Map<string, number>>();
+    const scopedTotal = new Map<string, number>();
     const elementStats = new Map<string, number>();
     const unresolvedSamples: string[] = [];
     for (const row of scopedRows) {
       const region = packetRegion.get(row.packet_hash) ?? null;
+      const countedNodes = new Set<string>();
       for (const element of row.elems ?? []) {
         if (!element) continue;
         const lengthKey = `elem_len_${element.length}`;
@@ -258,24 +274,15 @@ async function main(): Promise<void> {
           if (unresolvedSamples.length < UNRESOLVED_ELEMENT_LOG_LIMIT) unresolvedSamples.push(element);
           continue;
         }
-        let total = scopedTotal.get(nodeId);
-        if (!total) {
-          total = new Set<string>();
-          scopedTotal.set(nodeId, total);
-        }
-        total.add(row.packet_hash);
+        // Each SQL row is one distinct packet; overlapping path prefixes may
+        // resolve to the same node, which must still count once per packet.
+        if (countedNodes.has(nodeId)) continue;
+        countedNodes.add(nodeId);
+        scopedTotal.set(nodeId, (scopedTotal.get(nodeId) ?? 0) + 1);
         if (region) {
           let byRegion = scopedByNode.get(nodeId);
-          if (!byRegion) {
-            byRegion = new Map<string, Set<string>>();
-            scopedByNode.set(nodeId, byRegion);
-          }
-          let hashes = byRegion.get(region);
-          if (!hashes) {
-            hashes = new Set<string>();
-            byRegion.set(region, hashes);
-          }
-          hashes.add(row.packet_hash);
+          if (!byRegion) { byRegion = new Map(); scopedByNode.set(nodeId, byRegion); }
+          byRegion.set(region, (byRegion.get(region) ?? 0) + 1);
         }
       }
     }
@@ -290,8 +297,10 @@ async function main(): Promise<void> {
           AND p.path_hash_size_bytes >= 2
           AND p.time > now() - interval '7 days'
           AND length(e) >= 4
-        GROUP BY e`,
+        GROUP BY e
+        LIMIT $1`, [settings.maxNodes * 3 + 1],
     );
+    if (unscopedRows.length > settings.maxNodes * 3) throw new Error('REGION_SCOPE_ELEMENT_CAPACITY');
     const unscoped = new Map<string, number>();
     for (const row of unscopedRows) {
       if (!row.e) continue;
@@ -312,11 +321,11 @@ async function main(): Promise<void> {
     const regionView = new Map<string, { memberCount: number; repeaterMemberCount: number }>();
     let memberRowsTotal = 0;
     for (const [nodeId, byRegion] of scopedByNode) {
-      for (const [region, hashes] of byRegion) {
+      for (const [region, count] of byRegion) {
         memberRowsTotal += 1;
-        if (!meetsMemberShare(hashes.size, regionTotals.get(region) ?? 0)) continue;
+        if (!meetsMemberShare(count, regionTotals.get(region) ?? 0)) continue;
         const role = nodeRoles.get(nodeId) ?? null;
-        members.push({ region, nodeId, packets: hashes.size, role });
+        members.push({ region, nodeId, packets: count, role });
         const view = regionView.get(region) ?? { memberCount: 0, repeaterMemberCount: 0 };
         view.memberCount += 1;
         if (role === 2) view.repeaterMemberCount += 1;
@@ -341,16 +350,16 @@ async function main(): Promise<void> {
       const byRegion = scopedByNode.get(nodeId);
       const regions: Record<string, number> = {};
       if (byRegion) {
-        for (const [region, hashes] of [...byRegion.entries()].sort((a, b) => b[1].size - a[1].size)) {
-          if (!meetsMemberShare(hashes.size, regionTotals.get(region) ?? 0)) continue;
-          regions[region] = hashes.size;
+        for (const [region, count] of [...byRegion.entries()].sort((a, b) => b[1] - a[1])) {
+          if (!meetsMemberShare(count, regionTotals.get(region) ?? 0)) continue;
+          regions[region] = count;
         }
       }
       classification.push({
         nodeId,
         status: scoped ? 'green' : 'red',
         evidence: scoped ? 'scoped' : (unscoped.get(nodeId) ?? 0) > 0 ? 'unscoped-only' : 'none',
-        scopedPackets: scoped ? scoped.size : 0,
+        scopedPackets: scoped ?? 0,
         unscopedPackets7d: unscoped.get(nodeId) ?? 0,
         regions,
       });
@@ -385,6 +394,7 @@ async function main(): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query('DELETE FROM core.region_scope_members');
       await client.query('DELETE FROM core.region_scope_stats');
       await client.query('DELETE FROM core.repeater_scope_status');
@@ -493,11 +503,17 @@ async function main(): Promise<void> {
       elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
     }));
   } finally {
+    if (publisher) {
+      if (ownsLock) await publisher.query("SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish'))").catch(() => undefined);
+      publisher.release();
+    }
     await pool.end();
   }
 }
 
-main().catch((error: unknown) => {
-  console.error('[regions] failed:', error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  rebuildRegionParticipation().catch((error: unknown) => {
+    console.error('[regions] failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

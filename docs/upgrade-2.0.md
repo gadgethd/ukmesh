@@ -70,8 +70,12 @@ alone cannot revoke an already-fresh browser/CDN response.
 
 Region snapshots and stored spam geometry now carry a privacy generation (migration
 136). Existing rows remain uncertified and are withheld until their producer rebuilds
-them. Run `npm run regions:rebuild` after privacy preparation; the spam analyzer
-publishes its own certified incidents. A privacy change during a rebuild rejects its
+them. Start `region-snapshot-worker` from the same candidate backend image after
+migrations and privacy preparation. It repairs the certificate and refreshes it
+in the background; verify `meshcore_region_snapshot_healthy=1` and review its
+[capacity settings](operations.md#region-snapshot-worker). Manual repair remains
+available through `npm run regions:rebuild`. The spam analyzer publishes its own
+certified incidents. A privacy change during a rebuild rejects its
 publication. Public derived reads fail closed while privacy rematerialization is
 pending and require HTTP revalidation, including conditional requests.
 
@@ -113,6 +117,8 @@ On an owned isolated copy of the identified prior deployment:
 5. Start the exact prior image set against the migrated copy and test the same
    contracts. Record any required search-path/configuration compatibility and
    any statement or session format that prevents image rollback.
+   Stop candidate-only workers, including `region-snapshot-worker`, before
+   rehearsing the prior service set; do not mix writer versions accidentally.
 6. Separately restore the signed pre-upgrade backup into another disposable
    environment and verify its receipt and data. This proves disaster restore;
    it does not prove old-image compatibility with the new schema.

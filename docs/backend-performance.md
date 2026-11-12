@@ -224,6 +224,38 @@ model to fit. Oversized contexts can be used by the current operation but are
 not retained. The final sustained soak still needs to measure complete-process
 memory across the configured worker count.
 
+## Region snapshot convergence
+
+Region snapshots rebuild outside HTTP in a separate supervised worker. Source
+capacity, SQL/runtime deadlines, process heaps and container memory are bounded;
+see [operations](operations.md#region-snapshot-worker). A failed rebuild retains
+the complete previous snapshot. Serving still requires the current ready privacy
+generation, so an old certificate is withheld until recovery succeeds.
+
+Four alternating fresh-process before/after pairs on an owned retained-snapshot
+copy contained 157,801 packets, 6,177 nodes and 58 mixed-width packet groups.
+The complete 92-day scoped corpus had 3,798 packets, of which 3,402 decoded.
+All five normalized output-table hashes matched across every run (excluding
+the publication timestamp). One pair was warm-up. Measured medians were
+13.89 versus 13.80 seconds and 199.6 versus 199.2 MiB peak process RSS.
+There is no material speed or memory improvement on this fixture; replacing
+per-node packet-hash sets with counts preserves exact distinct-packet semantics
+without retaining each hash for every node. These measurements qualify this
+source population, not execution at the configured maximum capacity.
+
+The full-schema integration test creates its own invented database and proves
+recovery after real privacy convergence, complete empty publication, and later
+public-data restoration. Capacity rejection, a competing publisher, a concurrent
+privacy change during publication, and nonempty decode failure preserve all
+five committed tables. The child lifecycle test kills a process that ignores
+SIGTERM at its deadline and after cancellation.
+
+```bash
+cd backend
+TEST_SAMPLE_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore \
+  node --import tsx --test src/regions/snapshotRefresh.integration.test.ts
+```
+
 ## Link-worker startup and memory
 
 Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.

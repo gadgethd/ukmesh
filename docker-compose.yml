@@ -339,6 +339,38 @@ services:
       TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}
       PYTHONDONTWRITEBYTECODE: "1"
 
+  region-snapshot-worker:
+    <<: [*internal-hosts, *application-hardening]
+    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+    build:
+      context: .
+      dockerfile: Dockerfile.backend
+      args:
+        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+    restart: always
+    logging: *json-log-limits
+    cpus: 1.0
+    mem_limit: "1g"
+    memswap_limit: "1g"
+    command: ["node", "--max-old-space-size=128", "dist/workers/region-snapshot.js"]
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+      DATABASE_SKIP_SCHEMA_INIT: "true"
+      MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-}
+      MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+      REGION_SCOPE_WINDOW_DAYS: ${REGION_SCOPE_WINDOW_DAYS:-92}
+      REGION_SCOPE_MAX_PACKETS: ${REGION_SCOPE_MAX_PACKETS:-500000}
+      REGION_SCOPE_MAX_NODES: ${REGION_SCOPE_MAX_NODES:-100000}
+      REGION_SCOPE_STATEMENT_TIMEOUT_MS: ${REGION_SCOPE_STATEMENT_TIMEOUT_MS:-120000}
+      REGION_SCOPE_RUN_TIMEOUT_MS: ${REGION_SCOPE_RUN_TIMEOUT_MS:-180000}
+      REGION_SCOPE_POLL_MS: ${REGION_SCOPE_POLL_MS:-30000}
+      REGION_SCOPE_MAX_AGE_MS: ${REGION_SCOPE_MAX_AGE_MS:-900000}
+      NODE_ENV: production
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+
   privacy-remat-worker:
     <<: [*internal-hosts, *application-hardening]
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}

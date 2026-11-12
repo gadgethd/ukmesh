@@ -72,6 +72,43 @@ materialized generations differ or privacy work remains pending/failed. The
 mode locks policy/data writers and reclassifies both retained packet stores
 before publishing a verified generation; it requires a maintenance window.
 
+## Region snapshot worker
+
+`region-snapshot-worker` uses the backend image and its worker database role
+(`MESHCORE_WORKER_DATABASE_URL`, with `DATABASE_URL` fallback). It polls every
+30 seconds, rebuilding when the ready visibility generation changes or the
+snapshot exceeds 15 minutes. Pending/failed privacy work prevents rebuilding;
+resolve that first using the [privacy convergence runbook](privacy-convergence.md).
+HTTP requests never run this analytical rebuild.
+
+Defaults in `.env.example` bound the source to 500,000 distinct scoped packets
+within 92 days and 100,000 nodes; unscoped evidence is capped at three times
+the node limit. SQL has a 120-second statement deadline and publication has a
+five-second lock deadline. The supervisor kills the child after 180 seconds
+(SIGTERM, then SIGKILL after two seconds). Compose limits the combined worker
+to one CPU and 1 GiB without swap; parent/child V8 heaps are capped at
+128/640 MiB. Source row caps do not promise a fixed byte size: pathological
+rows can still exhaust the child, which fails without publishing partial data.
+
+Failures retry with exponential backoff, capped at five minutes; a newer
+ready generation can retry immediately. Capacity/decode failures retain the
+last committed snapshot. If its privacy certificate is old, APIs continue to
+withhold it. Inspect worker logs and the source counts before changing
+`REGION_SCOPE_MAX_PACKETS`, `REGION_SCOPE_MAX_NODES`, the window, or deadlines;
+qualify any higher limit against available memory and database load. All
+settings have finite clamps in `backend/src/regions/rebuildSettings.ts`.
+
+The worker explicitly allows a complete empty public corpus to replace an old
+snapshot after privacy convergence. The manual `regions:rebuild` tool requires
+`REGION_SCOPE_ALLOW_EMPTY=1` for that operation. Both paths reject a nonempty
+corpus when no packet decodes. A session advisory lock excludes competing
+publishers, including manual invocations; process death releases the lock.
+
+Metrics expose health, publication time, running state and fixed worker
+outcomes on container port 9091. The local development helper binds this
+worker's metrics to loopback port 9092; that helper is separate from the live
+Compose overlay's Prometheus port.
+
 ## Legacy schema-16 compatibility cutover
 
 An existing database that has `016_stale_mqtt_observer_cleanup.sql` but not
@@ -492,6 +529,15 @@ from its checkpoint, and investigate clock, database, or long-step latency.
 Check the `health-worker` container, database reachability, and its last
 successful snapshot. Restart only that worker; public health may be stale but
 the API should remain available.
+
+### RegionSnapshotUnavailable
+
+The region worker has reported no fresh privacy-certified snapshot for ten
+minutes. Check `region-snapshot-worker` logs, its last publication timestamp,
+and privacy readiness. Resolve pending privacy work first. Investigate source
+capacity, decode failures, statement deadlines or child memory failures before
+tuning limits. Restarting cannot make an old privacy certificate valid; keep
+the API's withholding behavior until a complete rebuild succeeds.
 
 ### WorkerMetricsDown
 

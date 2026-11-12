@@ -63,6 +63,15 @@ paths. Coverage is not sent through backend JSON or WebSocket messages.
   resolver implementation, pool, and caches;
 - `backend/src/stats/` and `backend/src/owner/`: stats and owner domains.
 
+`region-snapshot-worker` shares the backend image and runs independently of
+HTTP serving and the higher-priority privacy rematerialization worker. It
+polls the authoritative ready visibility generation and rebuilds expired or
+invalid region snapshots in a bounded child process. A PostgreSQL advisory
+lock allows one publisher, and the five snapshot tables commit atomically
+only after a fresh generation check. APIs withhold a snapshot from an older
+privacy generation while repair is pending. See [operations](operations.md#region-snapshot-worker)
+for capacity and recovery settings.
+
 ## Frontend domain layout
 
 - `frontend/src/components/Map/MapLibreMap.tsx`: dashboard MapLibre lifecycle
