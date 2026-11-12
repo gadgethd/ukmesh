@@ -118,6 +118,27 @@ async function acquireDeliverySlot(): Promise<() => void> {
   };
 }
 
+export function webhookLookup(selected: { address: string; family: 4 | 6 }) {
+  return (
+    _hostname: string,
+    options: { all?: boolean },
+    callback: (
+      error: Error | null,
+      address: string | Array<{ address: string; family: number }>,
+      family?: number,
+    ) => void,
+  ): void => {
+    // Node's autoSelectFamily (default on modern releases) requests every
+    // resolved address with `all: true`. Answering that call with a scalar
+    // address throws ERR_INVALID_IP_ADDRESS and kills the delivery.
+    if (options.all) {
+      callback(null, [{ address: selected.address, family: selected.family }]);
+      return;
+    }
+    callback(null, selected.address, selected.family);
+  };
+}
+
 export async function deliverWebhook(
   rawUrl: string,
   payload: unknown,
@@ -139,9 +160,7 @@ export async function deliverWebhook(
         servername: isIP(normalizeHostname(target.url.hostname))
           ? undefined
           : normalizeHostname(target.url.hostname),
-        lookup: (_hostname, _options, callback) => {
-          callback(null, selected.address, selected.family);
-        },
+        lookup: webhookLookup(selected),
         timeout: DELIVERY_TIMEOUT_MS,
       }, (response) => {
         let received = 0;
