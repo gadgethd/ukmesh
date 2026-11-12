@@ -163,3 +163,19 @@ recent-API and browser reads, because the API's recent window is five minutes.
 Their UUIDs and count stay fixed; the source archive is unchanged. Inventory
 counts include this overlay, and it is excluded from clean ingest benchmarks.
 This avoids interpreting an expired, empty feed as a performance improvement.
+
+The dashboard renderer benchmark uses its own invented nodes, real WebSocket
+transport and production app artifact; it needs neither the sample DB nor MQTT:
+
+```bash
+npm --prefix frontend run bench:map -- --label baseline
+```
+
+It refuses an existing label, builds into ignored `plans/measurements/map-baseline/`,
+then runs three desktop and three mobile samples at each of 1,000 / 3,000 / 6,000
+nodes with 500 presence updates per second. It records frame intervals, CDP task
+and script durations, heap, received updates and tool/artifact hashes. Mobile
+uses 4× CPU throttling; software-rendered results do not predict a physical GPU.
+The fixture contains no links, so it does not qualify link-heavy rendering.
+`--counts 6000 --mode mobile --runs 1` selects a diagnostic subset. Run it apart
+from other load/build benchmarks. CDP task time is not a React commit profile.
