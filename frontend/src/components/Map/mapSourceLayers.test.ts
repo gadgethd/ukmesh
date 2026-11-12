@@ -26,10 +26,18 @@ function contrast(foreground: string, background: string, opacity = 1): number {
     / (Math.min(foregroundLuminance, backgroundLuminance) + 0.05);
 }
 
-test('map layers avoid observer rings and raster-style glyph dependencies', () => {
+test('map layers safely restore and avoid observer rings and raster-style glyph dependencies', () => {
   const sourceIds: string[] = [];
   const layers: maplibregl.LayerSpecification[] = [];
+  const cleared: string[] = [];
   const map = {
+    getSource: (id: string) => sourceIds.includes(id) ? {
+      setData: (data: unknown) => {
+        assert.deepEqual(data, { type: 'FeatureCollection', features: [] });
+        cleared.push(id);
+      },
+    } : undefined,
+    getLayer: (id: string) => layers.find(layer => layer.id === id),
     addSource: (id: string) => {
       sourceIds.push(id);
     },
@@ -49,6 +57,12 @@ test('map layers avoid observer rings and raster-style glyph dependencies', () =
   )), false);
   assert.equal(layers.some((layer) => layer.id === 'planned-pins-dot'), true);
   assert.doesNotMatch(JSON.stringify(layers), /is_inferred/);
+  const sourceCount = sourceIds.length;
+  const layerCount = layers.length;
+  installMapSourcesAndLayers(map, { showLinks: true, mapLight: false });
+  assert.equal(sourceIds.length, sourceCount);
+  assert.equal(layers.length, layerCount);
+  assert.deepEqual(cleared, sourceIds, 'restored application sources clear cached geometry before current data is applied');
 });
 
 test('map overlay markers and links retain 3:1 contrast in both themes', () => {

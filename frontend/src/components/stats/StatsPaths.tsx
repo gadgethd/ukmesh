@@ -1,8 +1,16 @@
 import type { ChartData } from '../../features/stats/model.js';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { C_AMBER, C_CYAN, C_PURPLE, LABEL_COLOR, ChartCard, CustomTooltip, axisProps, describeSeries, formatCount, formatRatio, formatTimeAgo, gridProps, presentDecodedPath } from './StatsPrimitives.js';
+import { chartHeader, C_AMBER, C_CYAN, C_PURPLE, LABEL_COLOR, ChartCard, CustomTooltip, axisProps, describeSeries, formatCount, formatRatio, formatTimeAgo, gridProps, presentDecodedPath } from './StatsPrimitives.js';
 import { fmtAxisDay } from '../../features/stats/timeFormat.js';
 import type { DecodedPathSelection } from './StatsDecodedPathDialog.js';
+
+function pathStat(label: string, value: string, sub?: string) {
+  return <div className="site-stat">
+    <span className="site-stat__value">{value}</span>
+    <span className="site-stat__label">{label}</span>
+    {sub && <span className="site-stat__sub">{sub}</span>}
+  </div>;
+}
 
 export function StatsPaths({ data, openPath }: { data: ChartData; openPath: (selection: DecodedPathSelection) => void }) {
   const { nodes: decodedPathNodes, summary: decodedPathSummary } = presentDecodedPath(
@@ -12,32 +20,13 @@ export function StatsPaths({ data, openPath }: { data: ChartData; openPath: (sel
   return (
              <>
                 <div className="stats-page__observer-section">
-                  <div className="stats-page__chart-header">
-                    <span className="stats-page__chart-title">Path hashes</span>
-                    <span className="stats-page__chart-sub">observed hop widths across the last 24 hours</span>
-                  </div>
+                  {chartHeader("Path hashes", "observed hop widths across the last 24 hours")}
                   <div className="site-stats-grid site-stats-grid--4 health-system-grid">
-                    <div className="site-stat">
-                      <span className="site-stat__value">{formatCount(data.pathHashes.last24hHops.one_byte)}</span>
-                      <span className="site-stat__label">1-byte Hops (24h)</span>
-                    </div>
-                    <div className="site-stat">
-                      <span className="site-stat__value">{formatCount(data.pathHashes.last24hHops.two_byte)}</span>
-                      <span className="site-stat__label">2-byte Hops (24h)</span>
-                    </div>
-                    <div className="site-stat">
-                      <span className="site-stat__value">{formatCount(data.pathHashes.last24hHops.three_byte)}</span>
-                      <span className="site-stat__label">3-byte Hops (24h)</span>
-                    </div>
-                    <div className="site-stat">
-                      <span className="site-stat__value">{formatCount(data.pathHashes.multibytePackets24h)}</span>
-                      <span className="site-stat__label">Multibyte Packets (24h)</span>
-                    </div>
-                    <div className="site-stat">
-                      <span className="site-stat__value">{formatCount(data.pathHashes.fullyDecodedMultibyte24h)}</span>
-                      <span className="site-stat__label">Fully Decoded (24h)</span>
-                      <span className="site-stat__sub">{formatRatio(data.pathHashes.fullyDecodedMultibyte24h, data.pathHashes.multibytePackets24h)} of multibyte packets</span>
-                    </div>
+                    {pathStat("1-byte Hops (24h)", formatCount(data.pathHashes.last24hHops.one_byte))}
+                    {pathStat("2-byte Hops (24h)", formatCount(data.pathHashes.last24hHops.two_byte))}
+                    {pathStat("3-byte Hops (24h)", formatCount(data.pathHashes.last24hHops.three_byte))}
+                    {pathStat("Multibyte Packets (24h)", formatCount(data.pathHashes.multibytePackets24h))}
+                    {pathStat("Fully Decoded (24h)", formatCount(data.pathHashes.fullyDecodedMultibyte24h), `${formatRatio(data.pathHashes.fullyDecodedMultibyte24h, data.pathHashes.multibytePackets24h)} of multibyte packets`)}
                   </div>
                   <div className="health-meta">
                     <div className="health-kv">

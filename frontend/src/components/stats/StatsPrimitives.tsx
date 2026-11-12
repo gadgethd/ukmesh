@@ -133,6 +133,13 @@ export const StatCard: React.FC<{
   </div>
 ));
 
+export function chartHeader(title: string, sub?: string) {
+  return <div className="stats-page__chart-header">
+    <span className="stats-page__chart-title">{title}</span>
+    {sub && <span className="stats-page__chart-sub">{sub}</span>}
+  </div>;
+}
+
 const LazyChartMount = lazy(() => import('../LazyChartMount.js'));
 export const ChartCard: React.FC<{
   title: string;
@@ -142,10 +149,7 @@ export const ChartCard: React.FC<{
   tall?: boolean;
 }> = memo(({ title, sub, summary, children, tall }) => (
   <div className={`stats-page__chart${tall ? ' stats-page__chart--tall' : ''}`} aria-label={title}>
-    <div className="stats-page__chart-header">
-      <span className="stats-page__chart-title">{title}</span>
-      {sub && <span className="stats-page__chart-sub">{sub}</span>}
-    </div>
+    {chartHeader(title, sub)}
     <Suspense fallback={<div className="stats-page__chart-skeleton skeleton-shimmer" aria-hidden="true" />}>
       <LazyChartMount minHeight={220}>{children}</LazyChartMount>
     </Suspense>

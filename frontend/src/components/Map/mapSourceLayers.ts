@@ -75,9 +75,17 @@ export function installMapSourcesAndLayers(
 ): void {
   const { showLinks, mapLight } = options;
   const colors = MAP_OVERLAY_COLORS[mapLight ? 'light' : 'dark'];
-      map.addSource('nodes', { type: 'geojson', data: EMPTY_FC });
+  const addSource = (id: string, source: maplibregl.GeoJSONSourceSpecification) => {
+    const existing = map.getSource(id) as maplibregl.GeoJSONSource | undefined;
+    if (existing) existing.setData(EMPTY_FC);
+    else map.addSource(id, source);
+  };
+  const addLayer = (layer: maplibregl.LayerSpecification) => {
+    if (!map.getLayer(layer.id)) map.addLayer(layer);
+  };
+      addSource('nodes', { type: 'geojson', data: EMPTY_FC });
 
-      map.addLayer({
+      addLayer({
         id: 'node-dots-hit',
         type: 'circle',
         source: 'nodes',
@@ -92,7 +100,7 @@ export function installMapSourcesAndLayers(
         },
       });
 
-      map.addLayer({
+      addLayer({
         id: 'node-dots',
         type: 'circle',
         source: 'nodes',
@@ -111,7 +119,7 @@ export function installMapSourcesAndLayers(
       });
       // Two circle layers over node-dots, filtered to the selected node id.
       // A soft halo underneath, a bright solid marker on top.
-      map.addLayer({
+      addLayer({
         id: 'node-dots-selected-halo',
         type: 'circle',
         source: 'nodes',
@@ -126,7 +134,7 @@ export function installMapSourcesAndLayers(
           'circle-blur': 0.5,
         },
       });
-      map.addLayer({
+      addLayer({
         id: 'node-dots-selected',
         type: 'circle',
         source: 'nodes',
@@ -143,8 +151,8 @@ export function installMapSourcesAndLayers(
           'circle-stroke-opacity': 0.95,
         },
       });
-      map.addSource('privacy-rings', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
+      addSource('privacy-rings', { type: 'geojson', data: EMPTY_FC });
+      addLayer({
         id: 'privacy-rings-layer',
         type: 'line',
         source: 'privacy-rings',
@@ -155,8 +163,8 @@ export function installMapSourcesAndLayers(
           'line-dasharray': [4, 6],
         },
       });
-      map.addSource('viable-links', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
+      addSource('viable-links', { type: 'geojson', data: EMPTY_FC });
+      addLayer({
         id: 'viable-links-layer',
         type: 'line',
         source: 'viable-links',
@@ -171,8 +179,8 @@ export function installMapSourcesAndLayers(
           'line-opacity': ['get', 'opacity'],
         },
       });
-      map.addSource('clash-lines', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
+      addSource('clash-lines', { type: 'geojson', data: EMPTY_FC });
+      addLayer({
         id: 'clash-lines-layer',
         type: 'line',
         source: 'clash-lines',
@@ -183,8 +191,8 @@ export function installMapSourcesAndLayers(
           'line-opacity': 0.9,
         },
       });
-      map.addSource('planned-coverage', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
+      addSource('planned-coverage', { type: 'geojson', data: EMPTY_FC });
+      addLayer({
         id: 'planned-coverage-fill',
         type: 'fill',
         source: 'planned-coverage',
@@ -199,7 +207,7 @@ export function installMapSourcesAndLayers(
           ],
         },
       });
-      map.addLayer({
+      addLayer({
         id: 'planned-coverage-outline',
         type: 'line',
         source: 'planned-coverage',
@@ -212,8 +220,8 @@ export function installMapSourcesAndLayers(
       // Dashed lines (coloured by predicted path loss) so they read as
       // hypothetical, distinct from the solid observed-link lines. Visibility
       // follows the global Links toggle.
-      map.addSource('planned-links', { type: 'geojson', data: EMPTY_FC });
-      map.addLayer({
+      addSource('planned-links', { type: 'geojson', data: EMPTY_FC });
+      addLayer({
         id: 'planned-links-layer',
         type: 'line',
         source: 'planned-links',
@@ -233,10 +241,10 @@ export function installMapSourcesAndLayers(
       // distinct via a white stroke and glow halo. Shared map labels and glyphs
       // belong to the base style; planned status text stays in the popup so
       // temporary planning markers do not add clutter to the map.
-      map.addSource('planned-pins', { type: 'geojson', data: EMPTY_FC });
+      addSource('planned-pins', { type: 'geojson', data: EMPTY_FC });
 
       // Halo: soft glow behind the pin
-      map.addLayer({
+      addLayer({
         id: 'planned-pins-halo',
         type: 'circle',
         source: 'planned-pins',
@@ -255,7 +263,7 @@ export function installMapSourcesAndLayers(
       });
 
       // Core dot: same size/colour as a real online repeater, white stroke to mark as planned
-      map.addLayer({
+      addLayer({
         id: 'planned-pins-dot',
         type: 'circle',
         source: 'planned-pins',

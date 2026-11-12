@@ -1,6 +1,6 @@
 import type { ChartData } from '../../features/stats/model.js';
 import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
-import { C_AMBER, C_CYAN, C_GREEN, C_ORANGE, C_PURPLE, CustomTooltip, EmptyPacketState, StatCard, formatCount, formatTimeAgo, fmtTrafficPct, gridProps } from './StatsPrimitives.js';
+import { chartHeader, C_AMBER, C_CYAN, C_GREEN, C_ORANGE, C_PURPLE, CustomTooltip, EmptyPacketState, StatCard, formatCount, formatTimeAgo, fmtTrafficPct, gridProps } from './StatsPrimitives.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 import { mergeObserverRegions, type LiveObserverSnapshot } from '../../features/stats/state.js';
 
@@ -23,10 +23,7 @@ export function StatsObservers({ data, liveObservers, observerError }: { data: C
                 </div>
 
                 <div className="stats-page__observer-section">
-                  <div className="stats-page__chart-header">
-                    <span className="stats-page__chart-title">Observer regions</span>
-                    <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
-                  </div>
+                  {chartHeader("Observer regions", "sorted by observed packets over the last 7 days")}
                   {observerRegions.length > 0 ? (
                     <div className="stats-page__observer-grid">
                       {observerRegions.map((region) => (

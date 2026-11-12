@@ -5,7 +5,7 @@
  * directly into the MapLibre map. No separate WebGL canvas or viewport sync
  * needed — deck.gl automatically follows the MapLibre viewport.
  */
-import React, { useEffect, useRef, useMemo } from 'react';
+import React, { useEffect, useRef, useMemo, useState } from 'react';
 import { MapboxOverlay } from '@deck.gl/mapbox';
 import { ArcLayer, LineLayer, PathLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { HeatmapLayer } from '@deck.gl/aggregation-layers';
@@ -345,6 +345,9 @@ export const DeckGLOverlay: React.FC<Props> = ({
   customLosStart,
 }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const liveMapRef = useRef<maplibregl.Map | null>(null);
+  const styleReadyRef = useRef(false);
+  const [styleRevision, setStyleRevision] = useState(0);
   const explanationPopupRef = useRef<maplibregl.Popup | null>(null);
 
   const consistencySegments = useMemo<ConsistencySegment[]>(() => {
@@ -407,20 +410,47 @@ export const DeckGLOverlay: React.FC<Props> = ({
       .addTo(map);
   }, [betaConfidence, map, pathAlternatives, pathObserverCount, pathSummary]);
 
-  // Create/destroy the MapboxOverlay when the map instance changes
+  // Own an allocated device until its map is replaced or unmounted.
   useEffect(() => {
     if (!map) return;
-
-    ensureMapboxOverlayCompatibility(map);
-    const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
-    // MapboxOverlay implements IControl — addControl works with MapLibre GL
-    map.addControl(overlay as unknown as maplibregl.IControl);
-    overlayRef.current = overlay;
-
-    return () => {
+    liveMapRef.current = map;
+    styleReadyRef.current = Boolean(map.getStyle());
+    const lost = () => {
+      styleReadyRef.current = false;
       explanationPopupRef.current?.remove();
-      map.removeControl(overlay as unknown as maplibregl.IControl);
+      const overlay = overlayRef.current;
       overlayRef.current = null;
+      if (overlay) map.removeControl(overlay as unknown as maplibregl.IControl);
+    };
+    const loading = () => {
+      styleReadyRef.current = Boolean(map.getStyle());
+      if (!styleReadyRef.current) overlayRef.current?.setProps({ layers: [] });
+    };
+    const loaded = () => {
+      if (liveMapRef.current !== map) return;
+      styleReadyRef.current = true;
+      setStyleRevision(revision => revision + 1);
+    };
+    const release = (mapRemoved: boolean) => {
+      if (liveMapRef.current !== map) return;
+      liveMapRef.current = null;
+      styleReadyRef.current = false;
+      explanationPopupRef.current?.remove();
+      const overlay = overlayRef.current;
+      overlayRef.current = null;
+      if (overlay && !mapRemoved) map.removeControl(overlay as unknown as maplibregl.IControl);
+    };
+    const removed = () => release(true);
+    map.on('remove', removed);
+    map.on('webglcontextlost', lost);
+    map.on('styledataloading', loading);
+    map.on('style.load', loaded);
+    return () => {
+      map.off('remove', removed);
+      map.off('webglcontextlost', lost);
+      map.off('styledataloading', loading);
+      map.off('style.load', loaded);
+      release(false);
     };
   }, [map]);
 
@@ -447,8 +477,17 @@ export const DeckGLOverlay: React.FC<Props> = ({
   );
 
   useEffect(() => {
+    if (!map || liveMapRef.current !== map || !styleReadyRef.current) return;
+    // Empty overlays still run expensive GPU capability probes on creation.
+    // Allocate only for real content, then retain the device for later updates.
+    if (layers.length > 0 && !overlayRef.current) {
+      ensureMapboxOverlayCompatibility(map);
+      const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+      map.addControl(overlay as unknown as maplibregl.IControl);
+      overlayRef.current = overlay;
+    }
     overlayRef.current?.setProps({ layers });
-  }, [layers]);
+  }, [map, layers, styleRevision]);
 
   return null;
 };

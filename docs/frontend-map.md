@@ -77,6 +77,17 @@ style replacement. Controllers receive the existing map; they never construct a
 second map. Node-link requests, LOS calculations and dock UI have separate
 owners, while inactive planning remains behind its retained compatibility hook.
 
+Deck overlays allocate a GPU device when they first receive drawable content.
+They retain that device for later updates, clear its layers when content becomes
+empty, and release it when the map changes or unmounts. Empty overlays therefore
+avoid GPU capability probes during basemap startup and fallback.
+Context loss also releases the device; logical clearing continues while the
+style is unavailable, and restoration uses the current overlay content.
+Ordinary style changes clear displayed layers until the style is ready, while
+keeping the initialized device.
+Source and layer installation is idempotent for restored styles; owned GeoJSON
+starts empty before the live controller republishes current data.
+
 Scope identity includes the resolved network, observer, region and privacy
 generation. Scoped resource owners reject obsolete completions and abort work
 on session invalidation. An individual component detaches from shared work;

@@ -367,7 +367,12 @@ export function MapLibreMap({
       if (basemapModeRef.current !== 'fallback') setMapError(null);
     };
     const handleContextLost = () => {
+      if (mapRef.current !== map) return;
+      mapLoadedRef.current = false;
       setMapError('The browser lost the map graphics connection. Retry to reload the map.');
+    };
+    const handleStyleLoading = () => {
+      if (mapRef.current === map) mapLoadedRef.current = Boolean(map.getStyle());
     };
 
     let basemapWatchdogHandle: number | null = null;
@@ -547,6 +552,7 @@ export function MapLibreMap({
     map.on('idle', handleIdle);
     map.on('error', handleError);
     map.on('webglcontextlost', handleContextLost);
+    map.on('styledataloading', handleStyleLoading);
     map.on('webglcontextrestored', watchLoading);
     map.on('sourcedata', handleSourceData);
 
@@ -714,6 +720,7 @@ export function MapLibreMap({
       map.off('error', handleError);
       map.off('sourcedata', handleSourceData);
       map.off('webglcontextlost', handleContextLost);
+      map.off('styledataloading', handleStyleLoading);
       map.off('webglcontextrestored', watchLoading);
       mapLoadedRef.current = false;
       hasLoadedStyleRef.current = false;

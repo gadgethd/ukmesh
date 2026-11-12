@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { WebMercatorViewport, type Layer, type PickingInfo } from '@deck.gl/core';
 import { ArcLayer, ScatterplotLayer } from '@deck.gl/layers';
 import { MapboxOverlay } from '@deck.gl/mapbox';
@@ -562,7 +562,11 @@ export const AnimatedPathOverlay: React.FC<{
   onNodeClick,
 }) => {
   const overlayRef = useRef<MapboxOverlay | null>(null);
+  const liveMapRef = useRef<maplibregl.Map | null>(null);
+  const styleReadyRef = useRef(false);
+  const [styleRevision, setStyleRevision] = useState(0);
   const registryRef = useRef(new Map<string, PathRegistryEntry>());
+  const currentSegmentIdsRef = useRef(new Set<string>());
   const elevationCacheRef = useRef(new Map<string, number | null>());
   const terrainCoordinatesRef = useRef(new Map<string, [number, number]>());
   const frameRef = useRef<number | null>(null);
@@ -592,20 +596,54 @@ export const AnimatedPathOverlay: React.FC<{
 
   useEffect(() => {
     if (!map) return undefined;
-    ensureMapboxOverlayCompatibility(map);
-    const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
-    map.addControl(overlay as unknown as maplibregl.IControl);
-    overlayRef.current = overlay;
-    return () => {
+    liveMapRef.current = map;
+    styleReadyRef.current = Boolean(map.getStyle());
+    const cancelFrames = () => {
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
       if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
       frameRef.current = null;
       wakeTimerRef.current = null;
+    };
+    const lost = () => {
+      styleReadyRef.current = false;
+      cancelFrames();
+      const overlay = overlayRef.current;
+      overlayRef.current = null;
+      if (overlay) map.removeControl(overlay as unknown as maplibregl.IControl);
+    };
+    const loading = () => {
+      styleReadyRef.current = Boolean(map.getStyle());
+      if (!styleReadyRef.current) overlayRef.current?.setProps({ layers: [] });
+    };
+    const loaded = () => {
+      if (liveMapRef.current !== map) return;
+      styleReadyRef.current = true;
+      setStyleRevision(revision => revision + 1);
+    };
+    const release = (mapRemoved: boolean) => {
+      if (liveMapRef.current !== map) return;
+      liveMapRef.current = null;
+      styleReadyRef.current = false;
+      cancelFrames();
       registryRef.current.clear();
+      currentSegmentIdsRef.current.clear();
       elevationCacheRef.current.clear();
       terrainCoordinatesRef.current.clear();
-      map.removeControl(overlay as unknown as maplibregl.IControl);
+      const overlay = overlayRef.current;
       overlayRef.current = null;
+      if (overlay && !mapRemoved) map.removeControl(overlay as unknown as maplibregl.IControl);
+    };
+    const removed = () => release(true);
+    map.on('remove', removed);
+    map.on('webglcontextlost', lost);
+    map.on('styledataloading', loading);
+    map.on('style.load', loaded);
+    return () => {
+      map.off('remove', removed);
+      map.off('webglcontextlost', lost);
+      map.off('styledataloading', loading);
+      map.off('style.load', loaded);
+      release(false);
     };
   }, [map]);
 
@@ -621,7 +659,7 @@ export const AnimatedPathOverlay: React.FC<{
 
   renderRef.current = (now: number) => {
     const overlay = overlayRef.current;
-    if (!overlay || !activeRef.current) return;
+    if (!overlay || !activeRef.current || liveMapRef.current !== map || !styleReadyRef.current) return;
     const rendered: RenderedSegment[] = [];
     const pulses: LeadingPulse[] = [];
     const terrainEnabledNow = terrainEnabledRef.current;
@@ -670,7 +708,8 @@ export const AnimatedPathOverlay: React.FC<{
 
       const ageSinceCompletion = elapsed - animationDuration;
       if (ageSinceCompletion >= PATH_LINE_TTL_MS + PATH_LINE_FADE_MS) {
-        registryRef.current.delete(segmentId);
+        // A style reload must retain an unchanged current path's expired clock.
+        if (!currentSegmentIdsRef.current.has(segmentId)) registryRef.current.delete(segmentId);
         continue;
       }
       const opacity = ageSinceCompletion <= PATH_LINE_TTL_MS
@@ -729,12 +768,44 @@ export const AnimatedPathOverlay: React.FC<{
   };
 
   useEffect(() => {
+    const now = performance.now();
+    if (active) {
+      registerAerialPaths(registryRef.current, paths, now);
+      const currentSegments = new Set(buildAerialPathSegments(paths).map(segment => segment.id));
+      currentSegmentIdsRef.current = currentSegments;
+      for (const [id, entry] of registryRef.current) {
+        if (!currentSegments.has(id)
+          && now >= entry.startedAt + PATH_HOP_ANIMATION_MS + PATH_LINE_TTL_MS + PATH_LINE_FADE_MS) {
+          registryRef.current.delete(id);
+        }
+      }
+    }
+    else {
+      registryRef.current.clear();
+      currentSegmentIdsRef.current.clear();
+      elevationCacheRef.current.clear();
+      terrainCoordinatesRef.current.clear();
+      if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
+      if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
+      frameRef.current = null;
+      wakeTimerRef.current = null;
+    }
+    if (map && (liveMapRef.current !== map || !styleReadyRef.current)) return;
+    const hasVisibleSegments = [...registryRef.current.values()].some(entry => (
+      now < entry.startedAt + PATH_HOP_ANIMATION_MS + PATH_LINE_TTL_MS + PATH_LINE_FADE_MS
+    ));
+    if (map && active && (hasVisibleSegments || observerNodes.length > 0) && !overlayRef.current) {
+      ensureMapboxOverlayCompatibility(map);
+      const overlay = new MapboxOverlay({ interleaved: false, layers: [] });
+      map.addControl(overlay as unknown as maplibregl.IControl);
+      overlayRef.current = overlay;
+    }
     const overlay = overlayRef.current;
     const coordinates = new Map<string, [number, number]>();
     const rememberCoordinate = (position: [number, number]) => {
       coordinates.set(terrainCoordinateKey(position), position);
     };
-    for (const path of paths) {
+    for (const path of active ? paths : []) {
       for (const node of path.nodes) rememberCoordinate(node.position);
       for (let index = 0; index < path.nodes.length - 1; index += 1) {
         const source = path.nodes[index];
@@ -745,7 +816,7 @@ export const AnimatedPathOverlay: React.FC<{
         }
       }
     }
-    for (const node of observerNodes) rememberCoordinate(node.position);
+    for (const node of active ? observerNodes : []) rememberCoordinate(node.position);
     terrainCoordinatesRef.current = coordinates;
     elevationCacheRef.current.clear();
     if (terrainEnabled && map) {
@@ -755,7 +826,7 @@ export const AnimatedPathOverlay: React.FC<{
     }
 
     const retryUnavailableTerrain = () => {
-      if (!map || !terrainEnabledRef.current) return;
+      if (!map || !terrainEnabledRef.current || liveMapRef.current !== map || !styleReadyRef.current) return;
       let updated = false;
       for (const [key, position] of terrainCoordinatesRef.current) {
         if (elevationCacheRef.current.has(key) && elevationCacheRef.current.get(key) !== null) continue;
@@ -778,25 +849,19 @@ export const AnimatedPathOverlay: React.FC<{
       };
     }
     if (!active) {
-      registryRef.current.clear();
-      if (frameRef.current != null) cancelAnimationFrame(frameRef.current);
-      if (wakeTimerRef.current) clearTimeout(wakeTimerRef.current);
-      frameRef.current = null;
-      wakeTimerRef.current = null;
       overlay.setProps({ layers: [] });
       return () => {
         if (map && terrainEnabled) map.off('idle', retryUnavailableTerrain);
       };
     }
 
-    registerAerialPaths(registryRef.current, paths, performance.now());
     scheduleRef.current();
     return () => {
       if (map && terrainEnabled) map.off('idle', retryUnavailableTerrain);
     };
   // `signature` is the stable semantic dependency for the path collection.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, featureSignature, map, paths, terrainEnabled]);
+  }, [active, featureSignature, map, paths, terrainEnabled, styleRevision]);
 
   return null;
 };

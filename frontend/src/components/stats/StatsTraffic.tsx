@@ -1,7 +1,7 @@
 import type { Key } from 'react';
 import type { ChartData } from '../../features/stats/model.js';
 import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from 'recharts';
-import { PIE_COLORS, ChartCard, CustomTooltip, EmptyPacketState, channelLabel, describeSeries, formatCount, fmtTrafficPct } from './StatsPrimitives.js';
+import { chartHeader, PIE_COLORS, ChartCard, CustomTooltip, EmptyPacketState, channelLabel, describeSeries, formatCount, fmtTrafficPct } from './StatsPrimitives.js';
 
 function trafficRow({ rowKey, index, label, count, maximum, value, description, detail }: {
   rowKey: Key; index: number; label: string; count: number; maximum: number;
@@ -91,10 +91,7 @@ export function StatsTraffic({ data }: { data: ChartData }) {
                 </div>
 
                 <div className="stats-page__observer-section">
-                  <div className="stats-page__chart-header">
-                    <span className="stats-page__chart-title">Channel traffic</span>
-                    <span className="stats-page__chart-sub">GroupText packets in the last 24 hours</span>
-                  </div>
+                  {chartHeader("Channel traffic", "GroupText packets in the last 24 hours")}
                   {channelTraffic.length > 0 ? (
                     <div className="stats-page__channel-traffic">
                       {channelTraffic.map((channel, i) => trafficRow({
@@ -109,10 +106,7 @@ export function StatsTraffic({ data }: { data: ChartData }) {
                 </div>
 
                 <div className="stats-page__observer-section">
-                  <div className="stats-page__chart-header">
-                    <span className="stats-page__chart-title">Transport codes</span>
-                    <span className="stats-page__chart-sub">decoded from packet route metadata · last 24 hours</span>
-                  </div>
+                  {chartHeader("Transport codes", "decoded from packet route metadata · last 24 hours")}
                   {transportCodes.length > 0 ? (
                     <div className="stats-page__channel-traffic">
                       {transportCodes.map((code, i) => trafficRow({
