@@ -127,7 +127,7 @@ printf '%s\n' "$profile" > "$state/fixture-ready"
 printf '%s\n' "$data_dir" > "$state/data-dir"
 fi
 npm --prefix backend run build > "$state/build.log" 2>&1 || { tail -30 "$state/build.log" >&2; exit 1; }
-nohup node "$repo/backend/dist/index.js" \
+setsid nohup node "$repo/backend/dist/index.js" \
   > "$state/backend.log" 2>&1 < /dev/null &
 echo $! > "$state/backend.pid"
 ready=false
@@ -142,7 +142,7 @@ if [[ $profile == ingest && $action != start && $replay_limit -gt 0 ]]; then
 fi
 (
   cd "$repo/frontend"
-  nohup node "$repo/frontend/node_modules/vite/bin/vite.js" --host 127.0.0.1 --port 5173 --strictPort \
+  setsid nohup node "$repo/frontend/node_modules/vite/bin/vite.js" --host 127.0.0.1 --port 5173 --strictPort \
     > "$state/frontend.log" 2>&1 < /dev/null &
   echo $! > "$state/frontend.pid"
 )
