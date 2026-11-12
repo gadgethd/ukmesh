@@ -106,6 +106,41 @@ failed terminal writes therefore cannot retain run IDs indefinitely. The gauge
 using fixed workload/outcome labels. Run IDs never become metric labels.
 SQL lease and publication fences remain the authority for execution.
 
+The committed-observation dedup and pre-resolve cooldown maps each retain at
+most 50,000 entries. Their minute sweeps remain in place after a component
+comparison of fresh, half-expired and fully expired maps. Across 20 measured
+sweeps per state, manual sweep p95 stayed below 3.2 ms; replacing them with
+the metrics-enabled general TTL map raised full-expiry p95 to 32.3 ms.
+The existing fully expired sweep used about 0.044 ms CPU/s amortized over its
+minute cadence. An incremental-expiry rewrite was therefore not selected.
+This component measurement does not replace the sustained ingest soak.
+
+`meshcore_mqtt_dedup_entries`, `meshcore_mqtt_preresolve_history_entries` and
+`meshcore_mqtt_preresolve_inflight` expose occupancy without identity labels.
+The background pool bounds queued/active pre-resolves and releases rejected,
+timed-out or completed requests. The optional cooldown defaults to ten seconds;
+`PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS` is clamped to 1 second–24 hours, with
+nonfinite settings falling back to the default. Durable duplicate detection
+and privacy validation remain unchanged.
+
+Reproduce the component comparison from the repository root:
+
+```bash
+npm --prefix backend run bench:mqtt-caches -- --output "$PWD/plans/measurements/mqtt-cache-sweeps.json"
+```
+
+It checks equal starting populations and exact expiry counts, discards one
+warm-up per case, and records CPU/wall samples, medians and nearest-rank p95.
+
+The occupancy instrumentation also passed fresh 2,000-packet saturation and
+100-packets/s offered-rate trials: both persisted every packet and fully
+drained, with the same 25 ms persistence p95 bucket. Throughput was 77.43 and
+77.77 packets/s, versus 79.20 and 77.79 in the previous zero-flush fixture.
+Backend CPU per packet rose by less than 3%, DB CPU by less than 2%, and WAL
+by less than 0.2%. Dedup occupancy reached exactly 2,000; these ACK fixtures
+do not exercise optional ADV/GRP pre-resolution. The offered rate still
+requires a final drain and is not a sustainable-rate claim.
+
 ## Link-worker startup and memory
 
 Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.

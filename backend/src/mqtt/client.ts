@@ -47,6 +47,9 @@ import {
   mqttIngestQueueDepth,
   mqttIngestOutcomesTotal,
   mqttMessagesTotal,
+  mqttDedupEntries,
+  mqttPreResolveHistoryEntries,
+  mqttPreResolveInflight,
   mqttDeliveryProbeEnabled,
   mqttDeliveryProbeHealthy,
   mqttDeliveryProbeLastSuccess,
@@ -257,9 +260,11 @@ const preResolveInFlight = new Set<string>();
 const preResolveLastStarted = new Map<string, number>();
 const PRE_RESOLVE_HISTORY_MAX = 50_000;
 const PRE_RESOLVE_ENABLED = process.env['PATH_BETA_PRERESOLVE_ENABLED'] === '1';
-const PRE_RESOLVE_MIN_INTERVAL_MS = Math.max(
+const PRE_RESOLVE_MIN_INTERVAL_MS = boundedEnvInteger(
+  'PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS',
+  10_000,
   1_000,
-  Number(process.env['PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS'] ?? 10_000),
+  24 * 60 * 60_000,
 );
 
 setInterval(() => {
@@ -267,6 +272,7 @@ setInterval(() => {
   for (const [key, ts] of preResolveLastStarted) {
     if (ts < cutoff) preResolveLastStarted.delete(key);
   }
+  mqttPreResolveHistoryEntries.set(preResolveLastStarted.size);
 }, 60_000).unref();
 
 /**
@@ -282,6 +288,7 @@ setInterval(() => {
   for (const [k, ts] of seenPackets) {
     if (ts < cutoff) seenPackets.delete(k);
   }
+  mqttDedupEntries.set(seenPackets.size);
 }, 60_000).unref();
 
 function isDuplicatePacket(key: string): boolean {
@@ -294,6 +301,7 @@ function rememberPacket(key: string): void {
     if (oldest !== undefined) seenPackets.delete(oldest);
   }
   seenPackets.set(key, Date.now());
+  mqttDedupEntries.set(seenPackets.size);
 }
 
 /**
@@ -1202,6 +1210,7 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
     return;
   }
   preResolveInFlight.add(preResolveKey);
+  mqttPreResolveInflight.set(preResolveInFlight.size);
   if (
     !preResolveLastStarted.has(preResolveKey)
     && preResolveLastStarted.size >= PRE_RESOLVE_HISTORY_MAX
@@ -1210,6 +1219,7 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
     if (oldest !== undefined) preResolveLastStarted.delete(oldest);
   }
   preResolveLastStarted.set(preResolveKey, Date.now());
+  mqttPreResolveHistoryEntries.set(preResolveLastStarted.size);
   // Pass any previously resolved high-confidence hop assignments so the solver reuses them
   const stickyEntry = getStickyNodeMap(finalHash, network);
   const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
@@ -1233,7 +1243,10 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
       }
     })
     .catch(() => { /* best-effort */ })
-    .finally(() => { preResolveInFlight.delete(preResolveKey); });
+    .finally(() => {
+      preResolveInFlight.delete(preResolveKey);
+      mqttPreResolveInflight.set(preResolveInFlight.size);
+    });
 }
 
 export async function backfillHistoricalLinks(

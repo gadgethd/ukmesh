@@ -682,6 +682,24 @@ export const postPersistInFlightGauge = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const mqttDedupEntries = new Gauge({
+  name: 'meshcore_mqtt_dedup_entries',
+  help: 'Committed observation identities retained in the bounded 50000-entry local dedup map.',
+  registers: [metricsRegistry],
+});
+
+export const mqttPreResolveHistoryEntries = new Gauge({
+  name: 'meshcore_mqtt_preresolve_history_entries',
+  help: 'Cooldown timestamps retained in the bounded 50000-entry pre-resolve history.',
+  registers: [metricsRegistry],
+});
+
+export const mqttPreResolveInflight = new Gauge({
+  name: 'meshcore_mqtt_preresolve_inflight',
+  help: 'Pre-resolve requests awaiting the bounded background resolver pool.',
+  registers: [metricsRegistry],
+});
+
 export const postPersistDroppedTotal = new Counter({
   name: 'meshcore_mqtt_post_persist_dropped_total',
   help: 'Best-effort post-persist follow-ups dropped because the in-flight bound was reached.',

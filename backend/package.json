@@ -23,6 +23,7 @@
     "owner-packet-share:provision-scotmesh": "node dist/tools/provisionScotmesh.js",
     "analysis:cleanup-orphans": "node dist/tools/cleanupOrphanedAnalysisRuns.js",
     "bench:decode": "tsx src/tools/benchmarkPacketDecode.ts",
+    "bench:mqtt-caches": "tsx src/tools/benchmarkMqttCacheSweeps.ts",
     "path:accuracy": "tsx src/tools/pathAccuracy.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
