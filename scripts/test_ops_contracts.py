@@ -1,5 +1,6 @@
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import unittest
 import yaml
@@ -39,3 +40,36 @@ class OpsContractTests(unittest.TestCase):
         worker_job['static_configs'][0]['labels']['role'] = worker_job['static_configs'][1]['labels']['role']
         with self.assertRaisesRegex(ValueError, 'roles'):
             checks.worker_scrapes(compose, broken)
+
+
+    def test_shared_link_defaults_are_semantic_across_compose_and_example(self):
+        contract = json.loads((ROOT / 'contracts/link-v3.json').read_text())
+        compose = yaml.safe_load((ROOT / 'docker-compose.yml').read_text())
+        example = (ROOT / '.env.example').read_text()
+        expected = {spec['env'] for spec in contract['limits'].values()}
+        self.assertEqual(checks.link_queue_defaults(contract, compose, example), expected)
+        # Compose's list form and quoted decimal documentation mean the same thing.
+        for service in ('backend', 'link-worker'):
+            compose['services'][service]['environment'] = [f'{key}={value}' for key, value in compose['services'][service]['environment'].items()]
+        for spec in contract['limits'].values():
+            example = example.replace(f"{spec['env']}={spec['default']}\n", f"export {spec['env']}='{spec['default']}' # documented default\n")
+        self.assertEqual(checks.link_queue_defaults(contract, compose, example), expected)
+
+    def test_shared_link_defaults_reject_changed_values_names_and_missing_documentation(self):
+        contract = json.loads((ROOT / 'contracts/link-v3.json').read_text())
+        baseline = yaml.safe_load((ROOT / 'docker-compose.yml').read_text())
+        example = (ROOT / '.env.example').read_text()
+        spec = contract['limits']['maxJobs']
+        name, default = spec['env'], spec['default']
+        for service in ('backend', 'link-worker'):
+            for value in (f'${{{name}:-{default + 1}}}', f'${{WRONG_QUEUE_SETTING:-{default}}}', None):
+                with self.subTest(service=service, value=value):
+                    changed = copy.deepcopy(baseline)
+                    changed['services'][service]['environment'][name] = value
+                    with self.assertRaisesRegex(ValueError, service):
+                        checks.link_queue_defaults(contract, changed, example)
+        for replacement in (f'{name}={default + 1}\n', f'WRONG_QUEUE_SETTING={default}\n', ''):
+            with self.subTest(documentation=replacement):
+                changed = example.replace(f'{name}={default}\n', replacement)
+                with self.assertRaisesRegex(ValueError, r'\.env\.example'):
+                    checks.link_queue_defaults(contract, baseline, changed)
