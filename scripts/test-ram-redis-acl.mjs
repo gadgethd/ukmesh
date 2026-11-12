@@ -55,7 +55,7 @@ try{
   for(const [file,expected] of [['src/ram/operational.integration.test.ts',4],['src/ram/runtime.integration.test.ts',1]]){
     let transcript='';
     const code=await new Promise((resolve,reject)=>{
-      const child=spawn(process.execPath,['--import','tsx','--test',file],{cwd:backend,env,stdio:['ignore','pipe','pipe']});
+      const child=spawn(process.execPath,['--import','tsx','--test','--test-reporter=tap',file],{cwd:backend,env,stdio:['ignore','pipe','pipe']});
       child.stdout.on('data',chunk=>{transcript+=chunk;process.stdout.write(chunk);});
       child.stderr.pipe(process.stderr);
       child.once('error',reject);child.once('exit',(code,signal)=>resolve(signal?1:code));

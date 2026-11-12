@@ -44,7 +44,8 @@ try {
     persisted = await rowCount();
     after = await metrics();
     if (persisted === count && (after.get('meshcore_packet_batch_queue_depth') ?? -1) === 0
-      && (after.get('meshcore_mqtt_ingest_queue_depth') ?? -1) === 0) { drained = true; break; }
+      && (after.get('meshcore_mqtt_ingest_queue_depth') ?? -1) === 0
+      && (after.get('meshcore_mqtt_ingest_active') ?? -1) === 0) { drained = true; break; }
     await wait(250);
   }
   if (persisted !== count || !drained) throw new Error(`replay did not persist/drain expected unique rows: ${persisted}/${count}`);
