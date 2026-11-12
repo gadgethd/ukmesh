@@ -108,6 +108,7 @@ export const StatsPage: React.FC = () => {
 
   return (
     <div className="site-layout__inner">
+      <h1 className="ui-visually-hidden">Network stats</h1>
       {/* ── Page hero ─────────────────────────────────────────────────────── */}
 
       <div className="site-content">

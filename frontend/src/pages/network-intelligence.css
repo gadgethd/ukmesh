@@ -84,3 +84,6 @@
   .topology-page__validation-stats { grid-template-columns: 1fr 1fr; }
   .topology-page__validation-table [role='row'] { grid-template-columns: 1fr 1fr; }
 }
+
+/* Reserve the map workspace while data loads so footer/validation stay below it. */
+.topology-page__pending { min-height: 100svh; }

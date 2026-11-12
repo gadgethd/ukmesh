@@ -21,6 +21,7 @@ export type FetchJsonOptions<T> = {
   maxBytes?: number;
   validate?: (value: unknown) => value is T;
   readErrorMessage?: boolean;
+  fetchImpl?: typeof fetch;
 };
 
 export function withScopeParams(path: string, scope: ApiScope = {}): string {
@@ -130,7 +131,7 @@ export async function fetchJson<T>(
     : timeoutSignal;
   const headers = new Headers(init.headers);
   if (!headers.has('Accept')) headers.set('Accept', 'application/json');
-  const response = await fetch(input, {
+  const response = await (options.fetchImpl ?? globalThis.fetch)(input, {
     ...init,
     signal,
     headers,

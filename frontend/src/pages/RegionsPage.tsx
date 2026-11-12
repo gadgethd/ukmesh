@@ -53,6 +53,9 @@ export const RegionsPage: React.FC = () => {
     setError(null);
     setSelectedRegion(null);
     setSelectedNodeId(null);
+    // Wait for the initial authority snapshot; starting at generation zero
+    // would fetch, display, then discard the same workspace as config arrives.
+    if (privacyGeneration < 1) return () => controller.abort();
     Promise.all([
       fetchJson<RegionSummaryPayload>(
         withScopeParams('/api/regions/summary', { network, observer }),
@@ -231,7 +234,7 @@ export const RegionsPage: React.FC = () => {
       </header>
 
       {error && <div className="regions-page__error" role="alert">{error}</div>}
-      {!summary && !error && <LoadingIndicator label="Loading region scoping…" variant="inline" />}
+      {!summary && !error && <div className="regions-page__pending"><LoadingIndicator label="Loading region scoping…" variant="inline" /></div>}
 
       {summary && (
         <>

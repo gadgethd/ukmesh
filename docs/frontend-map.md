@@ -40,11 +40,20 @@
 
 ## Documented lifecycle exception
 
-`MapLibreMap.tsx` is intentionally the single owner of one MapLibre instance.
+`MapLibreMap.tsx` owns the dashboard's MapLibre instance.
 Splitting its lifecycle across React components would duplicate listeners,
 sources, or map construction during mount and Strict Mode. The component may
 coordinate lifecycle and call extracted helpers, but it must not absorb new
 pure computation, fetch policy, presentation markup, or persistent state.
+
+Public `RegionsMap` and `TopologyMap` use `EmbeddedMap.tsx` for their basemap
+lifecycle and retain their native overlay sources, controls, selection and
+style-reload handling. This base has no dashboard store subscriptions, deck.gl
+layers or recurring source refresh. Resize work is coalesced in an animation
+frame; load/recovery deadlines are bounded and removed with the map. Scope and
+privacy changes replace the instance. Each instance has one lifecycle owner.
+The stats decoded-path map is loaded only after selection; the feed path and
+owner maps retain their separate standalone lifecycles.
 
 The allowed responsibilities are:
 

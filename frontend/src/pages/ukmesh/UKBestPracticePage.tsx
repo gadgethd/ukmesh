@@ -3,6 +3,7 @@ import React from 'react';
 
 export const UKBestPracticePage: React.FC = () => (
   <>
+    <h1 className="ui-visually-hidden">UK Mesh documentation</h1>
 
     <div className="site-content site-prose">
 

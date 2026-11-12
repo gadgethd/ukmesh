@@ -103,3 +103,27 @@ Before a browser-cache, map, topology, or chart release:
 4. Roll back on privacy drift, cross-scope state, reload loops, cache quota
    overflow, or a limit above. Retain the prior service-worker namespace for
    seven days.
+
+Public route ceilings are also checked from the emitted Vite manifest by
+`npm run budget:routes`. The stats route must have no static MapLibre/deck import;
+its decoded-path map is loaded on selection. These route checks complement the
+whole-artifact ceilings above.
+
+`npm run lighthouse:ci` checks three fresh mobile and desktop navigations for
+home, docs, stats, feed and regions. It serves the production public artifact on
+owned loopback port 4186 and uses invented HTTP, WebSocket and basemap fixtures. Recent timestamps are
+relative to each request so the populated feed stays within its real time window.
+It checks median LCP, CLS and TBT plus accessibility and SEO scores; raw reports
+are retained as CI artifacts. The initial navigation ceilings are in
+`frontend/scripts/lighthouse-ci.config.json` and are tightened after qualified
+structural changes. CI fixtures cover populated rendering; the local sample-stack
+benchmark separately measures backend work, real payload sizes and map providers.
+Navigation audits do not measure INP. Field Web Vitals need real user interactions
+on an authorized deployment.
+
+The lightweight regions/topology base imports the native MapLibre stylesheet.
+The earlier wrapper omitted it on those public routes, leaving native controls
+without their required styles. Regions therefore includes about 10.7 KiB more CSS
+than the first baseline; its route ceiling records that restoration. The total
+CSS artifact limits still apply. Public native labels use the provider's
+[Noto Sans glyphs](https://github.com/hyperknot/openfreemap-styles).

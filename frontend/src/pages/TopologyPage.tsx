@@ -71,12 +71,13 @@ export const TopologyPage: React.FC = () => {
     setPayload(null);
     setError(null);
     setSelectedNodeId(null);
+    if (privacyGeneration < 1) return () => controller.abort();
     fetchJson<TopologyPayload>(
       withScopeParams('/api/topology?limit=300', { network, observer }),
       { signal: controller.signal, cache: 'no-store' },
       { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024 },
     )
-      .then(setPayload)
+      .then(result => { if (!controller.signal.aborted) setPayload(result); })
       .catch((reason: unknown) => {
         if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
       });
@@ -87,6 +88,7 @@ export const TopologyPage: React.FC = () => {
     const controller = new AbortController();
     setRfValidation(null);
     setRfError(false);
+    if (privacyGeneration < 1) return () => controller.abort();
     fetchJson<RfValidationPayload>(
       withScopeParams('/api/rf-validation?limit=100', { network, observer }),
       { signal: controller.signal, cache: 'no-store' },
@@ -146,7 +148,7 @@ export const TopologyPage: React.FC = () => {
       </header>
 
       {error && <div className="topology-page__error" role="alert">{error}</div>}
-      {!payload && !error && <LoadingIndicator label="Loading network topology…" variant="inline" />}
+      {!payload && !error && <div className="topology-page__pending"><LoadingIndicator label="Loading network topology…" variant="inline" /></div>}
 
       {payload && (
         <>

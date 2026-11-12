@@ -1,6 +1,6 @@
 {
   "baselineRevision": "2bb41dd",
-  "note": "Baseline 2bb41dd. CSS and stats ceilings tightened after the B1 production-browser qualification; remaining route ceilings await structural map work.",
+  "note": "Baseline 2bb41dd; tightened after B1/B2. Regions now includes required MapLibre CSS (missing in the old wrapper), adding 10.7 KiB; its CSS ceiling accounts for that restoration. Whole-artifact CSS ceilings remain unchanged.",
   "routes": {
     "/": {
       "module": "src/pages/ukmesh/UKHomePage.tsx",
@@ -32,9 +32,12 @@
     },
     "/regions": {
       "module": "src/pages/RegionsPage.tsx",
-      "scriptGzipKiB": 648,
-      "cssGzipKiB": 9,
-      "forbiddenChunks": []
+      "scriptGzipKiB": 425,
+      "cssGzipKiB": 20,
+      "forbiddenChunks": [
+        "MapLibreMap",
+        "deck-"
+      ]
     }
   }
 }

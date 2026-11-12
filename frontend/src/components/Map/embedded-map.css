@@ -1,0 +1,16 @@
+.embedded-map { position: relative; width: 100%; height: 100%; }
+.embedded-map__canvas { position: absolute; inset: 0; }
+.embedded-map__notice {
+  position: absolute;
+  bottom: 34px;
+  left: 12px;
+  max-width: min(420px, calc(100% - 24px));
+  z-index: 2;
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: var(--bg-panel);
+  color: var(--text-primary);
+  border: 1px solid var(--border-bright);
+  font-size: 12px;
+}
+.embedded-map__notice button { margin-left: 10px; }

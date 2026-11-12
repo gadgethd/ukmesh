@@ -391,6 +391,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
 
   return (
     <>
+      <h1 className="ui-visually-hidden">Repeater search</h1>
 
       <section className="site-section repeater-page">
         <div className="site-content">

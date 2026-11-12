@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react';
+import { fetchJson } from '../utils/api.js';
 
 export type RuntimeFeatureSnapshot = {
   packetArcs: boolean;
@@ -77,14 +78,10 @@ export async function refreshRuntimeFeatures(
   fetchImpl: typeof fetch = globalThis.fetch,
 ): Promise<RuntimeFeatureSnapshot> {
   try {
-    const response = await fetchImpl('/api/runtime-config', {
+    const payload = await fetchJson<unknown>('/api/runtime-config', {
       cache: 'no-store',
       credentials: 'same-origin',
-      headers: { Accept: 'application/json' },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-    if (!response.ok) throw new Error(`runtime config request failed: ${response.status}`);
-    const payload = await response.json() as unknown;
+    }, { timeoutMs: REQUEST_TIMEOUT_MS, maxBytes: 16 * 1024, fetchImpl });
     const parsed = parseRuntimeFeatureConfig(payload);
     return publish(parsed);
   } catch {

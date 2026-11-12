@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import * as maplibregl from 'maplibre-gl';
-import { MapLibreMap } from './MapLibreMap.js';
+import * as maplibregl from './maplibre.js';
+import { EmbeddedMap } from './EmbeddedMap.js';
 import { DEFAULT_CENTER } from './mapConfig.js';
 import {
   buildRegionAreasGeoJSON,
@@ -220,6 +220,7 @@ function RegionsMapOverlay({
         source: UNATTRIBUTED_SOURCE,
         layout: {
           'text-field': ['get', 'label'],
+          'text-font': ['Noto Sans Regular'],
           'text-size': 10.5,
           'text-anchor': 'center',
           'text-allow-overlap': false,
@@ -285,7 +286,7 @@ function RegionsMapOverlay({
         if (map.getSource('region-repeaters')) map.removeSource('region-repeaters');
         if (map.getSource('region-areas')) map.removeSource('region-areas');
         if (map.getSource(UNATTRIBUTED_SOURCE)) map.removeSource(UNATTRIBUTED_SOURCE);
-      } catch { /* MapLibreMap owns final map teardown */ }
+      } catch { /* EmbeddedMap owns final map teardown */ }
     };
   }, [map, onRegionSelect, onRepeaterSelect]);
 
@@ -365,27 +366,16 @@ export function RegionsMap({
   onRepeaterSelect,
 }: RegionsMapProps): React.ReactElement {
   const [map, setMap] = useState<maplibregl.Map | null>(null);
-  const handleMapReady = useCallback((nextMap: maplibregl.Map) => setMap(nextMap), []);
+  const handleMapReady = useCallback((nextMap: maplibregl.Map | null) => setMap(nextMap), []);
   const shapedRegions = regions.filter((region) => region.members.some((member) => member.lat != null && member.lon != null)).length;
   const locatedRepeaters = repeaters.filter((repeater) => Number.isFinite(repeater.lat) && Number.isFinite(repeater.lon)).length;
 
   return (
     <div className="regions-page__map" aria-label="MeshCore region scoping map">
-      <MapLibreMap
-        showLinks={false}
-        showTerrain={false}
-        showClientNodes={false}
-        showHexClashes={false}
-        maxHexClashHops={3}
-        viewshedEnabled={false}
-        rfCoverageEnabled={false}
+      <EmbeddedMap
         initialView={REGIONS_INITIAL_VIEW}
-        mapLight={false}
-        network={network}
-        observer={observer}
-        privacyGeneration={privacyGeneration}
+        scopeKey={`${network ?? 'ukmesh'}:${observer ?? ''}:${privacyGeneration}`}
         onMapReady={handleMapReady}
-        showMapChrome={false}
       />
       {map && (
         <RegionsMapOverlay

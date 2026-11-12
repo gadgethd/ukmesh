@@ -1,5 +1,11 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
+
+async function installPublicPolicy(page: Page) {
+  await page.route('**/api/runtime-config', route => route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
+  } }));
+}
 
 test('former node names resolve to the current name in repeater search', async ({ page }) => {
   const current = {
@@ -79,6 +85,7 @@ test('phone layouts give primary content the full available width', async ({ pag
 });
 
 test('tablet topology uses the full-width map workspace', async ({ page }) => {
+  await installPublicPolicy(page);
   await page.setViewportSize({ width: 768, height: 667 });
   await page.route('**/api/topology**', (route) => route.fulfill({
     json: {
@@ -101,6 +108,7 @@ test('tablet topology uses the full-width map workspace', async ({ page }) => {
 });
 
 test('public site exposes its primary journeys', async ({ page }) => {
+  await installPublicPolicy(page);
   await page.route('**/api/stats**', async (route) => {
     await route.fulfill({
       json: {

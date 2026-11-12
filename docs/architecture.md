@@ -65,8 +65,10 @@ paths. Coverage is not sent through backend JSON or WebSocket messages.
 
 ## Frontend domain layout
 
-- `frontend/src/components/Map/MapLibreMap.tsx`: sole imperative MapLibre
-  lifecycle owner;
+- `frontend/src/components/Map/MapLibreMap.tsx`: dashboard MapLibre lifecycle
+  owner and live-layer coordinator;
+- `frontend/src/components/Map/EmbeddedMap.tsx`: lightweight public regions and
+  topology basemap lifecycle, with native overlays and no dashboard stores;
 - `frontend/src/hooks/useRfCoverage.ts`: last-known-good metadata/progress
   polling and safe tile validation;
 - `frontend/src/components/Map/RfCoverageOverlay.tsx`: native image sources and

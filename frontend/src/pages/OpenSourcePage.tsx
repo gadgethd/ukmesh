@@ -15,7 +15,7 @@ const LibCard: React.FC<LibEntry> = ({ name, role, url }) => (
 );
 
 const FRONTEND: LibEntry[] = [
-  { name: 'React 18',            role: 'Component-based UI framework',                              url: 'https://react.dev' },
+  { name: 'React 19',            role: 'Component-based UI framework',                              url: 'https://react.dev' },
   { name: 'Vite',                role: 'Fast build tool and dev server',                             url: 'https://vitejs.dev' },
   { name: 'TypeScript',          role: 'Static typing across the entire codebase',                   url: 'https://www.typescriptlang.org' },
   { name: 'MapLibre GL JS',      role: 'GPU-rendered vector/raster map engine',                      url: 'https://maplibre.org' },
@@ -75,6 +75,7 @@ const Section: React.FC<{ title: string; items: LibEntry[] }> = ({ title, items 
 
 export const OpenSourcePage: React.FC = () => (
   <>
+    <h1 className="ui-visually-hidden">Open source acknowledgements</h1>
 
     <div className="site-content site-prose">
 

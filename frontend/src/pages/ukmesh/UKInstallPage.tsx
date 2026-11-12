@@ -14,6 +14,7 @@ export const UKInstallPage: React.FC = () => {
   const hardware = HARDWARE.find((entry) => entry.id === hardwareId)!;
   return (
   <>
+    <h1 className="ui-visually-hidden">Install MeshCore</h1>
 
     <div className="site-content site-prose install-page">
 

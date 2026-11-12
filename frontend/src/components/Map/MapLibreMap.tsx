@@ -8,6 +8,7 @@
  * Click hit-testing uses MapLibre's built-in R-tree spatial index.
  * deck.gl overlays are integrated via @deck.gl/mapbox (MapboxOverlay).
  */
+import './basemap-labels.css';
 import { useEffect, useRef, useState, useMemo, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import * as maplibregl from './maplibre.js';
@@ -25,6 +26,7 @@ import { useOverlayStore } from '../../store/overlayStore.js';
 import {
   DEFAULT_CENTER,
   DEFAULT_ZOOM,
+  MAP_INITIAL_LOAD_TIMEOUT_MS,
   EMPTY_FC,
   MAP_ARC_REFRESH_INTERVAL_MS,
   MAP_REFRESH_INTERVAL_MS,
@@ -820,7 +822,7 @@ export function MapLibreMap({
         // the blocking modal is for a map that cannot load at all.
         if (hasLoadedStyleRef.current && basemapPhaseRef.current === 'retrying') return;
         setMapError('The map is taking too long to load. Check your connection, then retry.');
-      }, 15_000);
+      }, MAP_INITIAL_LOAD_TIMEOUT_MS);
     };
     const handleIdle = () => {
       if (!map.loaded()) return;

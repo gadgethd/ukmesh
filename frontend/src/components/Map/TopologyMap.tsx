@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import * as maplibregl from 'maplibre-gl';
-import { MapLibreMap } from './MapLibreMap.js';
+import * as maplibregl from './maplibre.js';
+import { EmbeddedMap } from './EmbeddedMap.js';
 import { DEFAULT_CENTER } from './mapConfig.js';
 import {
   buildTopologyLinksGeoJSON,
@@ -68,98 +68,105 @@ function TopologyMapOverlay({
   strongOnly,
   onNodeSelect,
 }: TopologyMapOverlayProps): null {
+  const [styleGeneration, setStyleGeneration] = useState(0);
   useEffect(() => {
-    map.addSource('topology-links', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
-    });
-    map.addSource('topology-nodes', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features: [] },
-    });
+    const install = () => {
+      if (!map.getStyle()) return;
+      if (!map.getSource('topology-links')) map.addSource('topology-links', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
+      if (!map.getSource('topology-nodes')) map.addSource('topology-nodes', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features: [] },
+      });
 
-    addTopologyLayer(map, {
-      ...topologyLinkLayerBase,
-      id: TOPOLOGY_LINK_HALO_LAYER,
-      paint: {
-        'line-color': ['get', 'color'],
-        'line-width': ['+', ['get', 'width'], 4],
-        'line-opacity': ['get', 'halo_opacity'],
-      },
-    });
-    addTopologyLayer(map, {
-      ...topologyLinkLayerBase,
-      id: TOPOLOGY_LINK_LAYER,
-      paint: {
-        'line-color': ['get', 'color'],
-        'line-width': ['get', 'width'],
-        'line-opacity': ['get', 'opacity'],
-      },
-    });
-    addTopologyLayer(map, {
-      id: TOPOLOGY_NODE_HIT_LAYER,
-      type: 'circle',
-      source: 'topology-nodes',
-      paint: {
-        'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 10, 10, 14, 14, 18],
-        'circle-color': '#ffffff',
-        'circle-opacity': 0,
-        'circle-stroke-opacity': 0,
-      },
-    });
-    addTopologyLayer(map, {
-      id: TOPOLOGY_NODE_HALO_LAYER,
-      type: 'circle',
-      source: 'topology-nodes',
-      paint: {
-        'circle-radius': ['+', ['get', 'radius'], 5],
-        'circle-color': [
-          'case',
-          ['get', 'selected'], '#22e0ff',
-          ['get', 'bridge'], '#f59e0b',
-          '#00c4ff',
-        ],
-        'circle-opacity': [
-          'case',
-          ['get', 'selected'], 0.32,
-          ['get', 'bridge'], 0.22,
-          0.08,
-        ],
-        'circle-blur': 0.55,
-      },
-    });
-    addTopologyLayer(map, {
-      id: TOPOLOGY_NODE_LAYER,
-      type: 'circle',
-      source: 'topology-nodes',
-      paint: {
-        'circle-radius': [
-          'interpolate', ['linear'], ['get', 'degree'],
-          0, 3.5, 1, 4.5, 4, 6, 10, 8, 24, 11,
-        ],
-        'circle-color': [
-          'case',
-          ['get', 'selected'], '#f8fafc',
-          ['get', 'bridge'], '#fbbf24',
-          '#00c4ff',
-        ],
-        'circle-opacity': ['case', ['get', 'isolated'], 0, 1],
-        'circle-stroke-color': [
-          'case',
-          ['get', 'selected'], '#ffffff',
-          ['get', 'bridge'], '#f59e0b',
-          ['get', 'isolated'], '#d7e8f7',
-          '#020617',
-        ],
-        'circle-stroke-width': [
-          'case',
-          ['get', 'selected'], 2.5,
-          ['get', 'bridge'], 2.2,
-          1.2,
-        ],
-        'circle-stroke-opacity': 0.92,
-      },
-    });
+      addTopologyLayer(map, {
+        ...topologyLinkLayerBase,
+        id: TOPOLOGY_LINK_HALO_LAYER,
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['+', ['get', 'width'], 4],
+          'line-opacity': ['get', 'halo_opacity'],
+        },
+      });
+      addTopologyLayer(map, {
+        ...topologyLinkLayerBase,
+        id: TOPOLOGY_LINK_LAYER,
+        paint: {
+          'line-color': ['get', 'color'],
+          'line-width': ['get', 'width'],
+          'line-opacity': ['get', 'opacity'],
+        },
+      });
+      addTopologyLayer(map, {
+        id: TOPOLOGY_NODE_HIT_LAYER,
+        type: 'circle',
+        source: 'topology-nodes',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 6, 10, 10, 14, 14, 18],
+          'circle-color': '#ffffff',
+          'circle-opacity': 0,
+          'circle-stroke-opacity': 0,
+        },
+      });
+      addTopologyLayer(map, {
+        id: TOPOLOGY_NODE_HALO_LAYER,
+        type: 'circle',
+        source: 'topology-nodes',
+        paint: {
+          'circle-radius': ['+', ['get', 'radius'], 5],
+          'circle-color': [
+            'case',
+            ['get', 'selected'], '#22e0ff',
+            ['get', 'bridge'], '#f59e0b',
+            '#00c4ff',
+          ],
+          'circle-opacity': [
+            'case',
+            ['get', 'selected'], 0.32,
+            ['get', 'bridge'], 0.22,
+            0.08,
+          ],
+          'circle-blur': 0.55,
+        },
+      });
+      addTopologyLayer(map, {
+        id: TOPOLOGY_NODE_LAYER,
+        type: 'circle',
+        source: 'topology-nodes',
+        paint: {
+          'circle-radius': [
+            'interpolate', ['linear'], ['get', 'degree'],
+            0, 3.5, 1, 4.5, 4, 6, 10, 8, 24, 11,
+          ],
+          'circle-color': [
+            'case',
+            ['get', 'selected'], '#f8fafc',
+            ['get', 'bridge'], '#fbbf24',
+            '#00c4ff',
+          ],
+          'circle-opacity': ['case', ['get', 'isolated'], 0, 1],
+          'circle-stroke-color': [
+            'case',
+            ['get', 'selected'], '#ffffff',
+            ['get', 'bridge'], '#f59e0b',
+            ['get', 'isolated'], '#d7e8f7',
+            '#020617',
+          ],
+          'circle-stroke-width': [
+            'case',
+            ['get', 'selected'], 2.5,
+            ['get', 'bridge'], 2.2,
+            1.2,
+          ],
+          'circle-stroke-opacity': 0.92,
+        },
+      });
+      setStyleGeneration(value => value + 1);
+    };
+    install();
+    map.on('style.load', install);
 
     const handleNodeClick = (event: maplibregl.MapLayerMouseEvent) => {
       const nodeId = event.features?.[0]?.properties?.['node_id'];
@@ -175,6 +182,7 @@ function TopologyMapOverlay({
     map.addControl(navigation, 'top-right');
 
     return () => {
+      map.off('style.load', install);
       map.off('click', TOPOLOGY_NODE_HIT_LAYER, handleNodeClick);
       map.off('mouseenter', TOPOLOGY_NODE_HIT_LAYER, handlePointerEnter);
       map.off('mouseleave', TOPOLOGY_NODE_HIT_LAYER, handlePointerLeave);
@@ -191,16 +199,17 @@ function TopologyMapOverlay({
         }
         if (map.getSource('topology-nodes')) map.removeSource('topology-nodes');
         if (map.getSource('topology-links')) map.removeSource('topology-links');
-      } catch { /* MapLibreMap owns final map teardown */ }
+      } catch { /* EmbeddedMap owns final map teardown */ }
     };
   }, [map, onNodeSelect]);
 
   useEffect(() => {
+    if (!map.getStyle()) return;
     const linksSource = map.getSource('topology-links') as maplibregl.GeoJSONSource | undefined;
     const nodesSource = map.getSource('topology-nodes') as maplibregl.GeoJSONSource | undefined;
     linksSource?.setData(buildTopologyLinksGeoJSON(nodes, links, selectedNodeId, strongOnly));
     nodesSource?.setData(buildTopologyNodesGeoJSON(nodes, selectedNodeId, bridgeNodeIds, isolatedNodeIds));
-  }, [map, nodes, links, selectedNodeId, bridgeNodeIds, isolatedNodeIds, strongOnly]);
+  }, [map, styleGeneration, nodes, links, selectedNodeId, bridgeNodeIds, isolatedNodeIds, strongOnly]);
 
   return null;
 }
@@ -218,26 +227,15 @@ export function TopologyMap({
   onNodeSelect,
 }: TopologyMapProps): React.ReactElement {
   const [map, setMap] = useState<maplibregl.Map | null>(null);
-  const handleMapReady = useCallback((nextMap: maplibregl.Map) => setMap(nextMap), []);
+  const handleMapReady = useCallback((nextMap: maplibregl.Map | null) => setMap(nextMap), []);
   const positionedNodeCount = nodes.filter((node) => Number.isFinite(node.lat) && Number.isFinite(node.lon)).length;
 
   return (
     <div className="topology-page__map" aria-label="Geographic repeater topology map">
-      <MapLibreMap
-        showLinks={false}
-        showTerrain={false}
-        showClientNodes={false}
-        showHexClashes={false}
-        maxHexClashHops={3}
-        viewshedEnabled={false}
-        rfCoverageEnabled={false}
+      <EmbeddedMap
         initialView={TOPOLOGY_INITIAL_VIEW}
-        mapLight={false}
-        network={network}
-        observer={observer}
-        privacyGeneration={privacyGeneration}
+        scopeKey={`${network ?? 'ukmesh'}:${observer ?? ''}:${privacyGeneration}`}
         onMapReady={handleMapReady}
-        showMapChrome={false}
       />
       {map && (
         <TopologyMapOverlay

@@ -64,3 +64,22 @@ test('region scoping requires an explicit boolean true from runtime config', () 
     }).regionScoping, regionScoping === true);
   }
 });
+
+test('oversized runtime responses cancel streaming and invalidate the previous authority', async () => {
+  resetRuntimeFeaturesForTests();
+  await refreshRuntimeFeatures(async () => new Response(JSON.stringify({
+    version: 1, packetArcs: true, heatmap: true, privacyGeneration: 4, refreshAfterSeconds: 5,
+  })));
+  assert.equal(getRuntimeFeatureSnapshot().privacyGeneration, 4);
+  let cancelled = false;
+  await refreshRuntimeFeatures(async (_input, init) => {
+    assert.equal(init?.cache, 'no-store');
+    assert.equal(init?.credentials, 'same-origin');
+    return new Response(new ReadableStream({
+      pull(controller) { controller.enqueue(new Uint8Array(4096)); },
+      cancel() { cancelled = true; },
+    }));
+  });
+  assert.equal(cancelled, true);
+  assert.deepEqual(getRuntimeFeatureSnapshot(), FAIL_CLOSED_RUNTIME_FEATURES);
+});

@@ -1,3 +1,4 @@
+import { chartStats } from './fixtures/chartStats.mjs';
 import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
@@ -24,65 +25,7 @@ const TEST_MAP_STYLE = {
   ],
 };
 
-const chartStats = {
-  packetsPerHour: [{ hour: '12:00', count: 24 }],
-  packetsPerDay: [{ day: 'Mon', count: 120 }],
-  radiosPerHour: [{ hour: '12:00', count: 8 }],
-  radiosPerDay: [{ day: 'Mon', count: 32 }],
-  packetTypes: [{ label: 'Advert', count: 80 }, { label: 'Group', count: 40 }],
-  channelTraffic: [{ channel: 'Public', count: 40, pct: 50, allPct: 33 }],
-  hopDistribution: [{ hops: 1, count: 60 }],
-  prefixCollisions: [{ prefix: 'ab', repeats: 3 }],
-  observerRegions: [],
-  observerDiversity: {
-    averageObserversPerPacket: 2.5,
-    maxObserversPerPacket: 6,
-    totalPackets24h: 120,
-    singleObserverPackets24h: 20,
-    singleObserverPct24h: 16.7,
-  },
-  signalSummary: {
-    avgRssi: -92,
-    medianRssi: -91,
-    avgSnr: 4.5,
-    medianSnr: 4.2,
-    rssiSamples24h: 120,
-    snrSamples24h: 120,
-  },
-  routeTypes: [],
-  transportCodes: [],
-  pathDecodeTrend: [],
-  pathHashes: {
-    last24hHops: { one_byte: 30, two_byte: 20, three_byte: 10 },
-    multibytePackets24h: 30,
-    fullyDecodedMultibyte24h: 20,
-    latestMultibyteAt: '2026-07-18T12:00:00Z',
-    latestMultibyteHash: 'fixture-multibyte',
-    latestFullyDecodedAt: '2026-07-18T12:00:00Z',
-    latestFullyDecodedHash: 'fixture-path',
-    latestFullyDecodedHops: 1,
-    latestFullyDecodedPath: 'North -> South',
-    latestFullyDecodedNodes: [
-      { ord: 1, node_id: 'node-north', name: 'North', lat: 54.5, lon: -1.2 },
-      { ord: 2, node_id: 'node-south', name: 'South', lat: 53.5, lon: -1.1 },
-    ],
-    longestFullyDecodedAt: '2026-07-18T12:00:00Z',
-    longestFullyDecodedHash: 'fixture-longest',
-    longestFullyDecodedHops: 1,
-    longestFullyDecodedPath: 'North -> South',
-    longestFullyDecodedNodes: [
-      { ord: 1, node_id: 'node-north', name: 'North', lat: 54.5, lon: -1.2 },
-      { ord: 2, node_id: 'node-south', name: 'South', lat: 53.5, lon: -1.1 },
-    ],
-  },
-  summary: {
-    totalPackets24h: 120,
-    totalPackets7d: 720,
-    uniqueRadios24h: 32,
-    peakHour: '12:00',
-    peakHourCount: 24,
-  },
-};
+
 
 const repeater = {
   node_id: NODE_ID,
@@ -100,6 +43,9 @@ const repeater = {
 
 async function fulfillApi(route: Route) {
   const pathname = new URL(route.request().url()).pathname;
+  if (pathname === '/api/runtime-config') return route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
+  } });
   if (pathname === '/api/stats/observers/live') return route.fulfill({ json: {
     generatedAt: new Date().toISOString(), windowMinutes: 15, regions: [],
   } });

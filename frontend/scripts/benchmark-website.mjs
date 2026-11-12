@@ -19,12 +19,17 @@ const runs = Number(option('runs', '3'));
 if (!Number.isSafeInteger(runs) || runs < 1 || runs > 10) throw new Error('--runs must be 1..10');
 const routes = ['/', '/docs', '/stats', '/feed', '/regions'];
 const selected = option('route', undefined);
-if (selected && !routes.includes(selected)) throw new Error('unknown website route');
-await mkdir(output, { recursive: true });
+if (selected && ![...routes, '/topology', '/spam', '/login', '/owner'].includes(selected)) throw new Error('unknown website route');
+const selectedMode = option('mode', undefined);
+if (selectedMode && !['mobile', 'desktop'].includes(selectedMode)) throw new Error('unknown mode');
+await mkdir(path.dirname(output), { recursive: true });
+await mkdir(output);
 const measurements = [];
-for (const mode of ['mobile', 'desktop']) {
+for (const mode of selectedMode ? [selectedMode] : ['mobile', 'desktop']) {
   for (const route of selected ? [selected] : routes) {
+    let rateRetries = 0;
     for (let run = 0; run < runs; run += 1) {
+      let rateWaitMs = 0;
       const chrome = await launch({ chromePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || chromium.executablePath(),
         chromeFlags: ['--headless', '--no-sandbox', '--disable-dev-shm-usage', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
       try {
@@ -38,14 +43,34 @@ for (const mode of ['mobile', 'desktop']) {
         const resources = lhr.audits['resource-summary']?.details?.items ?? [];
         const metric = (name) => lhr.audits[name]?.numericValue ?? null;
         const name = `${route === '/' ? 'home' : route.slice(1)}-${mode}-${run + 1}`;
+        const badApi = (lhr.audits['network-requests']?.details?.items ?? []).filter(item => {
+          const url = new URL(item.url, base);
+          return url.origin === base.origin && url.pathname.startsWith('/api/')
+            && (item.statusCode >= 400 || item.statusCode === 0)
+            && !(item.statusCode === 401 && url.pathname.startsWith('/api/owner/'));
+        });
+        if (badApi.length) {
+          const throttled = badApi.every(item => item.statusCode === 429);
+          await writeFile(path.join(output, `${name}-invalid-${++rateRetries}.json`), result.report);
+          if (!throttled || rateRetries > 3) throw new Error(`invalid website measurement: ${badApi.map(item => `${new URL(item.url).pathname} HTTP ${item.statusCode}`).join(', ')}`);
+          console.log(`${name}: rate limited; close Chrome and wait for the shared limiter before repeating`);
+          rateWaitMs = 60_000;
+          run -= 1;
+          continue;
+        }
+        rateRetries = 0;
         await writeFile(path.join(output, `${name}.json`), result.report);
         const entry = { route, mode, run: run + 1, lcpMs: metric('largest-contentful-paint'), cls: metric('cumulative-layout-shift'),
           tbtMs: metric('total-blocking-time'), scores: Object.fromEntries(Object.entries(lhr.categories).map(([key, value]) => [key, value.score])),
           resources, environment: lhr.environment, configSettings: lhr.configSettings,
           warnings: lhr.runWarnings, failedRequests: lhr.audits['network-requests']?.details?.items?.filter((item) => item.statusCode >= 400).map(({ url, statusCode }) => ({ url, statusCode })) ?? [] };
+        if (![entry.lcpMs, entry.cls, entry.tbtMs].every(Number.isFinite)) throw new Error('missing navigation metric');
         measurements.push(entry);
         console.log(`${route} ${mode} #${run + 1}: LCP ${entry.lcpMs?.toFixed(0)}ms, CLS ${entry.cls}, TBT ${entry.tbtMs?.toFixed(0)}ms`);
-      } finally { await chrome.kill(); }
+      } finally {
+        await chrome.kill();
+        if (rateWaitMs) await new Promise(resolve => setTimeout(resolve, rateWaitMs));
+      }
     }
   }
 }

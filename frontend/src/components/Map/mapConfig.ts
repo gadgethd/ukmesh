@@ -5,6 +5,7 @@ export const OPENFREEMAP_STYLE_LIGHT = 'https://tiles.openfreemap.org/styles/pos
 
 export const DEFAULT_CENTER: [number, number] = [54.57, -1.23];
 export const DEFAULT_ZOOM = 11;
+export const MAP_INITIAL_LOAD_TIMEOUT_MS = 15_000;
 // Weekly adverts remain comfortably fresh; retain a second two-week window so
 // stale nodes are still visible as stale before the presence filter hides them.
 export const NODE_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;

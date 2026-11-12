@@ -1,0 +1,38 @@
+{
+  "runs": 3,
+  "note": "Navigation ceilings from B0; regions CLS tightened to0.1 after the B2 qualified map runs. Deterministic invented populated fixtures. INP requires field observations.",
+  "minimumAccessibility": 0.9,
+  "minimumSeo": 0.9,
+  "routes": {
+    "/": {
+      "mobileLcpMs": 3000,
+      "desktopLcpMs": 1500,
+      "cls": 0.1,
+      "tbtMs": 3000
+    },
+    "/docs": {
+      "mobileLcpMs": 3000,
+      "desktopLcpMs": 1500,
+      "cls": 0.1,
+      "tbtMs": 3000
+    },
+    "/stats": {
+      "mobileLcpMs": 5500,
+      "desktopLcpMs": 2000,
+      "cls": 0.15,
+      "tbtMs": 4000
+    },
+    "/feed": {
+      "mobileLcpMs": 5500,
+      "desktopLcpMs": 2000,
+      "cls": 0.1,
+      "tbtMs": 3000
+    },
+    "/regions": {
+      "mobileLcpMs": 7200,
+      "desktopLcpMs": 2000,
+      "cls": 0.1,
+      "tbtMs": 4000
+    }
+  }
+}

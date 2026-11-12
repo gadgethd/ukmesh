@@ -257,6 +257,20 @@ jobs:
           npm run budget
           VITE_BUILD_TARGET=public-website VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh npm run build
           npm run budget
+      - name: Install Chromium for public Lighthouse checks
+        run: |
+          python ../scripts/ci-retry.py apt npx --no-install playwright install-deps chromium
+          npx --no-install playwright install chromium
+      - name: Enforce public Lighthouse navigation budgets
+        run: npm run lighthouse:ci
+      - name: Retain Lighthouse reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lighthouse-public-${{ github.run_id }}-${{ github.run_attempt }}
+          path: frontend/test-results/lighthouse-ci
+          if-no-files-found: ignore
+          retention-days: 7
 
   workers-and-compose:
     if: github.event_name != 'schedule'

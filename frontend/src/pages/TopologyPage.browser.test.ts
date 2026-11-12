@@ -1,3 +1,4 @@
+import { mapHandle } from '../../test/browserMapHandle.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chromium, expect } from '@playwright/test';
@@ -23,7 +24,7 @@ const rf = {
 
 for (const failure of ['http503', 'timeout'] as const) {
   browserTest(`deployed topology retains graph and RF panel after ${failure}, then retry restores results`, { timeout: 35_000 }, async () => {
-    const browser = await chromium.launch({ headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], headless: true, args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     try {
       const context = await browser.newContext({ serviceWorkers: 'block' });
       const page = await context.newPage();
@@ -37,7 +38,7 @@ for (const failure of ['http503', 'timeout'] as const) {
         if (url.hostname !== '127.0.0.1') { await route.abort(); return; }
         if (url.pathname === '/api/topology') { await route.fulfill({ json: topology }); return; }
         if (url.pathname === '/api/runtime-config') {
-          await route.fulfill({ json: { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 0, refreshAfterSeconds: 300 } });
+          await route.fulfill({ json: { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300 } });
           return;
         }
         if (url.pathname === '/api/rf-validation') {
@@ -70,3 +71,47 @@ for (const failure of ['http503', 'timeout'] as const) {
     } finally { await browser.close(); }
   });
 }
+
+
+browserTest('topology preserves native layers, selection and controls across replacement styles', { timeout: 60_000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'],
+    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  try {
+    const page = await browser.newPage({ serviceWorkers: 'block' });
+    const errors: string[] = [];
+    page.on('pageerror', error => errors.push(error.message));
+    const style = { version: 8 as const, sources: {},
+      layers: [{ id: 'background', type: 'background' as const, paint: { 'background-color': '#182838' } }] };
+    await page.route('**/*', route => {
+      const url = new URL(route.request().url());
+      if (url.hostname !== '127.0.0.1') return route.fulfill({ json: style });
+      if (url.pathname === '/api/topology') return route.fulfill({ json: topology });
+      if (url.pathname === '/api/rf-validation') return route.fulfill({ json: rf });
+      if (url.pathname === '/api/runtime-config') return route.fulfill({ json: {
+        version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
+      } });
+      if (url.pathname.startsWith('/api/')) return route.fulfill({ json: {} });
+      return route.continue();
+    });
+    await page.goto(`${base}/topology`);
+    const canvas = page.locator('.topology-page__workspace canvas');
+    await expect(canvas).toBeVisible();
+    const map = await mapHandle(page);
+    await map.evaluate(map => { map.jumpTo({ center: [-1.05, 52.05], zoom: 8 }); });
+    await expect.poll(() => map.evaluate(map => Boolean(map.getLayer('topology-node')) && map.queryRenderedFeatures({ layers: ['topology-node'] }).length)).toBe(2);
+    await page.getByRole('checkbox', { name: 'Multibyte evidence only' }).check();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await map.evaluate((map, style) => { map.setStyle(style, { diff: false }); }, style);
+      await expect.poll(() => map.evaluate(map => Boolean(map.getLayer('topology-links'))
+        && map.queryRenderedFeatures({ layers: ['topology-node'] }).length === 2)).toBe(true);
+      assert.equal(await page.locator('.maplibregl-ctrl-zoom-in').count(), 1);
+    }
+    await canvas.scrollIntoViewIfNeeded();
+    const box = await canvas.boundingBox();
+    const point = await map.evaluate(map => { const p = map.project([-1, 52]); return { x: p.x, y: p.y }; });
+    await page.mouse.click(box!.x + point.x, box!.y + point.y);
+    await expect(page.getByRole('heading', { name: 'Selected repeater' })).toBeVisible();
+    await expect(page.locator('.topology-page__selected strong')).toHaveText('Alpha');
+    assert.deepEqual(errors, []);
+  } finally { await browser.close(); }
+});

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { chromium, expect, type Page } from '@playwright/test';
-import type { Map } from 'maplibre-gl';
+import { mapHandle } from '../../test/browserMapHandle.js';
 
 // Run against an isolated local Vite server; never change the deployed site.
 const browserTest = process.env['REGIONS_BROWSER_TESTS'] === '1' ? test : test.skip;
@@ -29,33 +29,15 @@ async function mockApi(page: Page): Promise<void> {
         : path === '/api/regions/unattributed'
           ? { generatedAt: null, windowDays: 92, clusters: [], totals: { clusters: 0, packets: 0, nodes: 0 } }
         : path === '/api/runtime-config'
-          ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 0, refreshAfterSeconds: 300 }
+          ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300 }
           : {};
     await route.fulfill({ json });
   });
 }
 
-async function mapHandle(page: Page) {
-  // Read the existing ref so the test exercises the real component and MapLibre
-  // instance, without adding a production window global or mocking its events.
-  return page.evaluateHandle(() => {
-    type Hook = { memoizedState?: { current?: Map }; next?: Hook };
-    type Fiber = { memoizedState?: Hook; return?: Fiber };
-    const element = document.querySelector('.maplibregl-map') as HTMLElement & Record<string, unknown>;
-    let fiber = element[Object.keys(element).find(key => key.startsWith('__reactFiber'))!] as Fiber | undefined;
-    while (fiber) {
-      for (let hook = fiber.memoizedState; hook; hook = hook.next) {
-        const value = hook.memoizedState?.current;
-        if (typeof value?.getStyle === 'function') return value;
-      }
-      fiber = fiber.return;
-    }
-    throw new Error('MapLibre map ref not found');
-  });
-}
 
 browserTest('regions survive repeated style loads with current filters and visibility', { timeout: 120_000 }, async () => {
-  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   try {
     const page = await browser.newPage({ serviceWorkers: 'block' });
     const errors: string[] = [];
@@ -84,7 +66,7 @@ browserTest('regions survive repeated style loads with current filters and visib
 });
 
 browserTest('a stalled sprite shows a visible failure and retry restores the map', { timeout: 120_000 }, async () => {
-  const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   try {
     const page = await browser.newPage({ serviceWorkers: 'block' });
     await mockApi(page);
@@ -115,7 +97,7 @@ browserTest('a stalled sprite shows a visible failure and retry restores the map
 
 for (const failure of ['style-http-error', 'webgl-unavailable'] as const) {
   browserTest(`${failure} is visible and retry can recover`, { timeout: 120_000 }, async () => {
-    const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+    const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'], args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
     try {
       const page = await browser.newPage({ serviceWorkers: 'block' });
       await mockApi(page);
@@ -148,3 +130,33 @@ for (const failure of ['style-http-error', 'webgl-unavailable'] as const) {
     } finally { await browser.close(); }
   });
 }
+
+
+browserTest('regions wait for privacy authority and clear the map when its refresh fails', { timeout: 30_000 }, async () => {
+  const browser = await chromium.launch({ executablePath: process.env['PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH'],
+    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+  try {
+    const page = await browser.newPage({ serviceWorkers: 'block' });
+    await mockApi(page);
+    await page.route('https://tiles.openfreemap.org/**', route => route.fulfill({ json: style }));
+    let authoritative = false;
+    let unavailable = false;
+    let summaryReads = 0;
+    await page.route('**/api/runtime-config', async route => {
+      return route.fulfill(unavailable ? { status: 503, json: { error: 'Unavailable' } } : { json: {
+        version: 1, packetArcs: false, heatmap: false, privacyGeneration: authoritative ? 1 : 0, refreshAfterSeconds: 5,
+      } });
+    });
+    await page.route('**/api/regions/summary**', route => { summaryReads++; return route.fallback(); });
+    await page.goto(`${origin}/regions`);
+    await expect(page.getByText('Loading region scoping…')).toBeVisible();
+    assert.equal(summaryReads, 0);
+    authoritative = true;
+    await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+    await expect(page.locator('.regions-page__map canvas')).toBeVisible();
+    assert.equal(summaryReads, 1);
+    unavailable = true;
+    await expect(page.locator('.regions-page__map canvas')).toHaveCount(0, { timeout: 10_000 });
+    assert.equal(summaryReads, 1, 'unavailable policy never starts another public snapshot read');
+  } finally { await browser.close(); }
+});

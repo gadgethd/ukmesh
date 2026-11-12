@@ -508,6 +508,7 @@ export const UKFeedPage: React.FC = () => {
 
   return (
     <>
+      <h1 className="ui-visually-hidden">Live feed</h1>
 
       <div className={`uk-feed-layout${selectedPacketHash ? ' uk-feed-layout--has-selection' : ''}`}>
 

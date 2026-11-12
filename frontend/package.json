@@ -18,7 +18,8 @@
     "test:regions": "playwright test --config=playwright.regions.config.ts",
     "bench:website": "node scripts/benchmark-website.mjs",
     "check": "tsc --noEmit && npm test && npm run lint:css",
-    "budget:routes": "node scripts/check-route-budgets.mjs"
+    "budget:routes": "node scripts/check-route-budgets.mjs",
+    "lighthouse:ci": "node scripts/lighthouse-ci.mjs"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",
@@ -45,10 +46,12 @@
     "@vitejs/plugin-react": "^6.1.1",
     "lighthouse": "13.6.0",
     "postcss": "8.5.28",
+    "puppeteer-core": "25.17.0",
     "terser": "5.51.2",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "8.3.5"
+    "vite": "8.3.5",
+    "ws": "8.22.2"
   },
   "overrides": {
     "postcss": "8.5.28"
