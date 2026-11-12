@@ -456,7 +456,7 @@ jobs:
             status=$?
             if [ "$status" -ne 0 ]; then
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps --all || true
-              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend alert-receiver alert-forward-sink alert-receiver-bootstrap || true
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend mosquitto alert-receiver alert-forward-sink alert-receiver-bootstrap || true
             fi
           }
           trap cleanup EXIT
@@ -587,16 +587,34 @@ jobs:
           NODE
           ws_pid=$!
           sleep 2
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T mosquitto \
-            mosquitto_pub -h 127.0.0.1 -p 1883 \
-              -u "$publisher_user" -P "$publisher_password" \
-              -t "meshcore-test/CI/${observer}/status" \
-              -m '{"origin":"CI E2E observer","origin_id":"CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC","stats":{"battery_mv":4100,"uptime_secs":60}}'
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T mosquitto \
-            mosquitto_pub -h 127.0.0.1 -p 1883 \
-              -u "$publisher_user" -P "$publisher_password" \
-              -t "meshcore-test/CI/${observer}/packets" \
-              -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D42AABBCCDDDEADBEEF"}'
+          # The deployed broker exposes WebSockets only. Publish over that
+          # same listener and wait for QoS 1 broker acknowledgements.
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T \
+            -e MQTT_E2E_OBSERVER="$observer" \
+            -e MQTT_E2E_PUBLISHER="$publisher_user" \
+            -e MQTT_E2E_PASSWORD="$publisher_password" \
+            backend node --input-type=module <<'NODE_PUBLISH'
+          import { connectAsync } from 'mqtt';
+          const observer = process.env.MQTT_E2E_OBSERVER;
+          const deadline = setTimeout(() => {
+            console.error('timed out waiting for MQTT publisher acknowledgements');
+            process.exit(1);
+          }, 15_000);
+          deadline.unref();
+          const client = await connectAsync(process.env.MQTT_E2E_BROKER_URL ?? 'ws://mosquitto:9001', {
+            username: process.env.MQTT_E2E_PUBLISHER,
+            password: process.env.MQTT_E2E_PASSWORD,
+            reconnectPeriod: 0, connectTimeout: 10_000,
+          });
+          try {
+            await client.publishAsync(`meshcore-test/CI/${observer}/status`, JSON.stringify({
+              origin: 'CI E2E observer', origin_id: observer, stats: { battery_mv: 4100, uptime_secs: 60 },
+            }), { qos: 1 });
+            await client.publishAsync(`meshcore-test/CI/${observer}/packets`, JSON.stringify({
+              packet_type: 1, RSSI: -75, SNR: 8, direction: 'rx', raw: '0D42AABBCCDDDEADBEEF',
+            }), { qos: 1 });
+          } finally { clearTimeout(deadline); await client.endAsync(); }
+          NODE_PUBLISH
           # Post-move canonical names (116/123/124/125): the old public names
           # are compatibility views at best, and some no longer exist at all.
           readback=""
