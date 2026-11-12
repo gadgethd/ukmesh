@@ -50,6 +50,8 @@ import {
   computeClashData,
   ALL_MAP_SOURCE_DIRTY_FLAGS,
   mergeMapSourceDirtyFlags,
+  nodeMapNeedsSourceRefresh,
+  nextNodePresenceTransition,
 } from './geojsonBuilders.js';
 import type { MapSourceDirtyFlags } from './geojsonBuilders.js';
 import { NodePopupContent } from './NodePopupContent.js';
@@ -198,6 +200,7 @@ export function MapLibreMap({
   const setClashPathLines = useOverlayStore((state) => state.setClashPathLines);
   const hiddenCoordMaskRef = useRef<Map<string, HiddenMaskGeometry>>(new Map());
   const refreshTimerRef = useRef<number | null>(null);
+  const presenceTimerRef = useRef<number | null>(null);
   const lastArcActivityRef = useRef(0);
   const dirtyFlagsRef = useRef<MapSourceDirtyFlags>({ ...ALL_MAP_SOURCE_DIRTY_FLAGS });
   const clashRef = useRef<ClashComputation>({
@@ -582,7 +585,7 @@ export function MapLibreMap({
     }
   }, []);
 
-  const refreshMapSources = useCallback(() => {
+  const refreshMapSources = useCallback((): void => {
     if (!mapLoadedRef.current || !mapRef.current) return;
 
     const dirty = dirtyFlagsRef.current;
@@ -628,6 +631,13 @@ export function MapLibreMap({
         Date.now(),
       );
       (mapRef.current.getSource('nodes') as maplibregl.GeoJSONSource | undefined)?.setData(nodeGeoJSON);
+      if (presenceTimerRef.current !== null) window.clearTimeout(presenceTimerRef.current);
+      const transition = nextNodePresenceTransition(nodes);
+      presenceTimerRef.current = transition === null ? null : window.setTimeout(() => {
+        presenceTimerRef.current = null;
+        dirtyFlagsRef.current = { ...ALL_MAP_SOURCE_DIRTY_FLAGS };
+        refreshMapSources();
+      }, Math.max(1, Math.min(2_147_483_647, transition - Date.now())));
     }
 
     if (dirty.privacy || dirty.nodes) {
@@ -781,6 +791,10 @@ export function MapLibreMap({
     if (refreshTimerRef.current !== null) {
       window.clearTimeout(refreshTimerRef.current);
       refreshTimerRef.current = null;
+    }
+    if (presenceTimerRef.current !== null) {
+      window.clearTimeout(presenceTimerRef.current);
+      presenceTimerRef.current = null;
     }
   }, [clearFocusTimer]);
 
@@ -1083,7 +1097,7 @@ export function MapLibreMap({
       map.on('click', 'node-dots-hit', (e) => {
         const feature = e.features?.[0];
         if (!feature) return;
-        const props = feature.properties as NodeFeatureProps;
+        const props = feature.properties as Pick<NodeFeatureProps, 'node_id' | 'is_prohibited'>;
 
         // In plan repeater mode, node clicks place a repeater on the node's location
         if (viewshedEnabledRef.current && useOverlayStore.getState().planRepeaterMode) {
@@ -1188,6 +1202,10 @@ export function MapLibreMap({
       mapLoadedRef.current = false;
       hasLoadedStyleRef.current = false;
       mapReadyNotifiedRef.current = false;
+      if (presenceTimerRef.current !== null) {
+        window.clearTimeout(presenceTimerRef.current);
+        presenceTimerRef.current = null;
+      }
       clearBasemapWatchdog();
       fallbackMarkersCleanupRef.current?.();
       fallbackMarkersCleanupRef.current = null;
@@ -1277,12 +1295,13 @@ export function MapLibreMap({
 
   useEffect(() => {
     const unsubscribeNodes = nodeStore.subscribe(() => {
-      const nextNodes = nodeStore.getState().nodes;
+      const { nodes: nextNodes, nodeChanges } = nodeStore.getState();
       // Packet/message updates share the same node Map reference. Ignore those
       // emissions so live feed traffic does not trigger a 3.6k-node rebuild.
       if (nextNodes === nodesRef.current) return;
+      const refreshSources = nodeChanges.full || nodeChanges.previous !== nodesRef.current || nodeMapNeedsSourceRefresh(nodesRef.current, nextNodes, Date.now(), nodeChanges.ids);
       nodesRef.current = nextNodes;
-      scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
+      if (refreshSources) scheduleRefresh({ nodes: true, privacy: true, links: true, clash: true, plannedLinks: true });
       if (selectedNodeIdRef.current) setPopupVersion((value) => value + 1);
     });
     const unsubscribeLinks = linkStateStore.subscribe(() => {

@@ -6,6 +6,7 @@ export const POLLING = Object.freeze({
   feedRegions: 60_000,
   feedTags: 15_000,
   feedClock: 5_000,
+  socketStatus: 1_000,
   rfActive: 3_000,
   rfIdle: 30_000,
   runtimeDefaultSeconds: 30,

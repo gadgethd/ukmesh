@@ -1,5 +1,7 @@
 import { useEffect, useRef, useCallback, useState } from 'react';
 import type { ApiScope } from '../utils/api.js';
+import { createMessageTimestampPublisher } from '../utils/messageTimestamp.js';
+import { POLLING } from '../config/polling.js';
 
 export type WSReadyState = 'connecting' | 'connected' | 'disconnected';
 export type WSConnectionState = {
@@ -23,6 +25,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const shouldReconnectRef = useRef(true);
   const retryDelayRef = useRef(3000);
+  const timestampRef = useRef<ReturnType<typeof createMessageTimestampPublisher> | null>(null);
   const handlerRef = useRef(onMessage);
   handlerRef.current = onMessage;
 
@@ -44,6 +47,9 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     const suffix = query ? `?${query}` : '';
     const url = `${protocol}//${window.location.host}/ws${suffix}`;
     const ws = new WebSocket(url);
+    timestampRef.current?.stop();
+    const timestamps = createMessageTimestampPublisher(setLastMessageAt, { intervalMs: POLLING.socketStatus });
+    timestampRef.current = timestamps;
     wsRef.current = ws;
     setReadyState('connecting');
 
@@ -64,7 +70,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
             ...(JSON.parse(line) as WSMessage),
             scopeEpoch,
           };
-          setLastMessageAt(Date.now());
+          timestamps.record(Date.now());
           handlerRef.current(msg);
         }
       } catch {
@@ -74,6 +80,8 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
 
     ws.onclose = () => {
       if (wsRef.current !== ws || !shouldReconnectRef.current) return;
+      timestamps.flush();
+      timestamps.stop();
       wsRef.current = null;
       setReadyState('disconnected');
       const baseDelay = retryDelayRef.current;
@@ -97,6 +105,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
     return () => {
       shouldReconnectRef.current = false;
       if (timerRef.current) clearTimeout(timerRef.current);
+      timestampRef.current?.stop();
       const ws = wsRef.current;
       wsRef.current = null;
       ws?.close();

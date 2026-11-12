@@ -229,3 +229,22 @@ test('one privacy-safe packet creates a bounded arc and expiry removes it', () =
   assert.equal(nodeStore.getState().arcs.length, 0);
   nodeStore.setArcCollectionEnabled(false);
 });
+
+test('node change descriptions accompany immutable snapshots and authoritative replacements', () => {
+  const epoch = nodeStore.reset('immutable-node-deltas');
+  nodeStore.handleInitialState({ nodes: [meshNode(NODE_ID, 0), meshNode(OTHER_NODE_ID, 0)], packets: [] }, epoch);
+  const before = nodeStore.getState();
+  assert.equal(before.nodeChanges.full, true);
+  nodeStore.handleNodeUpdateBatch([{ nodeId: NODE_ID.toLowerCase(), ts: NOW + 1000 }], epoch);
+  const after = nodeStore.getState();
+  assert.notEqual(after.nodes, before.nodes);
+  assert.equal(before.nodes.get(NODE_ID)?.last_seen, new Date(NOW).toISOString());
+  assert.equal(after.nodes.get(OTHER_NODE_ID), before.nodes.get(OTHER_NODE_ID));
+  assert.deepEqual(after.nodeChanges, { full: false, ids: [NODE_ID], previous: before.nodes });
+  nodeStore.handleNodeUpsert({ node_id: OTHER_NODE_ID, lat: 55 }, epoch);
+  assert.deepEqual(nodeStore.getState().nodeChanges.ids, [OTHER_NODE_ID]);
+  assert.equal(nodeStore.getState().nodeChanges.previous, after.nodes);
+  assert.deepEqual(after.nodeChanges.ids, [NODE_ID], 'earlier change descriptions also remain stable');
+  nodeStore.handleInitialState({ nodes: [], packets: [] }, epoch);
+  assert.equal(nodeStore.getState().nodeChanges.full, true);
+});

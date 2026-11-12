@@ -31,6 +31,7 @@ type NodeStoreState = {
   scopeKey: string | null;
   epoch: number;
   nodes: Map<string, MeshNode>;
+  nodeChanges: { full: boolean; ids: readonly string[]; previous: Map<string, MeshNode> | null };
   packets: AggregatedPacket[];
   messages: AggregatedPacket[]; // type=5 GRP only, protected from ADV eviction
   arcs: PacketArc[];
@@ -41,6 +42,7 @@ let state: NodeStoreState = {
   scopeKey: null,
   epoch: 0,
   nodes: new Map(),
+  nodeChanges: { full: true, ids: [], previous: null },
   packets: [],
   messages: [],
   arcs: [],
@@ -124,6 +126,7 @@ function reset(scopeKey: string): number {
     scopeKey,
     epoch,
     nodes: new Map(),
+    nodeChanges: { full: true, ids: [], previous: null },
     packets: [],
     messages: [],
     arcs: [],
@@ -204,6 +207,7 @@ function handleInitialState(
   setState({
     ...state,
     nodes: nodeMap,
+    nodeChanges: { full: true, ids: [], previous: null },
     packets: serverPackets,
     messages: serverMessages,
     arcs: [],
@@ -399,6 +403,7 @@ function handleNodeUpdate(data: { nodeId: string; ts: number }, epoch?: number) 
   setState({
     ...state,
     nodes: next,
+    nodeChanges: { full: false, ids: [nodeId], previous: state.nodes },
   });
 }
 
@@ -420,6 +425,7 @@ function handleNodeUpdateBatch(updates: { nodeId: string; ts: number }[], epoch?
   setState({
     ...state,
     nodes: next,
+    nodeChanges: { full: false, ids: updates.map(update => canonicalNodeId(update.nodeId)), previous: state.nodes },
   });
 }
 
@@ -443,6 +449,7 @@ function handleNodeUpsert(node: Partial<MeshNode> & { node_id: string }, epoch?:
   setState({
     ...state,
     nodes: next,
+    nodeChanges: { full: false, ids: [normalized.node_id], previous: state.nodes },
   });
 }
 
@@ -472,6 +479,7 @@ function handleNodeUpsertBatch(
   setState({
     ...state,
     nodes: next,
+    nodeChanges: { full: false, ids: nodes.map(node => canonicalNodeId(node.node_id)), previous: state.nodes },
   });
 }
 

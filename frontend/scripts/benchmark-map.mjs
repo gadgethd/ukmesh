@@ -9,7 +9,7 @@ import { mkdir, open, readFile, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import os from 'node:os';
-import { mapHandle } from '../test/browserMapHandle.ts';
+import { mapHandle, nodeMapHandle } from '../test/browserMapHandle.ts';
 import { publicFixture } from './lighthouse-fixtures.mjs';
 
 const frontend = fileURLToPath(new URL('..', import.meta.url));
@@ -75,8 +75,12 @@ const preview = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'previ
   '--host', '127.0.0.1', '--port', '4187', '--strictPort'], { cwd: frontend,
   env: { ...process.env, UKMESH_DEV_API_TARGET: `http://127.0.0.1:${fixture.address().port}` }, stdio: ['ignore', 'pipe', 'pipe'] });
 let ready = false;
+let previewOutput = '';
 let previewError = '';
-preview.stdout.on('data', chunk => { if (String(chunk).includes('http://127.0.0.1:4187')) ready = true; });
+preview.stdout.on('data', chunk => {
+  previewOutput = (previewOutput + chunk).slice(-4000);
+  if (previewOutput.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').includes('http://127.0.0.1:4187')) ready = true;
+});
 preview.stderr.on('data', chunk => { previewError = (previewError + chunk).slice(-4000); });
 const pause = ms => new Promise(resolve => setTimeout(resolve, ms));
 const percentile = (values, ratio) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * ratio) - 1];
@@ -87,7 +91,7 @@ try {
     if (preview.exitCode !== null) throw new Error(`preview failed: ${previewError}`);
     await pause(100);
   }
-  if (!ready) throw new Error('preview startup deadline');
+  if (!ready) throw new Error(`preview startup deadline: ${previewOutput} ${previewError}`);
   browser = await chromium.launch({ executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
   metadata.browser = browser.version();
@@ -153,6 +157,7 @@ try {
           }
           if (features !== count) throw new Error(`expected ${count} node features, received ${features}`);
           await pause(metadata.warmupMs);
+          const expectedSeen = new Map();
           const cdp = await context.newCDPSession(page);
           await cdp.send('Performance.enable');
           if (mode === 'mobile') await cdp.send('Emulation.setCPUThrottlingRate', { rate: 4 });
@@ -162,8 +167,10 @@ try {
           pump = setInterval(() => {
             for (let i = 0; i < metadata.updateBatch; i++) {
               const node = nodes[sent % count];
+              const timestamp = Date.now();
+              expectedSeen.set(node.node_id, timestamp);
               for (const socket of sockets.clients) if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify({
-                type: 'node_update', ts: Date.now(), data: { nodeId: node.node_id, ts: Date.now() },
+                type: 'node_update', ts: timestamp, data: { nodeId: node.node_id, ts: timestamp },
               }));
               sent++;
             }
@@ -183,11 +190,16 @@ try {
           await page.waitForFunction(expected => globalThis.__mapBenchReceived >= expected, sent);
           await pause(metadata.drainMs);
           const after = await metrics();
+          const store = await nodeMapHandle(page);
+          const applied = await store.evaluate((nodes, expected) => expected.filter(([id, timestamp]) =>
+            nodes.get(id)?.last_seen === new Date(timestamp).toISOString()).length, [...expectedSeen]);
+          await store.dispose();
+          if (applied !== expectedSeen.size) throw new Error(`node store did not drain latest presence: ${applied}/${expectedSeen.size}`);
           const received = await page.evaluate(() => globalThis.__mapBenchReceived);
           if (errors.length || unexpected.size) throw new Error(`invalid map fixture: ${errors.join('; ')} ${[...unexpected].join(', ')}`);
           const sample = { mode, count, run, viewport: page.viewportSize(), cpuThrottle: mode === 'mobile' ? 4 : 1,
             frames: frames.length, p50Ms: percentile(frames, 0.5), p95Ms: percentile(frames, 0.95),
-            over50Ms: frames.filter(value => value > 50).length, sent, received,
+            over50Ms: frames.filter(value => value > 50).length, sent, received, appliedLatest: applied,
             taskSeconds: after.TaskDuration - before.TaskDuration, scriptSeconds: after.ScriptDuration - before.ScriptDuration,
             heapBefore: before.JSHeapUsedSize, heapAfter: after.JSHeapUsedSize, layers: await map.evaluate(map => map.getStyle().layers.length) };
           samples.push(sample);

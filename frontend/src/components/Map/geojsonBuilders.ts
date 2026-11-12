@@ -99,6 +99,48 @@ export function shouldRenderMapNode(
   return nodePresenceAgeMs(node, nowMs) <= hideAfterMs;
 }
 
+/** Presence timestamps belong to the live store/popup. Replacing the native
+ * sources is only necessary when visible state, geometry or metadata changes.
+ * Private-node masks depend on last_seen, so those always invalidate fully. */
+export function nodeMapNeedsSourceRefresh(
+  previous: Map<string, MeshNode>, next: Map<string, MeshNode>, nowMs = Date.now(),
+  changedIds: Iterable<string> = next.keys(),
+): boolean {
+  if (previous.size !== next.size) return true;
+  for (const id of changedIds) {
+    const node = next.get(id);
+    const before = previous.get(id);
+    if (!before || !node) return true;
+    if (before === node) continue;
+    if (Object.keys(before).length !== Object.keys(node).length) return true;
+    if ((Object.keys(node) as (keyof MeshNode)[]).some(key => key !== 'last_seen' && before[key] !== node[key])) return true;
+    if (before.last_seen === node.last_seen) continue;
+    // An authoritative replacement snapshot can move evidence back in time.
+    // Refresh so its earlier boundary is scheduled even while still fresh.
+    if (Date.parse(node.last_seen) < Date.parse(before.last_seen)) return true;
+    if (isProhibitedMapNode(before) || isProhibitedMapNode(node)) return true;
+    if (shouldRenderMapNode(before, nowMs) !== shouldRenderMapNode(node, nowMs)
+      || (nodePresenceAgeMs(before, nowMs) > NODE_STALE_AFTER_MS) !== (nodePresenceAgeMs(node, nowMs) > NODE_STALE_AFTER_MS)) return true;
+  }
+  return false;
+}
+
+/** A single boundary timer keeps static nodes' stale/hide state current without
+ * an idle refresh loop. Presence updates may postpone, never advance, a cutoff. */
+export function nextNodePresenceTransition(nodes: Map<string, MeshNode>, nowMs = Date.now()): number | null {
+  let next = Number.POSITIVE_INFINITY;
+  for (const node of nodes.values()) {
+    if (!hasCoords(node)) continue;
+    const seen = Date.parse(node.last_seen);
+    if (!Number.isFinite(seen)) continue;
+    for (const age of [NODE_STALE_AFTER_MS, NODE_HIDE_AFTER_MS]) {
+      const at = seen + age + 1;
+      if (at > nowMs) next = Math.min(next, at);
+    }
+  }
+  return Number.isFinite(next) ? next : null;
+}
+
 export function buildNodeGeoJSON(
   nodes: Map<string, MeshNode>,
   hiddenCoordMask: Map<string, HiddenMaskGeometry>,
@@ -144,7 +186,7 @@ export function buildNodeGeoJSON(
       visible = keepAlways || pathNodeIds.size === 0 || pathNodeIds.has(node.node_id.toLowerCase());
     }
 
-    const props: NodeFeatureProps = {
+    const props: Omit<NodeFeatureProps, 'last_seen'> = {
       node_id: node.node_id,
       name: node.name ?? null,
       role: node.role ?? 2,
@@ -155,7 +197,6 @@ export function buildNodeGeoJSON(
       replay_mode: replayNodeIds !== null,
       hex_clash_state: hexClashState,
       visible,
-      last_seen: node.last_seen,
       public_key: node.public_key ?? null,
       advert_count: node.advert_count ?? null,
       elevation_m: node.elevation_m ?? null,

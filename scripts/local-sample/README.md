@@ -179,3 +179,8 @@ uses 4× CPU throttling; software-rendered results do not predict a physical GPU
 The fixture contains no links, so it does not qualify link-heavy rendering.
 `--counts 6000 --mode mobile --runs 1` selects a diagnostic subset. Run it apart
 from other load/build benchmarks. CDP task time is not a React commit profile.
+
+The map benchmark also verifies that the current live store has the exact latest
+sent presence timestamp for every touched node after the drain period
+(`appliedLatest`), in addition to transport reception counts. It inspects the
+component's existing refs from the test harness; production adds no debug globals.

@@ -142,3 +142,19 @@ progress. It pauses when hidden, refreshes on return and slows completed work
 to the idle interval. An initial discovery request preserves automatic network
 coverage availability when the user has not set a layer preference. Explicitly
 hiding coverage prevents unused repeated discovery.
+
+## Presence source invalidation
+
+Node-store snapshots remain immutable. Each change carries its touched keys and
+the preceding snapshot identity; an unmatched identity or authoritative snapshot
+forces full invalidation. Ordinary newer timestamps on already-online, fresh
+public nodes update the store and popup without replacing native sources.
+Changed geometry/metadata, private-mask movement and revived stale/hidden nodes
+still rebuild all dependent sources. A single deadline timer handles the next
+14-day stale or 28-day hidden boundary and is cleared on map cleanup. Native
+features omit reception timestamps; UI details read exact values from the store.
+
+Connection-status timestamp publications are coalesced to at most once a second,
+with a trailing exact last-reception value. Socket messages and store updates
+are delivered immediately through the existing coordinator. This status timer
+is cancelled on connection/scope cleanup.
