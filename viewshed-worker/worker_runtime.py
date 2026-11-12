@@ -25,7 +25,7 @@ from coverage_jobs import (
     recover_planned_coverage_jobs,
     release_viewshed_queue_payload,
 )
-from link_jobs import process_claimed_link_job
+from link_jobs import process_claimed_link_job, publish_link_updates
 from link_model import process_link_job
 from rf_context import (
     refresh_radio_neighbor_reports,
@@ -165,7 +165,8 @@ def worker_loop(settings=None, *, context=None):
                         raw = r_client.rpop(context.settings.LINK_JOB_QUEUE)
                         if raw is None:
                             break
-                        process_link_job(db, r_client, json.loads(raw), context=context)
+                        updates = process_link_job(db, json.loads(raw), context=context)
+                        publish_link_updates(r_client, updates, context=context)
 
             if (
                 context.settings.WORKER_MODE in ("all", "viewshed")
@@ -200,7 +201,8 @@ def worker_loop(settings=None, *, context=None):
                 continue
             queue_name, raw = item
             if queue_name == context.settings.LINK_JOB_QUEUE:
-                process_link_job(db, r_client, json.loads(raw), context=context)
+                updates = process_link_job(db, json.loads(raw), context=context)
+                publish_link_updates(r_client, updates, context=context)
             else:
                 job = json.loads(raw)
                 release_viewshed_queue_payload(r_client, job, raw, context=context)

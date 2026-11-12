@@ -20,6 +20,7 @@ from rf.terrain import (
 )
 from link_repository import upsert_link_pair
 from link_topology import link_pair_key
+from worker_types import LinkUpdate
 from rf_context import get_support_tree
 from worker_math import (
     check_job_budget,
@@ -182,40 +183,6 @@ def compute_planned_links(
     return links
 
 
-def publish_link_update(
-    r_client,
-    a_id: str,
-    b_id: str,
-    obs_count: int,
-    path_loss_db: Optional[float],
-    itm_viable: Optional[bool],
-    count_a_to_b: int,
-    count_b_to_a: int,
-    multibyte_obs: int,
-    *,
-    context,
-) -> None:
-    r_client.publish(
-        context.settings.LIVE_CHANNEL,
-        json.dumps(
-            {
-                "type": "link_update",
-                "data": {
-                    "node_a_id": a_id,
-                    "node_b_id": b_id,
-                    "observed_count": obs_count,
-                    "itm_path_loss_db": path_loss_db,
-                    "itm_viable": itm_viable,
-                    "count_a_to_b": count_a_to_b,
-                    "count_b_to_a": count_b_to_a,
-                    "multibyte_observed_count": multibyte_obs,
-                },
-                "ts": int(time.time() * 1000),
-            }
-        ),
-    )
-
-
 def ensure_physical_link_metrics(
     db, a_id: str, a: dict, b_id: str, b: dict, topology=None, *, context
 ):
@@ -346,19 +313,21 @@ def ensure_physical_link_metrics(
     )
 
 
-def process_physical_link_job(db, r_client, job: dict, topology=None, *, context):
+def process_physical_link_job(
+    db, job: dict, topology=None, *, context
+) -> list[LinkUpdate]:
     if topology is None:
         topology = context.topology
     node_a_id = job.get("node_a_id")
     node_b_id = job.get("node_b_id")
     if not node_a_id or not node_b_id or node_a_id == node_b_id:
-        return
+        return []
 
     nodes, physical_pairs = topology.get(db, (node_a_id, node_b_id))
     a = nodes.get(node_a_id)
     b = nodes.get(node_b_id)
     if not a or not b:
-        return
+        return []
 
     obs_count, path_loss_db, itm_viable, count_a_to_b, count_b_to_a, multibyte_obs = (
         ensure_physical_link_metrics(
@@ -368,21 +337,24 @@ def process_physical_link_job(db, r_client, job: dict, topology=None, *, context
     if itm_viable:
         topology.include_pair(node_a_id, node_b_id)
     if topology.scope == "public":
-        publish_link_update(
-            r_client,
-            node_a_id,
-            node_b_id,
-            obs_count,
-            path_loss_db,
-            itm_viable,
-            count_a_to_b,
-            count_b_to_a,
-            multibyte_obs,
-            context=context,
-        )
+        return [
+            LinkUpdate(
+                node_a_id,
+                node_b_id,
+                obs_count,
+                path_loss_db,
+                itm_viable,
+                count_a_to_b,
+                count_b_to_a,
+                multibyte_obs,
+            )
+        ]
+    return []
 
 
-def process_observation_link_job(db, r_client, job: dict, topology=None, *, context):
+def process_observation_link_job(
+    db, job: dict, topology=None, *, context
+) -> list[LinkUpdate]:
     """Resolve multibyte packet paths and annotate links.
 
     When both endpoints of a hop are uniquely resolved (exactly one node
@@ -399,7 +371,7 @@ def process_observation_link_job(db, r_client, job: dict, topology=None, *, cont
     path_hash_size_bytes = int(job.get("path_hash_size_bytes") or 1)
 
     if not rx_node_id or not path_hashes or path_hash_size_bytes <= 1:
-        return
+        return []
 
     all_nodes, physical_pairs = topology.get(db, (rx_node_id,))
 
@@ -408,7 +380,7 @@ def process_observation_link_job(db, r_client, job: dict, topology=None, *, cont
 
     rx = all_nodes.get(rx_node_id)
     if not rx:
-        return
+        return []
 
     def normalize_path_hash(value) -> str:
         return str(value or "").strip().upper()
@@ -496,8 +468,9 @@ def process_observation_link_job(db, r_client, job: dict, topology=None, *, cont
     full.extend(resolved)
     full.append((rx_node_id, rx, True))
     if len(full) < 2:
-        return
+        return []
 
+    updates = []
     for i in range(len(full) - 1):
         src_id, src, src_unique = full[i]
         dst_id, dst, dst_unique = full[i + 1]
@@ -556,25 +529,25 @@ def process_observation_link_job(db, r_client, job: dict, topology=None, *, cont
         if itm_viable:
             topology.include_pair(a_id, b_id)
         if topology.scope == "public":
-            publish_link_update(
-                r_client,
-                a_id,
-                b_id,
-                obs_count,
-                path_loss_db,
-                itm_viable,
-                count_a_to_b,
-                count_b_to_a,
-                multibyte_obs,
-                context=context,
+            updates.append(
+                LinkUpdate(
+                    a_id,
+                    b_id,
+                    obs_count,
+                    path_loss_db,
+                    itm_viable,
+                    count_a_to_b,
+                    count_b_to_a,
+                    multibyte_obs,
+                )
             )
+    return updates
 
 
-def process_link_job(db, r_client, job: dict, topology=None, *, context):
+def process_link_job(db, job: dict, topology=None, *, context) -> list[LinkUpdate]:
     if topology is None:
         topology = context.topology
     job_type = str(job.get("type") or "observe").strip().lower()
     if job_type == "physical_pair":
-        process_physical_link_job(db, r_client, job, topology, context=context)
-        return
-    process_observation_link_job(db, r_client, job, topology, context=context)
+        return process_physical_link_job(db, job, topology, context=context)
+    return process_observation_link_job(db, job, topology, context=context)

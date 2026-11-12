@@ -4,10 +4,14 @@ from __future__ import annotations
 from link_topology import TopologyCache
 import hashlib
 import json
+import time
+from dataclasses import asdict
+from collections.abc import Iterable
 from typing import Optional
 import link_queue_v3
 from queue_lease import LeaseGuard
 from worker_metrics import record_job
+from worker_types import LinkUpdate
 from link_model import process_link_job
 from worker_connections import redis_connection
 from worker_math import node_dist_km, physical_candidate_radius_km
@@ -16,8 +20,23 @@ import logging
 log = logging.getLogger("worker")
 
 
+def publish_link_updates(r_client, updates: Iterable[LinkUpdate], *, context) -> None:
+    for update in updates:
+        r_client.publish(
+            context.settings.LIVE_CHANNEL,
+            json.dumps(
+                {
+                    "type": "link_update",
+                    "data": asdict(update),
+                    "ts": int(time.time() * 1000),
+                }
+            ),
+        )
+
+
 def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
     job_id, token, job, _attempt = claimed
+    updates = []
     try:
         with LeaseGuard(
             lambda: redis_connection(context=context),
@@ -45,7 +64,7 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
                         )
                         if not generation:
                             topology.snapshot = context.topology.snapshot
-                        process_link_job(db, r_client, job, topology, context=context)
+                        updates = process_link_job(db, job, topology, context=context)
                         renewer.assert_owned()
                         if not link_queue_v3.owns_lease(r_client, job_id, token):
                             raise RuntimeError(f"LINK_LEASE_LOST:{job_id}")
@@ -75,6 +94,16 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
                 raise
             finally:
                 db.autocommit = True
+        # Pub/Sub is a post-commit live hint. Provisional graph writes and
+        # rejected leases must never become visible through this channel.
+        try:
+            publish_link_updates(r_client, updates, context=context)
+        except Exception:
+            # The ledger already committed; retrying the SQL job cannot replay
+            # this transient hint. Clients can reload the authoritative graph.
+            log.warning(
+                "Committed link job %s live notification failed", job_id, exc_info=True
+            )
         if not link_queue_v3.ack(r_client, job_id, token):
             log.warning(f"Link v3 ACK rejected for {job_id}")
         record_job("link", "job", "success")

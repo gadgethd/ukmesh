@@ -4,11 +4,15 @@ from worker_context import WorkerContext
 from dataclasses import FrozenInstanceError
 from unittest import mock
 import unittest
+import json
+import time
 import numpy as np
 import link_topology
+import link_model
 import link_jobs
 from queue_lease import LeaseGuard, LeaseProtocol
 from rf_snapshots import RfRefreshState
+from worker_types import LinkUpdate
 
 
 class SnapshotTests(unittest.TestCase):
@@ -91,8 +95,9 @@ class LinkCommitTests(unittest.TestCase):
         db, _cur, guard = self.fixture()
         previous = self.context.topology.snapshot
 
-        def provisional_pair(_db, _redis, _job, topology, **_kwargs):
+        def provisional_pair(_db, _job, topology, **_kwargs):
             topology.include_pair("a", "b")
+            return []
 
         with (
             mock.patch.object(link_jobs, "LeaseGuard", return_value=guard),
@@ -157,8 +162,164 @@ class LinkCommitTests(unittest.TestCase):
                 context=self.context,
             )
         self.assertEqual(events, ["commit", "ack"])
-        self.assertEqual(process.call_args.args[3].scope, generation)
-        self.assertIsNot(process.call_args.args[3], self.context.topology)
+        self.assertEqual(process.call_args.args[2].scope, generation)
+        self.assertIsNot(process.call_args.args[2], self.context.topology)
+
+    def test_live_updates_wait_for_the_lease_fence_commit_and_guard_exit(self):
+        for job_type in ("observe", "physical_pair"):
+            for failure in ("lease", "commit", "guard_exit", None):
+                with self.subTest(job_type=job_type, failure=failure):
+                    self.context = WorkerContext()
+                    a, b = "aa" * 32, "bb" * 32
+                    self.context.topology.snapshot = link_topology.TopologySnapshot(
+                        {a: {"lat": 51.5, "lon": -1.2}, b: {"lat": 51.6, "lon": -1.3}},
+                        frozenset(),
+                        time.time(),
+                    )
+                    previous = self.context.topology.snapshot
+                    db, _cur, guard = self.fixture()
+                    events = []
+                    db.commit.side_effect = (
+                        RuntimeError("commit failed")
+                        if failure == "commit"
+                        else lambda: events.append("commit")
+                    )
+
+                    def exit_guard(*_args):
+                        if failure == "guard_exit":
+                            raise RuntimeError("LINK_LEASE_LOST:job")
+                        events.append("guard_exit")
+                        return False
+
+                    guard.__exit__.side_effect = exit_guard
+                    client = mock.Mock()
+                    published = []
+
+                    def publish(channel, payload):
+                        events.append("publish")
+                        published.append(
+                            (
+                                channel,
+                                payload,
+                                db.autocommit,
+                                self.context.topology.snapshot,
+                            )
+                        )
+
+                    client.publish.side_effect = publish
+                    job = {
+                        "type": job_type,
+                        "node_a_id": a,
+                        "node_b_id": b,
+                        "rx_node_id": b,
+                        "src_node_id": a,
+                        "path_hashes": [a[:4]],
+                        "path_hash_size_bytes": 2,
+                    }
+                    with (
+                        mock.patch.object(link_jobs, "LeaseGuard", return_value=guard),
+                        mock.patch.object(
+                            link_model,
+                            "ensure_physical_link_metrics",
+                            return_value=(8, 90.0, True, 7, 1, 8),
+                        ),
+                        mock.patch.object(
+                            link_model,
+                            "upsert_link_pair",
+                            return_value=(8, None, 90.0, True, 7, 1, 8),
+                        ),
+                        mock.patch.object(
+                            link_jobs.link_queue_v3,
+                            "owns_lease",
+                            return_value=failure != "lease",
+                        ),
+                        mock.patch.object(
+                            link_jobs.link_queue_v3, "nack", return_value="retry"
+                        ),
+                        mock.patch.object(
+                            link_jobs.link_queue_v3,
+                            "ack",
+                            side_effect=lambda *_: events.append("ack") or True,
+                        ) as ack,
+                    ):
+                        if failure:
+                            with self.assertRaises(RuntimeError):
+                                link_jobs.process_claimed_link_job(
+                                    db,
+                                    client,
+                                    ("job", "token", job, 1),
+                                    context=self.context,
+                                )
+                            client.publish.assert_not_called()
+                            ack.assert_not_called()
+                            if failure != "guard_exit":
+                                db.rollback.assert_called_once()
+                                self.assertIs(self.context.topology.snapshot, previous)
+                        else:
+                            link_jobs.process_claimed_link_job(
+                                db,
+                                client,
+                                ("job", "token", job, 1),
+                                context=self.context,
+                            )
+                            self.assertEqual(
+                                events, ["commit", "guard_exit", "publish", "ack"]
+                            )
+                            channel, payload, autocommit, snapshot = published[0]
+                            self.assertEqual(
+                                channel, self.context.settings.LIVE_CHANNEL
+                            )
+                            self.assertTrue(autocommit)
+                            self.assertIsNot(snapshot, previous)
+                            message = json.loads(payload)
+                            self.assertEqual(message["type"], "link_update")
+                            self.assertIsInstance(message["ts"], int)
+                            self.assertEqual(
+                                message["data"],
+                                {
+                                    "node_a_id": a,
+                                    "node_b_id": b,
+                                    "observed_count": 8,
+                                    "itm_path_loss_db": 90.0,
+                                    "itm_viable": True,
+                                    "count_a_to_b": 7,
+                                    "count_b_to_a": 1,
+                                    "multibyte_observed_count": 8,
+                                },
+                            )
+                            db.rollback.assert_not_called()
+
+    def test_failed_live_hint_does_not_retry_an_already_committed_graph(self):
+        db, cur, guard = self.fixture()
+        client = mock.Mock()
+        client.publish.side_effect = ConnectionError("live channel unavailable")
+        update = LinkUpdate("a", "b", 8, 90.0, True, 7, 1, 8)
+        with (
+            mock.patch.object(link_jobs, "LeaseGuard", return_value=guard),
+            mock.patch.object(
+                link_jobs, "process_link_job", return_value=[update]
+            ) as process,
+            mock.patch.object(link_jobs.link_queue_v3, "owns_lease", return_value=True),
+            mock.patch.object(link_jobs.link_queue_v3, "nack") as nack,
+            mock.patch.object(link_jobs.link_queue_v3, "ack", return_value=True) as ack,
+        ):
+            with self.assertLogs("worker", level="WARNING") as logs:
+                link_jobs.process_claimed_link_job(
+                    db, client, ("job", "token", {}, 1), context=self.context
+                )
+            self.assertIn(
+                "Committed link job job live notification failed", logs.output[0]
+            )
+            db.rollback.assert_not_called()
+            ack.assert_called_once()
+            nack.assert_not_called()
+            cur.fetchone.return_value = (1,)
+            link_jobs.process_claimed_link_job(
+                db, client, ("job", "new-token", {}, 2), context=self.context
+            )
+            process.assert_called_once()
+            client.publish.assert_called_once()
+            self.assertEqual(ack.call_count, 2)
 
 
 class LeaseGuardTests(unittest.TestCase):
