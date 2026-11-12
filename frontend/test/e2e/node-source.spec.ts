@@ -14,6 +14,9 @@ test('native node sources skip visual no-ops but retain privacy, geometry, expir
     version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }],
   } }));
   const now = Date.now();
+  // Keep expiry out of the no-op window even on a slow cold renderer. Native
+  // timers still run; advance the wall clock explicitly for the expiry check.
+  await page.clock.setFixedTime(now);
   const nodes = ['A', 'B', 'C'].map((letter, index) => ({
     node_id: letter.repeat(64), public_key: letter.repeat(64), name: index === 1 ? 'Invented 🚫' : `Invented ${letter}`,
     lat: 54.5 + index * 0.01, lon: -1.3, role: 2, is_online: true,
@@ -58,7 +61,7 @@ test('native node sources skip visual no-ops but retain privacy, geometry, expir
   });
   await expect.poll(async () => (await features()).length).toBe(3);
   expect((await features()).find(feature => feature.properties?.node_id === 'C'.repeat(64))!.properties?.is_stale).toBe(false);
-  await page.waitForTimeout(500); // Drain the existing coalesced initial refresh.
+  await page.waitForTimeout(1500); // Drain the one-second coalesced initial refresh.
   await map.evaluate(map => {
     const source = map.getSource('nodes') as import('maplibre-gl').GeoJSONSource & { testCalls: number };
     const setData = source.setData.bind(source);
@@ -80,6 +83,7 @@ test('native node sources skip visual no-ops but retain privacy, geometry, expir
   await emit('node_update', { nodeId: 'B'.repeat(64), ts: Date.now() });
   await expect.poll(calls).toBeGreaterThan(beforePrivateCalls);
   await expect.poll(async () => (await features()).find(feature => feature.properties?.node_id === 'B'.repeat(64))!.geometry).not.toEqual(beforePrivate);
+  await page.clock.setFixedTime(now + 11000);
   await expect.poll(async () => (await features()).find(feature => feature.properties?.node_id === 'C'.repeat(64))!.properties?.is_stale,
     { timeout: 12000 }).toBe(true);
   // A replacement style recreates sources from the current authoritative store.
