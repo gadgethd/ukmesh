@@ -6,8 +6,16 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 
 ## Local development
 
-With Node (see `.nvmrc`), npm, Docker Engine and Compose available, run
-`scripts/dev-stack.sh up` from the repository root. It creates synthetic data,
+With Node (see `.nvmrc`), npm, Docker Engine and Compose available, use the
+candidate branch and run the local helper:
+
+```bash
+git clone --branch ukmesh2.0 --single-branch https://github.com/gadgethd/ukmesh.git
+cd ukmesh
+scripts/dev-stack.sh up
+```
+
+Run the helper from the repository root. It creates synthetic data,
 migrates owned local databases and checks MQTT persistence and live delivery.
 Open `http://127.0.0.1:5173`. See the [local stack runbook](scripts/local-sample/README.md)
 for profiles, explicit reset/cleanup, benchmarks and the optional private archive.
@@ -34,12 +42,12 @@ production cutover remain pending candidate qualification and authorization.
 - Stats pages and chart endpoints for packet rates, radios, hops, and activity
 - Public Health page with worker status/history + server resource metrics
 - UK site Feed page for public MQTT observer traffic visibility
-- Repeater owner portal with MQTT username/password login and encrypted cookie session
+- Repeater owner portal with MQTT username/password login, encrypted cookies and server-side session expiry/revocation
 - Owner dashboard with repeater summary, direct sender map, live packets, advert trend, heard-by list, link health, and alerts
 - Opt-in owner public MQTT feed with CoreScope-compatible MeshCore packet output
 - Multi-network ingestion (`meshcore/*` and `ukmesh/*`) with per-site filtering
 - Isolated test-feed support via `meshcore-test/*` and `test.ukmesh.com`
-- Multi-observer deduplication by packet hash
+- Durable duplicate handling that retains distinct observer and receive observations
 - MQTT connection monitor with Mosquitto log parsing and reconnect tracking
 
 ---
@@ -117,101 +125,61 @@ production cutover remain pending candidate qualification and authorization.
 
 ---
 
-## Quick Start
+## Deployment preparation
 
-```bash
-# 1. Clone and enter the project
-git clone https://github.com/gadgethd/ukmesh.git
-cd ukmesh
+The local helper above supplies invented credentials, owned databases and local
+service endpoints. A deployment uses its reviewed environment and immutable
+release images. Select the actual prior revision and follow the [2.0 upgrade
+guide](docs/upgrade-2.0.md), [migration contract](backend/src/db/migrations/README.md)
+and [release runbook](docs/runbook-release-rollback.md).
 
-# 2. Copy and configure environment
-cp .env.example .env
-# Edit .env. Required values are POSTGRES_PASSWORD, JWT_SECRET,
-# MQTT_PASSWORD, REDIS_PASSWORD, OPERATOR_SITE_TOKEN,
-# ANUBIS_ED25519_PRIVATE_KEY_HEX, GRAFANA_ADMIN_PASSWORD, and the full
-# 40-character HEALTHCHECK_SOURCE_REF.
+Configure `.env` from [.env.example](.env.example), including database, MQTT,
+Redis, owner-cookie, operator, Grafana and Anubis secrets, allowed browser
+origins and the full pinned health-check source revision. Provision the broker
+credentials/ACLs with `scripts/bootstrap-mosquitto.sh`. Bootstrap database roles,
+apply the explicit pending migration chain and provision the owner-auth schema
+before starting application images. Application startup does not migrate either
+database. Inspect intended Timescale jobs and use explicit bounded backfill jobs.
+A bare `docker compose up` is not a complete fresh-install or upgrade procedure.
 
-# 3. Create Mosquitto's backend credential and least-privilege ACL
-set -a
-. ./.env
-set +a
-scripts/bootstrap-mosquitto.sh
+The main Compose defaults expose backend/API on port 3000, the dashboard on
+3003, the public site on 3004 and the dev/test site on 3006. These differ from
+the synthetic helper's website 5173 and backend 3100. Readiness is `/readyz`,
+liveness is `/healthz`, and API discovery is `/api/v1` with its contract at
+`/api/v1/openapi.yaml`. Configure `ALLOWED_ORIGINS` for the actual frontend
+origins; [.env.example](.env.example) includes the local Compose origins.
 
-# 4. Start everything
-docker compose up -d
-
-# 5. Confirm readiness and inspect logs
-curl --fail http://127.0.0.1:3000/readyz
-docker compose logs -f backend
-```
-
-The calculator starts with the stack, publishes Standard tiles first, and
-continues Precision only after Standard is live and the disk gate passes:
-
-```bash
-docker compose up -d backend hopreach app-ukmesh link-worker
-docker compose logs -f hopreach
-```
-
-Local endpoints:
-
-- Backend API/WS: `http://localhost:3000`
-- App (ukmesh): `http://localhost:3003`
-- Website (ukmesh): `http://localhost:3004`
-- Dev/test site: `http://localhost:3006`
-- Liveness/readiness: `http://localhost:3000/healthz` and `http://localhost:3000/readyz`
-- API discovery/OpenAPI: `http://localhost:3000/api/v1` and `http://localhost:3000/api/v1/openapi.yaml`
-
-To expose it publicly, configure a Cloudflare Tunnel (see below) or reverse proxy of your choice.
+For a public deployment, the [tunnel section](#cloudflare-tunnel-optional)
+describes the optional edge routing. Publication, production changes and cache
+cutover follow the separately authorized release procedure.
 
 ---
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and fill in your values. All variables used by the app:
+[.env.example](.env.example) is the complete configuration template. The table
+below highlights setup inputs; defaults, optional tuning and feature switches
+belong in that template and their linked runbooks.
 
-| Variable | Default | Description |
-|---|---|---|
-| `POSTGRES_DB` | `meshcore` | TimescaleDB database name |
-| `POSTGRES_USER` | `meshcore` | TimescaleDB user |
-| `POSTGRES_PASSWORD` | *(required)* | TimescaleDB password |
-| `POSTGRES_MAX_WORKER_PROCESSES` | `24` | PostgreSQL worker slots; keep above the Timescale background-worker setting plus launcher/scheduler headroom |
-| `MQTT_BROKER_URL` | `ws://mosquitto:9001` | Mosquitto WebSocket URL (internal) |
-| `MQTT_USERNAME` | `backend` | MQTT client username |
-| `MQTT_PASSWORD` | *(required)* | MQTT client password |
-| `MESHCORE_SITE_ID` | `ukmesh` | Stable identifier added to site-to-site packet relay metadata |
-| `REDIS_PASSWORD` | *(required)* | Password for the bundled Redis service; passed separately from the URL so reserved characters are safe |
-| `REDIS_URL` | `redis://redis:6379` | Redis URL for WebSocket pub/sub |
-| `JWT_SECRET` | *(required)* | Secret for JWT verification |
-| `ALLOWED_ORIGINS` | `http://localhost:3001,http://localhost:3002` | Comma-separated browser origins allowed for CORS and WebSocket |
-| `API_RATE_LIMIT_MAX` | `120` | Per-client public API requests/minute; raise only in an isolated load-test project |
-| `VITE_APP_HOSTNAME` | *(blank — always shows dashboard)* | If set, only this hostname serves the analytics dashboard; all others serve the public website layout |
-| `MESHCORE_CHANNEL_SECRETS` | *(blank)* | Confidential channel keys for decrypting GroupText packets, managed through environment configuration. Format: `name:hex` or bare hex. The explicitly public `PUBLIC_CHANNELS` defaults are always included. |
-| `OWNER_DATABASE_URL` | *(optional)* | Separate Postgres database URL for owner portal username → repeater mappings |
-| `OWNER_COOKIE_SECRET` | *(optional but recommended)* | Secret used to encrypt/sign the owner session cookie |
-| `OWNER_MQTT_USERNAME_MAP` | *(empty)* | Operator-managed owner grants in the format `user=nodeId1|nodeId2,...` |
-| `OWNER_PACKET_SHARE_ENCRYPTION_KEY` | *(empty)* | Key used to encrypt destination MQTT passwords; required when a destination uses authentication |
-| `OWNER_PACKET_SHARE_POLL_INTERVAL_MS` | `5000` | Packet-sharing delivery queue poll interval |
-| `OWNER_PACKET_SHARE_BATCH_SIZE` | `25` | Maximum packet-sharing deliveries claimed per poll |
-| `PUBLIC_FEED_PUBLISH_ENABLED` | `false` | Operator kill switch for the authentication-locked UKmesh MQTT feed; owner switches remain off by default |
-| `PUBLIC_FEED_BROKER_URL` | *(empty)* | Deployment-only MQTT/MQTTS/WS/WSS endpoint shown in the owner dashboard; packets remain on the UKmesh broker and no separate publisher credential is used |
-| `OWNER_AUTHORIZATION_MODE` | `shadow` | `shadow` preserves read-only legacy ACL compatibility; `enforce` accepts verified database/config grants only |
-| `OWNER_ACL_MODE` | `shadow` | `shadow` renders and validates without changing Mosquitto; `apply` atomically installs and verifies the canonical ACL |
-| `OWNER_ACL_UNMANAGED_USERS` | `backend,test,test2` | Exact broker accounts intentionally preserved outside owner grant management |
-| `OWNER_ACL_ALLOW_EMPTY_USERS` | *(empty)* | Explicitly reviewed owner accounts allowed to render with no publish grants |
-| `OWNER_ACL_PUBLIC_FEED_READ_USERS` | *(empty)* | Operator-approved read-only MQTT subscribers; they receive the curated public feed only |
-| `OWNER_ACL_SYSTEM_READWRITE_TOPICS` | `public/#` | Broker topics the internal backend account may publish while rendering the public feed |
-| `RF_COVERAGE_ENABLED` | `true` | Compile the native HopReach layer into the production app image |
-| `HOPREACH_IMAGE` | `meshcore-analytics-hopreach:local` | Immutable HopReach calculator image override |
-| `HOPREACH_CPUS` | `4.0` | Calculator CPU limit |
-| `HOPREACH_CPU_WORKERS` | `4` | Go CPU worker limit (`GOMAXPROCS`) |
-| `HOPREACH_MEMORY_LIMIT` | `8g` | Calculator memory and swap limit |
-| `PUBLIC_FEATURE_INFERRED_NODES_ENABLED` | `true` | Runtime kill switch for privacy-reviewed inferred map nodes |
-| `PUBLIC_FEATURE_PACKET_ARCS_ENABLED` | `true` | Runtime kill switch for privacy-filtered live packet arcs |
-| `PUBLIC_FEATURE_HEATMAP_ENABLED` | `false` | Runtime kill switch for the packet heatmap |
-| `PUBLIC_FEATURE_CONFIG_TTL_SECONDS` | `30` | Client refresh interval for same-origin public feature configuration (bounded to 5–300 seconds) |
-| `CLOUDFLARE_TUNNEL_TOKEN` | *(optional)* | Cloudflare Zero Trust tunnel token |
-| `PORT` | `3000` | Internal app port |
+| Input | Purpose |
+|---|---|
+| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | Main database identity and credential; Compose defaults to database/user `meshcore` |
+| `MQTT_USERNAME`, `MQTT_PASSWORD` | Backend broker credential; provision its least-privilege ACL before startup |
+| `REDIS_PASSWORD`, `REDIS_URL` | Redis authentication and endpoint; Compose passes the password separately from the URL |
+| `JWT_SECRET`, `OWNER_COOKIE_SECRET` | Separate JWT and owner-cookie secrets; owner login requires the cookie secret |
+| `OPERATOR_SITE_TOKEN` | Authenticates local operator routes |
+| `GRAFANA_ADMIN_PASSWORD`, `ANUBIS_ED25519_PRIVATE_KEY_HEX` | Monitoring and edge service credentials |
+| `HEALTHCHECK_SOURCE_REF` | Required full pinned source revision for the health-check image |
+| `ALLOWED_ORIGINS` | Exact allowed browser origins for HTTP/WebSocket access |
+| `OWNER_DATABASE_URL` / `OWNER_POSTGRES_DB` | Explicit owner-auth database location; retain verified grants and session state |
+| `OWNER_AUTHORIZATION_MODE`, `OWNER_ACL_MODE` | Owner grant authority and ACL publication; review the [owner runbook](docs/runbook-owner-auth.md) before applying changes |
+| `PUBLIC_FEED_PUBLISH_ENABLED` | Operator feed kill switch; defaults off and does not enable an owner's selection |
+| `RF_COVERAGE_ENABLED`, `HOPREACH_IMAGE` | RF frontend build switch and calculator image selection |
+
+Direct backend/tool processes also support role-specific HTTP, ingest, worker
+and migration DSNs; see the [upgrade guide](docs/upgrade-2.0.md#owner-authorization-and-configuration).
+Main Compose constructs its container DSNs explicitly, so configure container
+environment overrides deliberately when adopting separate credentials.
 
 The inferred-node and packet-arc layers are enabled after privacy/correctness
 validation; the heatmap remains disabled by default. Each has an independent
@@ -234,7 +202,7 @@ disables all three layers.
 Packet sharing is available to every authenticated UKMesh owner. The owner
 dashboard can enable sharing for an owned observer and select only destination
 rows that an operator has already provisioned in
-`owner_packet_share_destinations`. Toggle and destination changes save
+`core.owner_packet_share_destinations`. Toggle and destination changes save
 immediately. Each destination can also carry an HTTPS `website_url` and short
 `description`; the owner UI renders those as a linked destination name with
 hover text, so adding another site only requires another operator-managed
@@ -310,7 +278,7 @@ For a broker that permits an anonymous publisher, the operator provisioning
 shape is:
 
 ```sql
-INSERT INTO owner_packet_share_destinations (
+INSERT INTO core.owner_packet_share_destinations (
   destination_id, display_name, website_url, description,
   broker_url, topic_template, enabled
 ) VALUES (
@@ -543,7 +511,7 @@ MeshCore Devices
 
 ## Acknowledgements
 
-This project is built on the following open source libraries and tools:
+This project uses the following libraries and tools. Licence terms vary by component and pinned version. The contributor fixture pins the TimescaleDB and Redis versions listed below; record the approved deployment digests separately:
 
 ### Frontend
 | Package | License |
@@ -556,6 +524,7 @@ This project is built on the following open source libraries and tools:
 | [react-router](https://reactrouter.com) | MIT |
 | [Recharts](https://recharts.org) | MIT |
 | [web-vitals](https://github.com/GoogleChrome/web-vitals) | Apache 2.0 |
+| [React Aria Components](https://github.com/adobe/react-spectrum) | Apache 2.0 |
 | [polygon-clipping](https://github.com/mfogel/polygon-clipping) | MIT |
 
 ### Backend
@@ -585,8 +554,8 @@ This project is built on the following open source libraries and tools:
 ### Infrastructure
 | Tool | License |
 |---|---|
-| [TimescaleDB](https://www.timescale.com) | Apache 2.0 (Community) |
-| [Redis](https://redis.io) | BSD 3-Clause |
+| [TimescaleDB 2.25.1](https://github.com/timescale/timescaledb/blob/2.25.1/LICENSE) | Apache 2.0 / compatible licences outside `tsl`; [Timescale License](https://github.com/timescale/timescaledb/blob/2.25.1/tsl/LICENSE-TIMESCALE) for `tsl` components |
+| [Redis 7.4.8](https://github.com/redis/redis/blob/7.4.8/LICENSE.txt) | Choice of RSALv2 or SSPLv1 |
 | [Eclipse Mosquitto](https://mosquitto.org) | EPL 2.0 / EDL 1.0 |
 | [Docker](https://www.docker.com) | Apache 2.0 |
 

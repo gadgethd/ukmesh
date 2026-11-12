@@ -7,6 +7,17 @@ cleanup are described in the [local stack runbook](scripts/local-sample/README.m
 Production configuration is documented in [README.md](README.md) and
 [.env.example](.env.example); the local helper does not import production settings.
 
+## Deployment and upgrades
+
+Use the [2.0 upgrade guide](docs/upgrade-2.0.md) for the actual starting revision,
+role/schema migration order, owner sessions, bounded backfills and rollback
+limits. The [release runbook](docs/runbook-release-rollback.md) governs approved
+image deployment. Local setup above uses invented state and does not import
+production credentials.
+
+The following timer runbook applies to an existing configured VPS deployment,
+after its normal installation and migration prerequisites have been satisfied.
+
 ## Owner baseline auto-rebaseline runbook
 
 The timer checks the local backend readiness endpoint every ten minutes. It

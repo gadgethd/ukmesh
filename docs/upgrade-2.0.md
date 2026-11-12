@@ -84,6 +84,15 @@ Server-side sessions require expiry and revocation checks; cookie handling must
 not bypass them. Follow the [owner-auth runbook](runbook-owner-auth.md).
 
 Backend/ingest/worker/migrate/owner DSNs are separate configuration inputs.
+Direct processes read `MESHCORE_HTTP_DATABASE_URL`, `MESHCORE_INGEST_DATABASE_URL`,
+`MESHCORE_WORKER_DATABASE_URL`, `MESHCORE_MIGRATE_DATABASE_URL` and
+`OWNER_DATABASE_URL`. Without `DATABASE_ROLE_ENFORCEMENT`, they can use the
+legacy `DATABASE_URL` fallback; the owner service derives its separate database
+name when that explicit URL is absent. Enabling enforcement requires the DSN
+for every role that process opens. Main Compose constructs container DSNs
+explicitly, so separate credentials also need reviewed environment wiring.
+Use `scripts/bootstrap-backend-roles.sql` and
+`scripts/bootstrap-reader-roles.sql` before the applicable grant migrations.
 Review `.env.example`, broker ACL paths, the public-feed opt-in state and any
 external forwarding destinations. Never copy production `.env` or owner grants
 into a local benchmark fixture. Node-based contributor tooling now follows
