@@ -50,7 +50,8 @@ test('owned broker accepts normal QoS 1 traffic and closes oversized frames with
 test('owned broker preserves a thirty-minute measured-rate backlog and exposes finite byte overflow', {
   skip: endpoint ? false : 'owned candidate broker required', timeout: 90000,
 }, async () => {
-  const { connectAsync } = await import('mqtt');
+  const { connect, connectAsync } = await import('mqtt');
+  const { once } = await import('node:events');
   const url = new URL(endpoint!);
   assert.ok(['127.0.0.1','localhost'].includes(url.hostname));
   const prefix = `owned-capacity-${process.pid}-${Date.now()}`;
@@ -68,8 +69,10 @@ test('owned broker preserves a thirty-minute measured-rate backlog and exposes f
         const payload=Buffer.alloc(bytes);payload.writeUInt32BE(i);
         await publisher.publishAsync(topic,payload,{qos:1});
       }
-      subscriber=await connectAsync(endpoint!, {clientId:id,clean:false,reconnectPeriod:0});
-      const received:number[]=[];subscriber.on('message',(_topic,payload)=>received.push(payload.readUInt32BE(0)));
+      const received:number[]=[];
+      subscriber=connect(endpoint!, {clientId:id,clean:false,reconnectPeriod:0});
+      subscriber.on('message',(_topic,payload)=>received.push(payload.readUInt32BE(0)));
+      await once(subscriber,'connect');
       try {
         if(expectAll) {await until(()=>received.length===count);assert.deepEqual(received,Array.from({length:count},(_,i)=>i));}
         else {await until(()=>received.length>=240);await new Promise(r=>setTimeout(r,1200));assert.ok(received.length<270,`byte bound failed: ${received.length}`);assert.equal(new Set(received).size,received.length);}

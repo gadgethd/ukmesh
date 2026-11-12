@@ -23,6 +23,10 @@ jobs:
           node-version-file: .nvmrc
       - name: Verify package and local image release identity
         run: node scripts/check-release-identity.mjs
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: '3.12'
+      - run: python -m pip install -r scripts/requirements-checks.txt
       - name: Verify release component coverage
         run: scripts/check-release-components.sh
       - name: Validate vulnerability waivers

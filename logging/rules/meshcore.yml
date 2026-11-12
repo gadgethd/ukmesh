@@ -142,7 +142,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: A durable queue is above 80 percent of its configured bound
+          summary: A durable queue is above 80 percent of the default capacity bound
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#queuecapacityhigh
 
