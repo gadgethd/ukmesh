@@ -128,3 +128,17 @@ ceilings remain unchanged. Every production chunk receives Terser compression.
 This is a documented dependency-baseline adjustment, not evidence that the
 old total ceiling passes on the newer dependencies. Requalify both targets
 and production browser journeys when changing this baseline.
+
+## Polling ownership
+
+Cadences and request deadlines are centralized in
+`frontend/src/config/polling.ts`. `utils/visibilityPoller.ts` owns the timer,
+visibility, cancellation and backoff state machine; `useVisibilityPoll` adapts
+it to React. Runtime privacy authority uses that same scheduler without jitter
+and with its server-provided bounded interval.
+
+`useRfCoverage` polls when coverage is shown or a selected node request needs
+progress. It pauses when hidden, refreshes on return and slows completed work
+to the idle interval. An initial discovery request preserves automatic network
+coverage availability when the user has not set a layer preference. Explicitly
+hiding coverage prevents unused repeated discovery.

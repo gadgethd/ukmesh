@@ -134,8 +134,13 @@ export const App: React.FC = () => {
   const [rfCoverageTier, setRfCoverageTier] = useState<RfCoverageTierName>(() => (
     localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
   ));
-  const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED);
   const [rfCoverageNodeKey, setRfCoverageNodeKey] = useState<string | null>(null);
+  const rfCoverage = useRfCoverage(RF_COVERAGE_ENABLED, {
+    layerVisible: filters.coverage,
+    nodeKey: rfCoverageNodeKey,
+    nodeRequestVisible: !!rfCoverageNodeKey && selectedNodeId?.toLowerCase() === rfCoverageNodeKey,
+    discoverOnMount: localStorage.getItem(RF_VISIBILITY_KEY) === null && !initialLayersSpecifiedRef.current,
+  });
   const [showShortcutGuide, setShowShortcutGuide] = useState(false);
   const [isPageVisible, setIsPageVisible] = useState(
     () => (typeof document === 'undefined' ? true : document.visibilityState === 'visible'),

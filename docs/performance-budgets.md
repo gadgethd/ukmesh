@@ -139,3 +139,20 @@ values and this identity, cancels obsolete tab/scope requests, and clears old da
 and decoded-path selection when authority changes. Live observer polling runs
 only on the Observers tab. Stats HTTP responses require revalidation; runtime
 configuration and owner/session reads retain `no-store`.
+
+Polling cadences and deadlines live in `frontend/src/config/polling.ts`. The
+shared visibility scheduler aborts reads when hidden and refreshes immediately
+on return, with bounded backoff and no overlapping requests. Runtime authority
+uses the server's 5–300 second cadence and still fails closed on transport or
+deadline failure. RF metadata/progress polls run every 3 seconds for visible
+calculations, slowing to 30 seconds when complete. Unused layers stop polling;
+a visible selected node calculation continues until completion even with the
+layer off. One initial metadata discovery preserves automatic availability
+when no layer preference was set. Tag enrichment also pauses and cancels across
+visibility/scope changes; owner/session freshness and `no-store` remain intact.
+
+Both preloaded fonts appear above the fold (body and navigation/brand). They
+use `font-display: swap` and build to content-addressed `/assets/` URLs covered
+by the existing immutable nginx policy. Stable `/fonts/` copies remain available
+for prior clients during rollback retention. The existing 1200×630 OG PNG is
+under 100 KiB; no re-encoding is required for this phase.

@@ -1,3 +1,4 @@
+import { chartStats } from './fixtures/chartStats.mjs';
 import { expect, test, type Page } from '@playwright/test';
 
 async function assertContiguous(page: Page) {
@@ -70,7 +71,7 @@ for (const width of [390, 1280]) {
     await page.route('**/api/**', route => {
       const url = route.request().url();
       return route.fulfill({ json: url.includes('runtime-config') ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 30 }
-        : url.includes('stats') ? { observerRegions: [] } : [] });
+        : url.includes('stats') ? chartStats : [] });
     });
     await page.addInitScript(() => {
       localStorage.setItem('meshcore-cookie-consent-v1', '1');

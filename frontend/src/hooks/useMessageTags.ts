@@ -1,49 +1,41 @@
-import { useEffect, useRef } from 'react';
 import { fetchJson, uncachedEndpoint, withScopeParams } from '../utils/api.js';
 import { nodeStore } from './useNodes.js';
 import type { TaggedMessage } from './packetFeed.js';
-
-const TAGS_POLL_MS = 15_000;
+import { useVisibilityPoll } from './useVisibilityPoll.js';
+import { POLLING } from '../config/polling.js';
 
 type TagScope = { network?: string; observer?: string };
 
-/** Polls GET /api/tags/recent and patches tags onto store rows by packet hash.
- *  Tags are written by tagger-worker ~2s after a packet arrives, so live WS rows
- *  start untagged and get their chips on the next poll. Best-effort: failures
- *  are ignored (the feed keeps working untagged). */
-export function useMessageTags(scope: TagScope, scopeKey: string): void {
-  const scopeRef = useRef(scope);
-  scopeRef.current = scope;
+export function isTaggedMessages(value: unknown): value is TaggedMessage[] {
+  const record = (row: unknown): row is Record<string, unknown> => !!row && typeof row === 'object' && !Array.isArray(row);
+  return Array.isArray(value) && value.length <= 300 && value.every(row => {
+    if (!record(row) || !record(row.tags)) return false;
+    const tags = row.tags;
+    const confidence = row.confidence;
+    return typeof row.packet_hash === 'string' && row.packet_hash.length <= 128
+      && ['kind', 'topic', 'speaker'].every(key => tags[key] === undefined
+        || (typeof tags[key] === 'string' && tags[key].length <= 256))
+      && ['safety', 'directed', 'mentions_location'].every(key => tags[key] === undefined
+        || (typeof tags[key] === 'number' && Number.isFinite(tags[key])))
+      && (confidence == null || (record(confidence) && ['kind', 'topic', 'speaker'].every(key =>
+        confidence[key] === undefined || (typeof confidence[key] === 'number' && Number.isFinite(confidence[key])))))
+      && (row.tagged_at === undefined || (typeof row.tagged_at === 'string' && Number.isFinite(Date.parse(row.tagged_at))));
+  });
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    let timer: number | null = null;
-    const schedule = () => {
-      if (cancelled) return;
-      timer = window.setTimeout(() => void tick(), TAGS_POLL_MS);
-    };
-    const tick = async () => {
-      if (cancelled) return;
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') {
-        schedule();
-        return;
-      }
-      try {
-        const rows = await fetchJson<TaggedMessage[]>(
-          uncachedEndpoint(withScopeParams('/api/tags/recent?limit=300', scopeRef.current)),
-          { cache: 'no-store' },
-          { timeoutMs: 15_000, maxBytes: 2 * 1024 * 1024 },
-        );
-        if (!cancelled && Array.isArray(rows)) nodeStore.applyMessageTags(rows);
-      } catch {
-        /* enrichment is best-effort */
-      }
-      schedule();
-    };
-    void tick();
-    return () => {
-      cancelled = true;
-      if (timer !== null) window.clearTimeout(timer);
-    };
-  }, [scopeKey]);
+/** Tags arrive after the packet; enrichment failures leave the feed usable. */
+export function useMessageTags(scope: TagScope, scopeKey: string): void {
+  useVisibilityPoll(async signal => {
+    const epoch = nodeStore.getState().epoch;
+    const rows = await fetchJson<TaggedMessage[]>(
+      uncachedEndpoint(withScopeParams('/api/tags/recent?limit=300', scope)),
+      { cache: 'no-store', signal },
+      { timeoutMs: POLLING.ordinaryTimeout, maxBytes: 2 * 1024 * 1024, validate: isTaggedMessages },
+    );
+    if (!signal.aborted && nodeStore.getState().epoch === epoch) nodeStore.applyMessageTags(rows);
+  }, {
+    scopeKey: `message-tags:${scopeKey}`,
+    intervalMs: POLLING.feedTags,
+    timeoutMs: POLLING.ordinaryTimeout,
+  });
 }

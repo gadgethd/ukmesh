@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { createVisibilityPoller } from './useVisibilityPoll.js';
+import { createVisibilityPoller } from '../utils/visibilityPoller.js';
 
 test('visibility poller prevents overlap, aborts when hidden, and refreshes once on return', async () => {
   let visible = true;
@@ -134,4 +134,27 @@ test('deadline becomes visible even when a request ignores abort until later', a
   complete();
   await Promise.resolve();
   poller.stop();
+});
+
+test('dynamic cadence follows completed work without restarting or overlapping the poll', async () => {
+  let interval = 1000;
+  let calls = 0;
+  const timers = new Map<number, { callback: () => void; delay: number }>();
+  let next = 0;
+  const poller = createVisibilityPoller({
+    intervalMs: () => interval, timeoutMs: 5000, jitterRatio: 0,
+    poll: async () => { calls++; interval = 30_000; },
+    isVisible: () => true, subscribeVisibility: () => () => {},
+    setTimer: (callback, delay) => { const id = ++next; timers.set(id, { callback, delay }); return id as unknown as ReturnType<typeof setTimeout>; },
+    clearTimer: id => { timers.delete(id as unknown as number); },
+  });
+  await Promise.resolve(); await Promise.resolve();
+  assert.equal(calls, 1);
+  assert.equal([...timers.values()][0]?.delay, 30_000);
+  interval = 3000;
+  await poller.trigger();
+  assert.equal(calls, 2);
+  assert.equal([...timers.values()][0]?.delay, 30_000, 'work selected its next idle cadence before scheduling');
+  poller.stop();
+  assert.equal(timers.size, 0);
 });

@@ -1,4 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useVisibilityPoll } from './useVisibilityPoll.js';
+import { POLLING } from '../config/polling.js';
 import { fetchJson } from '../utils/api.js';
 
 export type RfCoverageTierName = 'standard' | 'precision';
@@ -90,8 +92,6 @@ export type RfCoverageProgress = {
   backend?: 'cpu' | 'gpu' | 'remote_gpu' | string;
 };
 
-const POLL_INTERVAL_MS = 3_000;
-
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
@@ -138,6 +138,7 @@ export function availableRfCoverageTiers(meta: RfCoverageMeta | null): RfCoverag
 
 function fetchRfJson<T>(path: string, signal: AbortSignal): Promise<T> {
   return fetchJson<T>(path, { cache: 'no-store', credentials: 'same-origin', signal }, {
+    timeoutMs: POLLING.ordinaryTimeout,
     maxBytes: 4 * 1024 * 1024,
   });
 }
@@ -154,55 +155,71 @@ export async function requestRfNodeCoverage(publicKey: string): Promise<boolean>
     method: 'POST',
     credentials: 'same-origin',
     headers: { Accept: 'application/json' },
+    signal: AbortSignal.timeout(POLLING.ordinaryTimeout),
   });
+  await response.body?.cancel();
   return response.ok || response.status === 409;
 }
 
-export function useRfCoverage(enabled: boolean): {
+export type RfPollingOptions = {
+  layerVisible: boolean;
+  nodeKey?: string | null;
+  nodeRequestVisible?: boolean;
+  discoverOnMount?: boolean;
+};
+
+export function rfCoveragePollingPolicy(enabled: boolean, options: RfPollingOptions,
+  meta: RfCoverageMeta | null, discovered: boolean): { enabled: boolean; intervalMs: number } {
+  const nodeState = options.nodeKey ? rfNodeCoverageState(meta, options.nodeKey) : null;
+  const waitingForNode = (options.layerVisible || !!options.nodeRequestVisible) && !!options.nodeKey
+    && nodeState !== 'available' && nodeState !== 'error';
+  return {
+    enabled: enabled && (options.layerVisible || waitingForNode || (!!options.discoverOnMount && !discovered)),
+    intervalMs: waitingForNode || !meta?.complete ? POLLING.rfActive : POLLING.rfIdle,
+  };
+}
+
+export function useRfCoverage(enabled: boolean, options: RfPollingOptions = { layerVisible: enabled }): {
   meta: RfCoverageMeta | null;
   progress: RfCoverageProgress | null;
   availableTiers: RfCoverageTierName[];
 } {
   const [meta, setMeta] = useState<RfCoverageMeta | null>(null);
   const [progress, setProgress] = useState<RfCoverageProgress | null>(null);
+  const [discovered, setDiscovered] = useState(false);
+  const policy = rfCoveragePollingPolicy(enabled, options, meta, discovered);
+  const intervalRef = useRef(policy.intervalMs);
+  intervalRef.current = policy.intervalMs;
+  const interval = useCallback(() => intervalRef.current, []);
 
   useEffect(() => {
-    if (!enabled) {
-      setMeta(null);
-      setProgress(null);
-      return undefined;
-    }
-
-    let stopped = false;
-    let timer: number | null = null;
-    let controller: AbortController | null = null;
-
-    const poll = async () => {
-      controller?.abort();
-      controller = new AbortController();
-      const signal = controller.signal;
-      const stamp = Date.now();
-      const [nextMeta, nextProgress] = await Promise.allSettled([
-        fetchRfJson<RfCoverageMeta>(`/rf-coverage/meta.json?poll=${stamp}`, signal),
-        fetchRfJson<RfCoverageProgress>(`/rf-coverage/progress.json?poll=${stamp}`, signal),
-      ]);
-      if (stopped || signal.aborted) return;
-      if (nextMeta.status === 'fulfilled' && typeof nextMeta.value?.generated_at === 'string') {
-        setMeta(nextMeta.value);
-      }
-      if (nextProgress.status === 'fulfilled' && typeof nextProgress.value?.stage === 'string') {
-        setProgress(nextProgress.value);
-      }
-      timer = window.setTimeout(() => { void poll(); }, POLL_INTERVAL_MS);
-    };
-
-    void poll();
-    return () => {
-      stopped = true;
-      controller?.abort();
-      if (timer !== null) window.clearTimeout(timer);
-    };
+    if (enabled) return;
+    setMeta(null); setProgress(null); setDiscovered(false);
   }, [enabled]);
+
+  useVisibilityPoll(async signal => {
+    const stamp = Date.now();
+    const [nextMeta, nextProgress] = await Promise.allSettled([
+      fetchRfJson<RfCoverageMeta>(`/rf-coverage/meta.json?poll=${stamp}`, signal),
+      fetchRfJson<RfCoverageProgress>(`/rf-coverage/progress.json?poll=${stamp}`, signal),
+    ]);
+    if (signal.aborted) return;
+    // The scheduling policy reads this ref before React's next render too.
+    if (nextMeta.status === 'fulfilled' && typeof nextMeta.value?.generated_at === 'string') {
+      setMeta(nextMeta.value);
+      intervalRef.current = rfCoveragePollingPolicy(enabled, options, nextMeta.value, true).intervalMs;
+    }
+    if (nextProgress.status === 'fulfilled' && typeof nextProgress.value?.stage === 'string') setProgress(nextProgress.value);
+    setDiscovered(true);
+    if (nextMeta.status === 'rejected') throw nextMeta.reason;
+    if (nextProgress.status === 'rejected') throw nextProgress.reason;
+  }, {
+    enabled: policy.enabled,
+    scopeKey: `rf:${options.layerVisible}:${options.nodeKey ?? 'network'}:${!!options.nodeRequestVisible}`,
+    intervalMs: interval,
+    timeoutMs: POLLING.ordinaryTimeout,
+    maxBackoffMs: POLLING.rfIdle * 4,
+  });
 
   const availableTiers = useMemo(() => availableRfCoverageTiers(meta), [meta]);
   return { meta, progress, availableTiers };

@@ -1,3 +1,5 @@
+import { POLLING } from '../../config/polling.js';
+import { parseStatsSection } from '../statsSections.js';
 import React, { useMemo, useCallback, useEffect, useState, useRef } from 'react';
 import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
@@ -14,7 +16,6 @@ import { useMessageTags } from '../../hooks/useMessageTags.js';
 import { messageTagKind, messageTagTitle } from '../../hooks/packetFeed.js';
 import {
   ApiResponseError,
-  chartStatsEndpoint,
   fetchJson,
   uncachedEndpoint,
   withScopeParams,
@@ -158,7 +159,7 @@ export const UKFeedPage: React.FC = () => {
 
   // Clock tick for live connection indicator and stats
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), 5000);
+    const timer = window.setInterval(() => setNow(Date.now()), POLLING.feedClock);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -182,23 +183,26 @@ export const UKFeedPage: React.FC = () => {
   }, [scopeKey]);
 
   useVisibilityPoll(async (signal) => {
-    const json = await fetchJson<{
-      observerRegions?: Array<{ iata?: string | null; activeObservers?: number; observers?: number }>;
-    }>(
-      uncachedEndpoint(chartStatsEndpoint(scope)),
-      { cache: 'no-store', signal },
-      { timeoutMs: PATH_REQUEST_TIMEOUT_MS, maxBytes: 4 * 1024 * 1024 },
+    const payload = await fetchJson<unknown>(
+      withScopeParams('/api/stats/charts?sections=observers', scope),
+      { cache: 'no-cache', signal },
+      { timeoutMs: POLLING.ordinaryTimeout, maxBytes: 4 * 1024 * 1024 },
     );
     if (signal.aborted) return;
+    const selected = parseStatsSection(payload, 'observers', { network: scope.network ?? 'ukmesh',
+      observer: scope.observer ?? null, generation: privacyGeneration });
+    if (!selected) throw new Error('Observer regions no longer match the feed scope');
+    const json = selected.data;
     const values = (json.observerRegions ?? [])
       .map((region) => String(region.iata ?? '').trim().toUpperCase())
       .filter((iata) => /^[A-Z0-9]{2,8}$/.test(iata));
     setRegionOptions(Array.from(new Set(values)).sort((a, b) => a.localeCompare(b)));
     setRegionOptionsStatus('ready');
   }, {
+    enabled: privacyGeneration > 0,
     scopeKey: `feed-regions:${scopeKey}`,
-    intervalMs: 60_000,
-    timeoutMs: PATH_REQUEST_TIMEOUT_MS,
+    intervalMs: POLLING.feedRegions,
+    timeoutMs: POLLING.ordinaryTimeout,
     onError: () => setRegionOptionsStatus('failed'),
   });
 

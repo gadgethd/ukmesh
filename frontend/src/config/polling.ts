@@ -1,0 +1,22 @@
+/** Shared request cadence and deadline policy. Values are milliseconds. */
+export const POLLING = Object.freeze({
+  ordinaryTimeout: 15_000,
+  stats: 5 * 60_000,
+  liveObservers: 60_000,
+  feedRegions: 60_000,
+  feedTags: 15_000,
+  feedClock: 5_000,
+  rfActive: 3_000,
+  rfIdle: 30_000,
+  runtimeDefaultSeconds: 30,
+  runtimeMinSeconds: 5,
+  runtimeMaxSeconds: 300,
+  runtimeTimeout: 3_000,
+  ownerSession: 15_000,
+  ownerQueue: 5_000,
+  ownerLive: 10_000,
+  ownerHistory: 60_000,
+  ownerTimeout: 10_000,
+  ownerHistoryTimeout: 15_000,
+  ownerHistoryPollTimeout: 20_000,
+});

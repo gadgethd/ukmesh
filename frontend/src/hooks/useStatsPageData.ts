@@ -6,9 +6,8 @@ import { chartStatsEndpoint, fetchJson, withScopeParams } from '../utils/api.js'
 import { isLiveObserverSnapshot, type LiveObserverSnapshot } from '../pages/statsState.js';
 import { parseStatsSection } from '../pages/statsSections.js';
 import { useVisibilityPoll } from './useVisibilityPoll.js';
+import { POLLING } from '../config/polling.js';
 
-const STATS_REFRESH_MS = 5 * 60 * 1_000;
-const STATS_TIMEOUT_MS = 15_000;
 const STATS_MAX_BYTES = 8 * 1024 * 1024;
 
 export interface StatsPageData {
@@ -58,7 +57,7 @@ export function useStatsPageData(section: StatsTabId): StatsPageData {
       const payload = await fetchJson<unknown>(
         `${chartStatsEndpoint(statsScope)}${chartStatsEndpoint(statsScope).includes('?') ? '&' : '?'}sections=${section}`,
         { cache: 'no-cache', signal },
-        { timeoutMs: STATS_TIMEOUT_MS, maxBytes: STATS_MAX_BYTES },
+        { timeoutMs: POLLING.ordinaryTimeout, maxBytes: STATS_MAX_BYTES },
       );
       const next = parseStatsSection(payload, section, { network: statsScope.network ?? 'ukmesh',
         observer: statsScope.observer ?? null, generation: privacyGeneration });
@@ -97,21 +96,21 @@ export function useStatsPageData(section: StatsTabId): StatsPageData {
     {
       enabled: privacyGeneration > 0,
       scopeKey: key,
-      intervalMs: STATS_REFRESH_MS,
-      timeoutMs: STATS_TIMEOUT_MS,
+      intervalMs: POLLING.stats,
+      timeoutMs: POLLING.ordinaryTimeout,
     },
   );
 
   const refreshObservers = useVisibilityPoll(async (signal) => {
     const payload = await fetchJson<LiveObserverSnapshot>(
       withScopeParams('/api/stats/observers/live', statsScope), { cache: 'no-store', signal },
-      { timeoutMs: STATS_TIMEOUT_MS, maxBytes: 128 * 1024, validate: isLiveObserverSnapshot },
+      { timeoutMs: POLLING.ordinaryTimeout, maxBytes: 128 * 1024, validate: isLiveObserverSnapshot },
     );
     if (!signal.aborted) { setLiveObservers(payload); setObserverError(null); }
   }, {
     enabled: section === 'observers' && privacyGeneration > 0,
     scopeKey: `live-observers:${statsScope.network ?? 'all'}:${statsScope.observer ?? 'all'}:${privacyGeneration}`,
-    intervalMs: 60_000, timeoutMs: STATS_TIMEOUT_MS,
+    intervalMs: POLLING.liveObservers, timeoutMs: POLLING.ordinaryTimeout,
     onError: () => setObserverError('Live observer updates are unavailable. Showing the last received data.'),
   });
 

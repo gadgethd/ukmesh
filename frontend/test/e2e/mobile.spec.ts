@@ -1,68 +1,9 @@
+import { chartStats } from './fixtures/chartStats.mjs';
 import { publicOrigin, dashboardOrigin, devOrigin } from './localServers.js';
 import { expect, test, type Page } from '@playwright/test';
 import { installMapRoutes, installTerrainRoutes } from './mapFixtures.js';
 
 const PHONE = { width: 375, height: 667 };
-
-const chartStats = {
-  packetsPerHour: [{ hour: '12:00', count: 24 }],
-  packetsPerDay: [{ day: 'Mon', count: 120 }],
-  radiosPerHour: [{ hour: '12:00', count: 8 }],
-  radiosPerDay: [{ day: 'Mon', count: 32 }],
-  packetTypes: [{ label: 'Advert', count: 80 }, { label: 'Group', count: 40 }],
-  channelTraffic: [{ channel: 'Public', count: 40, pct: 50, allPct: 33 }],
-  repeatersPerDay: [{ hour: '12:00', count: 20 }],
-  hopDistribution: [{ hops: 1, count: 60 }],
-  prefixCollisions: [{ prefix: 'ab', repeats: 3 }],
-  observerRegions: [],
-  observerDiversity: {
-    averageObserversPerPacket: 2.5,
-    maxObserversPerPacket: 6,
-    totalPackets24h: 120,
-    singleObserverPackets24h: 20,
-    singleObserverPct24h: 16.7,
-  },
-  signalSummary: {
-    avgRssi: -92,
-    medianRssi: -91,
-    avgSnr: 4.5,
-    medianSnr: 4.2,
-    rssiSamples24h: 120,
-    snrSamples24h: 120,
-  },
-  routeTypes: [],
-  transportCodes: [],
-  pathDecodeTrend: [],
-  pathHashes: {
-    last24hHops: { one_byte: 30, two_byte: 20, three_byte: 10 },
-    multibytePackets24h: 30,
-    fullyDecodedMultibyte24h: 20,
-    latestMultibyteAt: null,
-    latestMultibyteHash: null,
-    latestFullyDecodedAt: null,
-    latestFullyDecodedHash: 'fixture-path',
-    latestFullyDecodedHops: 1,
-    latestFullyDecodedPath: 'North -> South',
-    latestFullyDecodedNodes: [
-      { ord: 1, node_id: 'node-north', name: 'North', lat: 54.5, lon: -1.2 },
-      { ord: 2, node_id: 'node-south', name: 'South', lat: 53.5, lon: -1.1 },
-    ],
-    longestFullyDecodedAt: null,
-    longestFullyDecodedHash: null,
-    longestFullyDecodedHops: null,
-    longestFullyDecodedPath: null,
-    longestFullyDecodedNodes: [],
-  },
-  summary: {
-    totalPackets24h: 120,
-    totalPackets7d: 720,
-    uniqueRadios24h: 32,
-    activeRepeaters: 20,
-    staleRepeaters: 2,
-    peakHour: '12:00',
-    peakHourCount: 24,
-  },
-};
 
 const repeaterNodes = Array.from({ length: 12 }, (_, index) => ({
   node_id: `node-${index}`,
@@ -86,6 +27,7 @@ async function installApiFixtures(page: Page) {
 
   await page.route('**/api/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/api/runtime-config') return route.fulfill({ json: { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300 } });
     if (pathname === '/api/stats/charts') return route.fulfill({ json: chartStats });
     if (pathname === '/api/stats') {
       return route.fulfill({
@@ -363,7 +305,7 @@ test('stats path modal fits the viewport and keeps its close action reachable', 
   await page.goto(`${publicOrigin}/stats`, { waitUntil: 'networkidle' });
 
   await page.getByRole('tab', { name: 'Paths' }).click();
-  await page.getByRole('button', { name: 'North -> South' }).click();
+  await page.getByRole('button', { name: 'North -> South', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
   await expect(dialog).toBeVisible();
   const modalBox = await page.locator('.stats-page__path-modal').boundingBox();

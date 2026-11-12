@@ -83,3 +83,21 @@ test('oversized runtime responses cancel streaming and invalidate the previous a
   assert.equal(cancelled, true);
   assert.deepEqual(getRuntimeFeatureSnapshot(), FAIL_CLOSED_RUNTIME_FEATURES);
 });
+
+test('hidden/stopped authority reads cannot publish late data; a request deadline fails closed', async () => {
+  const body = (privacyGeneration: number) => new Response(JSON.stringify({
+    version: 1, packetArcs: true, heatmap: true, privacyGeneration, refreshAfterSeconds: 5,
+  }));
+  await refreshRuntimeFeatures(async () => body(3));
+  const cancelled = new AbortController();
+  let complete!: (response: Response) => void;
+  const pending = refreshRuntimeFeatures(() => new Promise(resolve => { complete = resolve; }), cancelled.signal);
+  cancelled.abort(new DOMException('Page hidden', 'AbortError'));
+  complete(body(9));
+  await pending;
+  assert.equal(getRuntimeFeatureSnapshot().privacyGeneration, 3);
+  const deadline = new AbortController();
+  deadline.abort(new DOMException('Poll timed out', 'TimeoutError'));
+  await refreshRuntimeFeatures(async () => body(9), deadline.signal);
+  assert.deepEqual(getRuntimeFeatureSnapshot(), FAIL_CLOSED_RUNTIME_FEATURES);
+});

@@ -1,3 +1,4 @@
+import { POLLING } from '../../config/polling.js';
 import { fetchJson } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 
@@ -354,7 +355,7 @@ export async function fetchOwnerPacketSharing(
   return fetchJson<OwnerPacketSharing>(
     `/api/owner/packet-sharing?nodeId=${encodeURIComponent(nodeId)}`,
     { cache: 'no-store', signal },
-    { timeoutMs: 10_000, maxBytes: 128 * 1024, validate: isOwnerPacketSharingResponse },
+    { timeoutMs: POLLING.ownerTimeout, maxBytes: 128 * 1024, validate: isOwnerPacketSharingResponse },
   );
 }
 
@@ -391,7 +392,7 @@ export async function fetchOwnerPublicFeed(signal?: AbortSignal): Promise<OwnerP
   return fetchJson<OwnerPublicFeed>(
     '/api/owner/public-feed',
     { cache: 'no-store', signal },
-    { timeoutMs: 10_000, maxBytes: 32 * 1024, validate: isOwnerPublicFeedResponse },
+    { timeoutMs: POLLING.ownerTimeout, maxBytes: 32 * 1024, validate: isOwnerPublicFeedResponse },
   );
 }
 
@@ -421,7 +422,7 @@ export async function fetchOwnerCsrfToken(signal?: AbortSignal): Promise<string>
   const body = await fetchJson<{ csrfToken?: unknown }>(
     '/api/owner/csrf',
     { cache: 'no-store', signal },
-    { timeoutMs: 10_000, maxBytes: 8 * 1024 },
+    { timeoutMs: POLLING.ownerTimeout, maxBytes: 8 * 1024 },
   );
   if (typeof body.csrfToken !== 'string' || !body.csrfToken) {
     throw new Error('Unable to initialize secure owner session');

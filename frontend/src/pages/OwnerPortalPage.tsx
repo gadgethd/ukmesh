@@ -4,6 +4,7 @@ import './owner-portal.css';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { OwnerLoginSection, OwnerPacketSharingSection, OwnerPublicFeedSection } from '../components/owner/OwnerPortalSections.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
+import { POLLING } from '../config/polling.js';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll.js';
 import { ApiResponseError, fetchJson } from '../utils/api.js';
 import { isValidMapCoord } from '../utils/pathing.js';
@@ -137,7 +138,7 @@ export const OwnerPortalPage: React.FC = () => {
     fetchJson<OwnerSessionResponse>(
       '/api/owner/session',
       { cache: 'no-store', signal: controller.signal },
-      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
+      { timeoutMs: POLLING.ownerTimeout, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
     )
       .then((json) => {
         if (controller.signal.aborted) return;
@@ -168,7 +169,7 @@ export const OwnerPortalPage: React.FC = () => {
     const json = await fetchJson<OwnerSessionResponse>(
       '/api/owner/session',
       { cache: 'no-store', signal },
-      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
+      { timeoutMs: POLLING.ownerTimeout, maxBytes: 2 * 1024 * 1024, validate: isOwnerSessionResponse },
     );
     if (signal.aborted) return;
     setDashboard(json.dashboard);
@@ -182,8 +183,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard,
     scopeKey: `owner-session:${ownerSessionKey ?? 'pending'}`,
-    intervalMs: 15_000,
-    timeoutMs: 10_000,
+    intervalMs: POLLING.ownerSession,
+    timeoutMs: POLLING.ownerTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();
@@ -210,7 +211,7 @@ export const OwnerPortalPage: React.FC = () => {
           },
           body: JSON.stringify(credentials),
         }, {
-          timeoutMs: 15_000,
+          timeoutMs: POLLING.ownerHistoryTimeout,
           maxBytes: 2 * 1024 * 1024,
           validate: isOwnerSessionResponse,
           readErrorMessage: true,
@@ -239,7 +240,7 @@ export const OwnerPortalPage: React.FC = () => {
           method: 'POST',
           headers: { 'X-CSRF-Token': csrfToken },
         }, {
-          timeoutMs: 10_000,
+          timeoutMs: POLLING.ownerTimeout,
           maxBytes: 8 * 1024,
           validate: (value): value is { ok: boolean } => isRecord(value) && value['ok'] === true,
         }),
@@ -280,8 +281,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard && isPacketSharingOwner(ownerSessionKey) && Boolean(selectedNodeId),
     scopeKey: `owner-packet-sharing:${ownerSessionKey ?? 'none'}:${selectedNodeId}`,
-    intervalMs: 5_000,
-    timeoutMs: 10_000,
+    intervalMs: POLLING.ownerQueue,
+    timeoutMs: POLLING.ownerTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();
@@ -314,8 +315,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey),
     scopeKey: `owner-public-feed:${ownerSessionKey ?? 'none'}`,
-    intervalMs: 5_000,
-    timeoutMs: 10_000,
+    intervalMs: POLLING.ownerQueue,
+    timeoutMs: POLLING.ownerTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();
@@ -336,7 +337,7 @@ export const OwnerPortalPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
         body: JSON.stringify({ enabled }),
       }, {
-        timeoutMs: 10_000,
+        timeoutMs: POLLING.ownerTimeout,
         maxBytes: 32 * 1024,
         validate: (value): value is OwnerPublicFeed => isOwnerPublicFeedResponse(value),
       }))
@@ -363,7 +364,7 @@ export const OwnerPortalPage: React.FC = () => {
           destinationIds,
         }),
       }, {
-        timeoutMs: 10_000,
+        timeoutMs: POLLING.ownerTimeout,
         maxBytes: 32 * 1024,
         validate: (value): value is { nodeId: string; enabled: boolean; destinationIds: string[] } => (
           isRecord(value)
@@ -405,7 +406,7 @@ export const OwnerPortalPage: React.FC = () => {
     const json = await fetchJson<OwnerLiveResponse>(
       `/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`,
       { cache: 'no-store', signal },
-      { timeoutMs: 10_000, maxBytes: 4 * 1024 * 1024, validate: isOwnerLiveResponse },
+      { timeoutMs: POLLING.ownerTimeout, maxBytes: 4 * 1024 * 1024, validate: isOwnerLiveResponse },
     );
     if (signal.aborted) return;
     setLiveResult({ scope: liveScope, data: json });
@@ -414,8 +415,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
     scopeKey: liveScope,
-    intervalMs: 10_000,
-    timeoutMs: 10_000,
+    intervalMs: POLLING.ownerLive,
+    timeoutMs: POLLING.ownerTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();
@@ -441,7 +442,7 @@ export const OwnerPortalPage: React.FC = () => {
       const json = await fetchJson<OwnerLastHopStrengthResponse>(
         `/api/owner/live-last-hop?nodeId=${encodeURIComponent(selectedNodeId)}&window=${lastHopWindow}`,
         { cache: 'no-store', signal },
-        { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
+        { timeoutMs: POLLING.ownerHistoryTimeout, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
       );
       return json.points;
     });
@@ -452,8 +453,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
     scopeKey: `owner-last-hop:${lastHopScope}:${selectedNodeId}`,
-    intervalMs: 60_000,
-    timeoutMs: 15_000,
+    intervalMs: POLLING.ownerHistory,
+    timeoutMs: POLLING.ownerHistoryTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();
@@ -476,7 +477,7 @@ export const OwnerPortalPage: React.FC = () => {
           const json = await fetchJson<OwnerLastHopStrengthResponse>(
             `/api/owner/live-last-hop?nodeId=${encodeURIComponent(nodeId)}&window=${lastHopWindow}`,
             { cache: 'no-store' },
-            { timeoutMs: 15_000, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
+            { timeoutMs: POLLING.ownerHistoryTimeout, maxBytes: 8 * 1024 * 1024, validate: isOwnerLastHopStrengthResponse },
           );
           return json.points;
         });
@@ -489,8 +490,8 @@ export const OwnerPortalPage: React.FC = () => {
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && compareActive,
     scopeKey: `owner-last-hop-compare:${lastHopScope}:${compareKey}`,
-    intervalMs: 60_000,
-    timeoutMs: 20_000,
+    intervalMs: POLLING.ownerHistory,
+    timeoutMs: POLLING.ownerHistoryPollTimeout,
     onError: (pollError) => {
       if (pollError instanceof ApiResponseError && pollError.status === 401) {
         clearOwnerSession();

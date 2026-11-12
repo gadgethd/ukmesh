@@ -17,11 +17,12 @@ test.beforeEach(async ({ page }) => {
 
     const nodes = Array.from({ length: 4_600 }, (_, index) => ({
       node_id: index.toString(16).padStart(64, '0'),
+      public_key: index.toString(16).padStart(64, '0'),
       name: `Load fixture ${index}`,
       role: 2,
       lat: 49.8 + (index % 100) * 0.105,
       lon: -7.8 + (index % 80) * 0.125,
-      last_seen: '2026-08-02T00:00:00.000Z',
+      last_seen: new Date().toISOString(),
       is_online: true,
     }));
     class FixtureWebSocket extends EventTarget {
@@ -190,6 +191,66 @@ test('HopReach tiles arrive progressively while the 4,600-node map remains inter
   await expect(page.getByRole('button', { name: 'Layers' }).first()).toBeEnabled();
   expect(before?.width).toBeGreaterThan(250);
   expect(requests.some((path) => path.startsWith('/api/coverage'))).toBe(false);
+});
+
+test('RF polling pauses when unused or hidden and follows a visible node job with the layer off', async ({ page }, testInfo) => {
+  test.setTimeout(60_000);
+  const key = '0'.repeat(64);
+  await page.addInitScript(() => localStorage.setItem('meshcore-rf-coverage-visible-v1', '0'));
+  let polls = 0;
+  let nodeState: 'computing' | 'available' = 'computing';
+  await page.route('**/rf-coverage/meta.json*', route => {
+    polls++;
+    return route.fulfill({ json: { generated_at: new Date().toISOString(), source: 'Synthetic', version: 'fixture', complete: true,
+      node_coverage: { [key]: { dataset_id: `n${'1'.repeat(24)}`, run_id: 'invented', state: nodeState,
+        position_status: 'active', lat: 49.8, lon: -7.8, requested_at: new Date().toISOString(), updated_at: new Date().toISOString(),
+        fresh_until: new Date(Date.now() + 60_000).toISOString(),
+        ...(nodeState === 'available' ? { standard: { tiles: [{ image: `tiles/nodes/n${'1'.repeat(24)}/0-0.png`,
+          bounds: { South: 49, North: 55, West: -9, East: 3 } }] } } : {}) } },
+    } });
+  });
+  await page.route('**/rf-coverage/nodes/*/request', route => route.fulfill({ status: 202 }));
+  await page.goto(`/?node=${key}&layers=feed`);
+  await expect(page.getByText('Live Map', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: testInfo.project.name === 'dashboard-mobile' ? 'Layers' : 'Show map layers' }).first().click();
+  const toggle = page.getByRole('button', { name: 'RF Coverage', exact: true }).first();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await page.waitForTimeout(3500);
+  expect(polls).toBe(0);
+  await toggle.click();
+  await expect.poll(() => polls).toBeGreaterThan(0);
+  const beforeHidden = polls;
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await page.waitForTimeout(3500);
+  expect(polls).toBe(beforeHidden);
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect.poll(() => polls).toBeGreaterThan(beforeHidden);
+  await toggle.click();
+  const beforeUnused = polls;
+  await page.waitForTimeout(3500);
+  expect(polls).toBe(beforeUnused);
+  if (testInfo.project.name === 'dashboard-mobile') await page.getByRole('button', { name: 'Close menu', exact: true }).click();
+  await page.getByRole('dialog', { name: 'Node details' }).getByRole('tab', { name: 'Path', exact: true }).click();
+  await page.getByRole('button', { name: 'Show RF coverage', exact: true }).first().click();
+  await expect.poll(() => polls).toBeGreaterThan(beforeUnused);
+  if (testInfo.project.name === 'dashboard-mobile') await page.getByRole('button', { name: 'Layers' }).first().click();
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  const pendingPolls = polls;
+  await expect.poll(() => polls, { timeout: 6000 }).toBeGreaterThan(pendingPolls);
+  nodeState = 'available';
+  const completionPolls = polls;
+  await expect.poll(() => polls, { timeout: 6000 }).toBeGreaterThan(completionPolls);
+  await page.waitForTimeout(300);
+  const completedPolls = polls;
+  await page.waitForTimeout(3500);
+  expect(polls).toBe(completedPolls);
 });
 
 test('enabled HopReach coverage survives metadata winning the initial map-load race', async ({ page }, testInfo) => {

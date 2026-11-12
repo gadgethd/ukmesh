@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from 'react';
 import { fetchJson } from '../utils/api.js';
+import { POLLING } from './polling.js';
+import { createVisibilityPoller } from '../utils/visibilityPoller.js';
 
 export type RuntimeFeatureSnapshot = {
   packetArcs: boolean;
@@ -13,17 +15,13 @@ type RuntimeFeatureResponse = RuntimeFeatureSnapshot & {
   version: 1;
 };
 
-const DEFAULT_REFRESH_SECONDS = 30;
-const MIN_REFRESH_SECONDS = 5;
-const MAX_REFRESH_SECONDS = 300;
-const REQUEST_TIMEOUT_MS = 3_000;
 
 export const FAIL_CLOSED_RUNTIME_FEATURES: RuntimeFeatureSnapshot = Object.freeze({
   packetArcs: false,
   heatmap: false,
   regionScoping: false,
   privacyGeneration: 0,
-  refreshAfterSeconds: DEFAULT_REFRESH_SECONDS,
+  refreshAfterSeconds: POLLING.runtimeDefaultSeconds,
 });
 
 let snapshot: RuntimeFeatureSnapshot = FAIL_CLOSED_RUNTIME_FEATURES;
@@ -58,8 +56,8 @@ export function parseRuntimeFeatureConfig(value: unknown): RuntimeFeatureSnapsho
     || value['privacyGeneration'] < 0
     || typeof value['refreshAfterSeconds'] !== 'number'
     || !Number.isInteger(value['refreshAfterSeconds'])
-    || value['refreshAfterSeconds'] < MIN_REFRESH_SECONDS
-    || value['refreshAfterSeconds'] > MAX_REFRESH_SECONDS) {
+    || value['refreshAfterSeconds'] < POLLING.runtimeMinSeconds
+    || value['refreshAfterSeconds'] > POLLING.runtimeMaxSeconds) {
     return FAIL_CLOSED_RUNTIME_FEATURES;
   }
 
@@ -76,15 +74,19 @@ export function parseRuntimeFeatureConfig(value: unknown): RuntimeFeatureSnapsho
 
 export async function refreshRuntimeFeatures(
   fetchImpl: typeof fetch = globalThis.fetch,
+  signal?: AbortSignal,
 ): Promise<RuntimeFeatureSnapshot> {
   try {
     const payload = await fetchJson<unknown>('/api/runtime-config', {
       cache: 'no-store',
       credentials: 'same-origin',
-    }, { timeoutMs: REQUEST_TIMEOUT_MS, maxBytes: 16 * 1024, fetchImpl });
+      signal,
+    }, { timeoutMs: POLLING.runtimeTimeout, maxBytes: 16 * 1024, fetchImpl });
+    if (signal?.aborted) return signal.reason?.name === 'TimeoutError' ? publish(FAIL_CLOSED_RUNTIME_FEATURES) : snapshot;
     const parsed = parseRuntimeFeatureConfig(payload);
     return publish(parsed);
   } catch {
+    if (signal?.aborted) return signal.reason?.name === 'TimeoutError' ? publish(FAIL_CLOSED_RUNTIME_FEATURES) : snapshot;
     return publish(FAIL_CLOSED_RUNTIME_FEATURES);
   }
 }
@@ -94,50 +96,20 @@ export function initializeRuntimeFeatures(): Promise<RuntimeFeatureSnapshot> {
 }
 
 export function startRuntimeFeaturePolling(): () => void {
-  let stopped = false;
-  let running = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-
-  const clearScheduled = () => {
-    if (timer !== null) globalThis.clearTimeout(timer);
-    timer = null;
-  };
-
-  const schedule = () => {
-    clearScheduled();
-    if (stopped || document.visibilityState !== 'visible') return;
-    timer = globalThis.setTimeout(() => {
-      timer = null;
-      void refreshOnce();
-    }, snapshot.refreshAfterSeconds * 1_000);
-  };
-
-  const refreshOnce = async () => {
-    if (stopped || running || document.visibilityState !== 'visible') return;
-    running = true;
-    try {
-      await refreshRuntimeFeatures();
-    } finally {
-      running = false;
-      schedule();
-    }
-  };
-
-  const onVisibilityChange = () => {
-    if (document.visibilityState !== 'visible') {
-      clearScheduled();
-      return;
-    }
-    void refreshOnce();
-  };
-
-  document.addEventListener('visibilitychange', onVisibilityChange);
-  schedule();
-  return () => {
-    stopped = true;
-    clearScheduled();
-    document.removeEventListener('visibilitychange', onVisibilityChange);
-  };
+  const poller = createVisibilityPoller({
+    poll: async signal => { await refreshRuntimeFeatures(globalThis.fetch, signal); },
+    intervalMs: () => snapshot.refreshAfterSeconds * 1_000,
+    timeoutMs: POLLING.runtimeTimeout,
+    immediate: false,
+    // Privacy authority refreshes use the server's bounded cadence, without jitter.
+    jitterRatio: 0,
+    isVisible: () => document.visibilityState === 'visible',
+    subscribeVisibility: listener => {
+      document.addEventListener('visibilitychange', listener);
+      return () => document.removeEventListener('visibilitychange', listener);
+    },
+  });
+  return poller.stop;
 }
 
 export function getRuntimeFeatureSnapshot(): RuntimeFeatureSnapshot {

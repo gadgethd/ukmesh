@@ -4,13 +4,35 @@ import {
   availableRfCoverageTiers,
   isValidRfCoverageTile,
   rfNodeCoverageState,
+  rfCoveragePollingPolicy,
   type RfCoverageMeta,
 } from './useRfCoverage.js';
+import { POLLING } from '../config/polling.js';
 
 const validTile = {
   image: 'tiles/standard/0-0.png',
   bounds: { South: 49, North: 55, West: -6, East: 2 },
 };
+
+test('RF polls only visible work, preserves one discovery read and backs off after completion', () => {
+  const key = 'a'.repeat(64);
+  const off = { layerVisible: false, nodeKey: key, nodeRequestVisible: false };
+  assert.equal(rfCoveragePollingPolicy(false, { ...off, layerVisible: true }, null, false).enabled, false);
+  assert.equal(rfCoveragePollingPolicy(true, off, null, true).enabled, false);
+  assert.equal(rfCoveragePollingPolicy(true, { ...off, discoverOnMount: true }, null, false).enabled, true);
+  assert.equal(rfCoveragePollingPolicy(true, { ...off, discoverOnMount: true }, null, true).enabled, false);
+  const pending = { ...off, nodeRequestVisible: true };
+  assert.deepEqual(rfCoveragePollingPolicy(true, pending, null, true), { enabled: true, intervalMs: POLLING.rfActive });
+  const meta = { complete: true, node_coverage: { [key]: { state: 'available', position_status: 'active',
+    fresh_until: new Date(Date.now() + 60_000).toISOString(), standard: { tiles: [validTile] } } } } as unknown as RfCoverageMeta;
+  assert.equal(rfCoveragePollingPolicy(true, pending, meta, true).enabled, false);
+  assert.deepEqual(rfCoveragePollingPolicy(true, { ...off, layerVisible: true }, meta, true), { enabled: true, intervalMs: POLLING.rfIdle });
+  meta.node_coverage![key]!.state = 'computing';
+  assert.deepEqual(rfCoveragePollingPolicy(true, pending, meta, true), { enabled: true, intervalMs: POLLING.rfActive });
+  assert.deepEqual(rfCoveragePollingPolicy(true, { ...off, layerVisible: true }, meta, true), { enabled: true, intervalMs: POLLING.rfActive });
+  meta.node_coverage![key]!.state = 'failed';
+  assert.equal(rfCoveragePollingPolicy(true, pending, meta, true).enabled, false);
+});
 
 test('coverage availability accepts progressive standard then precision tiles', () => {
   const meta = {
