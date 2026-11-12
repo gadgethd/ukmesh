@@ -1,5 +1,5 @@
 import type { getNodes } from '../db/index.js';
-import { isPrivateNode } from '../api/utils/privateNode.js';
+import { isPrivateNode } from '../privacy/privateNode.js';
 
 /** Load the shared map-visible set plus public endpoints referenced by the
  * actual, bounded initial packet/message payload. Viable link endpoints are

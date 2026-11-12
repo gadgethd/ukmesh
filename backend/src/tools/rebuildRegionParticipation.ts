@@ -39,7 +39,7 @@ import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.j
 import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
 import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
 import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
-import { isPrivateNode } from '../api/utils/privateNode.js';
+import { isPrivateNode } from '../privacy/privateNode.js';
 
 const { Pool } = pg;
 

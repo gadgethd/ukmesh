@@ -1,5 +1,5 @@
 import type { LivePacket, WSMessage } from '../types/index.js';
-import { isPrivateNode } from '../api/utils/privateNode.js';
+import { isPrivateNode } from '../privacy/privateNode.js';
 import type { PrivatePrefixCache } from '../privacy/privatePrefixCache.js';
 
 /** Current authority for all public message types; frozen flags are metadata. */

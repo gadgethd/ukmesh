@@ -4,7 +4,7 @@ import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
-import { isPrivateNode } from '../utils/privateNode.js';
+import { isPrivateNode } from '../../privacy/privateNode.js';
 import {
   combinedTopologyRows,
   type TopologyRow,

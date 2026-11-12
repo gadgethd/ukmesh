@@ -28,7 +28,6 @@
     "api/routes/regions.ts": [],
     "api/routes/rfValidation.test.ts": [],
     "api/routes/telemetry.ts": [],
-    "api/utils/networkFilters.ts": [],
     "db/index.ts": [
       "node_identity_link_radio_reports"
     ],
@@ -72,7 +71,6 @@
     "maintenance/staleMqttObservers.test.ts": [],
     "maintenance/staleMqttObservers.ts": [],
     "mqtt/client.ts": [],
-    "mqtt/observationIdentity.ts": [],
     "mqtt/spamDetector.ts": [],
     "nodes/mapSuppressions.ts": [],
     "operations/operatorOperations.ts": [],
@@ -88,9 +86,7 @@
     "path-beta/championPriors.ts": [],
     "path-beta/resolver.ts": [],
     "path-beta/slowMode.ts": [],
-    "path-lazy/evaluate.ts": [],
     "path-lazy/lazyResolver.ts": [],
-    "path-lazy/lazyResolverLegacy.ts": [],
     "path-learning/rebuild.privacy.test.ts": [],
     "path-learning/rebuild.ts": [],
     "pathing/pathingRepository.ts": [],
@@ -142,6 +138,8 @@
     "workers/syntheticPersistence.ts": [],
     "ws/initialStateNodes.integration.test.ts": [],
     "ws/publicAuthorization.integration.test.ts": [],
-    "ws/regionScoping.integration.test.ts": []
+    "ws/regionScoping.integration.test.ts": [],
+    "platform/query/networkFilters.ts": [],
+    "db/observationIdentity.ts": []
   }
 }

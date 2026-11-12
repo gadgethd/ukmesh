@@ -3,7 +3,7 @@ import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
-import { isPrivateNode, redactPrivateNode } from '../utils/privateNode.js';
+import { isPrivateNode, redactPrivateNode } from '../../privacy/privateNode.js';
 import { parseRegionFilter } from '../../regions/filter.js';
 import type { NodeRepository } from '../../repositories/nodes.js';
 import type { GetNodesOptions } from '../../db/index.js';
