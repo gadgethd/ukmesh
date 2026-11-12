@@ -1,9 +1,10 @@
+import { initializePacketPersistence } from './db/packetPersistence.js';
 import 'node:process';
 import http from 'node:http';
 import express from 'express';
 import compression from 'compression';
 import cors from 'cors';
-import { closeDb, initDb, analyticsPool, pool, query } from './db/index.js';
+import { closeDb, initDb, analyticsPool, pool, query } from './db/runtime.js';
 import { refreshNodeIdentityAliases } from './db/nodeIdentity.js';
 import { refreshNodeMapSuppressions } from './nodes/mapSuppressions.js';
 import {
@@ -249,6 +250,7 @@ process.on('uncaughtException', (error) => {
 });
 
 async function main() {
+  initializePacketPersistence();
   // 1. Initialise DB schema + retention policy
   await initDb();
   const identityRefresh = await refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS });

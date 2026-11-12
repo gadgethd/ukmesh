@@ -1,4 +1,4 @@
-import { pool } from '../db/index.js';
+import { pool } from '../db/runtime.js';
 
 const APPROVAL = 'clear-orphaned-analysis-runs';
 const apply = process.argv.includes('--apply');

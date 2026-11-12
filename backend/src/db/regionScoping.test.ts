@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
-import { getNodes, getRecentPackets, getRecentMessages, getRecentPacketEvents } from './index.js';
+import { getNodes } from '../repositories/nodeReads.js';
+import { getRecentPackets, getRecentMessages, getRecentPacketEvents } from '../repositories/packetReads.js';
 import { networkFilters } from '../platform/query/networkFilters.js';
 
 test('region SQL scopes representatives, counts and nodes with parameterized indexed predicates', async (t) => {

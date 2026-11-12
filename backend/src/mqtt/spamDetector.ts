@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { haversineKm } from '../platform/geo.js';
-import { query, type DatabaseQueryFn } from '../db/index.js';
+import { query } from '../db/runtime.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import { readSpamSnapshot } from './spamSnapshot.js';
 import { spamDetectorSnapshotEntries, spamDetectorSnapshotUpdatedSeconds, spamDetectorRefreshHealthy, spamDetectorRefreshesTotal, setSpamDetectorRuntimeCollector } from '../metrics.js';
 

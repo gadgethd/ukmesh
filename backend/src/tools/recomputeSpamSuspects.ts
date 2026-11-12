@@ -1,5 +1,6 @@
 import { evaluateAdvert, refreshSpamDetectorCaches } from '../mqtt/spamDetector.js';
-import { pool, query, replaceSpamSuspects, type SpamSuspectRow } from '../db/index.js';
+import { replaceSpamSuspects, type SpamSuspectRow } from '../spam/suspectRepository.js';
+import { pool, query } from '../db/runtime.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 
 type CandidateRow = {

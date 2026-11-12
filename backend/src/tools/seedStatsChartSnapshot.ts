@@ -1,4 +1,4 @@
-import { pool, query } from '../db/index.js';
+import { pool, query } from '../db/runtime.js';
 import {
   CHART_SNAPSHOT_MAX_BYTES,
   saveStoredChartSnapshot,

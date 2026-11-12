@@ -1,4 +1,4 @@
-import { pool, query } from '../db/index.js';
+import { pool, query } from '../db/runtime.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 
 const PUBLIC_PACKET_PRIVACY_SQL = publicPacketPrivacySql('p');

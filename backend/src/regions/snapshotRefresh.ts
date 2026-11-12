@@ -1,4 +1,4 @@
-import type { DatabaseQueryFn } from '../db/index.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { observeWorkerOutcome, regionSnapshotHealthy, regionSnapshotPublishedSeconds, regionSnapshotRunning } from '../metrics.js';
 import type { regionRebuildSettings } from './rebuildSettings.js';

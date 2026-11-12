@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { getRecentMessages, getRecentPackets } from '../db/index.js';
+import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import type { QueryFn } from '../db/packetBatch.js';
 
 const databaseUrl = process.env['DATABASE_URL'];

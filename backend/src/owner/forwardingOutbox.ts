@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { observeWorkerOutcome } from '../metrics.js';
 import type { LivePacket } from '../types/index.js';

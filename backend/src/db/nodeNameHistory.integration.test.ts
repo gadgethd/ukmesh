@@ -7,7 +7,7 @@ import test from 'node:test';
 import express, { Router } from 'express';
 import { rateLimit } from 'express-rate-limit';
 import pg from 'pg';
-import { upsertNode, insertNodeStatusSample } from './index.js';
+import { upsertNode, insertNodeStatusSample } from '../repositories/nodeState.js';
 import { persistStatusTelemetrySample } from '../mqtt/statusTelemetry.js';
 import { createNodeRepository } from '../repositories/nodes.js';
 import { registerNodeRoutes } from '../api/routes/nodes.js';

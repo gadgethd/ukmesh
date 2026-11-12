@@ -1,5 +1,5 @@
 import fs from 'node:fs';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import {
   getAppliedOwnerAclArtifact,
   getOwnerAclReadiness,

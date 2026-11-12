@@ -1,7 +1,4 @@
-import {
-  closeDb,
-  query,
-} from '../db/index.js';
+import { closeDb, query } from '../db/runtime.js';
 import {
   closeOwnerAuthDb,
   getOwnerAclReadiness,

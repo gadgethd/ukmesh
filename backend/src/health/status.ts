@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { Redis } from 'ioredis';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import {
   configuredLifecycleTargets,

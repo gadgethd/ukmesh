@@ -1,4 +1,5 @@
-import { getPublicVisibilityGeneration, query as dbQuery } from '../db/index.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
+import { query as dbQuery } from '../db/runtime.js';
 import { loadSpamMessageConfig, type SpamMessageConfig } from './config.js';
 import { clusterMessages, incidentStatus, SpamAnalysisBudgetExceededError } from './cluster.js';
 import { estimateOrigin } from './origin.js';

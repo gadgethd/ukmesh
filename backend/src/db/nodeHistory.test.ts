@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
-import { getNodeHistory } from './index.js';
+import { getNodeHistory } from '../repositories/nodeReads.js';
 
 test('history retains its DTO, indexed alias predicates, time cap and fail-closed privacy in both directions', async (t) => {
   const rows = [{ time: '2026-09-07T12:00:00Z', packet_hash: '1234', src_node_id: 'B'.repeat(64),

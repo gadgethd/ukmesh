@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 import type { QueryResultRow } from 'pg';
-import { getRecentMessages, getRecentPackets } from './index.js';
+import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import type { QueryFn } from './packetBatch.js';
 
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];

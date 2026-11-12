@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import type { DatabaseQueryFn } from '../db/index.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import { metricsRegistry, spamDetectorRefreshHealthy, spamDetectorSnapshotUpdatedSeconds, spamDetectorRuntimeEntries } from '../metrics.js';
 import { evaluateAdvert, refreshSpamDetectorCaches } from './spamDetector.js';
 

@@ -4,7 +4,7 @@
  * past the reader-overlap retention interval, then been deleted by the writer.
  */
 import { Redis } from 'ioredis';
-import { query, closeDb, withTransaction } from '../db/index.js';
+import { query, closeDb, withTransaction } from '../db/runtime.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';

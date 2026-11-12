@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
 import { createPacketShareRepository } from './packetShareRepository.js';
-import type { DatabaseQueryFn } from '../db/index.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import type { LivePacket } from '../types/index.js';
 
 const databaseUrl = process.env['PACKET_SHARE_TEST_DATABASE_URL'];

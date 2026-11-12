@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
-import { closeDb, type DatabaseQueryFn } from '../db/index.js';
+import { closeDb } from '../db/runtime.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import { spamDetectorRefreshHealthy } from '../metrics.js';
 import { evaluateAdvert, refreshSpamDetectorCaches } from './spamDetector.js';
 import { readSpamSnapshot } from './spamSnapshot.js';

@@ -1,4 +1,4 @@
-import type { getNodes } from '../db/index.js';
+import type { getNodes } from '../repositories/nodeReads.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
 
 /** Load the shared map-visible set plus public endpoints referenced by the

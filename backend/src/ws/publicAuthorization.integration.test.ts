@@ -31,7 +31,7 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
   process.env['WARMUP_NETWORKS'] = '';
   process.env['MQTT_INGEST_MODE'] = 'ram';
   const { initWebSocketServer, closeWebSocketServer } = await import('./server.js');
-  const { closeDb } = await import('../db/index.js');
+  const { closeDb } = await import('../db/runtime.js');
   const { configureRamStore } = await import('../ram/liveStore.js');
   const pub = new Redis(redisURL!);
   await pub.ping();

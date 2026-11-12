@@ -5,7 +5,7 @@ import {
 } from '../mqtt/aclManager.js';
 import type { OwnerAclStateUpdate } from './ownerAuth.js';
 import type { OwnerAclGenerationState } from './ownerInventoryBaseline.js';
-import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
+import type { AppliedOwnerAclArtifact } from './ownerAclArtifact.js';
 import { isOwnerAclGenerationSettled } from './ownerInventoryReadiness.js';
 import type { OwnerAclArtifactInput } from './ownerAclArtifacts.js';
 

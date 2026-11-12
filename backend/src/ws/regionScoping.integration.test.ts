@@ -43,7 +43,7 @@ test('real regional sockets isolate snapshots, caches, live packets and node mem
   process.env['MQTT_INGEST_MODE'] = 'durable';
   process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = 'false';
   const { initWebSocketServer, closeWebSocketServer } = await import('./server.js');
-  const { closeDb } = await import('../db/index.js');
+  const { closeDb } = await import('../db/runtime.js');
   const { processNextPrivacyRematerialization } = await import('../workers/privacy-rematerialization.js');
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* fixture only */ }
   const pub = new Redis(redisURL!);

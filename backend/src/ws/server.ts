@@ -4,7 +4,9 @@ import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes, getRecentPackets, getRecentMessages, getViableLinks } from '../db/index.js';
+import { getNodes } from '../repositories/nodeReads.js';
+import { getRecentPackets, getRecentMessages } from '../repositories/packetReads.js';
+import { getViableLinks } from '../repositories/topologyReads.js';
 import {
   InvalidPublicNetworkScopeError,
   PublicAllScopeForbiddenError,

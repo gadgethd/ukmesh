@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import pg from 'pg';
-import { getRecentPackets } from '../db/index.js';
+import { getRecentPackets } from '../repositories/packetReads.js';
 
 /**
  * Regression tests for the three HIGH defects found by the 2026-11-03 identity

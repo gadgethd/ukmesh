@@ -64,7 +64,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       pathFresh, privateNode, crossNetwork, nullIsland, otherRole]);
     await pool.query('UPDATE nodes SET last_path_evidence_at = NOW() WHERE node_id = $1', [pathFresh]);
     process.env['DATABASE_URL'] = url.toString();
-    const db = await import('../db/index.js');
+    const db = { ...await import('../repositories/nodeReads.js'), ...await import('../db/runtime.js') };
     closeDb = db.closeDb;
     const ids = (rows: { node_id: string }[]) => rows.map((row) => row.node_id).sort();
     const expectedMap = [fresh, otherFresh, pathFresh, otherRole].sort();

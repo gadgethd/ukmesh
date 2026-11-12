@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { Redis } from 'ioredis';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { getOwnerNodeIdsForUsername, revokeOwnerSessionsForUsername } from './ownerAuth.js';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { reconcileOwnerAuthorization } from './ownerAclReconciler.js';
 import { groupOwnerNodes, type OwnerDashboardRow } from './ownerDashboard.js';

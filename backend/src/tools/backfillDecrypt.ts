@@ -17,7 +17,7 @@
  */
 import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from '../mqtt/channelRegistry.js';
 import { decodePacketCompat } from '../mqtt/decodePacket.js';
-import { pool } from '../db/index.js';
+import { pool } from '../db/runtime.js';
 
 function log(msg: string): void {
   process.stdout.write(`[backfill ${new Date().toISOString()}] ${msg}\n`);

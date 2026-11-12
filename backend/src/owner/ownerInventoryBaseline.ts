@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import { getNodeIdsForUserInAcl, OWNER_ACL_RENDERER_VERSION } from '../mqtt/aclManager.js';
-import { validAppliedOwnerAclArtifact } from './ownerAclArtifacts.js';
-import type { AppliedOwnerAclArtifact } from './ownerInventoryReadiness.js';
+import { validAppliedOwnerAclArtifact } from './ownerAclArtifact.js';
+import type { AppliedOwnerAclArtifact } from './ownerAclArtifact.js';
 import {
   ownerGrantConfigGeneration,
   type ConfiguredOwnerGrant,

@@ -28,9 +28,6 @@
     "api/routes/regions.ts": [],
     "api/routes/rfValidation.test.ts": [],
     "api/routes/telemetry.ts": [],
-    "db/index.ts": [
-      "node_identity_link_radio_reports"
-    ],
     "db/ledgerArchive.integration.test.ts": [],
     "db/legacyMoveReplay.integration.test.ts": [
       "schema_migrations"
@@ -140,6 +137,9 @@
     "ws/publicAuthorization.integration.test.ts": [],
     "ws/regionScoping.integration.test.ts": [],
     "platform/query/networkFilters.ts": [],
-    "db/observationIdentity.ts": []
+    "db/observationIdentity.ts": [],
+    "repositories/nodeReads.ts": [
+      "node_identity_link_radio_reports"
+    ]
   }
 }

@@ -19,7 +19,7 @@ test('the production status writer preserves replay time without regressing pres
         battery_mv integer, uptime_secs bigint, tx_air_secs bigint, rx_air_secs bigint,
         channel_utilization float, air_util_tx float, stats jsonb, status text);`);
     process.env['DATABASE_URL'] = url;
-    const db = await import('./index.js');
+    const db = { ...await import('../repositories/nodeState.js'), ...await import('./runtime.js') };
     close = db.closeDb;
     const nodeId = 'A'.repeat(64);
     const existing = new Date(Date.now() - 3_600_000).toISOString();

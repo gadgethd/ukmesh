@@ -1,9 +1,5 @@
-import {
-  analyticsPool,
-  closeDb,
-  getPublicVisibilityGeneration,
-  query,
-} from '../db/index.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
+import { analyticsPool, closeDb, query } from '../db/runtime.js';
 import {
   backfillMultibyteObservationIds,
   backfillMultibytePathFacts,

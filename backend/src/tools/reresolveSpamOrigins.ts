@@ -1,4 +1,4 @@
-import { pool, query } from '../db/index.js';
+import { pool, query } from '../db/runtime.js';
 import { loadSpamMessageConfig } from '../spam/config.js';
 import { resolveSpamOrigin } from '../spam/spamResolver.js';
 import { sanitizeOrigin, type PublicIncident } from '../spam/sanitize.js';

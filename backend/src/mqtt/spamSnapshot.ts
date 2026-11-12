@@ -1,4 +1,4 @@
-import type { DatabaseQueryFn } from '../db/index.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 
 export const SPAM_SNAPSHOT_MAX_ROWS = 100_000;
 export const SPAM_SNAPSHOT_MAX_BYTES = 16 * 1024 * 1024;

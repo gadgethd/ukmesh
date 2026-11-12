@@ -21,7 +21,7 @@ test('one batch keeps the maximum for every network and UTC day, including repla
   });
   await bootstrapBaseSchemaFixture(pool);
   // Public reads must also work when the optional tagger has never started.
-  const db = await import('./index.js');
+  const db = { ...await import('../repositories/packetReads.js'), ...await import('./runtime.js') };
   try {
     assert.deepEqual(await db.getRecentPackets(5, 'ukmesh', undefined, 'slim', undefined, (sql, params) => pool.query(sql, params)), []);
     assert.deepEqual(await db.getRecentMessages(5, 'ukmesh', undefined, undefined, (sql, params) => pool.query(sql, params)), []);

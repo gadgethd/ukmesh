@@ -1,4 +1,4 @@
-import type { DatabaseQueryFn } from '../db/index.js';
+import type { DatabaseQueryFn } from '../db/contracts.js';
 import type { LivePacket } from '../types/index.js';
 import { destinationAllowedForOwner, type PacketShareDestinationRow, type PacketShareTarget } from './packetShareConfig.js';
 

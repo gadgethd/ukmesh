@@ -7,7 +7,7 @@ import test from 'node:test';
 import { promisify } from 'node:util';
 import pg, { type QueryResultRow } from 'pg';
 import express, { Router, type RequestHandler } from 'express';
-import { getNodeHistory } from '../../db/index.js';
+import { getNodeHistory } from '../../repositories/nodeReads.js';
 import { rfValidationRows } from '../../repositories/networkAnalysis.js';
 import { networkFilters } from '../../platform/query/networkFilters.js';
 import { registerExportRoutes } from './exports.js';

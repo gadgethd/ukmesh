@@ -1,9 +1,6 @@
-import {
-  getPublicVisibilityGeneration,
-  namedQuery,
-  query,
-  touchNodesPredictedOnline,
-} from '../db/index.js';
+import { touchNodesPredictedOnline } from '../repositories/nodeState.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
+import { namedQuery, query } from '../db/runtime.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { PATH_CONTEXT_MAX_WEIGHT, pathContextWeight } from './contextWeight.js';
 import { packetExcludesPrivateNodesSql, privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';

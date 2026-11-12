@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { assertSpamSuspectScope } from './index.js';
+import { assertSpamSuspectScope } from '../spam/suspectRepository.js';
 
 test('spam suspect replacement rejects rows outside its deletion scope', () => {
   assert.doesNotThrow(() => assertSpamSuspectScope(

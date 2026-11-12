@@ -21,7 +21,7 @@
  */
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import { loadCurrentPublicPrivacyPolicy, type QueryFn } from '../db/packetBatch.js';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
 

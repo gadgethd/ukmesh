@@ -7,7 +7,7 @@ import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../../privacy/privateNode.js';
 import { parseRegionFilter } from '../../regions/filter.js';
 import type { NodeRepository } from '../../repositories/nodes.js';
-import type { GetNodesOptions } from '../../db/index.js';
+import type { GetNodesOptions } from '../../repositories/nodeReads.js';
 import {
   PublicMapInputError,
   encodePublicMapCursor,

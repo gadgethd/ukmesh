@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { pool } from '../db/index.js';
+import { pool } from '../db/runtime.js';
 
 type QueryResultLike<Row = Record<string, unknown>> = {
   rows: Row[];

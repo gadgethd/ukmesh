@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
-import { getRecentMessages, getRecentPackets } from './index.js';
+import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import { packetIdentityKeySql, packetIdentityReadAuthority } from './packetIdentityRead.js';
 
 test('packet identity read helper validates authority and aliases', () => {

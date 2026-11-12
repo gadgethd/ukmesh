@@ -193,7 +193,7 @@ async function recordSlowResolution(
   network: string,
   result: { observers?: unknown; canonicalPath?: unknown },
 ): Promise<void> {
-  const { query } = await import('../db/index.js');
+  const { query } = await import('../db/runtime.js');
   await query(
     `INSERT INTO analytics.path_slow_resolutions
        (packet_hash, network, window_ms, observers_seen, resolved_at, canonical_path)

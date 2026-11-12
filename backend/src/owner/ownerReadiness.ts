@@ -1,10 +1,11 @@
+import type { AppliedOwnerAclArtifact } from './ownerAclArtifact.js';
 import {
   buildOwnerInventoryBaseline,
   type OwnerAclGenerationState,
   type OwnerInventoryAccountRow,
   type OwnerInventoryBaseline,
 } from './ownerInventoryBaseline.js';
-import { validateOwnerInventoryReadiness, type AppliedOwnerAclArtifact, type OwnerInventoryReadinessResult } from './ownerInventoryReadiness.js';
+import { validateOwnerInventoryReadiness, type OwnerInventoryReadinessResult } from './ownerInventoryReadiness.js';
 import type { ConfiguredOwnerGrant } from './ownerGrantConfig.js';
 
 export const OWNER_READINESS_FORMAT = 'meshcore-owner-readiness-v1';

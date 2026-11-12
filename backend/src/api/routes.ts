@@ -16,24 +16,11 @@ import {
   ownerLiveCache,
   statsCache,
 } from './bootstrap/caches.js';
-import {
-  getMultibytePathSegments,
-  getNodes,
-  getNodeHistory,
-  getNodeAdverts,
-  getTopAdvertingRepeaters,
-  getPacketDetail,
-  getPublicVisibilityGeneration,
-  getPublicResponseGeneration,
-  getChannelMessageHistory,
-  getRecentMessageTags,
-  getRecentPacketEvents,
-  getRecentPackets,
-  analyticsQuery,
-  pool,
-  query,
-  withTransaction,
-} from '../db/index.js';
+import { getMultibytePathSegments } from '../repositories/topologyReads.js';
+import { getNodes, getNodeHistory, getNodeAdverts, getTopAdvertingRepeaters } from '../repositories/nodeReads.js';
+import { getPacketDetail, getChannelMessageHistory, getRecentMessageTags, getRecentPacketEvents, getRecentPackets } from '../repositories/packetReads.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration, readReadyVisibilityGeneration as getPublicResponseGeneration } from '../privacy/authority.js';
+import { analyticsQuery, pool, query, withTransaction } from '../db/runtime.js';
 import {
   autoLinkOwnerNodeIds,
   buildOwnerDashboard,

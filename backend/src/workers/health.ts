@@ -1,5 +1,5 @@
 import 'node:process';
-import { initDb } from '../db/index.js';
+import { initDb } from '../db/runtime.js';
 import { captureWorkerHealthSnapshot } from '../health/status.js';
 import { cleanupInactiveNodes, cleanupStaleMqttObservers } from '../maintenance/staleMqttObservers.js';
 import { pollOwnerAlertRules } from '../owner/alertRules.js';

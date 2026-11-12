@@ -1,5 +1,5 @@
 import type { QueryResultRow } from 'pg';
-import { analyticsQuery, pool } from '../db/index.js';
+import { analyticsQuery, pool } from '../db/runtime.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import { normalizeMessage } from './normalize.js';
 import type { Incident, IncidentStatus, MessageRecord, ObserverObservation, OriginEstimate } from './types.js';

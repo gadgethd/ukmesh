@@ -1,18 +1,11 @@
 import { parseAcl } from '../mqtt/aclManager.js';
-import { validAppliedOwnerAclArtifact } from './ownerAclArtifacts.js';
+import { validAppliedOwnerAclArtifact, type AppliedOwnerAclArtifact } from './ownerAclArtifact.js';
 import {
   validateOwnerInventoryBaseline,
   verifyOwnerInventoryBaselineIntegrity,
   type OwnerAclGenerationState,
   type OwnerInventoryBaseline,
 } from './ownerInventoryBaseline.js';
-
-export type AppliedOwnerAclArtifact = {
-  generation: string;
-  rendererVersion: string;
-  contentSha256: string;
-  content: string;
-};
 
 const PUBLIC_FEED_READ = 'topic read public/+/+/packets';
 const GENERATION_MISMATCHES = new Set([

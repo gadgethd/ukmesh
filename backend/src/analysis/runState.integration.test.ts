@@ -79,7 +79,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
   const observedLeases = async () => (await analysisActiveLeases.get()).values
     .find(value => value.labels.workload === 'other')?.value ?? 0;
   const { assertAnalysisPublicationLease } = await import('./publicationFence.js');
-  const db = await import('../db/index.js');
+  const db = { ...await import('../db/runtime.js') };
   pool = db.pool;
   const { query } = db;
 

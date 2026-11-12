@@ -1,6 +1,6 @@
 import { publicJson } from '../../http/publicJson.js';
 import { Router, RequestHandler } from 'express';
-import { getSpamSuspects, getSpamPacketObservers, getSpamAllObservers, getSpamSuspectSummary } from '../../db/index.js';
+import { getSpamSuspects, getSpamPacketObservers, getSpamAllObservers, getSpamSuspectSummary } from '../../spam/suspectRepository.js';
 import { getPublicIncident, getPublicIncidents, getPublicStatus } from '../../spam/repository.js';
 import { loadSpamMessageConfig } from '../../spam/config.js';
 import {

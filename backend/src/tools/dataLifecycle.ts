@@ -1,4 +1,4 @@
-import { pool, query } from '../db/index.js';
+import { pool, query } from '../db/runtime.js';
 function qualifiedTable(policy: { table: string; qualifiedTable?: string }): string {
   return policy.qualifiedTable ?? policy.table;
 }

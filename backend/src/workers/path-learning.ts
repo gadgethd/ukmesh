@@ -1,5 +1,5 @@
 import 'node:process';
-import { initDb } from '../db/index.js';
+import { initDb } from '../db/runtime.js';
 import { rebuildPathLearningModels } from '../path-learning/rebuild.js';
 import { observeWorkerOutcome } from '../metrics.js';
 import { startWorkerMetrics } from './workerMetrics.js';

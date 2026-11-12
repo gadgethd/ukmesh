@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { analyticsPool, analyticsQuery, getPublicVisibilityGeneration } from '../db/index.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
+import { analyticsPool, analyticsQuery } from '../db/runtime.js';
 import {
   analysisGeneration,
   beginAnalysisRun,

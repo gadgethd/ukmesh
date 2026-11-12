@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 import { deliverWebhook } from '../security/outboundWebhook.js';
 
 const MAX_DELIVERY_ATTEMPTS = 5;

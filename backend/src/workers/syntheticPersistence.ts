@@ -1,4 +1,4 @@
-import { query } from '../db/index.js';
+import { query } from '../db/runtime.js';
 
 export type SyntheticCheckResult = {
   name: string;

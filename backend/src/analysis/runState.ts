@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 import os from 'node:os';
-import { pool, query } from '../db/index.js';
+import { pool, query } from '../db/runtime.js';
 import type { BoundedRunStatus } from './boundedRun.js';
 import { assertAnalysisPublicationLease } from './publicationFence.js';
 import { LeaseMetricTracker } from './leaseMetricTracker.js';

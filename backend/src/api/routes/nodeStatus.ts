@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { query } from '../../db/index.js';
+import { query } from '../../db/runtime.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { expandResolverScope } from '../../networks.js';

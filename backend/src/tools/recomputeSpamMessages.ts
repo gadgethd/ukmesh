@@ -1,4 +1,5 @@
-import { getPublicVisibilityGeneration, pool, query } from '../db/index.js';
+import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from '../privacy/authority.js';
+import { pool, query } from '../db/runtime.js';
 import {
   analysisGeneration,
   beginAnalysisRun,

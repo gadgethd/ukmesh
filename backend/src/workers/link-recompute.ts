@@ -1,7 +1,7 @@
 import 'node:process';
 import { randomBytes } from 'node:crypto';
 import { Redis } from 'ioredis';
-import { initDb, pool, query } from '../db/index.js';
+import { initDb, pool, query } from '../db/runtime.js';
 import { backfillHistoricalLinks } from '../mqtt/client.js';
 import {
   queueLinkJob,
