@@ -116,8 +116,8 @@ jobs:
         run: timeout 240s npm run test:migration-supersession
       - name: Qualify synthetic sample loading against the complete migrated schema
         run: timeout 240s npm run test:sample-integration
-      - name: Qualify public node delivery and region repair across privacy changes
-        run: timeout 240s node --import tsx --test --test-concurrency=1 src/api/routes/nodePrivacy.integration.test.ts src/regions/snapshotRefresh.integration.test.ts
+      - name: Qualify node and timeline delivery and region repair across privacy changes
+        run: timeout 240s node --import tsx --test --test-concurrency=1 src/api/routes/nodePrivacy.integration.test.ts src/api/routes/activityTimeline.integration.test.ts src/repositories/pathEvidence.integration.test.ts src/regions/snapshotRefresh.integration.test.ts
       - name: Qualify broker framing and bounded offline replay
         run: |
           fixture_dir="$(mktemp -d)"

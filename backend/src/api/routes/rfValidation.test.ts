@@ -5,16 +5,18 @@ import test from 'node:test';
 import express, { Router, type RequestHandler } from 'express';
 import { networkFilters } from '../../platform/query/networkFilters.js';
 import { registerRfValidationRoutes, RF_VALIDATION_REQUEST_TIMEOUT_MS } from './rfValidation.js';
+import { PUBLIC_REVALIDATE } from '../../http/publicJson.js';
 
 const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
 type RfQuery = NonNullable<Parameters<typeof registerRfValidationRoutes>[2]>;
-async function start(query: RfQuery) {
+async function start(query: RfQuery, authority: RfQuery = async () => ({ rows: [{ generation: '1' }] as never[] })) {
   const router = Router();
   registerRfValidationRoutes(router, {
     limiter: passThroughLimiter as Parameters<typeof registerRfValidationRoutes>[1]['limiter'],
     networkFilters,
     query: async () => { throw new Error('Must not use the unbounded shared query'); },
-  }, query);
+  }, (sql, params, signal) => sql.includes('ops.public_visibility_state')
+    ? authority(sql, params, signal) : query(sql, params, signal));
   const app = express();
   app.use(router);
   const server = app.listen(0, '127.0.0.1');
@@ -98,6 +100,7 @@ test('RF JSON keeps classification summaries and numeric counts, including an ho
     try {
       const response = await fetch(server.url);
       assert.equal(response.status, 200);
+      assert.equal(response.headers.get('cache-control'), PUBLIC_REVALIDATE);
       const body = await response.json() as { windowDays: number; summary: { evaluated: number; observedUnexpected: number }; mismatches: Array<{ sourceName: string; observations: number; strongObservations: number }> };
       assert.equal(body.windowDays, 30);
       assert.equal(body.summary.evaluated, empty ? 0 : 1);
@@ -109,4 +112,43 @@ test('RF JSON keeps classification summaries and numeric counts, including an ho
       }
     } finally { await server.close(); }
   }
+});
+
+test('RF authority reads share the request deadline and cancellation signal', { timeout: 6_000 }, async () => {
+  let aborted = false;
+  const server = await start(async () => { assert.fail('Rows must not load before authority'); },
+    async (_sql, _params, signal) => new Promise((_resolve, reject) => {
+      signal!.addEventListener('abort', () => { aborted = true; reject(signal!.reason); }, { once: true });
+    }));
+  try {
+    const response = await fetch(server.url);
+    assert.equal(response.status, 503); assert.ok(aborted);
+    assert.equal(response.headers.get('cache-control'), 'no-store');
+  } finally { await server.close(); }
+});
+
+test('RF conditional responses check authority twice and withhold a failed or changed generation', async t => {
+  t.mock.timers.enable({ apis: ['Date'], now: Date.parse('2026-11-12T12:00:00Z') });
+  t.mock.method(console, 'error', () => undefined);
+  let reads = 0, mode = 'ready', loads = 0;
+  const server = await start(async sql => {
+    loads++;
+    return { rows: (sql.includes('FROM core.node_identity_nodes') ? [{ node_id: 'A', name: 'Invented RF node' }] : []) as never[] };
+  }, async (_sql, _params, signal) => {
+    assert.ok(signal); reads++;
+    if (mode === 'initial-failure' || mode === 'final-failure' && reads === 2) throw new Error('unavailable');
+    return { rows: [{ generation: mode === 'final-change' && reads === 2 ? '2' : '1' }] as never[] };
+  });
+  try {
+    const first = await fetch(server.url); assert.equal(first.status, 200); await first.arrayBuffer();
+    const conditional = { cache: 'force-cache' as const, headers: { 'If-None-Match': first.headers.get('etag')! } };
+    reads = 0; assert.equal((await fetch(server.url, conditional)).status, 304); assert.equal(reads, 2);
+    for (const failure of ['initial-failure','final-failure','final-change']) {
+      mode = failure; reads = 0; const before = loads;
+      const response = await fetch(server.url, conditional); assert.equal(response.status, 500);
+      assert.equal(response.headers.get('cache-control'), 'no-store');
+      assert.ok(!JSON.stringify(await response.json()).includes('Invented RF node'));
+      if (failure === 'initial-failure') assert.equal(loads, before);
+    }
+  } finally { await server.close(); }
 });

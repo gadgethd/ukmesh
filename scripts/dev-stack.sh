@@ -91,6 +91,7 @@ export OWNER_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore
 export REDIS_URL=redis://127.0.0.1:6380 MQTT_BROKER_URL=ws://127.0.0.1:9002
 export PORT=3100 JWT_SECRET=local-only-development-secret-at-least-32-characters
 export HTTP_HOST=127.0.0.1 METRICS_HOST=127.0.0.1
+export ALLOWED_ORIGINS=http://127.0.0.1:5173,http://localhost:5173
 export OWNER_COOKIE_SECRET=local-only-cookie-secret-at-least-32-characters OPERATOR_SITE_TOKEN=local-only-token
 export OWNER_ACL_MODE=shadow MOSQUITTO_ACL_PATH="$repo/scripts/local-sample/mosquitto-acl"
 export OWNER_ACL_SHADOW_PATH="$state/owner-acl.shadow" MOSQUITTO_LOG_PATH="$state/mosquitto.log"

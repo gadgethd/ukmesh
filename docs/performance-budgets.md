@@ -121,9 +121,12 @@ Compose smoke checks and browser suites remain together, with sequential
 frontend builds and explicit cleanup of their shared fixture.
 
 Compare whole-run and job/step timestamps separately from local build timings.
-Before this split, one successful run spent 358 seconds on the independent RF
-checks and 132 seconds on monitoring within the 1,877-second critical job.
-That is the scheduling opportunity, not a measured saving from the new layout.
+Successful Actions runs before and after the split had critical jobs of 1,856
+and 1,434 seconds (31 versus 24 minutes). This operational comparison also
+includes two browser fixture timing corrections, and excludes queue time.
+All seven jobs passed; production journeys passed 55 tests without retries,
+with six region, two development-renderer and six basemap tests also passing.
+Aggregate runner time can rise slightly because the isolated jobs repeat setup.
 Retain npm and BuildKit cache-hit evidence with the before/after comparison.
 
 ### Stats route delivery

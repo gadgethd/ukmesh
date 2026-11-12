@@ -42,15 +42,19 @@ try {
   const walBefore = String((await pool.query('SELECT pg_current_wal_lsn()::text AS lsn')).rows[0].lsn);
   const before = await metrics();
   const samples: { elapsedMs: number; values: Record<string, number> }[] = [];
+  // Cover the plan's maximum one-hour soak and bounded drain without growing
+  // the collector indefinitely on longer ad-hoc replays.
+  const sampleIntervalMs = 250;
+  const maximumSamples = 15_000;
   let sampling = false;
   const started = performance.now();
   const timer = setInterval(() => {
-    if (sampling || samples.length >= 2400) return;
+    if (sampling || samples.length >= maximumSamples) return;
     sampling = true;
     void metrics().then(values => samples.push({ elapsedMs: performance.now() - started,
-      values: Object.fromEntries([...values].filter(([key]) => /resident_memory|heap_size_used|eventloop_lag|queue_depth|mqtt_ingest_active/.test(key))),
+      values: Object.fromEntries([...values].filter(([key]) => /resident_memory|heap_size_used|eventloop_lag|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key))),
     })).catch(() => undefined).finally(() => { sampling = false; });
-  }, 250);
+  }, sampleIntervalMs);
   let acknowledgedMs: number;
   let persisted = 0;
   let after = before;
@@ -97,6 +101,8 @@ try {
     settings: { speed: Number(speed), concurrency: Number(concurrency), qos: 1, order: 'timestamp ascending', mode: 'durable' },
     beforeMetrics: Object.fromEntries(before), afterMetrics: Object.fromEntries(after), deltas,
     // Gauges are time samples, not counter deltas. SQL rankings exclude fixture preparation.
+    sampleCollection: { intervalMs: sampleIntervalMs, maximumSamples,
+      observedSpanMs: samples.at(-1)?.elapsedMs ?? 0 },
     samples, walBytes, walBytesPerPacket: walBytes / count, queries,
   }, null, 2) + '\n');
   console.log(JSON.stringify({ persisted, persistedPerSecond: count / (drainedMs / 1000), enqueueToCommitP95UpperBoundSeconds: p95UpperBound, output }));

@@ -15,6 +15,10 @@ Readiness includes persisted row counts, WebSocket delivery and a nonempty
 recent-packets API. The website is at `http://127.0.0.1:5173`; its `/api` and
 `/ws` proxy targets `http://127.0.0.1:3100` using `UKMESH_DEV_API_TARGET`.
 No private dataset is needed for onboarding.
+The backend explicitly allows the local website origins at `127.0.0.1:5173`
+and `localhost:5173`; the replay smoke test supplies that browser Origin when
+checking WebSocket admission. Other browser origins remain subject to the
+backend allowlist.
 
 The script starts digest-pinned TimescaleDB (5433), Redis (6380), Mosquitto
 (MQTT 1884 and WebSocket 9002), backend (3100), region snapshot worker

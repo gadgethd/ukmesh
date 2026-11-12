@@ -12,7 +12,9 @@ export async function smokeSampleReplay(args: string[]): Promise<void> {
   if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) throw new Error('smoke --limit must be 1..1000');
   const directory = requiredOption(args, 'data-dir');
   const pool = new pg.Pool({ connectionString: url, max: 1 });
-  const ws = new WebSocket('ws://127.0.0.1:3100/ws?network=ukmesh');
+  const ws = new WebSocket('ws://127.0.0.1:3100/ws?network=ukmesh', {
+    origin: 'http://127.0.0.1:5173',
+  });
   const seen = new Set<string>();
   ws.on('message', (bytes) => {
     for (const line of bytes.toString().split('\n').filter(Boolean)) {

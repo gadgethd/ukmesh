@@ -127,7 +127,7 @@ router.use((req, res, next) => {
 router.use(healthRoutes);
 router.use(nodeStatusRoutes);
 router.use(radioRoutes);
-registerProductFeatureRoutes(router, query);
+registerProductFeatureRoutes(router, query, getPublicResponseGeneration);
 const OWNER_COOKIE_NAME = 'meshcore_owner_session';
 // 7 days: revocation is now immediate via the credential-generation check
 // (BUG-010), so a long cookie lifetime no longer delays incident response.
@@ -265,6 +265,7 @@ registerActivityTimelineRoutes(router, {
   query,
   networkFilters,
   limiter: STATS_CHARTS_LIMITER,
+  getPublicVisibilityGeneration: getPublicResponseGeneration,
 });
 registerRfValidationRoutes(router, {
   query,

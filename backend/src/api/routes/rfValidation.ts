@@ -4,6 +4,8 @@ import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
 import { queryRfValidation, rfValidationRows } from '../../repositories/networkAnalysis.js';
+import { publicJson } from '../../http/publicJson.js';
+import { readPublicResponseGeneration } from '../../privacy/responseGeneration.js';
 export { RF_VALIDATION_DB_TIMEOUT_MS } from '../../repositories/networkAnalysis.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[], signal?: AbortSignal) => Promise<{ rows: T[] }>;
@@ -34,35 +36,38 @@ export function registerRfValidationRoutes(router: Router, deps: Deps, rfQuery: 
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
-      const result = await rfValidationRows(rfQuery, filters, limit, controller.signal);
-      const links = result.rows.map((row) => ({
-        source: row.node_a_id,
-        target: row.node_b_id,
-        sourceName: row.name_a,
-        targetName: row.name_b,
-        observations: Number(row.observed_count),
-        strongObservations: Number(row.multibyte_observed_count),
-        pathLossDb: row.itm_path_loss_db,
-        modelViable: row.itm_viable,
-        operatorOverride: row.force_viable,
-        lastObserved: row.last_observed,
-        classification: row.classification,
-      }));
-      const mismatches = links.filter((link) => link.classification !== 'match');
-      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=600');
-      res.json({
-        generatedAt: new Date().toISOString(),
-        windowDays: 30,
-        methodology: 'Relay links observed in the last 30 days, ranked by model disagreement and evidence strength. Stored observation counts and ITM results are combined across recently active identity aliases; weak evidence is not a proven model error.',
-        summary: {
-          evaluated: links.length,
-          matches: links.length - mismatches.length,
-          mismatches: mismatches.length,
-          observedUnexpected: mismatches.filter((link) => link.classification === 'observed_unexpected').length,
-          operatorOverrides: mismatches.filter((link) => link.classification === 'operator_override').length,
-          weakModelEvidence: mismatches.filter((link) => link.classification === 'weak_model_evidence').length,
-        },
-        mismatches,
+      await publicJson(res,
+        () => readPublicResponseGeneration(sql => rfQuery(sql, undefined, controller.signal)),
+        async () => {
+          const result = await rfValidationRows(rfQuery, filters, limit, controller.signal);
+          const links = result.rows.map((row) => ({
+            source: row.node_a_id,
+            target: row.node_b_id,
+            sourceName: row.name_a,
+            targetName: row.name_b,
+            observations: Number(row.observed_count),
+            strongObservations: Number(row.multibyte_observed_count),
+            pathLossDb: row.itm_path_loss_db,
+            modelViable: row.itm_viable,
+            operatorOverride: row.force_viable,
+            lastObserved: row.last_observed,
+            classification: row.classification,
+          }));
+          const mismatches = links.filter((link) => link.classification !== 'match');
+          return {
+            generatedAt: new Date().toISOString(),
+            windowDays: 30,
+            methodology: 'Relay links observed in the last 30 days, ranked by model disagreement and evidence strength. Stored observation counts and ITM results are combined across recently active identity aliases; weak evidence is not a proven model error.',
+            summary: {
+              evaluated: links.length,
+              matches: links.length - mismatches.length,
+              mismatches: mismatches.length,
+              observedUnexpected: mismatches.filter((link) => link.classification === 'observed_unexpected').length,
+              operatorOverrides: mismatches.filter((link) => link.classification === 'operator_override').length,
+              weakModelEvidence: mismatches.filter((link) => link.classification === 'weak_model_evidence').length,
+            },
+            mismatches,
+          };
       });
     } catch (err) {
       if (res.destroyed) return;

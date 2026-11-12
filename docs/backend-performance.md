@@ -221,8 +221,8 @@ An additional model memo or shared context-transfer mechanism was not selected:
 the existing reuse already removes repeated prior loads in this fixture. The
 cache-weight correction preserves complete evidence instead of truncating a
 model to fit. Oversized contexts can be used by the current operation but are
-not retained. The final sustained soak still needs to measure complete-process
-memory across the configured worker count.
+not retained. Include complete-process memory across the configured worker
+count in the final sustained qualification.
 
 ## Public node delivery
 
@@ -251,6 +251,51 @@ responses had identical normalized data and 297,618 decoded bytes. An earlier
 time-relative comparison crossed an online-status boundary; the fixed-snapshot
 repeat resolves that parity uncertainty. This records the observed cost of the
 privacy fix, not a speedup or a production SLO.
+
+The activity timeline, RF validation, observer health, link history and firmware
+aggregates also fence delivery with fresh ready-generation reads. Observer
+health remains `no-store`; the others require private revalidation. RF authority
+reads use its existing read-only pool and share the 4.5-second request deadline
+and cancellation signal, including when a browser disconnects.
+
+## Activity timeline query
+
+The timeline groups raw receiver/source identities and their observation weights
+before canonical identity lookup. It retains distinct packet counts, canonical
+observer counts, null-observer buckets, weighted node ordering and the 250-node
+per-bucket limit. Actual PostgreSQL regressions cover aliases, duplicate
+receptions, nulls and a privacy change committed while an HTTP query is held.
+
+On a quiet retained corpus of 54,000 invented ACKs, three alternating pairs used
+the actual compiled route, two request warm-ups, 20 measurements per trial and
+one discarded pair. Median trial p95 fell from 1,342 to 147 ms (89%). Every one
+of the 120 measured response hashes matched after removing `generatedAt`.
+Both versions used a no-op limiter for this isolated query comparison; deployed
+rate limits remain unchanged. PostgreSQL/OS buffers were warm and neither route
+had a response cache. The new timing includes both privacy fence reads.
+
+Historic relay reactivation is a best-effort live-map hint after durable ingest.
+It skips rows held by another writer and can update them on later traffic.
+This avoids waiting or deadlocking on hot relay rows; packet/path/ledger writes
+retain their authoritative transaction. A separate SQL connection holding a
+relay lock verifies that free rows update and busy rows update after unlock.
+
+## Sustained qualification
+
+Keep the workload, warm-up and numerical acceptance rules with each run under
+ignored `plans/measurements/`. A 50,000-entry invalidation cache needs about
+28 minutes to fill at 30 unique packets per second. A 40-minute / 72,000-packet
+run allows a retention comparison after that capacity has warmed. Check the
+broker backlog/drop counters, exact packet/path/ledger persistence and final
+queue drain alongside latency, RSS, heap, cache occupancy and map frames.
+
+`bench:ingest` retains at most 15,000 quarter-second samples, covering an hour
+plus bounded drain, including cache occupancy. Use separate private diagnostic
+instrumentation for post-GC heap and referenced/unreferenced timers; compare
+process RSS separately from the main isolate's heap. Temporary timer occupancy
+depends on admission bursts, so verify that it returns to its pre-replay idle
+level after traffic drains. Confirm browser-origin admission and actual live
+WebSocket messages before treating a rendered map as a live-load measurement.
 
 ## Region snapshot convergence
 

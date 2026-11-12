@@ -79,6 +79,8 @@ export async function reactivateHistoricPathNodes(
        FROM candidates c
        JOIN unique_hashes u ON u.hash = c.hash
      ),
+     -- This live-map hint is best-effort. A busy relay is retried by later
+     -- traffic; waiting here can deadlock with the authoritative ingest writer.
      locked AS MATERIALIZED (
        SELECT n.node_id
        FROM core.nodes n
@@ -86,7 +88,7 @@ export async function reactivateHistoricPathNodes(
        WHERE n.last_path_evidence_at IS NULL
           OR n.last_path_evidence_at < $2::timestamptz
        ORDER BY n.node_id
-       FOR UPDATE OF n
+       FOR UPDATE OF n SKIP LOCKED
      ),
      updated AS (
        UPDATE core.nodes n

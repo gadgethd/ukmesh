@@ -172,6 +172,15 @@ rollback window; a cached copy cannot recover an old chunk that a client never
 loaded. Hashed immutable assets receive new URLs and need no blanket purge.
 No live cache purge or asset deletion is part of local candidate qualification.
 
+Inventory any edge rules that cached the former public API responses, including
+node maps, timeline, RF validation, link history and firmware aggregates. Prepare
+targeted invalidation of those mutable API paths for the authorized cutover.
+New origin responses require revalidation or `no-store`; an edge purge cannot
+retroactively clear a response already fresh in an older browser's HTTP cache.
+Include those prior headers, their expiry and old-client behavior in F2's actual
+deployment rehearsal rather than promising immediate revocation from an origin
+header change alone.
+
 Record actual Timescale jobs and compression/retention settings after the
 schema moves. A migration declaration does not prove a policy is active.
 Disabled policies are not permission to activate destructive lifecycle work;

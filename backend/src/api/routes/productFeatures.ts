@@ -13,6 +13,7 @@ import {
   visibleLinkNodeIds,
 } from '../../repositories/productFeatures.js';
 import { notifyObserverRegistration } from '../../notifications/observerRegistration.js';
+import { publicJson } from '../../http/publicJson.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -24,33 +25,36 @@ const registrationLimiter = rateLimit({
   message: { error: 'Too many registration requests; try again later' },
 });
 
-export function registerProductFeatureRoutes(router: Router, query: QueryFn): void {
+export function registerProductFeatureRoutes(
+  router: Router,
+  query: QueryFn,
+  getPublicVisibilityGeneration: () => Promise<number>,
+): void {
   router.get('/observers/health', async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networks = expandResolverScope(network);
-      const result = await observerHealthRows(query, networks);
-      const maxPackets = Math.max(1, ...result.rows.map((row) => Number(row.packets_48h)));
-      // Generation-keyed public caching is a later step; until then this
-      // aggregate must not be shared across users or cached after a privacy rewrite.
-      res.setHeader('Cache-Control', 'private, no-store');
-      res.json(result.rows.map((row) => {
-        const uptime = Math.min(100, (Number(row.active_hours) / 48) * 100);
-        const packetCoverage = Math.min(100, (Number(row.packets_48h) / maxPackets) * 100);
-        const uniqueSources = Number(row.unique_src_48h);
-        const score = Math.round(uptime * 0.5 + packetCoverage * 0.25 + Math.min(100, uniqueSources * 2) * 0.25);
-        return {
-          node_id: row.node_id,
-          name: row.name,
-          lat: Number(row.lat),
-          lon: Number(row.lon),
-          uptime_pct: Math.round(uptime * 10) / 10,
-          packet_coverage: Math.round(packetCoverage * 10) / 10,
-          unique_src_48h: uniqueSources,
-          score,
-          quality: score >= 75 ? 'good' : score >= 45 ? 'watch' : 'poor',
-        };
-      }));
+      await publicJson(res, getPublicVisibilityGeneration, async () => {
+        const result = await observerHealthRows(query, networks);
+        const maxPackets = Math.max(1, ...result.rows.map((row) => Number(row.packets_48h)));
+        return result.rows.map((row) => {
+          const uptime = Math.min(100, (Number(row.active_hours) / 48) * 100);
+          const packetCoverage = Math.min(100, (Number(row.packets_48h) / maxPackets) * 100);
+          const uniqueSources = Number(row.unique_src_48h);
+          const score = Math.round(uptime * 0.5 + packetCoverage * 0.25 + Math.min(100, uniqueSources * 2) * 0.25);
+          return {
+            node_id: row.node_id,
+            name: row.name,
+            lat: Number(row.lat),
+            lon: Number(row.lon),
+            uptime_pct: Math.round(uptime * 10) / 10,
+            packet_coverage: Math.round(packetCoverage * 10) / 10,
+            unique_src_48h: uniqueSources,
+            score,
+            quality: score >= 75 ? 'good' : score >= 45 ? 'watch' : 'poor',
+          };
+        });
+      }, 'no-store');
     } catch (error) {
       console.error('[api] GET /observers/health', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -83,14 +87,15 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
       const [nodeA, nodeB] = parts.sort();
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networks = expandResolverScope(network);
-      const visible = await visibleLinkNodeIds(query, [nodeA, nodeB], networks);
-      if (new Set(visible.rows.map((row) => row.node_id.toUpperCase())).size !== 2) {
-        res.status(404).json({ error: 'Link not found' });
-        return;
-      }
-      const result = await linkHistoryRows(query, nodeA, nodeB, hours, networks);
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-      res.json({ linkId: `${nodeA}:${nodeB}`, network, hours, points: result.rows });
+      await publicJson(res, getPublicVisibilityGeneration, async () => {
+        const visible = await visibleLinkNodeIds(query, [nodeA, nodeB], networks);
+        if (new Set(visible.rows.map((row) => row.node_id.toUpperCase())).size !== 2) {
+          res.status(404);
+          return { error: 'Link not found' };
+        }
+        const result = await linkHistoryRows(query, nodeA, nodeB, hours, networks);
+        return { linkId: `${nodeA}:${nodeB}`, network, hours, points: result.rows };
+      });
     } catch (error) {
       console.error('[api] GET /links/:id/history', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -101,10 +106,11 @@ export function registerProductFeatureRoutes(router: Router, query: QueryFn): vo
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const networks = expandResolverScope(network);
-      const result = await repeaterFirmwareRows(query, networks);
-      const versions = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
-      res.setHeader('Cache-Control', 'public, max-age=300, stale-while-revalidate=900');
-      res.json({ total: versions.reduce((sum, row) => sum + row.count, 0), versions });
+      await publicJson(res, getPublicVisibilityGeneration, async () => {
+        const result = await repeaterFirmwareRows(query, networks);
+        const versions = result.rows.map((row) => ({ ...row, count: Number(row.count) }));
+        return { total: versions.reduce((sum, row) => sum + row.count, 0), versions };
+      });
     } catch (error) {
       console.error('[api] GET /repeaters/firmware', (error as Error).message);
       res.status(500).json({ error: 'Internal server error' });
