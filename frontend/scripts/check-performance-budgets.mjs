@@ -45,8 +45,8 @@ const budgets = [
   {
     name: 'all JavaScript',
     measure: await measure((file) => file.endsWith('.js')),
-    raw: 3_200 * KIB,
-    gzip: 900 * KIB,
+    raw: 2_900 * KIB,
+    gzip: 850 * KIB,
   },
   {
     name: 'all CSS',

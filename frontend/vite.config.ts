@@ -1,9 +1,9 @@
-import { defineConfig, transformWithOxc } from 'vite';
+import { defaultClientConditions, defineConfig, transformWithOxc } from 'vite';
 import react from '@vitejs/plugin-react';
 import path from 'node:path';
 import fs from 'node:fs';
-import { minify } from 'terser';
 import { prepareMapLibreSource } from './src/plugins/maplibre-source.js';
+import { deduplicateLegalComments } from './src/plugins/legal-comments.js';
 const mapLibreSource = prepareMapLibreSource();
 import viteSeoPlugin from './src/plugins/vite-seo.js';
 
@@ -26,11 +26,11 @@ export default defineConfig(({ command }) => ({
       });
     },
   }, {
-    name: 'compact-production-chunks',
-    renderChunk: { order: 'post', async handler(code) {
-      const result = await minify(code, { module: true, compress: { passes: 2 }, format: { comments: /@license|@preserve|^!/ } });
-      if (result.code == null) throw new Error('Chunk minification produced no output');
-      return { code: result.code, map: null };
+    name: 'distinct-chunk-legal-notices',
+    apply: 'build',
+    renderChunk: { order: 'post', handler(code, chunk) {
+      const compact = deduplicateLegalComments(code, chunk.fileName);
+      return compact === null ? null : { code: compact, map: null };
     } },
   }, react(), viteSeoPlugin(), {
     name: 'maplibre-shared-module-worker',
@@ -53,7 +53,11 @@ export default defineConfig(({ command }) => ({
   }],
   // Production shares the renderer/worker source graph. Development uses the
   // upstream ESM bundle to avoid hundreds of cold source-module requests.
-  resolve: { alias: command === 'build'
+  resolve: {
+    // MapLibre and its deck overlays use WebGL2. Select the upstream 9.4
+    // build that omits WebGPU branches while preserving the same public API.
+    conditions: ['visgl:webgl-only', ...defaultClientConditions],
+    alias: command === 'build'
     ? [{ find: /^maplibre-gl$/, replacement: path.join(mapLibreSource, 'src/index.ts') }]
     : [] },
   optimizeDeps: {
@@ -72,10 +76,20 @@ export default defineConfig(({ command }) => ({
     },
   },
   build: {
+    // Bound worker memory on local machines while parallelizing compression.
+    minify: 'terser',
+    terserOptions: {
+      maxWorkers: 2, module: true, ecma: 2020,
+      compress: { passes: 2 },
+      format: { comments: /@license|@preserve|^!/ },
+    },
     manifest: true,
 
     rollupOptions: {
       output: {
+        // Keep Rolldown's compact final code generation after parallel Terser.
+        minify: true,
+        comments: { legal: true },
         entryFileNames: 'assets/[name]-[hash].js',
         chunkFileNames: 'assets/[name]-[hash].js',
         assetFileNames: 'assets/[name]-[hash].[ext]',

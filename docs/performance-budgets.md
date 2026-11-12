@@ -57,7 +57,7 @@ bytes and “gzip” is computed with Node's default gzip settings.
 | Asset group | Raw limit | Gzip limit |
 | --- | ---: | ---: |
 | Main `App-*` chunk | 900 KiB | 260 KiB |
-| `maplibre-gl-*` chunk | 820 KiB | 225 KiB |
+| `maplibre-*` renderer chunks (excluding worker entry) | 820 KiB | 225 KiB |
 | Recharts categorical chunk | 400 KiB | 110 KiB |
 | All JavaScript | 2,900 KiB | 850 KiB |
 | All CSS | 230 KiB | 42 KiB |
@@ -66,6 +66,50 @@ Run `npm run budget` after `npm run build`. CSS has a separate structural
 gate: no duplicate selector in the same at-rule/cascade context and no
 dashboard/page selector in `styles/globals.css`. Responsive declarations in a
 distinct media query are intentional and are not counted as duplicates.
+
+### Build strategy and measurement
+
+The November 2026 build uses Vite's Terser integration with two workers,
+two compression passes and ES2020 output, followed by Rolldown's compact
+code generation. Both stages preserve legal notices. A parser removes exact
+duplicate notices within each chunk; every distinct notice remains in that
+chunk, and the complete MapLibre license is also emitted as an asset.
+The previous script's 3,200/900 KiB JavaScript allowance has been corrected to
+the approved 2,900/850 limits above.
+
+MapLibre and the deck overlays use WebGL2. The resolver selects deck.gl 9.4's
+supported `visgl:webgl-only` exports while retaining Vite's default client
+conditions. This excludes unused WebGPU branches. A future WebGPU renderer or
+dependency upgrade must qualify those conditions and the emitted worker again.
+Development continues to use the upstream MapLibre module and worker.
+
+On the same four-CPU Linux VM, Node 26.13.1 and locked dependencies, three
+sequential public builds improved from a 13.29 s median to 8.66 s (35%). Each
+set began without TypeScript's incremental cache; later builds reused it.
+The cache lives under `node_modules/.cache` and can be deleted safely.
+GNU time reported up to 1.59 GiB peak process RSS, versus 1.11 GiB before;
+parallel compression trades memory for wall time. Avoid competing build or
+benchmark loads on a 4 GiB machine. The production Playwright server setup
+already builds its three targets sequentially.
+
+The public artifact measured 2,899.5/830.7 KiB raw/gzip JavaScript and the
+dashboard 2,705.0/767.2 KiB, with unchanged byte ceilings. The public raw
+margin is small: every subsequent change must rerun the budget. These are
+local build measurements, not a claim about whole-workflow CI duration.
+Measure that separately from Actions job/step timestamps and cache-hit logs.
+
+For a comparable local result, stop development watchers, hold the target and
+dependencies fixed, and run this from `frontend` on Linux. Retain all three
+times and the budget output; the first build includes cold TypeScript state.
+
+```bash
+rm -f node_modules/.cache/tsconfig.tsbuildinfo
+for run in 1 2 3; do
+  env VITE_BUILD_TARGET=public-website VITE_APP_HOSTNAME=app.ukmesh.com VITE_SITE=ukmesh \
+    /usr/bin/time -f 'wall=%e user=%U system=%S max-rss-KiB=%M' npm run build
+done
+npm run budget
+```
 
 ## HopReach RF calculator
 

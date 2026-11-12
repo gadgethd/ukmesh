@@ -8,6 +8,10 @@
 **/__pycache__
 **/.pytest_cache
 coverage
+plans
+data
+**/test-results
+**/playwright-report
 npm-debug.log*
 terrain-tiles
 mosquitto

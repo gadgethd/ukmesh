@@ -401,18 +401,14 @@ test('repeater search exposes keyboard selection and tolerates IME composition',
   await expect(page.getByRole('heading', { name: 'Alpha Repeater' })).toBeVisible();
   await expect(page.getByText(/54\.50000, 0\.00000/)).toBeVisible();
 
-  await search.evaluate((input: HTMLInputElement) => {
-    input.focus();
-    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, data: '東' }));
-    input.value = '東';
-    input.dispatchEvent(new InputEvent('input', {
-      bubbles: true,
-      data: '東',
-      inputType: 'insertCompositionText',
-      isComposing: true,
-    }));
-    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: '東' }));
-  });
+  // Let Chromium perform composition. Assigning input.value updates React's
+  // value tracker before a synthetic input event and does not model user input.
+  await search.selectText();
+  const ime = await page.context().newCDPSession(page);
+  try {
+    await ime.send('Input.imeSetComposition', { text: '東', selectionStart: 1, selectionEnd: 1 });
+    await ime.send('Input.insertText', { text: '東' });
+  } finally { await ime.detach(); }
   await expect(search).toHaveAttribute('aria-autocomplete', 'list');
   await expect(search).toHaveValue('東');
 });
