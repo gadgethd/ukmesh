@@ -23,12 +23,17 @@ redis_image="redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5
 mosquitto_image="eclipse-mosquitto@sha256:9cfdd46ad59f3e3e5f592f6baf57ab23e1ad00605509d0f5c1e9b179c5314d87"
 busybox_image="busybox@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028"
 
-for command in docker openssl jq tar sha256sum stat head realpath; do
+for command in docker openssl jq tar sha256sum stat head realpath git; do
   command -v "$command" >/dev/null || {
     echo "required command is unavailable: $command" >&2
     exit 69
   }
 done
+application_source_revision="$(git -C "$project_dir" rev-parse HEAD)"
+if [ -n "$(git -C "$project_dir" status --porcelain --untracked-files=normal)" ]; then
+  echo "restore verification requires a clean candidate checkout so its application image identifies one source revision" >&2
+  exit 78
+fi
 for path in \
   "$archive_path" "$backup_receipt" "$backup_signature" "$backup_verify_key" \
   "$decryption_cert" "$decryption_key" "$restore_signing_key" "$restore_verify_key"; do
@@ -261,7 +266,7 @@ for required_mosquitto_configuration in \
     }
 done
 
-docker network create "$network_name" >/dev/null
+docker network create --internal "$network_name" >/dev/null
 docker volume create "$postgres_volume" >/dev/null
 docker volume create "$redis_volume" >/dev/null
 docker volume create "$mosquitto_volume" >/dev/null
@@ -290,12 +295,39 @@ postgres_logs="$(docker logs "$postgres_name" 2>&1)"
 grep -q 'PostgreSQL init process complete' <<<"$postgres_logs"
 docker exec "$postgres_name" pg_isready -U meshcore -d meshcore >/dev/null
 docker exec "$postgres_name" createdb -U meshcore meshcore_owner_auth
-docker exec -i "$postgres_name" pg_restore \
-  -U meshcore -d meshcore --no-owner --no-acl --exit-on-error \
-  <"$payload_dir/analytics.dump"
-docker exec -i "$postgres_name" pg_restore \
-  -U meshcore -d meshcore_owner_auth --no-owner --no-acl --exit-on-error \
-  <"$payload_dir/owner-auth.dump"
+timescale_evidence="$tmp_dir/timescale-restore.jsonl"
+: >"$timescale_evidence"
+restore_database() {
+  local database="$1" dump_path="$2" toc_path jobs_before extension_version
+  toc_path="$tmp_dir/${database}-restore.toc"
+  docker exec -i "$postgres_name" pg_restore --list <"$dump_path" >"$toc_path"
+  if awk '$4 == "EXTENSION" && $6 == "timescaledb" { found = 1 } END { exit !found }' "$toc_path"; then
+    docker exec "$postgres_name" psql -U meshcore -d "$database" -v ON_ERROR_STOP=1 \
+      -c 'CREATE EXTENSION IF NOT EXISTS timescaledb; SELECT timescaledb_pre_restore();' >/dev/null
+    docker exec -i "$postgres_name" pg_restore \
+      -U meshcore -d "$database" --no-owner --no-acl --exit-on-error <"$dump_path"
+    jobs_before="$(docker exec "$postgres_name" psql -U meshcore -d "$database" -v ON_ERROR_STOP=1 -Atc \
+      "SELECT COALESCE(json_agg(json_build_object('job_id', job_id, 'proc_schema', proc_schema, 'proc_name', proc_name, 'scheduled', scheduled) ORDER BY job_id), '[]'::json) FROM timescaledb_information.jobs")"
+    # Retain the restored scheduling inventory, then prevent retention or other
+    # jobs from changing this isolated copy as restore mode is released.
+    docker exec "$postgres_name" psql -U meshcore -d "$database" -v ON_ERROR_STOP=1 \
+      -c 'SELECT alter_job(job_id, scheduled => false) FROM timescaledb_information.jobs; SELECT timescaledb_post_restore();' >/dev/null
+    test "$(docker exec "$postgres_name" psql -U meshcore -d "$database" -Atc \
+      'SELECT COUNT(*) FROM timescaledb_information.jobs WHERE scheduled')" = 0
+    test "$(docker exec "$postgres_name" psql -U meshcore -d "$database" -Atc \
+      'SHOW timescaledb.restoring')" = off
+    extension_version="$(docker exec "$postgres_name" psql -U meshcore -d "$database" -Atc \
+      "SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'")"
+    jq -n --arg database "$database" --arg version "$extension_version" --argjson jobs "$jobs_before" \
+      '{database: $database, version: $version, original_jobs: $jobs, jobs_disabled_in_drill: true, restore_mode_off: true}' \
+      >>"$timescale_evidence"
+  else
+    docker exec -i "$postgres_name" pg_restore \
+      -U meshcore -d "$database" --no-owner --no-acl --exit-on-error <"$dump_path"
+  fi
+}
+restore_database meshcore "$payload_dir/analytics.dump"
+restore_database meshcore_owner_auth "$payload_dir/owner-auth.dump"
 echo "PostgreSQL datasets restored."
 
 echo "Restoring Redis durable state..."
@@ -383,8 +415,10 @@ echo "Mosquitto durable state restored."
 echo "Building current application for migration and smoke verification..."
 docker build \
   --file "$project_dir/Dockerfile.backend" \
+  --build-arg "SOURCE_REVISION=$application_source_revision" \
   --tag "$application_image" \
   "$project_dir" >/dev/null
+application_image_id="$(docker image inspect "$application_image" --format '{{.Id}}')"
 database_url="postgresql://meshcore:${restore_password}@timescaledb:5432/meshcore"
 owner_database_url="postgresql://meshcore:${restore_password}@timescaledb:5432/meshcore_owner_auth"
 redis_url="redis://redis:6379"
@@ -496,12 +530,15 @@ jq -n \
   --arg restore_verified_at "$restore_verified_at" \
   --arg archive_sha256 "$actual_archive_sha" \
   --arg source_revision "$source_revision" \
+  --arg application_source_revision "$application_source_revision" \
+  --arg application_image_id "$application_image_id" \
   --arg verify_key_sha256 "sha256:$restore_verify_key_sha256" \
   --argjson restore_duration_seconds "$restore_duration_seconds" \
   --argjson recovery_point_age_seconds "$recovery_point_age_seconds" \
   --argjson schema_version "$schema_version" \
   --argjson integrity "$integrity_json" \
   --argjson owner_lookup_count "$owner_lookup_count" \
+  --argjson timescale_restore "$(jq -s . "$timescale_evidence")" \
   '{
     format: "meshcore-restore-receipt-v1",
     receipt_id: $receipt_id,
@@ -513,16 +550,20 @@ jq -n \
     recovery_point_age_seconds: $recovery_point_age_seconds,
     archive_sha256: $archive_sha256,
     source_revision: $source_revision,
+    application_source_revision: $application_source_revision,
+    application_image_id: $application_image_id,
     verify_key_sha256: $verify_key_sha256,
     schema_version: $schema_version,
     datasets: ["analytics", "owner_auth", "mosquitto", "redis", "configuration", "infra_configuration"],
     evidence: {
       integrity: $integrity,
-      owner_lookup_count: $owner_lookup_count
+      owner_lookup_count: $owner_lookup_count,
+      timescale_restore: $timescale_restore
     },
     checks: {
       migrations: "passed",
       integrity: "passed",
+      timescale_restore: "passed",
       owner_lookup: "passed",
       readiness: "passed"
     },

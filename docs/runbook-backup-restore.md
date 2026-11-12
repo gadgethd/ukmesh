@@ -125,11 +125,27 @@ and ACL readback exactly match the pre-reset baseline. Do not rewrite
 
 ## Isolated restore drill
 
-The drill creates a private Docker network and disposable PostgreSQL, Redis,
+The drill requires a clean candidate checkout and creates an internal Docker network and disposable PostgreSQL, Redis,
 and Mosquitto volumes. It restores every dataset, migrates the restored schema,
 boots the current backend read-only, checks readiness and stats, samples data
 integrity and owner lookups, signs a restore receipt, then removes the isolated
 containers and volumes.
+
+Each dump's inventory determines whether Timescale restore hooks are needed,
+including the owner database when it contains the extension. The drill creates
+the extension, enters `timescaledb_pre_restore`, restores serially, records
+the restored job scheduling inventory, disables jobs in the disposable copy,
+and calls `timescaledb_post_restore`. It verifies that restore mode is off and
+the restored jobs remain unscheduled. Production lifecycle activation follows
+its separate receipt/allowlist procedure.
+
+The signed receipt records the backup's `source_revision` separately from the
+current `application_source_revision` and local immutable `application_image_id`.
+Archive/payload checksums are verified before restore. Recorded sample
+fingerprints identify the restored data; compare them with source-snapshot
+evidence when proving equality. The drill uses `--no-owner --no-acl`; deployment
+role grants and previous-image compatibility require the separate
+[upgrade rehearsal](upgrade-2.0.md#rehearsal-order).
 
 ```bash
 export BACKUP_RECEIPT_VERIFY_KEY=/secure/meshcore-backup-keys/receipt-verify.pem
