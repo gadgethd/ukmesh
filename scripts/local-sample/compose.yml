@@ -19,6 +19,7 @@ services:
       retries: 60
     cpus: 2
     mem_limit: 2g
+    shm_size: "1g"
   redis:
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     container_name: ukmesh-sample-redis

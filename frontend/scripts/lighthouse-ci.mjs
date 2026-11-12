@@ -50,8 +50,12 @@ const preview = spawn(process.execPath, ['node_modules/vite/bin/vite.js', 'previ
   env: { ...process.env, UKMESH_DEV_API_TARGET: `http://127.0.0.1:${fixture.address().port}` }, stdio: ['ignore', 'pipe', 'pipe'],
 });
 let previewErrors = '';
+let previewOutput = '';
 let ownedPreviewReady = false;
-preview.stdout.on('data', chunk => { if (String(chunk).includes('http://127.0.0.1:4186')) ownedPreviewReady = true; });
+preview.stdout.on('data', chunk => {
+  previewOutput = (previewOutput + chunk).slice(-4000);
+  if (previewOutput.replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '').includes('http://127.0.0.1:4186')) ownedPreviewReady = true;
+});
 preview.stderr.on('data', chunk => { previewErrors = (previewErrors + chunk).slice(-4000); });
 const median = values => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
 const measurements = [];
@@ -63,7 +67,7 @@ try {
     try { if (ownedPreviewReady && (await fetch('http://127.0.0.1:4186', { signal: AbortSignal.timeout(500) })).ok) { ready = true; break; } } catch {}
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  if (!ready) throw new Error('preview startup deadline exceeded');
+  if (!ready) throw new Error(`preview startup deadline exceeded: ${previewOutput} ${previewErrors}`);
   for (const [route, budget] of Object.entries(config.routes).filter(([route]) => !selected || route === selected)) {
     for (const mode of ['mobile', 'desktop']) {
       const samples = [];
