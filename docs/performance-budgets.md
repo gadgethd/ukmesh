@@ -134,6 +134,25 @@ allocation output, independent CPU/heap profiles, and a progressive completion
 trace. Full evidence and raw-value interpretation are in
 `rf-coverage/BENCHMARKS.md` and `docs/rf-coverage-rollout.md`.
 
+CI shares temporary Go compiler/module caches between its parity and RF
+benchmark containers. The parity command uses `-count=1` so test results are
+executed again; compiled dependencies can still be reused. Profile executables
+and traces are written under `HOPREACH_PROFILE_DIR`, outside the vendored
+checkout. The vendored source is unchanged.
+
+With the pinned Go 1.23 image, two CPUs and a 2 GiB limit, three propagation
+test-compilation trials took a 12.35 s median with fresh caches and 0.64 s
+with the compiler cache populated. The traced compiler/assembler action count
+fell from 255 to zero. This compile-only experiment used `-run '^$'`; it
+does not replace the full parity suite or any RF runtime/performance gate.
+Whole-workflow timings also include image builds, browser setup and audits,
+so compare their individual steps and cache logs before attributing a change.
+
+The deployed app/website Dockerfiles already share identical BuildKit dependency
+and runtime-base layers. CI logs confirm cached `npm ci` layers for both
+frontend targets. Their separate build entry points remain in place; no new
+shared-image publication or build argument contract is needed for that reuse.
+
 ## Rollout evidence
 
 Before a browser-cache, map, topology, or chart release:

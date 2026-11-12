@@ -372,15 +372,20 @@ jobs:
             meshcore-viewshed-worker:test /app/tests/benchmark_rf.py --rays 12 --steps 1000
           docker run --rm --network none --entrypoint python \
             meshcore-viewshed-worker:test /app/tests/benchmark_rf_radial.py --rays 72 --steps 500 --repeats 1
+      - name: Prepare shared Go compiler and module caches
+        run: mkdir -p "$RUNNER_TEMP/ukmesh-go-cache/build" "$RUNNER_TEMP/ukmesh-go-cache/mod"
       - name: Test HopReach parity and progressive publication
         run: |
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
-            -v "$PWD:/work" \
+            -e GOCACHE=/go-cache/build \
+            -e GOMODCACHE=/go-cache/mod \
+            -v "$RUNNER_TEMP/ukmesh-go-cache:/go-cache" \
+            -v "$PWD:/work:ro" \
             -w /work/third_party/hopreach \
             "$GO_TEST_IMAGE" \
-            go test ./...
+            go test -count=1 ./...
       - name: Enforce HopReach UK performance release gate
         run: |
           profile_dir="$(mktemp -d)"
@@ -388,8 +393,11 @@ jobs:
           docker run --rm \
             --user "$(id -u):$(id -g)" \
             -e HOME=/tmp \
+            -e GOCACHE=/go-cache/build \
+            -e GOMODCACHE=/go-cache/mod \
+            -v "$RUNNER_TEMP/ukmesh-go-cache:/go-cache" \
             -e HOPREACH_PROFILE_DIR=/profiles \
-            -v "$PWD:/work" \
+            -v "$PWD:/work:ro" \
             -v "$profile_dir:/profiles" \
             -w /work \
             "$GO_TEST_IMAGE" \

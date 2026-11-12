@@ -73,11 +73,13 @@ go test ./internal/coverage -run '^$' -bench '^BenchmarkUKTerrainWorkingSet$' -b
 # Separate profiles make upstream and optimized costs independently inspectable.
 go test ./internal/propagation -run '^$' \
   -bench 'BenchmarkRasterUKFixtures/Optimized/(Standard|PrecisionTile)/UK4600$' \
+  -o "$profile_dir/optimized.test" \
   -benchtime=1x -count=1 -cpuprofile "$profile_dir/optimized.cpu.pprof" \
   -memprofile "$profile_dir/optimized.mem.pprof" \
   > "$profile_dir/optimized-profile.txt"
 go test ./internal/propagation -run '^$' \
   -bench 'BenchmarkRasterUKFixtures/UpstreamReference/(Standard|PrecisionTile)/UK4600$' \
+  -o "$profile_dir/upstream.test" \
   -benchtime=1x -count=1 -cpuprofile "$profile_dir/upstream.cpu.pprof" \
   -memprofile "$profile_dir/upstream.mem.pprof" \
   > "$profile_dir/upstream-profile.txt"
@@ -85,6 +87,7 @@ go test ./internal/propagation -run '^$' \
 # Scheduler trace records progressive tile/checkpoint completion behaviour.
 go test ./internal/coverage \
   -run 'Test(PlanPublicationTilesCoversRasterWithoutGaps|ProgressiveSignatureChangesWithRFInputs)$' \
+  -o "$profile_dir/tile-completion.test" \
   -trace "$profile_dir/tile-completion.trace" \
   > "$profile_dir/tile-completion.txt"
 
