@@ -4,7 +4,7 @@ import {
   databaseConfig,
   databaseUrlForRole,
 } from '../platform/config/database.js';
-import { UKMESH_NETWORKS } from '../networks.js';
+import { UKMESH_NETWORKS, UKMESH_NETWORK_SQL_LIST } from '../networks.js';
 import {
   configurePacketBatch,
   enqueuePacket,
@@ -430,7 +430,7 @@ export async function upsertNode(nodeId: string, updates: {
          network          = CASE
                               WHEN EXCLUDED.network IS NULL THEN nodes.network
                               WHEN EXCLUDED.network = 'test' AND $11 THEN 'test'
-                              WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'northeast', 'teesside') THEN nodes.network
+                              WHEN EXCLUDED.network = 'test' AND nodes.network IN (${UKMESH_NETWORK_SQL_LIST}) THEN nodes.network
                               WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
                               ELSE EXCLUDED.network
                             END,
@@ -477,7 +477,7 @@ export async function upsertNode(nodeId: string, updates: {
          network          = CASE
                               WHEN EXCLUDED.network IS NULL THEN nodes.network
                               WHEN EXCLUDED.network = 'test' AND $11 THEN 'test'
-                              WHEN EXCLUDED.network = 'test' AND nodes.network IN ('ukmesh', 'northeast', 'teesside') THEN nodes.network
+                              WHEN EXCLUDED.network = 'test' AND nodes.network IN (${UKMESH_NETWORK_SQL_LIST}) THEN nodes.network
                               WHEN EXCLUDED.network IN ('ukmesh', 'teesside') THEN EXCLUDED.network
                               ELSE EXCLUDED.network
                             END,

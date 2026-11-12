@@ -1,4 +1,4 @@
-import { UKMESH_NETWORKS } from '../../networks.js';
+import { UKMESH_NETWORKS, UKMESH_NETWORK_SQL_LIST } from '../../networks.js';
 import { regionMemberIdsSql } from '../../regions/filter.js';
 import { regionNodeSourceSql } from '../../regions/nodeSource.js';
 
@@ -60,8 +60,8 @@ export function publicPacketPrivacySql(alias?: string): string {
           OR ${prefix}src_node_id = remat.node_id
           OR (
             (${prefix}network = remat.network
-              OR (${prefix}network IN ('ukmesh', 'northeast', 'teesside')
-                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+              OR (${prefix}network IN (${UKMESH_NETWORK_SQL_LIST})
+                AND remat.network IN (${UKMESH_NETWORK_SQL_LIST})))
             AND EXISTS (
               SELECT 1
               FROM unnest(COALESCE(${prefix}path_hashes, ARRAY[]::text[])) AS packet_prefix

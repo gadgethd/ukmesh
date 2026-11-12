@@ -4,6 +4,9 @@
 // packet history, stats, or resolver evidence disappear. Test traffic remains
 // deliberately separate.
 export const UKMESH_NETWORKS = ['ukmesh', 'northeast', 'teesside'] as const;
+
+/** SQL `IN (...)` list for the production compatibility family. */
+export const UKMESH_NETWORK_SQL_LIST = UKMESH_NETWORKS.map((network) => `'${network}'`).join(', ');
 const UKMESH_NETWORK_SET = new Set<string>(UKMESH_NETWORKS);
 
 export function networkMatchesScope(packetNetwork: string | undefined, scopeNetwork: string): boolean {
