@@ -55,7 +55,7 @@ Rank by both total cost and per-call latency: low-frequency benchmark probes
 are not ingest bottlenecks. The packet transaction dominates this fixture;
 removing its timer wait improved throughput without an index change.
 
-`npm --prefix backend run bench:db -- --output plans/measurements/db-plans`
+`npm --prefix backend run bench:db -- --output ../plans/measurements/db-plans`
 records actual summary, observer-activity and topology queries with their bound
 parameters through PostgreSQL's planner. It runs ten `EXPLAIN (ANALYZE, BUFFERS)`
 plans inside a read-only transaction and stores the five slowest first. Results
