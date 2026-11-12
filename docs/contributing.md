@@ -63,3 +63,17 @@ Before finishing a refactor or behavior change:
   `osgeo` exactly match production
 - run `docker compose config --quiet`
 - rebuild affected containers and check `http://localhost:3000/healthz`
+
+For worker protocol changes, `scripts/test-worker-fixtures.sh` provisions owned
+PostgreSQL and Redis fixtures, runs the real GDAL image suite and RF budgets,
+then removes those temporary services. Build the image first and set
+`RF_WORKER_TEST_IMAGE` to its local tag. `scripts/test-link-queue-contract.sh`
+checks TypeScript/Python producer-consumer behavior against owned Redis using
+the configured local backend and worker images. These commands do not read the
+project `.env` or use the retained sample database.
+
+For public-page lifecycle changes, run `npm run test:browser-contracts` from
+`frontend/`. It builds an isolated production preview, starts an owned loopback
+server and runs the owner, topology and regions browser contracts with zero
+skips. The Playwright development and regions lanes also exercise interrupted
+renders, scope changes and late socket callbacks.

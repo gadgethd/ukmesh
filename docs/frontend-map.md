@@ -3,7 +3,15 @@
 ## Current structure
 
 - `MapLibreMap.tsx`
-  - imperative MapLibre lifecycle, event wiring, and source refresh scheduling
+  - imperative MapLibre lifecycle, event wiring, and controller coordination
+- `liveMapSources.ts`
+  - live-store subscriptions, source invalidation, coalescing and presence expiry
+- `NodeDock.tsx` and `useNodeLos.ts`
+  - node detail presentation and cancellable selected-node LOS work
+- `features/map/`
+  - pure map/LOS models and scoped node-link loading
+- `useLegacyPlanner.tsx`
+  - isolated inactive planning compatibility retained for rollback
 - `mapSourceLayers.ts`
   - source/layer creation and exact layer identifiers
 - `geojsonBuilders.ts`
@@ -25,9 +33,9 @@
 
 ## State ownership
 
-- live nodes/packets: `useNodes.ts`
+- live nodes/packets: `features/realtime/nodeStore.ts`, adapted by `useNodes.ts`
 - HopReach metadata/progress and last-known-good state: `useRfCoverage.ts`
-- links: `useLinkState.ts`
+- links: `features/realtime/linkStore.ts`, consumed by map controllers
 - overlay/path state: `overlayStore.ts`
 
 ## Contributor rules
@@ -62,6 +70,18 @@ The allowed responsibilities are:
 - reconcile extracted source/layer definitions
 - bridge the external live stores into bounded frame snapshots
 - coordinate popups and imperative camera transitions
+
+The live-source controller owns its subscriptions and timers. Its lifecycle is
+started once per mounted coordinator, cancelled on cleanup and reset after a
+style replacement. Controllers receive the existing map; they never construct a
+second map. Node-link requests, LOS calculations and dock UI have separate
+owners, while inactive planning remains behind its retained compatibility hook.
+
+Scope identity includes the resolved network, observer, region and privacy
+generation. Scoped resource owners reject obsolete completions and abort work
+on session invalidation. An individual component detaches from shared work;
+physical requests continue to count against admission limits until they settle.
+Former-name search receives the same selected region as the map.
 
 New code belongs in `mapSourceLayers.ts`, `geojsonBuilders.ts`, overlay
 controllers, hooks, or focused UI components as appropriate. A change that

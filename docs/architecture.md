@@ -70,6 +70,23 @@ generation ready for publication. A current counter alone does not authorize a
 public response: delivery and snapshot publication retain fresh ready-state
 checks around their work.
 
+`createApiRuntime` composes the stats, owner, timeline and health services and
+their caches. Startup explicitly starts background work after identity
+reconciliation; shutdown closes each runtime's resources after HTTP draining.
+Public batch policy readers receive a query capability independently of packet
+write-batcher setup, including in standalone WebSocket runtimes.
+
+Workload modules under `backend/src/metrics/` own metric definitions. Process
+startup initializes the complete metric inventory and process collectors;
+health runtimes explicitly attach and detach their feature collectors. Importing
+a metric definition does not start a database probe or Redis client.
+
+Path prior identities and count conversion live below resolver implementations
+in `backend/src/path-shared/`. The learner's pure evidence aggregation is
+separate from SQL loading and lease-fenced publication. Beta and diagnostic lazy
+resolvers retain their different observation grouping and normalization rules
+and continue to use the existing common decoder.
+
 Cross-runtime definitions live in [`contracts/`](../contracts/README.md).
 Deterministically generated package-local bindings keep standalone builds and
 worker-only Docker contexts independent. HTTP schemas remain owned by the
@@ -87,8 +104,13 @@ for capacity and recovery settings.
 
 ## Frontend domain layout
 
+- `frontend/src/features/`: feature-owned models, parsers and data operations;
+  pages and renderers depend on these modules rather than supplying types to
+  reusable hooks;
 - `frontend/src/components/Map/MapLibreMap.tsx`: dashboard MapLibre lifecycle
-  owner and live-layer coordinator;
+  owner and controller coordinator;
+- `frontend/src/components/Map/liveMapSources.ts`: store subscriptions, dirty
+  source scheduling, presence expiry and native source publication;
 - `frontend/src/components/Map/EmbeddedMap.tsx`: lightweight public regions and
   topology basemap lifecycle, with native overlays and no dashboard stores;
 - `frontend/src/hooks/useRfCoverage.ts`: last-known-good metadata/progress
@@ -97,10 +119,39 @@ for capacity and recovery settings.
   nearest-neighbour raster layers below labels and interactive layers;
 - `frontend/src/components/Map/RfCoverageStatus.tsx`: tier controls, legend,
   model details, and progress/failure state;
-- `frontend/src/hooks/useNodes.ts` and `useLinkState.ts`: live node, packet, and
-  observed-link stores;
+- `frontend/src/features/realtime/`: live node/packet/link stores and wire
+  protocol; `useNodes` adapts node state to React subscriptions, while map
+  controllers subscribe directly to link state;
 - `frontend/src/store/overlayStore.ts`: path, replay, selection, and dormant
   rollback-window planning state.
+
+Resolved public scope is a network/observer/region/privacy-generation value.
+Session transitions publish store resets after React commit; delayed HTTP and
+WebSocket results cannot publish into an obsolete session. Cached tasks own
+their cancellation and deadlines, while individual consumers detach without
+cancelling another consumer's request. Aborting tasks keep their physical
+concurrency slot until settlement. Runtime-config and owner authentication
+bootstrap remain independent of public-data readiness.
+
+## Worker ownership
+
+The coverage/link worker entrypoint parses its environment into immutable
+settings and constructs a `WorkerContext`. That context owns RF snapshots,
+topology and lazy land-mask state. Computation receives explicit context rather
+than consulting mutable process-global calibration dictionaries. Coverage/link
+repositories, job handlers and process scheduling have separate owners; RF
+equations and lazy geometry loading remain unchanged.
+
+Link graph repositories bind a validated `core` or rebuild-generation schema
+through SQL identifiers. Node catalog reads stay in `core`. Rebuild jobs read
+and write their staging graph, retain lease/ledger/commit-before-ACK fences, and
+do not publish uncommitted graph updates. Graph selection does not depend on a
+`search_path` convention.
+
+Link-v3 and retained viewshed-v2 share lease renewal infrastructure and keep
+their distinct Redis state transitions. Tagger configuration, SQL repository,
+classifier client and polling service are import-safe; its executable entrypoint
+owns environment parsing and signal registration.
 
 ## Data flow
 
