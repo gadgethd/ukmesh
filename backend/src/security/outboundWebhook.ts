@@ -1,7 +1,7 @@
 import { promises as dns } from 'node:dns';
 import https from 'node:https';
 import { BlockList, isIP } from 'node:net';
-import { webhookDeliveriesTotal } from '../metrics.js';
+import { webhookDeliveriesTotal } from '../metrics/owner.js';
 
 const MAX_URL_LENGTH = 2_048;
 const MAX_RESPONSE_BYTES = 64 * 1_024;

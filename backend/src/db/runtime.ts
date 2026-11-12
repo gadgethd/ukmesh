@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { analyticsStatementTimeoutMs, databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
-import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics.js';
+import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import { ingestPool } from './ingest.js';
 import type { DatabaseQueryFn } from './contracts.js';
 

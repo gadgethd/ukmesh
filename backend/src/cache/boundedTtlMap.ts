@@ -1,9 +1,5 @@
-import {
-  boundedCacheMetricLabel,
-  cacheBytes,
-  cacheEntries,
-  cacheOperationsTotal,
-} from '../metrics.js';
+import { boundedCacheMetricLabel } from '../metrics/labels.js';
+import { cacheBytes, cacheEntries, cacheOperationsTotal } from '../metrics/cache.js';
 
 type BoundedTtlMapOptions<K, V> = {
   name?: string;

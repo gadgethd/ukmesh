@@ -1,10 +1,5 @@
 import fs from 'node:fs';
-import {
-  mqttConnectionMonitorErrorsTotal,
-  mqttConnectionMonitorHealthy,
-  mqttConnectionMonitorClients,
-  mqttDeniedPublishesTotal,
-} from '../metrics.js';
+import { mqttConnectionMonitorErrorsTotal, mqttConnectionMonitorHealthy, mqttConnectionMonitorClients, mqttDeniedPublishesTotal } from '../metrics/ingest.js';
 import {
   parseDeniedPublish,
   parseMeshcoreClientNodePrefix,

@@ -22,19 +22,18 @@ import {
   websocketAdmissionDecision,
 } from './limits.js';
 import { authorizePublicWsMessage, PublicWsPrivacyIndex } from './privacy.js';
-import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
+import { query } from '../db/runtime.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
 import { trustedClientIp } from '../http/trustedProxy.js';
-import {
-  websocketAdmissionsTotal,
-  websocketClients,
-  publicLiveOutcomesTotal,
-} from '../metrics.js';
+import { websocketAdmissionsTotal, websocketClients, publicLiveOutcomesTotal } from '../metrics/websocket.js';
 import { selectInitialViableLinks } from './initialStateLinks.js';
 import { loadInitialMapNodes } from './initialStateNodes.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
 import { ApiInputError } from '../platform/apiInputError.js';
+
+const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';

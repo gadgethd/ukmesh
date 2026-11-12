@@ -1,4 +1,4 @@
-import { spamAnalysisTruncationsTotal } from '../metrics.js';
+import { spamAnalysisTruncationsTotal } from '../metrics/spam.js';
 
 /** Report only aggregate counts; never include message text or identities. */
 export function reportSpamAnalysisTruncation(

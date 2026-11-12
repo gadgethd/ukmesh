@@ -15,7 +15,7 @@ import {
   type LinkQueueAdmission,
 } from '../queue/linkQueueV3.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { observeWorkerOutcome } from '../metrics.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
 const LEGACY_LINK_JOB_QUEUE = 'meshcore:link_jobs';

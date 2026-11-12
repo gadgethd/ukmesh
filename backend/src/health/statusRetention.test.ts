@@ -4,7 +4,21 @@ import {
   deleteExpiredRows,
   RETENTION_TARGETS,
   retentionDeleteSql,
-} from './status.js';
+} from './retention.js';
+import { DATA_LIFECYCLE_POLICIES } from '../db/dataLifecycle.js';
+
+test('exact-row cleanup derives identity and duration while retaining its explicit eligible set', () => {
+  for (const target of RETENTION_TARGETS) {
+    const policy = DATA_LIFECYCLE_POLICIES.find(candidate =>
+      candidate.table === target.table || candidate.qualifiedTable === target.table);
+    assert.ok(policy);
+    assert.equal(target.qualifiedTable ?? target.table, policy.qualifiedTable ?? policy.table);
+    assert.equal(target.timestampColumn, policy.timestampColumn);
+    assert.equal(target.retention, policy.retention);
+  }
+  assert.equal(RETENTION_TARGETS.some(target => target.table === ('node_neighbor_samples' as string)), false);
+  assert.equal(RETENTION_TARGETS.some(target => target.table === ('packet_paths' as string)), false);
+});
 
 test('retention targets include hard packet boundary and reviewed long-lived tables', () => {
   const byTable = new Map(RETENTION_TARGETS.map((target) => [target.table, target]));

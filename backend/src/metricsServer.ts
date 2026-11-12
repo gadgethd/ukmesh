@@ -1,10 +1,12 @@
+import { initializeMetrics } from './metrics/runtime.js';
 import http, { type Server } from 'node:http';
-import { metricsRegistry } from './metrics.js';
+import { metricsRegistry } from './metrics/registry.js';
 
 let server: Server | null = null;
 
 export function startMetricsServer(port: number, host = '0.0.0.0'): Server {
   if (server) return server;
+  initializeMetrics();
   server = http.createServer(async (req, res) => {
     if (req.method !== 'GET' || req.url !== '/metrics') {
       res.writeHead(404, { 'content-type': 'application/json' });

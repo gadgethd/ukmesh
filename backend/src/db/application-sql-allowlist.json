@@ -62,7 +62,7 @@
     ],
     "health/packetDiagnostics.integration.test.ts": [],
     "health/packetDiagnostics.ts": [],
-    "health/status.ts": [],
+    "health/repository.ts": [],
     "maintenance/staleMqttObservers.integration.test.ts": [],
     "maintenance/staleMqttObservers.native.integration.test.ts": [],
     "maintenance/staleMqttObservers.test.ts": [],

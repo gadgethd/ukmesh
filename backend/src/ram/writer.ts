@@ -37,17 +37,7 @@ import {
   RAM_QUARANTINE_ENTRY_MAX_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
-import {
-  ramCommitBatchSize,
-  ramCommitDuration,
-  ramCommitTotal,
-  ramBatchDedupeTotal,
-  ramQuarantinedTotal,
-  ramReclaimedTotal,
-  ramRetryTotal,
-  ramSweepDeletedTotal,
-  ramVisibilityLatency,
-} from '../metrics.js';
+import { ramCommitBatchSize, ramCommitDuration, ramCommitTotal, ramBatchDedupeTotal, ramQuarantinedTotal, ramReclaimedTotal, ramRetryTotal, ramSweepDeletedTotal, ramVisibilityLatency } from '../metrics/ram.js';
 
 type StreamEntry = { id: string; entry: RamPendingEntry; bytes: number; raw: string };
 

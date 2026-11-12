@@ -1,13 +1,17 @@
+import { setSpamDetectorRuntimeCollector } from '../metrics/spam.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { DatabaseQueryFn } from '../db/contracts.js';
-import { metricsRegistry, spamDetectorRefreshHealthy, spamDetectorSnapshotUpdatedSeconds, spamDetectorRuntimeEntries } from '../metrics.js';
-import { evaluateAdvert, refreshSpamDetectorCaches } from './spamDetector.js';
+import { metricsRegistry } from '../metrics/registry.js';
+import { spamDetectorRefreshHealthy, spamDetectorSnapshotUpdatedSeconds, spamDetectorRuntimeEntries } from '../metrics/spam.js';
+import { evaluateAdvert, refreshSpamDetectorCaches, spamDetectorRuntimeCounts } from './spamDetector.js';
 
 const key = 'A'.repeat(64);
 const advert = { name: 'Invented hill', publicKey: key, srcNodeId: key, network: 'ukmesh' };
 const emptyQuery: DatabaseQueryFn = async () => ({ rows: [{ row_count: '0', byte_count: '0', snapshot: [] }] as never });
 const flood = async () => (await evaluateAdvert(advert)).signals.some(signal => signal.name === 'EXTREME_ADVERT_FLOOD');
+
+test.beforeEach(t => { t.after(setSpamDetectorRuntimeCollector(spamDetectorRuntimeCounts)); });
 
 test('a flood retains only the latest 31 arrivals and expires against a monotonic clock', async t => {
   let now = 100_000;

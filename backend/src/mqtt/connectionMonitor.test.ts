@@ -4,13 +4,8 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { setTimeout as delay } from 'node:timers/promises';
 import test, { type TestContext } from 'node:test';
-import {
-  metricsRegistry,
-  mqttConnectionMonitorErrorsTotal,
-  mqttConnectionMonitorHealthy,
-  mqttConnectionMonitorClients,
-  mqttDeniedPublishesTotal,
-} from '../metrics.js';
+import { metricsRegistry } from '../metrics/registry.js';
+import { mqttConnectionMonitorErrorsTotal, mqttConnectionMonitorHealthy, mqttConnectionMonitorClients, mqttDeniedPublishesTotal } from '../metrics/ingest.js';
 import { mqttOnboardingDiagnostics } from './onboardingDiagnostics.js';
 
 // Importing the audit repository creates a lazy pool. All writes below use an

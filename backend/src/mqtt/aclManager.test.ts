@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import test from 'node:test';
-import { ownerAclReloadTotal } from '../metrics.js';
+import { ownerAclReloadTotal } from '../metrics/owner.js';
 import {
   getNodeIdsForUserInAcl,
   parseAcl,

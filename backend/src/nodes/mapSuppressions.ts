@@ -1,6 +1,6 @@
 import { haversineKm } from '../platform/geo.js';
 import type pg from 'pg';
-import { mapSuppressedNodes } from '../metrics.js';
+import { mapSuppressedNodes } from '../metrics/nodes.js';
 import { nodeEffectiveLastSeenSql } from './presence.js';
 import { mapVisiblePredicate } from './publicMap.js';
 

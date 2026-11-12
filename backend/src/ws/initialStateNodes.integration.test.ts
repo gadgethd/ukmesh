@@ -4,7 +4,7 @@ import test from 'node:test';
 import pg from 'pg';
 import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 import { refreshNodeMapSuppressions } from '../nodes/mapSuppressions.js';
-import { mapSuppressedNodes } from '../metrics.js';
+import { mapSuppressedNodes } from '../metrics/nodes.js';
 import { createNodeRepository } from '../repositories/nodes.js';
 import { networkFilters } from '../platform/query/networkFilters.js';
 import { loadInitialMapNodes } from './initialStateNodes.js';

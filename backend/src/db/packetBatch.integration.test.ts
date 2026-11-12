@@ -6,7 +6,7 @@ import { networkFilters } from '../platform/query/networkFilters.js';
 import {
   deleteExpiredRows,
   RETENTION_TARGETS,
-} from '../health/status.js';
+} from '../health/retention.js';
 import { backfillMultibytePathFacts } from '../stats/multibytePathFacts.js';
 import { createStatsRepository } from '../stats/statsRepository.js';
 import {

@@ -1,7 +1,7 @@
 import 'node:process';
 import { initDb } from '../db/runtime.js';
 import { rebuildPathLearningModels } from '../path-learning/rebuild.js';
-import { observeWorkerOutcome } from '../metrics.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
 const REBUILD_INTERVAL_MS = Math.max(

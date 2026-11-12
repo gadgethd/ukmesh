@@ -1,13 +1,14 @@
 import { Router } from 'express';
 import { HEALTH_CACHE_TTL_MS } from '../bootstrap/caches.js';
 import { HealthSnapshotCache } from '../../health/snapshot.js';
-import { getWorkerHealthOverview, toPublicHealthOverview } from '../../health/status.js';
+import { toPublicHealthOverview } from '../../health/projections.js';
+import type { HealthRuntime } from '../../health/runtime.js';
 import { getMqttRuntimeStatus } from '../../mqtt/client.js';
 import { withMqttDeliveryHealth } from '../../health/mqttDelivery.js';
 
-export function createHealthRoutes() {
+export function createHealthRoutes(healthRuntime: HealthRuntime) {
     const router = Router();
-    const healthSnapshot = new HealthSnapshotCache(getWorkerHealthOverview, Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000));
+    const healthSnapshot = new HealthSnapshotCache(healthRuntime.getWorkerHealthOverview, Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000));
     let timer: ReturnType<typeof setInterval> | undefined;
     let closed = false;
   router.get('/health', (_req, res) => {

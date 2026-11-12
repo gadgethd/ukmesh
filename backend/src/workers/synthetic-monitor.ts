@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { DurableAlertQueue, type AlertReceipt } from './alertDeliveryQueue.js';
 import { createSyntheticAlertEvaluator } from './syntheticAlerts.js';
-import { observeSyntheticCheck } from '../metrics.js';
+import { observeSyntheticCheck } from '../metrics/synthetic.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 import {
   persistSyntheticCheckResults,

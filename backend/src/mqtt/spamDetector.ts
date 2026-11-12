@@ -3,7 +3,7 @@ import { haversineKm } from '../platform/geo.js';
 import { query } from '../db/runtime.js';
 import type { DatabaseQueryFn } from '../db/contracts.js';
 import { readSpamSnapshot } from './spamSnapshot.js';
-import { spamDetectorSnapshotEntries, spamDetectorSnapshotUpdatedSeconds, spamDetectorRefreshHealthy, spamDetectorRefreshesTotal, setSpamDetectorRuntimeCollector } from '../metrics.js';
+import { spamDetectorSnapshotEntries, spamDetectorSnapshotUpdatedSeconds, spamDetectorRefreshHealthy, spamDetectorRefreshesTotal, setSpamDetectorRuntimeCollector } from '../metrics/spam.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -160,14 +160,14 @@ function trackerKey(value: string): string {
   return createHash('sha256').update(value).digest('base64');
 }
 
-setSpamDetectorRuntimeCollector(() => {
+export function spamDetectorRuntimeCounts() {
   let arrivals = 0, names = 0;
   for (const entry of nodeFreqTracker.values()) {
     arrivals += entry.times.length;
     names += entry.namesSeen.size;
   }
   return { trackers: nodeFreqTracker.size, arrivals, names };
-});
+}
 
 function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
   while (map.size >= capacity) {
@@ -184,13 +184,26 @@ function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
 let refreshInFlight: Promise<void> | undefined;
 let initialized = false;
 
+let closeMetrics: (() => void) | undefined;
+const refreshTimers = new Set<ReturnType<typeof setInterval>>();
 export async function initSpamDetector(): Promise<void> {
   await refreshSpamDetectorCaches();
   if (initialized) return;
   initialized = true;
-  setInterval(() => { void refreshSpamDetectorCaches(); }, 15 * 60 * 1000).unref();
-  setInterval(cleanupMemory, 5 * 60 * 1000).unref();
+  closeMetrics = setSpamDetectorRuntimeCollector(spamDetectorRuntimeCounts);
+  const evidenceTimer = setInterval(() => { void refreshSpamDetectorCaches(); }, 15 * 60 * 1000);
+  const memoryTimer = setInterval(cleanupMemory, 5 * 60 * 1000);
+  evidenceTimer.unref(); memoryTimer.unref();
+  refreshTimers.add(evidenceTimer); refreshTimers.add(memoryTimer);
 }
+
+export function stopSpamDetector(): void {
+  initialized = false;
+  closeMetrics?.(); closeMetrics = undefined;
+  for (const timer of refreshTimers) clearInterval(timer);
+  refreshTimers.clear();
+}
+
 
 export function refreshSpamDetectorCaches(databaseQuery: DatabaseQueryFn = query): Promise<void> {
   if (refreshInFlight) return refreshInFlight;

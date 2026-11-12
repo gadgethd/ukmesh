@@ -1,11 +1,11 @@
+import { initializeMetrics } from './metrics/runtime.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import {
-  boundedAnalysisWorkloadLabel,
-  boundedNetworkMetricLabel,
-  metricsRegistry,
-  setPrivacyGenerationHealthCollector,
-} from './metrics.js';
+import { boundedAnalysisWorkloadLabel, boundedNetworkMetricLabel } from './metrics/labels.js';
+import { metricsRegistry } from './metrics/registry.js';
+import { setPrivacyGenerationHealthCollector } from './metrics/privacy.js';
+
+initializeMetrics();
 
 const ALLOWED_LABEL_NAMES = new Set([
   'cache',

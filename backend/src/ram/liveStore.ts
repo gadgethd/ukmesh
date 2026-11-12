@@ -39,18 +39,7 @@ import {
   RAM_REDIS_HEADROOM_BYTES,
   type RamPendingEntry,
 } from './protocol.js';
-import {
-  ramAdmissionDuration,
-  ramAdmissionsTotal,
-  ramEarliestPendingAge,
-  ramPendingDepth,
-  ramRetainedDepth,
-  ramPelDepth,
-  ramOldestPelAge,
-  ramQueueBytes,
-  ramQueueReservedBytes,
-  ramQueueDepth,
-} from '../metrics.js';
+import { ramAdmissionDuration, ramAdmissionsTotal, ramEarliestPendingAge, ramPendingDepth, ramRetainedDepth, ramPelDepth, ramOldestPelAge, ramQueueBytes, ramQueueReservedBytes, ramQueueDepth } from '../metrics/ram.js';
 
 /** Minimal surface this module needs; keeps unit tests free of a live Redis. */
 export interface RamStoreRedis {

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { metricsRegistry, setWorkerHeartbeatCollector, workerHeartbeatAgeSeconds } from '../metrics.js';
+import { metricsRegistry } from '../metrics/registry.js';
+import { setWorkerHeartbeatCollector, workerHeartbeatAgeSeconds } from '../metrics/workers.js';
 import {
   LINK_WORKER_HEARTBEAT_KEY,
   linkWorkerHeartbeatCollector,

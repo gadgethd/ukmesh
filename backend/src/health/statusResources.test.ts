@@ -1,3 +1,4 @@
+import { toPublicHealthOverview } from './projections.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -6,8 +7,7 @@ import test from 'node:test';
 import {
   measureConfiguredVolumes,
   measureDirectoryBytes,
-  toPublicHealthOverview,
-} from './status.js';
+} from './resources.js';
 
 test('volume measurements use only configured data roots and expose unknown on incomplete scans', (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'meshcore-health-volume-'));

@@ -1,3 +1,4 @@
+import type { HealthRuntime } from '../health/runtime.js';
 import { Request, Router } from 'express';
 import {
   CHARTS_CACHE_TTL_MS,
@@ -79,11 +80,11 @@ import { ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { createOwnerSessionGuard } from './ownerSessionGuard.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
-export function createApiRuntime() {
+export function createApiRuntime(healthRuntime: HealthRuntime) {
   const router = Router();
   const caches = createApiCaches();
   const { statsCache, inferredNodesCache, inferredNodesInflight, nodeLinksCache, nodeLinksInflight, chartsCache, chartsInflight, ownerLiveCache } = caches;
-  const health = createHealthRoutes();
+  const health = createHealthRoutes(healthRuntime);
   // Anonymous cross-network aggregation is not a public API capability. Operator
   // diagnostics must use separately authenticated/local-only entry points.
   router.use((req, res, next) => {

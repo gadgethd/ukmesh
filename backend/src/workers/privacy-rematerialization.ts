@@ -3,7 +3,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { randomUUID } from 'node:crypto';
-import { observeWorkerOutcome } from '../metrics.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
 const { Pool } = pg;

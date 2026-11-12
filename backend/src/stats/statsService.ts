@@ -1,6 +1,6 @@
 import type { StatsRepository } from './statsRepository.js';
 import { readInitialVisibilityGeneration } from '../privacy/initialGeneration.js';
-import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics.js';
+import { statsRecomputeDuration, statsRecomputeTotal } from '../metrics/stats.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import {
   CHART_SNAPSHOT_MAX_FUTURE_SKEW_MS,

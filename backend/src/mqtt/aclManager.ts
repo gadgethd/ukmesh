@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import { ownerAclReloadTotal } from '../metrics.js';
+import { ownerAclReloadTotal } from '../metrics/owner.js';
 
 export const OWNER_ACL_RENDERER_VERSION = 'meshcore-owner-acl/v5-public-feed-namespace';
 const MANAGED_BEGIN = '# BEGIN MESHCORE OWNER ACL';

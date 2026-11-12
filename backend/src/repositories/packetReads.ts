@@ -1,7 +1,7 @@
 import { pool } from '../db/runtime.js';
 import { query } from '../db/runtime.js';
 import { analyticsQuery } from '../db/runtime.js';
-import { type QueryFn } from '../db/packetBatch.js';
+import type { DatabaseQueryFn as QueryFn } from '../db/contracts.js';
 import { channelHashesForName } from '../mqtt/channelRegistry.js';
 import { isPublicChannelName } from '../mqtt/channelRegistry.js';
 import { sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';

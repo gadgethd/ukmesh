@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { query } from '../db/runtime.js';
-import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
-import { observeWorkerOutcome } from '../metrics.js';
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
 import type { LivePacket } from '../types/index.js';
 
 type Intent = { observation_id: string; payload: { packet: LivePacket; upstreamEnvelope: Record<string, unknown> } };
@@ -9,10 +9,10 @@ type Enqueue = (packet: LivePacket, envelope: Record<string, unknown>) => Promis
 
 export function createForwardingOutbox(enqueue: Enqueue, deps: {
   execute?: typeof query;
-  loadPolicy?: typeof loadCurrentPublicPrivacyPolicy;
+  loadPolicy?: ReturnType<typeof createPublicPolicyReader>;
 } = {}) {
   const execute = deps.execute ?? query;
-  const loadPolicy = deps.loadPolicy ?? loadCurrentPublicPrivacyPolicy;
+  const loadPolicy = deps.loadPolicy ?? createPublicPolicyReader(execute);
   let running: Promise<void> | null = null;
   let timer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;

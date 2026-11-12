@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Router } from 'express';
-import { loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
+import { query } from '../db/runtime.js';
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import { encodePendingEntry, getRamIngestMode } from './protocol.js';
 import type { PrivatePrefixCache } from '../privacy/privatePrefixCache.js';
@@ -19,7 +20,7 @@ export function createPublicRamSource(deps: {
   const router = Router();
   const token = deps.token ?? (() => process.env['MQTT_RAM_PUBLIC_READ_TOKEN']);
   const read = deps.read ?? (() => readPendingEntries(10_000, true));
-  const loadPolicy = deps.loadPolicy ?? loadCurrentPublicPrivacyPolicy;
+  const loadPolicy = deps.loadPolicy ?? createPublicPolicyReader(query);
   router.use((req, res, next) => {
     const expected = token();
     if (!expected || expected.length < 32) { res.sendStatus(404); return; }

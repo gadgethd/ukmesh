@@ -20,7 +20,8 @@
  *    remain available.
  */
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
-import { loadCurrentPublicPrivacyPolicy, type QueryFn } from '../db/packetBatch.js';
+import type { DatabaseQueryFn as QueryFn } from '../db/contracts.js';
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import { query } from '../db/runtime.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
@@ -28,7 +29,10 @@ import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
 export type RecentRow = Record<string, unknown>;
 export type PendingSummary = { packet_hash: string; payload: { _summary: unknown } };
 
+const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
+
 export type MergeOptions = {
+  loadPolicy?: ReturnType<typeof createPublicPolicyReader>;
   limit: number;
   network?: string;
   observer?: string;
@@ -254,7 +258,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
   if (getRamIngestMode() !== 'ram' || opts.limit <= 0) return stripInternalIds(rows);
   try {
     const pending = opts.pendingSnapshot ?? await readPendingEntries(opts.limit);
-    const policy = await loadCurrentPublicPrivacyPolicy();
+    const policy = await (opts.loadPolicy ?? loadCurrentPublicPrivacyPolicy)();
     if (!policy) return [];
     const base = (rows as unknown as RecentRow[]).filter((row) =>
       Number(row['_policy_generation']) === policy.currentGeneration && policy.classify({
@@ -338,7 +342,7 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     }
     // Alias and summary queries may wait while authorization changes. Their
     // captured generation is never permission to deliver after those waits.
-    const current = await loadCurrentPublicPrivacyPolicy();
+    const current = await (opts.loadPolicy ?? loadCurrentPublicPrivacyPolicy)();
     if (!current || current.currentGeneration !== policy.currentGeneration) return [];
     combined.sort((left, right) => timeMs(right['time']) - timeMs(left['time'])
       || String(left['packet_hash']).localeCompare(String(right['packet_hash'])));

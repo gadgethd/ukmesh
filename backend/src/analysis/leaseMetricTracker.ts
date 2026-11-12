@@ -1,4 +1,4 @@
-import { boundedAnalysisWorkloadLabel } from '../metrics.js';
+import { boundedAnalysisWorkloadLabel } from '../metrics/labels.js';
 
 type Lease = { workload: string; expiresAt: number };
 type DropReason = 'capacity' | 'expired';

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { frontendCls, frontendInp, frontendLcp } from '../metrics.js';
+import { frontendCls, frontendInp, frontendLcp } from '../metrics/frontend.js';
 import { recordWebVital } from './webVitals.js';
 import express, { Router } from 'express';
 import { once } from 'node:events';

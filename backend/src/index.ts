@@ -1,3 +1,4 @@
+import { stopSpamDetector } from './mqtt/spamDetector.js';
 import { initializePacketPersistence } from './db/packetPersistence.js';
 import 'node:process';
 import http from 'node:http';
@@ -48,11 +49,9 @@ import {
   apiErrorMiddleware,
   requestContextMiddleware,
 } from './api/errors.js';
-import { getWorkerHealthOverview } from './health/status.js';
-import {
-  gracefulShutdownTotal,
-  observeHttpRequest,
-} from './metrics.js';
+import { createHealthRuntime } from './health/runtime.js';
+import { gracefulShutdownTotal } from './metrics/lifecycle.js';
+import { observeHttpRequest } from './metrics/http.js';
 import { closeOperatorOperations } from './operations/operatorOperations.js';
 import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
 import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
@@ -116,6 +115,7 @@ const forwardingOutbox = createForwardingOutbox(async (packet, envelope) => {
   ]);
 });
 lifecycle.register({ name: 'forwarding-outbox', stage: 25, close: forwardingOutbox.stop });
+lifecycle.register({ name: 'spam-detector', stage: 10, close: stopSpamDetector });
 let shutdownExitCode = 0;
 let shutdownDeadlineAt = 0;
 function shutdownTimeLeft(): number {
@@ -249,6 +249,9 @@ process.on('uncaughtException', (error) => {
 
 async function main() {
   initializePacketPersistence();
+  const healthRuntime = createHealthRuntime();
+  healthRuntime.startTelemetry();
+  lifecycle.register({ name: 'health-runtime', stage: 30, close: healthRuntime.close });
   // 1. Initialise DB schema + retention policy
   await initDb();
   const identityRefresh = await refreshNodeIdentityAliases(analyticsPool, { maxAgeMs: NODE_IDENTITY_REFRESH_INTERVAL_MS });
@@ -274,7 +277,7 @@ async function main() {
   nodeIdentityRefreshTimer.unref();
   // Visibility-dependent chart work must pin its generation only after the
   // initial identity reconciliation has settled the alias mapping.
-  const apiRuntime = createApiRuntime();
+  const apiRuntime = createApiRuntime(healthRuntime);
   lifecycle.register({ name: 'api-runtime', stage: 30, close: apiRuntime.close });
   apiRuntime.startBackgroundWork();
   await initOwnerAuthDb();
@@ -389,7 +392,7 @@ async function main() {
   // Local-only backend/operator site.
   app.use('/', createBackendSiteRoutes({
     query,
-    getHealthOverview: getWorkerHealthOverview,
+    getHealthOverview: healthRuntime.getWorkerHealthOverview,
     getOwnerAuthorizationReadiness: readOwnerAuthorizationReadiness,
   }));
 

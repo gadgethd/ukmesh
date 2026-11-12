@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { privacyGenerationHealthy } from '../metrics.js';
+import { privacyGenerationHealthy } from '../metrics/privacy.js';
 import {
   createPrivacyGenerationReconciler,
   evaluatePrivacyGenerations,

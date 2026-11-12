@@ -20,7 +20,7 @@ import type {
   PacketShareDeliveryRow,
   PacketShareRepository,
 } from './packetShareRepository.js';
-import { packetShareOutcomesTotal, packetShareQueueDepth } from '../metrics.js';
+import { packetShareOutcomesTotal, packetShareQueueDepth } from '../metrics/owner.js';
 import { positiveIntegerSetting } from '../platform/config/boundedNumber.js';
 import { withDeadline } from '../platform/deadline.js';
 

@@ -1,4 +1,4 @@
-import { privacyGenerationHealthy } from '../metrics.js';
+import { privacyGenerationHealthy } from '../metrics/privacy.js';
 
 export const PRIVACY_GENERATION_TIMEOUT_MS = 2_000;
 

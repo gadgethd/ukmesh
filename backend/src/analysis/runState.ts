@@ -9,12 +9,8 @@ import {
   normalizeRetiredAnalysisState,
   RETIRED_ANALYSIS_WORKLOADS,
 } from './workloadPolicy.js';
-import {
-  analysisActiveLeases,
-  analysisLeaseEventsTotal,
-  analysisLeaseTrackingDropsTotal,
-  boundedAnalysisWorkloadLabel,
-} from '../metrics.js';
+import { analysisActiveLeases, analysisLeaseEventsTotal, analysisLeaseTrackingDropsTotal } from '../metrics/analysis.js';
+import { boundedAnalysisWorkloadLabel } from '../metrics/labels.js';
 
 export { normalizeRetiredAnalysisState } from './workloadPolicy.js';
 

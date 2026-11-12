@@ -1,9 +1,12 @@
 import 'node:process';
 import { initDb } from '../db/runtime.js';
-import { captureWorkerHealthSnapshot } from '../health/status.js';
+import { createHealthRuntime } from '../health/runtime.js';
+
+const healthRuntime = createHealthRuntime();
+const { captureWorkerHealthSnapshot } = healthRuntime;
 import { cleanupInactiveNodes, cleanupStaleMqttObservers } from '../maintenance/staleMqttObservers.js';
 import { pollOwnerAlertRules } from '../owner/alertRules.js';
-import { observeWorkerOutcome } from '../metrics.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';
 
 const SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
@@ -61,6 +64,7 @@ async function cleanupStaleObservers(tag: 'initial' | 'scheduled') {
 }
 
 async function main() {
+  healthRuntime.startTelemetry();
   startWorkerMetrics();
   await initDb();
   await captureOnce('initial');

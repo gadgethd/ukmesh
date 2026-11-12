@@ -1,6 +1,7 @@
 import type { DatabaseQueryFn } from '../db/contracts.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
-import { observeWorkerOutcome, regionSnapshotHealthy, regionSnapshotPublishedSeconds, regionSnapshotRunning } from '../metrics.js';
+import { observeWorkerOutcome } from '../metrics/workers.js';
+import { regionSnapshotHealthy, regionSnapshotPublishedSeconds, regionSnapshotRunning } from '../metrics/regions.js';
 import type { regionRebuildSettings } from './rebuildSettings.js';
 
 type Settings = ReturnType<typeof regionRebuildSettings>;

@@ -1,4 +1,4 @@
-import { frontendCls, frontendInp, frontendLcp } from '../metrics.js';
+import { frontendCls, frontendInp, frontendLcp } from '../metrics/frontend.js';
 
 export const PUBLIC_VITAL_ROUTES = ['/', '/docs', '/stats', '/feed', '/regions', '/topology'] as const;
 export const WEB_VITAL_SCHEMA = {

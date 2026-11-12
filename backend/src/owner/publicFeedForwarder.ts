@@ -11,7 +11,7 @@ import {
   type PublicFeedConfig,
 } from './publicFeedConfig.js';
 import type { PublicFeedDeliveryRow, PublicFeedRepository, PublicFeedAuthorizationSnapshot } from './publicFeedRepository.js';
-import { publicFeedOutcomesTotal, publicFeedQueueDepth, publicFeedOldestAgeSeconds } from '../metrics.js';
+import { publicFeedOutcomesTotal, publicFeedQueueDepth, publicFeedOldestAgeSeconds } from '../metrics/owner.js';
 import { positiveIntegerSetting } from '../platform/config/boundedNumber.js';
 
 const DEFAULT_POLL_INTERVAL_MS = 5_000;

@@ -75,7 +75,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
   `);
 
   const runState = await import('./runState.js');
-  const { analysisActiveLeases } = await import('../metrics.js');
+  const { analysisActiveLeases } = await import('../metrics/analysis.js');
   const observedLeases = async () => (await analysisActiveLeases.get()).values
     .find(value => value.labels.workload === 'other')?.value ?? 0;
   const { assertAnalysisPublicationLease } = await import('./publicationFence.js');

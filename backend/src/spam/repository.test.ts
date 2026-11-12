@@ -5,7 +5,7 @@ import { normalizeMessage } from './normalize.js';
 import { loadRecentMessages, persistIncidents, selectIncidentEvidenceMembers } from './repository.js';
 import { buildIncidents } from './analyzer.js';
 import { DEFAULT_SPAM_MESSAGE_CONFIG as CFG } from './config.js';
-import { spamAnalysisTruncationsTotal } from '../metrics.js';
+import { spamAnalysisTruncationsTotal } from '../metrics/spam.js';
 import type { MessageRecord } from './types.js';
 
 function member(index: number, text = `message-${index}`): MessageRecord {

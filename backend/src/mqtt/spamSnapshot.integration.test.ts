@@ -3,7 +3,7 @@ import test from 'node:test';
 import pg from 'pg';
 import { closeDb } from '../db/runtime.js';
 import type { DatabaseQueryFn } from '../db/contracts.js';
-import { spamDetectorRefreshHealthy } from '../metrics.js';
+import { spamDetectorRefreshHealthy } from '../metrics/spam.js';
 import { evaluateAdvert, refreshSpamDetectorCaches } from './spamDetector.js';
 import { readSpamSnapshot } from './spamSnapshot.js';
 

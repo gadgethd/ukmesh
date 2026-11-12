@@ -1,3 +1,4 @@
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import type { MqttClient } from 'mqtt';
 import { createHash } from 'node:crypto';
@@ -8,7 +9,7 @@ import { insertOrUpdateSpamSuspect } from '../spam/suspectRepository.js';
 import { query } from '../db/runtime.js';
 import { reactivateHistoricPathNodes } from '../repositories/pathEvidence.js';
 import { ingestQuery } from '../db/ingest.js';
-import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
+import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
 import { invalidateResolveCache, setResolveCache, getStickyNodeMap, mergeStickyNodes, getHeldPath, setHeldPath, resolveCacheKey } from '../path-beta/resolveCache.js';
 import { resolvePool } from '../path-beta/resolvePool.js';
@@ -41,26 +42,9 @@ import { fallbackPacketIdentity, ramMqttDeliveryKey, observationIdentityKey, pac
 import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
-import {
-  boundedNetworkMetricLabel,
-  mqttIngestAckDuration,
-  mqttIntakeQueueWait,
-  mqttWireAckDuration,
-  mqttIngestActive,
-  mqttIngestQueueDepth,
-  mqttIngestOutcomesTotal,
-  mqttMessagesTotal,
-  mqttDedupEntries,
-  mqttPreResolveHistoryEntries,
-  mqttPreResolveInflight,
-  mqttDeliveryProbeEnabled,
-  mqttDeliveryProbeHealthy,
-  mqttDeliveryProbeLastSuccess,
-  mqttDeliveryProbeRecoveries,
-  postPersistDroppedTotal,
-  postPersistInFlightGauge,
-  publicLiveOutcomesTotal,
-} from '../metrics.js';
+import { boundedNetworkMetricLabel } from '../metrics/labels.js';
+import { mqttIngestAckDuration, mqttIntakeQueueWait, mqttWireAckDuration, mqttIngestActive, mqttIngestQueueDepth, mqttIngestOutcomesTotal, mqttMessagesTotal, mqttDedupEntries, mqttPreResolveHistoryEntries, mqttPreResolveInflight, mqttDeliveryProbeEnabled, mqttDeliveryProbeHealthy, mqttDeliveryProbeLastSuccess, mqttDeliveryProbeRecoveries, postPersistDroppedTotal, postPersistInFlightGauge } from '../metrics/ingest.js';
+import { publicLiveOutcomesTotal } from '../metrics/websocket.js';
 
 type PacketCallback      = (packet: LivePacket, upstreamEnvelope?: Record<string, unknown>) => void;
 type NodeCallback        = (nodeId: string, meta?: { network?: string; observerId?: string }) => void;
@@ -86,7 +70,7 @@ let mqttStopping = false;
 const MQTT_INGEST_MODE = getRamIngestMode();
 const publicPackets = createPublicBatch<{ packet: LivePacket; publish: () => void }>({
   maxItems: 10_000, maxBytes: 8 * 1_048_576,
-  loadPolicy: loadCurrentPublicPrivacyPolicy,
+  loadPolicy: createPublicPolicyReader(ingestQuery),
   refused: (outcome, count) => publicLiveOutcomesTotal.inc({ phase: 'mqtt', outcome }, count),
   deliver: (items, policy) => {
     for (const { packet, publish } of items) {

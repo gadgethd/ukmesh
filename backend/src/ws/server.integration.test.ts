@@ -18,7 +18,7 @@ test('failed WebSocket initial state still releases client bookkeeping', {
   process.env['WARMUP_NETWORKS'] = '';
   const { initWebSocketServer, closeWebSocketServer } = await import('./server.js');
   const { closeDb } = await import('../db/runtime.js');
-  const { websocketClients } = await import('../metrics.js');
+  const { websocketClients } = await import('../metrics/websocket.js');
   const server = http.createServer();
   const wss = initWebSocketServer(server);
   let client: WebSocket | undefined;

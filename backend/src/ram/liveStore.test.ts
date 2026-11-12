@@ -1,3 +1,4 @@
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
 // RAM mode is enabled for this whole file before any test runs; the store
 // gates its behaviour on getRamIngestMode() per call.
 process.env['MQTT_INGEST_MODE'] = 'ram';
@@ -12,14 +13,22 @@ import {
   readPendingEntries,
   type RamStoreRedis,
 } from './liveStore.js';
-import { mergePendingPacketsIntoRecentRows as mergeRecentRows, type MergeOptions } from './liveRead.js';
+import { mergePendingPacketsIntoRecentRows as mergeRecentRowsImpl, type MergeOptions } from './liveRead.js';
 import {
   encodeCommitMarker,
   encodePendingEntry,
   type RamPendingEntry,
 } from './protocol.js';
 import type { InsertPacketInput } from '../db/packetInput.js';
-import { classifyForAdmission, configurePacketBatch } from '../db/packetBatch.js';
+import { classifyForAdmission, configurePacketBatch as configureAdmissionBatch, type QueryFn } from '../db/packetBatch.js';
+
+let readPublicPolicy: ReturnType<typeof createPublicPolicyReader> = async () => null;
+function configurePacketBatch(query: QueryFn) {
+  configureAdmissionBatch(query);
+  readPublicPolicy = createPublicPolicyReader(query);
+}
+const mergeRecentRows = <T>(rows: T[], opts: MergeOptions) =>
+  mergeRecentRowsImpl(rows, { ...opts, loadPolicy: readPublicPolicy });
 
 const mergePendingPacketsIntoRecentRows = <T>(rows: T[], opts: MergeOptions): Promise<T[]> =>
   mergeRecentRows(rows, {

@@ -1,7 +1,7 @@
 import pg from 'pg';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 import { databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
-import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics.js';
+import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import type { DatabaseQueryFn } from './contracts.js';
 
 export function ingestPoolOptions(env: NodeJS.ProcessEnv = process.env): pg.PoolConfig {

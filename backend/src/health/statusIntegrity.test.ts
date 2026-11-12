@@ -6,7 +6,7 @@ import {
   privacyGenerationProblem,
   summarizeAuthoritativeHealth,
   toPublicHealthOverview,
-} from './status.js';
+} from './projections.js';
 import { evaluatePrivacyGenerations } from '../privacy/generationHealth.js';
 
 test('anonymous frontend diagnostics cannot forge health severity', () => {
