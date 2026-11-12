@@ -3,6 +3,7 @@ import os from 'node:os';
 import { pool, query } from '../db/index.js';
 import type { BoundedRunStatus } from './boundedRun.js';
 import { assertAnalysisPublicationLease } from './publicationFence.js';
+import { LeaseMetricTracker } from './leaseMetricTracker.js';
 import {
   analysisRetirement,
   normalizeRetiredAnalysisState,
@@ -11,6 +12,7 @@ import {
 import {
   analysisActiveLeases,
   analysisLeaseEventsTotal,
+  analysisLeaseTrackingDropsTotal,
   boundedAnalysisWorkloadLabel,
 } from '../metrics.js';
 
@@ -32,22 +34,17 @@ const ANALYSIS_RUN_OWNER = String(
   process.env['ANALYSIS_RUN_OWNER']
     ?? `${os.hostname()}:${process.pid}`,
 ).slice(0, 200);
-const metricActiveRuns = new Map<string, Set<string>>();
+const metricActiveRuns = new LeaseMetricTracker(4_096,
+  (workload, count) => analysisActiveLeases.set({ workload }, count),
+  (workload, reason) => analysisLeaseTrackingDropsTotal.inc({ workload, outcome: reason }));
+setInterval(() => metricActiveRuns.sweep(), 30_000).unref();
 
-function trackMetricLease(workload: string, runId: string): void {
-  const label = boundedAnalysisWorkloadLabel(workload);
-  const runs = metricActiveRuns.get(label) ?? new Set<string>();
-  runs.add(runId);
-  metricActiveRuns.set(label, runs);
-  analysisActiveLeases.set({ workload: label }, runs.size);
+function trackMetricLease(workload: string, runId: string, deadlineAt: Date): void {
+  metricActiveRuns.track(workload, runId, Date.now() + ANALYSIS_RUN_LEASE_MS, deadlineAt.getTime());
 }
 
-function untrackMetricLease(workload: string, runId: string): void {
-  const label = boundedAnalysisWorkloadLabel(workload);
-  const runs = metricActiveRuns.get(label) ?? new Set<string>();
-  runs.delete(runId);
-  metricActiveRuns.set(label, runs);
-  analysisActiveLeases.set({ workload: label }, runs.size);
+function untrackMetricLease(runId: string): void {
+  metricActiveRuns.remove(runId);
 }
 
 export type AnalysisRunHandle = {
@@ -219,8 +216,8 @@ export async function beginAnalysisRun(
       ],
     );
     await client.query('COMMIT');
-    if (active?.active_run_id) untrackMetricLease(input.workload, active.active_run_id);
-    trackMetricLease(input.workload, runId);
+    if (active?.active_run_id) untrackMetricLease(active.active_run_id);
+    trackMetricLease(input.workload, runId, inserted.rows[0]!.run_deadline_at);
     analysisLeaseEventsTotal.inc({
       workload: boundedAnalysisWorkloadLabel(input.workload),
       outcome: active?.active_run_id ? 'reclaimed' : 'acquired',
@@ -298,9 +295,10 @@ export async function heartbeatAnalysisRun(handle: AnalysisRunHandle): Promise<v
       workload: boundedAnalysisWorkloadLabel(handle.workload),
       outcome: 'heartbeat_lost',
     });
-    untrackMetricLease(handle.workload, handle.runId);
+    untrackMetricLease(handle.runId);
     throw new AnalysisRunLeaseLostError(handle.runId);
   }
+  trackMetricLease(handle.workload, handle.runId, handle.deadlineAt);
   analysisLeaseEventsTotal.inc({
     workload: boundedAnalysisWorkloadLabel(handle.workload),
     outcome: 'heartbeat',
@@ -553,7 +551,7 @@ export async function finishAnalysisRun(
     );
     if (cleared.rows.length !== 1) throw new AnalysisRunLeaseLostError(handle.runId);
     await client.query('COMMIT');
-    untrackMetricLease(handle.workload, handle.runId);
+    untrackMetricLease(handle.runId);
     analysisLeaseEventsTotal.inc({
       workload: boundedAnalysisWorkloadLabel(handle.workload),
       outcome: input.status,

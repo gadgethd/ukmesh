@@ -75,6 +75,9 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
   `);
 
   const runState = await import('./runState.js');
+  const { analysisActiveLeases } = await import('../metrics.js');
+  const observedLeases = async () => (await analysisActiveLeases.get()).values
+    .find(value => value.labels.workload === 'other')?.value ?? 0;
   const { assertAnalysisPublicationLease } = await import('./publicationFence.js');
   const db = await import('../db/index.js');
   pool = db.pool;
@@ -99,6 +102,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
     const fulfilledClaims = claims.filter((claim) => claim.status === 'fulfilled');
     assert.equal(fulfilledClaims.length, 1);
     const first = fulfilledClaims[0]!.value;
+    assert.equal(await observedLeases(), 1);
     assert.ok(
       claims.some(
         (claim) => claim.status === 'rejected'
@@ -126,6 +130,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
     assert.equal(fulfilledReclaims.length, 1);
     const reclaimed = fulfilledReclaims[0]!.value;
     assert.equal(reclaimed.attempt, 2);
+    assert.equal(await observedLeases(), 1, 'reclaim replaces the old observation');
 
     const oldClient = await pool.connect();
     try {
@@ -159,6 +164,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
       checkpoint: 10,
       generation: 'generation-1',
     });
+    assert.equal(await observedLeases(), 0);
     const reclaimReadback = await admin.query<{
       active_run_id: string | null;
       status: string;
@@ -175,6 +181,8 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
     assert.equal(reclaimReadback.rows[0]?.terminal_reason, 'lease_expired_reclaimed');
 
     const boundaryRun = await runState.beginAnalysisRun(input('boundary'));
+    await runState.heartbeatAnalysisRun(boundaryRun);
+    assert.equal(await observedLeases(), 1, 'renewal does not duplicate the observation');
     await admin.query(`
       CREATE FUNCTION ${schema}.reject_analysis_clear() RETURNS trigger
       LANGUAGE plpgsql AS $$
@@ -197,6 +205,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
       }),
       /injected clear failure/,
     );
+    assert.equal(await observedLeases(), 1, 'failed commit does not claim that the SQL lease ended');
     const rolledBack = await admin.query<{ active_run_id: string; status: string }>(
       `SELECT state.active_run_id, run.status
          FROM ${schema}.analysis_workload_state state
@@ -220,6 +229,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
       checkpoint: 0,
       error: 'injected test terminal',
     });
+    assert.equal(await observedLeases(), 0);
     const boundaryState = await admin.query<{ active_run_id: string | null }>(
       `SELECT active_run_id
          FROM ${schema}.analysis_workload_state
@@ -239,6 +249,7 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
       runState.heartbeatAnalysisRun(deadlineRun),
       runState.AnalysisRunLeaseLostError,
     );
+    assert.equal(await observedLeases(), 0);
     await runState.finishAnalysisRun(deadlineRun, {
       status: 'timed_out',
       checkpoint: 4,

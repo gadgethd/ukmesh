@@ -97,6 +97,15 @@ disable pruning. `meshcore_mqtt_connection_monitor_clients` exposes retained
 count without client or username labels. These observations never authorize
 ownership; the owner-auth database remains authoritative.
 
+Analysis lease metrics retain at most 4,096 local run observations. A successful
+SQL heartbeat refreshes the observation through the earlier of its lease expiry
+and hard run deadline. A 30-second sweep physically removes expired entries;
+failed terminal writes therefore cannot retain run IDs indefinitely. The gauge
+`meshcore_analysis_active_leases` reports these local observations, while
+`meshcore_analysis_lease_tracking_drops_total` counts expiry/capacity removal
+using fixed workload/outcome labels. Run IDs never become metric labels.
+SQL lease and publication fences remain the authority for execution.
+
 ## Link-worker startup and memory
 
 Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.
