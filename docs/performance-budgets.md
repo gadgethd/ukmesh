@@ -127,3 +127,15 @@ without their required styles. Regions therefore includes about 10.7 KiB more CS
 than the first baseline; its route ceiling records that restoration. The total
 CSS artifact limits still apply. Public native labels use the provider's
 [Noto Sans glyphs](https://github.com/hyperknot/openfreemap-styles).
+
+The stats page requests `GET /api/stats/charts?sections=overview` initially and
+selects `traffic`, `observers`, `paths` or `signal` when its tab changes. The API
+accepts up to five distinct comma-separated names, always includes summary and
+snapshot metadata, and preserves the complete response when `sections` is absent.
+The full canonical snapshot remains the only persisted/cached representation;
+projection happens inside the fresh delivery privacy fences. Selected responses
+identify section, network, observer and generation. The browser validates nested
+values and this identity, cancels obsolete tab/scope requests, and clears old data
+and decoded-path selection when authority changes. Live observer polling runs
+only on the Observers tab. Stats HTTP responses require revalidation; runtime
+configuration and owner/session reads retain `no-store`.

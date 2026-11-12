@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { ChartData } from '../components/stats/StatsPrimitives.js';
+import type { ChartData, StatsTabId } from '../components/stats/StatsPrimitives.js';
 import { getCurrentSite } from '../config/site.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
-import { chartStatsEndpoint, fetchJson, uncachedEndpoint, withScopeParams } from '../utils/api.js';
-import { isStatsPayload, isLiveObserverSnapshot, statsGeneratedAt, type LiveObserverSnapshot } from '../pages/statsState.js';
+import { chartStatsEndpoint, fetchJson, withScopeParams } from '../utils/api.js';
+import { isLiveObserverSnapshot, type LiveObserverSnapshot } from '../pages/statsState.js';
+import { parseStatsSection } from '../pages/statsSections.js';
 import { useVisibilityPoll } from './useVisibilityPoll.js';
 
 const STATS_REFRESH_MS = 5 * 60 * 1_000;
@@ -21,12 +22,11 @@ export interface StatsPageData {
   observerError: string | null;
 }
 
-export function useStatsPageData(): StatsPageData {
-  const [data, setData] = useState<ChartData | null>(null);
+export function useStatsPageData(section: StatsTabId): StatsPageData {
+  const [result, setResult] = useState<{ key: string; data: ChartData; generatedAt: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [lastUpdatedAt, setLastUpdatedAt] = useState<number | null>(null);
   const [liveObservers, setLiveObservers] = useState<LiveObserverSnapshot | null>(null);
   const [observerError, setObserverError] = useState<string | null>(null);
   const dataRef = useRef<ChartData | null>(null);
@@ -38,6 +38,8 @@ export function useStatsPageData(): StatsPageData {
     () => ({ network: site.networkFilter, observer: site.observerId }),
     [site.networkFilter, site.observerId],
   );
+  const key = `stats:${statsScope.network ?? 'ukmesh'}:${statsScope.observer ?? 'all'}:${privacyGeneration}:${section}`;
+  const data = result?.key === key ? result.data : null;
 
   const load = useCallback(async (externalSignal?: AbortSignal) => {
     requestControllerRef.current?.abort();
@@ -54,16 +56,16 @@ export function useStatsPageData(): StatsPageData {
 
     try {
       const payload = await fetchJson<unknown>(
-        uncachedEndpoint(chartStatsEndpoint(statsScope)),
-        { cache: 'no-store', signal },
+        `${chartStatsEndpoint(statsScope)}${chartStatsEndpoint(statsScope).includes('?') ? '&' : '?'}sections=${section}`,
+        { cache: 'no-cache', signal },
         { timeoutMs: STATS_TIMEOUT_MS, maxBytes: STATS_MAX_BYTES },
       );
-      if (!isStatsPayload(payload)) throw new Error('Stats response was malformed');
+      const next = parseStatsSection(payload, section, { network: statsScope.network ?? 'ukmesh',
+        observer: statsScope.observer ?? null, generation: privacyGeneration });
+      if (!next) throw new Error('Stats response was malformed or no longer matches this scope');
       if (signal.aborted || sequence !== requestSequenceRef.current) return;
-      const next = payload as ChartData;
-      dataRef.current = next;
-      setData(next);
-      setLastUpdatedAt(statsGeneratedAt(payload));
+      dataRef.current = next.data;
+      setResult({ key, ...next });
     } catch (error) {
       if (!signal.aborted && sequence === requestSequenceRef.current) {
         setLoadError(error instanceof Error ? error.message : 'Stats could not be loaded');
@@ -74,26 +76,27 @@ export function useStatsPageData(): StatsPageData {
         setRefreshing(false);
       }
     }
-  }, [statsScope]);
+  }, [statsScope, section, privacyGeneration, key]);
 
   useEffect(() => {
     requestControllerRef.current?.abort();
     dataRef.current = null;
-    setData(null);
-    setLastUpdatedAt(null);
+    setResult(null);
     setLiveObservers(null);
     setObserverError(null);
     setLoadError(null);
     setLoading(true);
     return () => {
       requestControllerRef.current?.abort();
+      requestSequenceRef.current++;
     };
   }, [load, privacyGeneration]);
 
   useVisibilityPoll(
     load,
     {
-      scopeKey: `stats:${statsScope.network ?? 'all'}:${statsScope.observer ?? 'all'}:${privacyGeneration}`,
+      enabled: privacyGeneration > 0,
+      scopeKey: key,
       intervalMs: STATS_REFRESH_MS,
       timeoutMs: STATS_TIMEOUT_MS,
     },
@@ -106,6 +109,7 @@ export function useStatsPageData(): StatsPageData {
     );
     if (!signal.aborted) { setLiveObservers(payload); setObserverError(null); }
   }, {
+    enabled: section === 'observers' && privacyGeneration > 0,
     scopeKey: `live-observers:${statsScope.network ?? 'all'}:${statsScope.observer ?? 'all'}:${privacyGeneration}`,
     intervalMs: 60_000, timeoutMs: STATS_TIMEOUT_MS,
     onError: () => setObserverError('Live observer updates are unavailable. Showing the last received data.'),
@@ -113,10 +117,10 @@ export function useStatsPageData(): StatsPageData {
 
   return {
     data,
-    loading,
+    loading: loading || (!data && !loadError),
     refreshing,
     loadError,
-    lastUpdatedAt,
+    lastUpdatedAt: data ? result!.generatedAt : null,
     reload: async () => { refreshObservers(); await load(); },
     liveObservers,
     observerError,

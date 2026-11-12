@@ -27,7 +27,7 @@ export function publicFixture(path, query = new URLSearchParams()) {
     case '/api/owner/session': return { ok: false };
     case '/api/spam/messages/status': return { ongoing: false, activeIncidents: 0, totalIncidents: 0,
       messagesLast24h: 0, observersInvolved: 0, lastIncidentAt: null, updatedAt: at };
-    case '/api/stats/charts': return { ...chartStats, snapshot: { generatedAt: at, visibilityGeneration: 1 } };
+    case '/api/stats/charts': return chartStats;
     case '/api/stats/observers/live': return { generatedAt: at, windowMinutes: 15, regions: [] };
     case '/api/stats': return { totalNodes: 24, packetsDay: 120, longestHop: 4, internationalNodes: 0 };
     case '/api/regions/summary': return { generatedAt: at, windowDays: 92, regions: [{ name: 'synthetic-region',

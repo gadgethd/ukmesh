@@ -46,12 +46,15 @@ import { fmtAxisDay, fmtAxisTime, fmtPeakHour } from './statsTimeFormat.js';
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
   const watchlist = useWatchlist();
-  const { data, loading, refreshing, loadError, lastUpdatedAt, reload, liveObservers, observerError } = useStatsPageData();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
   const requestedTab = searchParams.get('tab');
   const requestedRegion = searchParams.get('region')?.trim().toUpperCase() ?? '';
   const activeTab: StatsTabId = isStatsTabId(requestedTab) ? requestedTab : 'overview';
+  const { data, loading, refreshing, loadError, lastUpdatedAt, reload, liveObservers, observerError } = useStatsPageData(activeTab);
+  useEffect(() => {
+    if (!data) setSelectedDecodedPath(null);
+  }, [data]);
 
   const setActiveTab = (tab: StatsTabId) => {
     const next = new URLSearchParams(searchParams);
@@ -113,19 +116,6 @@ export const StatsPage: React.FC = () => {
 
       <div className="site-content">
 
-        {loading && (
-          <div className="stats-page__loading-shell" aria-label="Loading stats">
-            <LoadingIndicator label="Loading stats..." variant="block" />
-            <div className="stats-page__summary">
-              {Array.from({ length: 6 }, (_, index) => <div key={index} className="stats-page__stat skeleton-shimmer" />)}
-            </div>
-            <div className="stats-page__row">
-              <div className="stats-page__chart skeleton-shimmer" />
-              <div className="stats-page__chart skeleton-shimmer" />
-            </div>
-          </div>
-        )}
-
         {!loading && !data && (
           <div className="stats-page__request-state" role={loadError ? 'alert' : 'status'}>
             <strong>{loadError ? 'Stats are unavailable' : 'No stats response was returned'}</strong>
@@ -157,7 +147,6 @@ export const StatsPage: React.FC = () => {
           </div>
         )}
 
-        {data && !dataIsEmpty && (
           <Tabs
             selectedKey={activeTab}
             onSelectionChange={(key) => setActiveTab(key as StatsTabId)}
@@ -177,6 +166,20 @@ export const StatsPage: React.FC = () => {
               ))}
             </TabList>
             <TabPanel id={activeTab} className="stats-page__tabpanel">
+        {loading && (
+          <div className="stats-page__loading-shell" aria-label="Loading stats">
+            <LoadingIndicator label="Loading stats..." variant="block" />
+            <div className="stats-page__summary">
+              {Array.from({ length: 6 }, (_, index) => <div key={index} className="stats-page__stat skeleton-shimmer" />)}
+            </div>
+            <div className="stats-page__row">
+              <div className="stats-page__chart skeleton-shimmer" />
+              <div className="stats-page__chart skeleton-shimmer" />
+            </div>
+          </div>
+        )}
+
+            {data && !dataIsEmpty && (<>
 
             {activeTab === 'overview' && (
               <>
@@ -700,9 +703,9 @@ export const StatsPage: React.FC = () => {
                 )}
               </>
             )}
+            </>)}
             </TabPanel>
           </Tabs>
-        )}
 
         <StatsDecodedPathDialog
           selection={selectedDecodedPath}

@@ -7,6 +7,7 @@ import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import type { QueryResultRow } from 'pg';
 import { createDeferredOnce } from '../../lifecycle/deferredOnce.js';
+import { parseChartSections, projectChartSections } from '../../stats/chartSections.js';
 
 const chartsWarmup = createDeferredOnce('stats chart warmup');
 
@@ -95,10 +96,17 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   });
 
   router.get('/stats/charts', deps.statsChartsLimiter, async (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    let sections;
+    try { sections = parseChartSections(req.query['sections']); }
+    catch { res.status(400).json({ error: 'sections must select unique overview,traffic,observers,paths,signal values' }); return; }
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getCharts(network, observer));
+      await publicJson(res, deps.getPublicVisibilityGeneration, async generation => projectChartSections(
+        await service.getCharts(network, observer), sections,
+        { network: network ?? 'ukmesh', observer: observer ?? null }, generation,
+      ));
     } catch (err) {
       if (err instanceof StatsWorkOverloadedError) {
         res.status(503).json({ error: 'Statistics are busy', retryable: true });

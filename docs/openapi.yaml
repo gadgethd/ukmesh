@@ -7226,13 +7226,42 @@
     },
     "/api/stats/charts": {
       "get": {
-        "summary": "Read stats charts",
+        "summary": "Read the complete chart snapshot or selected statistics sections",
         "operationId": "get-stats-charts",
         "tags": [
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "observer",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Fa-f0-9]{64}$"
+            }
+          },
+          {
+            "name": "sections",
+            "in": "query",
+            "required": false,
+            "description": "One to five distinct comma-separated section names. Omit for the backward-compatible full snapshot. Selection order is canonicalized; summary and snapshot metadata are always included. The full origin snapshot remains cached by network and privacy generation; observer snapshots are never persisted. Responses require HTTP revalidation.",
+            "schema": {
+              "type": "string",
+              "maxLength": 80,
+              "pattern": "^(overview|traffic|observers|paths|signal)(,(overview|traffic|observers|paths|signal)){0,4}$"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",
@@ -7240,13 +7269,210 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": true
+                  "required": [
+                    "snapshot",
+                    "summary"
+                  ],
+                  "additionalProperties": true,
+                  "properties": {
+                    "snapshot": {
+                      "type": "object",
+                      "required": [
+                        "status",
+                        "generatedAt",
+                        "scope",
+                        "visibilityGeneration"
+                      ],
+                      "properties": {
+                        "status": {
+                          "const": "complete",
+                          "type": "string"
+                        },
+                        "generatedAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "scope": {
+                          "type": "string"
+                        },
+                        "visibilityGeneration": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "required": [
+                        "totalPackets24h",
+                        "totalPackets7d",
+                        "uniqueRadios24h",
+                        "peakHour",
+                        "peakHourCount"
+                      ],
+                      "properties": {
+                        "totalPackets24h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "totalPackets7d": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "uniqueRadios24h": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "peakHour": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "peakHourCount": {
+                          "type": "number",
+                          "minimum": 0
+                        }
+                      }
+                    },
+                    "representation": {
+                      "type": "object",
+                      "required": [
+                        "sections",
+                        "scope",
+                        "visibilityGeneration"
+                      ],
+                      "additionalProperties": false,
+                      "properties": {
+                        "sections": {
+                          "type": "array",
+                          "minItems": 1,
+                          "maxItems": 5,
+                          "uniqueItems": true,
+                          "items": {
+                            "type": "string",
+                            "enum": [
+                              "overview",
+                              "traffic",
+                              "observers",
+                              "paths",
+                              "signal"
+                            ]
+                          }
+                        },
+                        "scope": {
+                          "type": "object",
+                          "required": [
+                            "network",
+                            "observer"
+                          ],
+                          "additionalProperties": false,
+                          "properties": {
+                            "network": {
+                              "type": "string"
+                            },
+                            "observer": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            }
+                          }
+                        },
+                        "visibilityGeneration": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    },
+                    "packetsPerHour": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "packetsPerDay": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "radiosPerHour": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "radiosPerDay": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "packetTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "channelTraffic": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "routeTypes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "transportCodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "observerRegions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "observerDiversity": {
+                      "type": "object"
+                    },
+                    "pathHashes": {
+                      "type": "object"
+                    },
+                    "hopDistribution": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "prefixCollisions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "pathDecodeTrend": {
+                      "type": "array",
+                      "items": {
+                        "type": "object"
+                      }
+                    },
+                    "signalSummary": {
+                      "type": "object"
+                    }
+                  }
                 }
               }
             }
           },
           "400": {
-            "description": "Invalid or out-of-bounds request",
+            "description": "Invalid, empty, duplicate or oversized sections selection",
             "content": {
               "application/json": {
                 "schema": {

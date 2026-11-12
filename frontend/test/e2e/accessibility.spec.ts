@@ -217,9 +217,9 @@ test('observer activity refreshes independently of an old chart snapshot', async
   await installFixtures(page);
   const generatedAt = '2026-11-01T12:00:00Z';
   await page.route('**/api/stats/charts?**', route => route.fulfill({ json: {
-    ...chartStats, snapshot: { generatedAt }, observerRegions: [{
+    ...chartStats, snapshot: { ...chartStats.snapshot, generatedAt }, observerRegions: [{
       iata: 'EDI', activeObservers: 0, observers: 4, packets7d: 120, packets24h: 20,
-      lastPacketAt: generatedAt, series: [], health: { score: 0, status: 'poor' },
+      lastPacketAt: generatedAt, series: [], health: { score: 0, status: 'poor', factors: {} },
     }],
   } }));
   let activeObservers = 2;
@@ -238,6 +238,74 @@ test('observer activity refreshes independently of an old chart snapshot', async
   await page.getByRole('button', { name: /refresh/i }).click();
   await expect(card.getByText('3 / 4', { exact: true })).toBeVisible();
   await expect(timestamp).toHaveText(originalTimestamp!);
+});
+
+test('stats request only the active section and cancel a stale refresh on tab change', async ({ page }) => {
+  await installFixtures(page);
+  const fields: Record<string, (keyof typeof chartStats)[]> = {
+    overview: ['packetsPerHour', 'packetsPerDay', 'radiosPerHour', 'radiosPerDay', 'observerDiversity'],
+    traffic: ['packetTypes', 'channelTraffic', 'routeTypes', 'transportCodes'],
+    observers: ['observerRegions', 'observerDiversity'],
+    paths: ['pathHashes', 'hopDistribution', 'prefixCollisions', 'pathDecodeTrend'], signal: ['signalSummary'],
+  };
+  const requested: string[] = [];
+  let delayedRefresh = false;
+  let malformed = false;
+  await page.route('**/api/stats/charts?**', async route => {
+    const section = new URL(route.request().url()).searchParams.get('sections')!;
+    expect(fields[section]).toBeTruthy();
+    requested.push(section);
+    if (delayedRefresh && section === 'overview') await new Promise(resolve => setTimeout(resolve, 600));
+    await route.fulfill({ json: {
+      snapshot: chartStats.snapshot, summary: chartStats.summary,
+      representation: { sections: [section], scope: { network: 'ukmesh', observer: null }, visibilityGeneration: 1 },
+      ...Object.fromEntries(fields[section].map(key => [key, chartStats[key]])),
+      ...(malformed ? { signalSummary: { ...chartStats.signalSummary, avgRssi: 'invalid' } } : {}),
+    } });
+  });
+  await page.goto('/stats');
+  await expect(page.getByText('Observed packets (24h)', { exact: true })).toBeVisible();
+  expect(requested).toEqual(['overview']);
+  delayedRefresh = true;
+  const oldRequest = page.waitForRequest(request => request.url().includes('sections=overview'));
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await oldRequest;
+  await page.getByRole('tab', { name: 'Paths', exact: true }).click();
+  await expect(page.getByRole('tab', { name: 'Paths', exact: true })).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByText('Multibyte Packets (24h)', { exact: true })).toBeVisible();
+  await page.waitForTimeout(700);
+  await expect(page.getByText('Multibyte Packets (24h)', { exact: true })).toBeVisible();
+  for (const tab of ['Traffic', 'Observers', 'Signal']) {
+    await page.getByRole('tab', { name: tab, exact: true }).click();
+    await expect(page.getByRole('tab', { name: tab, exact: true })).toHaveAttribute('aria-selected', 'true');
+  }
+  expect(requested).toEqual(['overview', 'overview', 'paths', 'traffic', 'observers', 'signal']);
+  malformed = true;
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await expect(page.getByRole('alert')).toContainText('malformed');
+  await expect(page.getByText('RSSI samples', { exact: true })).toBeVisible();
+});
+
+test('a changed stats privacy generation closes the old path dialog and rejects an old snapshot', async ({ page }) => {
+  await installFixtures(page);
+  let generation = 1;
+  await page.route('**/api/runtime-config', route => route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, privacyGeneration: generation, refreshAfterSeconds: 300,
+  } }));
+  await page.goto('/stats?tab=paths');
+  await page.getByRole('button', { name: 'North -> South', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
+  await expect(dialog).toBeVisible();
+  generation = 2;
+  await page.evaluate(() => {
+    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('alert')).toContainText('malformed or no longer matches this scope');
+  await expect(page.getByRole('button', { name: 'North -> South', exact: true })).toHaveCount(0);
 });
 
 for (const route of publicRoutes) {

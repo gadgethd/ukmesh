@@ -1,5 +1,6 @@
 // Invented, deterministic public statistics for browser and Lighthouse checks.
 export const chartStats = {
+  snapshot: { status: 'complete', generatedAt: '2026-11-12T00:00:00Z', scope: 'ukmesh', visibilityGeneration: 1 },
   packetsPerHour: [{ hour: '12:00', count: 24 }],
   packetsPerDay: [{ day: 'Mon', count: 120 }],
   radiosPerHour: [{ hour: '12:00', count: 8 }],
