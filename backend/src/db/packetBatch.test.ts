@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildPacketBatchInput } from './packetInput.js';
-import {
-  configurePacketBatch,
-  enqueuePacket,
-  flush,
-  type PacketBatchInput,
-} from './packetBatch.js';
+import type { PacketBatchInput } from './packetBatch.js';
+
+// These cases exercise collection of several concurrent rows. Select that
+// supported mode explicitly; the serial MQTT default is immediate flush.
+const originalFlushMs = process.env['MQTT_INGEST_FLUSH_MS'];
+process.env['MQTT_INGEST_FLUSH_MS'] = '10';
+const { configurePacketBatch, enqueuePacket, flush } = await import('./packetBatch.js');
+if (originalFlushMs === undefined) delete process.env['MQTT_INGEST_FLUSH_MS'];
+else process.env['MQTT_INGEST_FLUSH_MS'] = originalFlushMs;
 
 test('a poison row cannot reject the valid packet sharing its transaction', async () => {
   const query = async (sql: string, params: unknown[] = []) => {
@@ -186,8 +189,10 @@ test('F02 refuses a contended writer before any mutation and gates the hourly pr
   assert.match(statements[1]!, /WHERE \(network = 'test'\s+OR topic_prefix <> 'meshcore-test'\)/);
 });
 
-test('an immediate flush failure rejects its packet without an unhandled process failure', async () => {
+test('the default immediate flush rejects a failed packet without an unhandled process failure', async () => {
   const { spawnSync } = await import('node:child_process');
+  const environment = { ...process.env };
+  delete environment['MQTT_INGEST_FLUSH_MS'];
   const child = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import { configurePacketBatch, enqueuePacket } from './src/db/packetBatch.ts';
@@ -201,6 +206,6 @@ test('an immediate flush failure rejects its packet without an unhandled process
     await assert.rejects(enqueuePacket(buildPacketBatchInput({ packetHash: 'poison', packetType: 3,
       topic: 'meshcore/LHR/fixture/packets', rawHex: '00' })), /permanent packet data failure/);
     await new Promise((resolve) => setTimeout(resolve, 30));
-  `], { encoding: 'utf8', env: { ...process.env, MQTT_INGEST_FLUSH_MS: '0' }, timeout: 10_000 });
+  `], { encoding: 'utf8', env: environment, timeout: 10_000 });
   assert.equal(child.status, 0, child.stderr);
 });

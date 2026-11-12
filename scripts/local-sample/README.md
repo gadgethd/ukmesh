@@ -157,7 +157,8 @@ It retains source checksums, image/resource limits, DB CPU and WAL deltas,
 steady-state SQL rankings, RSS/heap/event-loop samples and the decode benchmark.
 Use `--data-dir plans/measurements/ingest-baseline/dataset --flush-ms 0` with a
 new label to compare a flush setting against exactly the same source. The default
-comparison setting is explicitly 10 ms; it does not read a project `.env`.
+comparison setting is explicitly 0 ms, matching the backend default; it does
+not read a project `.env`. Select `--flush-ms 10` for the former wait interval.
 The local broker has bounded per-client queues (10,000 messages / 16 MiB), and
 the 2 GiB database pins 100 connections to accommodate the backend's pools.
 
@@ -167,6 +168,17 @@ the enqueue-to-commit histogram's p95 upper bound. It does not label the broker
 acknowledgement latency as persistence latency. `--speed 1` reproduces the
 synthetic fixture's one-packet-per-second timing. Package `check` commands run
 normal correctness checks; benchmarks stay out of the unit suite.
+
+The 2026-11-12 flush comparison used the same 2,000 invented receptions on a
+four-CPU local host, Node 26.13.1 and the pinned images above (PostgreSQL limited
+to two CPUs / 2 GiB). Immediate microtask flushing measured 79.2 persisted
+packets/second for saturation and 77.8 for the paced run, versus 43.3 and 43.2
+with a 10 ms wait. Every run persisted exactly 2,000 rows and drained queues.
+The enqueue-to-commit p95 histogram bounds were 25 ms for saturation at both
+settings and 50 → 25 ms for paced replay. DB CPU, backend CPU and WAL per packet
+decreased. Paced replay offered 100/second and required a final drain; this
+fixture does not establish sustainable throughput at 100/second or production
+capacity. Reproduce both settings before applying them to another workload.
 
 Snapshot benchmarks add a fixed overlay of 50 invented ACK receptions and one
 invented observer. The measurement tools re-anchor only those receptions before

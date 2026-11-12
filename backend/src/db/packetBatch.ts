@@ -26,7 +26,11 @@ const MAX_BATCH_SIZE = 50;
  * 50ms wait taxed every singleton batch, and a strictly serial ingest loop
  * produces nothing else. 0 flushes as soon as an entry is enqueued.
  */
-const FLUSH_INTERVAL_MS = boundedEnvInteger('MQTT_INGEST_FLUSH_MS', 10, 0, 1_000);
+// Durable MQTT delivery is serial: the 2k local replay measured singleton
+// batches at both settings. Immediate flush removes idle wait without changing
+// the transaction, retry, queue or acknowledgement boundaries. Operators may
+// still select a collection interval for concurrent producers.
+const FLUSH_INTERVAL_MS = boundedEnvInteger('MQTT_INGEST_FLUSH_MS', 0, 0, 1_000);
 /**
  * Upper bound on entries waiting to be persisted. Reaching it refuses new
  * entries instead of growing without limit; the ingest layer treats the
@@ -241,6 +245,19 @@ function scheduleFlush(): void {
   timer.unref();
 }
 
+let immediateScheduled = false;
+function scheduleImmediateFlush(): void {
+  if (immediateScheduled) return;
+  immediateScheduled = true;
+  // Collect synchronous producers in this turn without adding a timer wait.
+  queueMicrotask(() => {
+    immediateScheduled = false;
+    void flush().catch((error: unknown) => {
+      console.error('[db] packet batch flush failed', error instanceof Error ? error.message : error);
+    });
+  });
+}
+
 export function isRetryableDatabaseError(error: unknown): boolean {
   if (typeof error === 'object' && error !== null && 'code' in error) {
     const code = (error as { code?: unknown }).code;
@@ -264,7 +281,8 @@ export function enqueuePacket(packet: PacketBatchInput): Promise<PacketBatchResu
     pending.push({ packet, resolve, reject, enqueuedNs: process.hrtime.bigint() });
   });
   packetBatchQueueDepth.set(pending.length);
-  if (pending.length >= MAX_BATCH_SIZE || FLUSH_INTERVAL_MS === 0) {
+  if (FLUSH_INTERVAL_MS === 0) scheduleImmediateFlush();
+  else if (pending.length >= MAX_BATCH_SIZE) {
     void flush().catch((error: unknown) => {
       // Individual packet promises carry the error to intake/quarantine. A
       // detached flush must not also trigger the global rejection shutdown.

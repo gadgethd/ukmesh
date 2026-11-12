@@ -10,7 +10,7 @@ cd "$repo"
 label=${1:-}
 [[ $label =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo 'Supply a new lowercase measurement label' >&2; exit 2; }
 shift
-data_dir= flush_ms=10
+data_dir= flush_ms=0
 while (($#)); do
   case "$1" in
     --data-dir) data_dir=$(realpath "$2"); shift 2 ;;
@@ -50,7 +50,7 @@ export DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore
 for mode in saturation controlled; do
   mkdir "$output/$mode"
   scripts/dev-stack.sh reset --profile ingest --data-dir "$data_dir" --replay-limit 0 \
-    --ingest-flush-ms "$flush_ms" > "$output/$mode/setup.log" 2>&1
+    --ingest-flush-ms "$flush_ms" 9>&- > "$output/$mode/setup.log" 2>&1
   docker inspect ukmesh-sample-db ukmesh-sample-redis ukmesh-sample-mqtt \
     --format '{{.Name}} {{.Image}} {{json .HostConfig.Memory}} {{json .HostConfig.NanoCpus}}' > "$output/$mode/images.txt"
   cp plans/dev-stack/prepare.log "$output/$mode/prepare.log"
