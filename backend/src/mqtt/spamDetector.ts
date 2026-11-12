@@ -1,5 +1,8 @@
+import { createHash } from 'node:crypto';
 import { haversineKm } from '../platform/geo.js';
-import { query } from '../db/index.js';
+import { query, type DatabaseQueryFn } from '../db/index.js';
+import { readSpamSnapshot } from './spamSnapshot.js';
+import { spamDetectorSnapshotEntries, spamDetectorSnapshotUpdatedSeconds, spamDetectorRefreshHealthy, spamDetectorRefreshesTotal, setSpamDetectorRuntimeCollector } from '../metrics.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,15 +110,16 @@ const nodeFreqTracker = new Map<string, {
 
 // DB-backed established node locations (refreshed every 15 min at startup)
 // srcNodeId → { lat, lon, avgHops, advertCount }
-const establishedNodes = new Map<string, {
+interface EstablishedNode {
   lat: number;
   lon: number;
   avgHops: number;
   advertCount: number;
-}>();
+}
+let establishedNodes = new Map<string, EstablishedNode>();
 
-// Known src_node_ids seen in the DB before this session (loaded once at startup)
-const knownNodeIds = new Set<string>();
+// Known src_node_ids from the most recent complete database snapshot
+let knownNodeIds = new Set<string>();
 
 interface IdentityKeyStats {
   publicKey: string;
@@ -144,11 +148,25 @@ interface KeyRotationStats {
   sampleNames: string[];
 }
 
-const identityByName = new Map<string, IdentityNameStats>();
-const keyRotationByPublicKey = new Map<string, KeyRotationStats>();
+let identityByName = new Map<string, IdentityNameStats>();
+let keyRotationByPublicKey = new Map<string, KeyRotationStats>();
 
 const SPAM_RUNTIME_TRACKER_MAX = 10_000;
 const SPAM_NAMES_PER_NODE_MAX = 64;
+
+// Retain fixed-size digests rather than arbitrary input strings in runtime maps.
+function trackerKey(value: string): string {
+  return createHash('sha256').update(value).digest('base64');
+}
+
+setSpamDetectorRuntimeCollector(() => {
+  let arrivals = 0, names = 0;
+  for (const entry of nodeFreqTracker.values()) {
+    arrivals += entry.times.length;
+    names += entry.namesSeen.size;
+  }
+  return { trackers: nodeFreqTracker.size, arrivals, names };
+});
 
 function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
   while (map.size >= capacity) {
@@ -162,28 +180,47 @@ function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
 // Startup & refresh
 // ---------------------------------------------------------------------------
 
+let refreshInFlight: Promise<void> | undefined;
+let initialized = false;
+
 export async function initSpamDetector(): Promise<void> {
   await refreshSpamDetectorCaches();
-  setInterval(refreshSpamDetectorCaches, 15 * 60 * 1000);
-  setInterval(cleanupMemory, 5 * 60 * 1000);
+  if (initialized) return;
+  initialized = true;
+  setInterval(() => { void refreshSpamDetectorCaches(); }, 15 * 60 * 1000).unref();
+  setInterval(cleanupMemory, 5 * 60 * 1000).unref();
 }
 
-export async function refreshSpamDetectorCaches(): Promise<void> {
-  await Promise.all([
-    refreshEstablishedNodes(),
-    refreshIdentityEvidence(),
-  ]);
+export function refreshSpamDetectorCaches(databaseQuery: DatabaseQueryFn = query): Promise<void> {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = Promise.all([
+    refreshEstablishedNodes(databaseQuery),
+    refreshIdentityEvidence(databaseQuery),
+  ]).then(() => undefined).finally(() => { refreshInFlight = undefined; });
+  return refreshInFlight;
 }
 
-async function refreshEstablishedNodes(): Promise<void> {
+function refreshSucceeded(dataset: 'established' | 'identity', entries: number): void {
+  spamDetectorSnapshotEntries.set({ dataset }, entries);
+  spamDetectorSnapshotUpdatedSeconds.set({ dataset }, Date.now() / 1000);
+  spamDetectorRefreshHealthy.set({ dataset }, 1);
+  spamDetectorRefreshesTotal.inc({ dataset, outcome: 'success' });
+}
+
+function refreshFailed(dataset: 'established' | 'identity'): void {
+  spamDetectorRefreshHealthy.set({ dataset }, 0);
+  spamDetectorRefreshesTotal.inc({ dataset, outcome: 'failure' });
+}
+
+async function refreshEstablishedNodes(databaseQuery: DatabaseQueryFn): Promise<void> {
   try {
-    const res = await query<{
+    const rows = await readSpamSnapshot<{
       src_node_id: string;
       avg_lat: number;
       avg_lon: number;
       avg_hops: number;
       advert_count: number;
-    }>(`
+    }>(databaseQuery, `
       SELECT
         n.node_id AS src_node_id,
         AVG(NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision)  AS avg_lat,
@@ -202,39 +239,42 @@ async function refreshEstablishedNodes(): Promise<void> {
         AND COUNT(DISTINCT p.packet_hash) >= $1
     `, [ESTABLISHED_MIN_ADVERTS]);
 
-    establishedNodes.clear();
-    knownNodeIds.clear();
+    const nextEstablished = new Map<string, EstablishedNode>();
+    const nextKnown = new Set<string>();
 
-    for (const row of res.rows) {
+    for (const row of rows) {
       if (row.avg_lat == null || row.avg_lon == null) continue;
-      establishedNodes.set(row.src_node_id, {
+      nextEstablished.set(row.src_node_id, {
         lat: Number(row.avg_lat),
         lon: Number(row.avg_lon),
         avgHops: Number(row.avg_hops ?? 5),
         advertCount: Number(row.advert_count),
       });
-      knownNodeIds.add(row.src_node_id);
+      nextKnown.add(row.src_node_id);
     }
 
     // Also load all known node IDs (even without stable location) for slow-burn detection
-    const allIds = await query<{ node_id: string }>(
+    const allIds = await readSpamSnapshot<{ node_id: string }>(databaseQuery,
       `SELECT node_id
          FROM core.nodes
         WHERE last_seen > NOW() - INTERVAL '180 days'
-        ORDER BY last_seen DESC
-        LIMIT 100000`
+        ORDER BY last_seen DESC`
     );
-    for (const row of allIds.rows) knownNodeIds.add(row.node_id);
+    for (const row of allIds) nextKnown.add(row.node_id);
+    establishedNodes = nextEstablished;
+    knownNodeIds = nextKnown;
+    refreshSucceeded('established', establishedNodes.size + knownNodeIds.size);
 
     console.log(`[spam-detect] established nodes: ${establishedNodes.size}, known ids: ${knownNodeIds.size}`);
   } catch (err: unknown) {
+    refreshFailed('established');
     console.error('[spam-detect] refreshEstablishedNodes error:', (err as Error).message);
   }
 }
 
-async function refreshIdentityEvidence(): Promise<void> {
+async function refreshIdentityEvidence(databaseQuery: DatabaseQueryFn): Promise<void> {
   try {
-    const keyRows = await query<{
+    const keyRows = await readSpamSnapshot<{
       name: string;
       public_key: string;
       advert_count: string;
@@ -242,7 +282,7 @@ async function refreshIdentityEvidence(): Promise<void> {
       first_seen: Date;
       last_seen: Date;
       max_adverts_per_minute: string;
-    }>(`
+    }>(databaseQuery, `
       WITH base AS (
         SELECT
           payload->>'_summary' AS name,
@@ -290,7 +330,7 @@ async function refreshIdentityEvidence(): Promise<void> {
       LEFT JOIN max_minute mm ON mm.name = ks.name AND mm.public_key = ks.public_key
     `, [IDENTITY_WINDOW_DAYS]);
 
-    const burstRows = await query<{ name: string; max_evidenced_keys_per_hour: string }>(`
+    const burstRows = await readSpamSnapshot<{ name: string; max_evidenced_keys_per_hour: string }>(databaseQuery, `
       WITH base AS (
         SELECT
           payload->>'_summary' AS name,
@@ -328,17 +368,17 @@ async function refreshIdentityEvidence(): Promise<void> {
       GROUP BY name
     `, [IDENTITY_WINDOW_DAYS, EVIDENCED_KEY_MIN_ADVERTS, EVIDENCED_KEY_MIN_OBSERVERS]);
 
-    const rotationRows = await query<{
+    const rotationRows = await readSpamSnapshot<{
       public_key: string;
       name_count: string;
       advert_count: string;
       sample_names: string[];
-    }>(`
+    }>(databaseQuery, `
       SELECT
         upper(payload->>'publicKey') AS public_key,
         COUNT(DISTINCT payload->>'_summary') AS name_count,
         COUNT(DISTINCT packet_hash) AS advert_count,
-        array_agg(DISTINCT left(payload->>'_summary', 32)) AS sample_names
+        (array_agg(DISTINCT left(payload->>'_summary', 32) ORDER BY left(payload->>'_summary', 32)))[1:4] AS sample_names
       FROM mesh.packets
       WHERE packet_type = 4
         AND time > NOW() - ($1 * INTERVAL '1 day')
@@ -350,20 +390,20 @@ async function refreshIdentityEvidence(): Promise<void> {
     `, [IDENTITY_WINDOW_DAYS]);
 
     const burstByName = new Map<string, number>();
-    for (const row of burstRows.rows) {
+    for (const row of burstRows) {
       burstByName.set(row.name, Number(row.max_evidenced_keys_per_hour ?? 0));
     }
 
     const nextIdentityByName = new Map<string, IdentityNameStats>();
-    for (const row of keyRows.rows) {
+    for (const row of keyRows) {
       const advertCount = Number(row.advert_count ?? 0);
       const observerCount = Number(row.observer_count ?? 0);
       const keyStats: IdentityKeyStats = {
         publicKey: row.public_key,
         advertCount,
         observerCount,
-        firstSeen: row.first_seen,
-        lastSeen: row.last_seen,
+        firstSeen: new Date(row.first_seen),
+        lastSeen: new Date(row.last_seen),
         maxAdvertsPerMinute: Number(row.max_adverts_per_minute ?? 0),
       };
 
@@ -395,7 +435,7 @@ async function refreshIdentityEvidence(): Promise<void> {
     }
 
     const nextKeyRotation = new Map<string, KeyRotationStats>();
-    for (const row of rotationRows.rows) {
+    for (const row of rotationRows) {
       nextKeyRotation.set(row.public_key, {
         publicKey: row.public_key,
         nameCount: Number(row.name_count ?? 0),
@@ -404,20 +444,20 @@ async function refreshIdentityEvidence(): Promise<void> {
       });
     }
 
-    identityByName.clear();
-    for (const [name, stats] of nextIdentityByName) identityByName.set(name, stats);
-    keyRotationByPublicKey.clear();
-    for (const [key, stats] of nextKeyRotation) keyRotationByPublicKey.set(key, stats);
+    identityByName = nextIdentityByName;
+    keyRotationByPublicKey = nextKeyRotation;
+    refreshSucceeded('identity', keyRows.length + identityByName.size + keyRotationByPublicKey.size);
 
     const suspiciousNames = Array.from(identityByName.values()).filter((stats) => stats.evidencedKeys >= MULTI_KEY_CONFIRMED_THRESHOLD).length;
     console.log(`[spam-detect] identity evidence names: ${identityByName.size}, suspicious names: ${suspiciousNames}, rotating keys: ${keyRotationByPublicKey.size}`);
   } catch (err: unknown) {
+    refreshFailed('identity');
     console.error('[spam-detect] refreshIdentityEvidence error:', (err as Error).message);
   }
 }
 
 function cleanupMemory(): void {
-  const now = Date.now();
+  const now = performance.now();
 
   for (const [id, entry] of nodeFreqTracker) {
     entry.times = entry.times.filter(t => now - t < HIGH_FREQ_WINDOW_MS);
@@ -488,19 +528,21 @@ function checkCoords(name: string, lat?: number, lon?: number): Signal[] {
 }
 
 function checkHighFreq(srcNodeId: string): Signal[] {
-  const now = Date.now();
-  let entry = nodeFreqTracker.get(srcNodeId);
+  const now = performance.now();
+  let entry = nodeFreqTracker.get(trackerKey(srcNodeId));
   if (!entry) {
     evictOldest(nodeFreqTracker, SPAM_RUNTIME_TRACKER_MAX);
     entry = { times: [], namesSeen: new Map() };
-    nodeFreqTracker.set(srcNodeId, entry);
+    nodeFreqTracker.set(trackerKey(srcNodeId), entry);
   }
   entry.times.push(now);
   entry.times = entry.times.filter(t => now - t < HIGH_FREQ_WINDOW_MS);
+  // The verdict only needs to know whether the latest 31 arrivals fit in a minute.
+  if (entry.times.length > EXTREME_HIGH_FREQ_COUNT + 1) entry.times.shift();
 
   if (entry.times.length > EXTREME_HIGH_FREQ_COUNT) {
     return [sig('EXTREME_ADVERT_FLOOD',
-      `${entry.times.length} adverts in 60s from ${srcNodeId.slice(0, 12)}…`
+      `More than ${EXTREME_HIGH_FREQ_COUNT} adverts in 60s from ${srcNodeId.slice(0, 12)}…`
     )];
   }
   return [];
@@ -519,17 +561,18 @@ function checkTimestamp(payloadTimestamp?: number): Signal[] {
 }
 
 function checkNameRotation(srcNodeId: string, name: string): Signal[] {
-  const now = Date.now();
-  let entry = nodeFreqTracker.get(srcNodeId);
+  const now = performance.now();
+  let entry = nodeFreqTracker.get(trackerKey(srcNodeId));
   if (!entry) {
     evictOldest(nodeFreqTracker, SPAM_RUNTIME_TRACKER_MAX);
     entry = { times: [], namesSeen: new Map() };
-    nodeFreqTracker.set(srcNodeId, entry);
+    nodeFreqTracker.set(trackerKey(srcNodeId), entry);
   }
-  if (!entry.namesSeen.has(name)) {
+  const nameKey = trackerKey(name);
+  if (!entry.namesSeen.has(nameKey)) {
     evictOldest(entry.namesSeen, SPAM_NAMES_PER_NODE_MAX);
   }
-  entry.namesSeen.set(name, now);
+  entry.namesSeen.set(nameKey, now);
 
   // Evict expired names
   for (const [n, ts] of entry.namesSeen) {

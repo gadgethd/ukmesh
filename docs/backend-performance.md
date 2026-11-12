@@ -141,6 +141,52 @@ by less than 0.2%. Dedup occupancy reached exactly 2,000; these ACK fixtures
 do not exercise optional ADV/GRP pre-resolution. The offered rate still
 requires a final drain and is not a sustainable-rate claim.
 
+## Spam-detector memory bounds
+
+Each of the five database result sets is limited to 100,000 rows and 16 MiB
+of serialized row data. PostgreSQL checks both budgets before returning the
+snapshot to Node. These are transfer limits, not a claim about exact JavaScript
+heap usage. Established locations and known IDs publish together; identity,
+burst and rotation evidence publish together. A failed or oversized refresh
+retains the previous complete snapshot. Before the first successful refresh,
+that snapshot is empty and the detector has reduced evidence.
+
+`meshcore_spam_detector_refresh_healthy{dataset}` reports the latest attempt;
+`meshcore_spam_detector_snapshot_updated_seconds{dataset}` records the last
+successful publication. Check both before relying on detector coverage.
+Refresh outcomes and retained entry counts use only the fixed `established`
+and `identity` dataset labels. Concurrent refresh callers share one operation.
+Rotation diagnostics retain four sample names while keeping the full distinct
+name and advert counts used by verdicts.
+
+Runtime state retains at most 10,000 trackers, 64 fixed-size name digests per
+tracker and the latest 31 arrival timestamps. The flood predicate needs only
+whether more than 30 arrivals fit within one minute. Monotonic time controls
+arrival/name expiry; wall-clock corrections cannot extend those windows.
+The runtime-entry metric reports tracker, arrival and name populations without
+identity labels. Five-minute cleanup also removes idle state.
+
+A fresh-process component comparison used 20,000 repeated invented adverts,
+one warm-up and three measured runs per implementation. Both reported exactly
+19,970 flood signals. Median evaluation wall time fell from 1,837 to 95 ms,
+CPU from 1,900 to 126 ms, and post-GC retained heap delta from 264 to 134 KiB.
+This isolates detector evaluation and is not persisted-ingest throughput.
+An isolated PostgreSQL fixture retained the previous implementation's exact
+verdicts/scores/signals for a six-key clone burst, stable locations and key
+rotation. Oversized evidence rejected the whole identity refresh and retained
+those verdicts. Row-count and UTF-8 byte boundaries also execute against SQL.
+
+Run the SQL checks against a disposable-capable local PostgreSQL endpoint:
+
+```bash
+cd backend
+TEST_INGEST_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore \
+  node --import tsx --test src/mqtt/spamSnapshot.integration.test.ts
+```
+
+The test creates and drops its own named database. The final sustained soak
+must still qualify the complete candidate after the last runtime change.
+
 ## Link-worker startup and memory
 
 Link mode retains GDAL, NumPy, terrain sampling and the existing RF model.
