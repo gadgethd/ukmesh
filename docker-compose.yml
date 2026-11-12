@@ -485,8 +485,8 @@ services:
       context: ./third_party/hopreach
       dockerfile: Dockerfile
       args:
-        VERSION: v0.1.32-ukmesh.3
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+        VERSION: v0.1.32-ukmesh.4
+        SOURCE_REVISION: ${HOPREACH_SOURCE_REVISION:-58b2eb9ccdadd2e1b5e54c7548e48f92cc526119}
     restart: always
     logging: *json-log-limits
     cpus: ${HOPREACH_CPUS:-4.0}

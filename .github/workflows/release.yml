@@ -94,7 +94,9 @@ jobs:
             image: meshcore-hopreach
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
-            build_args: VERSION=v0.1.32-ukmesh.3
+            build_args: |
+              VERSION=v0.1.32-ukmesh.4
+              SOURCE_REVISION=58b2eb9ccdadd2e1b5e54c7548e48f92cc526119
           - component: mosquitto-reloader
             image: meshcore-mosquitto-reloader
             context: .

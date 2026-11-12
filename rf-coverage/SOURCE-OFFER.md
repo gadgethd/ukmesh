@@ -1,9 +1,9 @@
 # HopReach corresponding source
 
 The deployed RF calculator's complete corresponding source is public in the
-[UK Mesh HopReach fork](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.3)
-at commit `0230702be70a2729c5acc5640401f56ab9d65fd4`, immutably tagged
-`v0.1.32-ukmesh.3`. That revision is based directly on upstream HopReach
+[UK Mesh HopReach fork](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.4)
+at commit `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119`, immutably tagged
+`v0.1.32-ukmesh.4`. That revision is based directly on upstream HopReach
 v0.1.32 commit `61efac0b4678f55496fe08f53eda0c79eb18655b` and contains the
 identifiable UK Mesh modifications vendored in `third_party/hopreach`.
 
