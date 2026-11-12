@@ -1,3 +1,4 @@
+import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import assert from 'node:assert/strict';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -50,9 +51,12 @@ test('synthetic loader and derived-state preparation work on the complete migrat
   await prepareSampleDataset(url.href);
   assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p WHERE ${publicPacketPrivacySql('p')}`)).rows[0].n, 25);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.multibyte_path_facts WHERE fully_decoded AND visibility_ok')).rows[0].n, 25);
+  assert.ok(await readPublicResponseGeneration((sql) => pool.query(sql)) > 0);
   // A policy change after loading must remain authoritative. Preparation uses
   // the actual generation and the existing privacy implementation.
   await pool.query("UPDATE core.nodes SET name='Synthetic private 🚫' WHERE node_id LIKE 'AABB%'");
+  await assert.rejects(readPublicResponseGeneration((sql) => pool.query(sql)), /GENERATION_UNAVAILABLE/,
+    'pending rematerialization must fence derived HTTP responses before generation advances');
   await prepareSampleDataset(url.href);
   assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p WHERE ${publicPacketPrivacySql('p')}`)).rows[0].n, 0);
   // Reset must reach base relations, remove derived rows and permit a normal

@@ -334,8 +334,8 @@ export async function persistIncidents(
            (incident_key, network, status, first_seen, last_seen, message_count, observer_count,
             channels, username_variants, sender_names, representative_text, canonical_text,
             spam_marker, score, reasons, origin_lat, origin_lon, origin_radius_km, origin_region,
-            origin_confidence, origin_level, public_json, updated_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,NOW())
+            origin_confidence, origin_level, public_json, visibility_generation, updated_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,NOW())
          ON CONFLICT (incident_key) DO UPDATE SET
            status            = EXCLUDED.status,
            first_seen        = LEAST(analytics.spam_message_incidents.first_seen, EXCLUDED.first_seen),
@@ -358,6 +358,7 @@ export async function persistIncidents(
            origin_level      = EXCLUDED.origin_level,
            public_json       = jsonb_set(EXCLUDED.public_json, '{firstSeen}',
                                  to_jsonb(LEAST(analytics.spam_message_incidents.first_seen, EXCLUDED.first_seen)), true),
+           visibility_generation = EXCLUDED.visibility_generation,
            updated_at        = NOW()
          WHERE EXCLUDED.last_seen >= analytics.spam_message_incidents.last_seen
          RETURNING incident_key`,
@@ -384,6 +385,7 @@ export async function persistIncidents(
           origin.confidence,
           origin.level,
           JSON.stringify(publicJson),
+          analysisRun.privacyGeneration ?? null,
         ],
       );
 
@@ -483,7 +485,7 @@ export async function getPublicIncidents(
   runQuery: SpamSqlQuery = poolSqlQuery,
 ): Promise<PublicIncident[]> {
   const params: unknown[] = [];
-  const where: string[] = [];
+  const where: string[] = ['i.visibility_generation = (SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE)'];
   if (options.status) {
     params.push(options.status);
     where.push(`i.status = $${params.length}`);
@@ -543,7 +545,8 @@ export async function getPublicStatus(minConfidence = 0): Promise<PublicStatus> 
         COALESCE(SUM(message_count) FILTER (WHERE last_seen > NOW() - INTERVAL '24 hours'), 0)  AS msgs_24h,
         COALESCE(SUM(observer_count) FILTER (WHERE status = 'active'), 0) AS observers_24h
      FROM analytics.spam_message_incidents
-     WHERE score >= $1`,
+     WHERE score >= $1
+       AND visibility_generation = (SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE)`,
     [minConfidence],
   );
   const row = res.rows[0]!;
@@ -576,6 +579,7 @@ export async function getPublicIncident(
     `SELECT i.public_json
        FROM analytics.spam_message_incidents i
       WHERE i.incident_key = $1
+        AND i.visibility_generation = (SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE)
         AND EXISTS (
               SELECT 1
                 FROM analytics.spam_message_members m

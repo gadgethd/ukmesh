@@ -16,63 +16,9 @@ import { buildZonesGeoJSON, circlePolygon, groupSpamOrigins, type SpamOriginGrou
 // origins are coarse heat zones — never exact identities or locations.
 // ---------------------------------------------------------------------------
 
-type OriginLevel = 'high' | 'medium' | 'low' | 'insufficient';
-
-interface PublicOrigin {
-  region: string;
-  confidence: number;
-  level: OriginLevel;
-  zone: { lat: number; lon: number; radiusKm: number } | null;
-  observerCount: number;
-  reasons: string[];
-}
-
-interface PublicIncident {
-  id: string;
-  status: 'active' | 'closed';
-  network: string;
-  firstSeen: string;
-  lastSeen: string;
-  messageCount: number;
-  observerCount: number;
-  channels: string[];
-  similarUsernames: string[];
-  usernameVariants: number;
-  sampleMessage: string;
-  spamMarker: boolean;
-  confidence: number;
-  reasons: string[];
-  origin: PublicOrigin;
-}
-
-interface TimelineEntry {
-  observedAt: string;
-  channel: string;
-  observerCount: number;
-  minHopCount: number | null;
-  bestRssi: number | null;
-  bestSnr: number | null;
-}
-
-interface IncidentDetail extends PublicIncident {
-  timeline: TimelineEntry[];
-}
-
-interface StatusResp {
-  ongoing: boolean;
-  activeIncidents: number;
-  totalIncidents: number;
-  messagesLast24h: number;
-  observersInvolved: number;
-  lastIncidentAt: string | null;
-  updatedAt: string;
-}
-
-interface IncidentsResp {
-  filters: { status: string; minConfidence: number; limit: number; offset: number };
-  returned: number;
-  incidents: PublicIncident[];
-}
+import { isIncidentDetail, isIncidentsResp, isStatusResp, type IncidentDetail, type OriginLevel, type PublicIncident, type StatusResp } from './spamPayload.js';
+import { fetchJson } from '../utils/api.js';
+import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -231,12 +177,11 @@ const IncidentCard = memo(function IncidentCard({
       const controller = new AbortController();
       detailController.current = controller;
       setLoadingDetail(true);
-      fetch(`/api/spam/messages/incidents/${incident.id}`, {
+      fetchJson(`/api/spam/messages/incidents/${encodeURIComponent(incident.id)}`, {
         cache: 'no-store',
         signal: controller.signal,
-      })
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
-        .then((d: IncidentDetail) => {
+      }, { maxBytes: 4 * 1024 * 1024, validate: isIncidentDetail })
+        .then((d) => {
           if (!controller.signal.aborted) setDetail(d);
         })
         .catch(() => {
@@ -390,6 +335,7 @@ function IncidentList({
 // ---------------------------------------------------------------------------
 
 export function SpamPage() {
+  const { privacyGeneration } = useRuntimeFeatures();
   const [status, setStatus] = useState<StatusResp | null>(null);
   const [incidents, setIncidents] = useState<PublicIncident[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -418,26 +364,17 @@ export function SpamPage() {
   useEffect(() => {
     const controller = new AbortController();
     setError(null);
+    setStatus(null);
     setIncidents(null);
     const conf = showLow ? '?minConfidence=0' : '';
     const incConf = showLow ? '&minConfidence=0' : '';
     Promise.all([
-      fetch(`/api/spam/messages/status${conf}`, {
-        cache: 'no-store',
-        signal: controller.signal,
-      }).then((response) => {
-        if (!response.ok) throw new Error(`status:${response.status}`);
-        return response.json() as Promise<StatusResp>;
-      }),
-      fetch(`/api/spam/messages/incidents?limit=200${incConf}`, {
-        cache: 'no-store',
-        signal: controller.signal,
-      }).then(
-        (response) => {
-          if (!response.ok) throw new Error(`incidents:${response.status}`);
-          return response.json() as Promise<IncidentsResp>;
-        },
-      ),
+      fetchJson(`/api/spam/messages/status${conf}`, {
+        cache: 'no-store', signal: controller.signal,
+      }, { maxBytes: 128 * 1024, validate: isStatusResp }),
+      fetchJson(`/api/spam/messages/incidents?limit=200${incConf}`, {
+        cache: 'no-store', signal: controller.signal,
+      }, { maxBytes: 4 * 1024 * 1024, validate: isIncidentsResp }),
     ])
       .then(([s, inc]) => {
         if (controller.signal.aborted) return;
@@ -452,7 +389,7 @@ export function SpamPage() {
         }
       });
     return () => controller.abort();
-  }, [retryVersion, showLow]);
+  }, [retryVersion, showLow, privacyGeneration]);
 
   const active = useMemo(() => (incidents ?? []).filter((i) => i.status === 'active'), [incidents]);
   const historical = useMemo(() => (incidents ?? []).filter((i) => i.status === 'closed'), [incidents]);

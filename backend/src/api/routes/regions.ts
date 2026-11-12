@@ -1,3 +1,4 @@
+import { publicJson } from '../../http/publicJson.js';
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
@@ -373,11 +374,24 @@ export function shapeUnattributedPayload(
 
 type RegionsRouteDeps = {
   query: QueryFn;
+  getPublicVisibilityGeneration: () => Promise<number>;
   networkFilters: (network?: string, observer?: string) => NetworkFilters;
   limiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
 };
 
-const REGIONS_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=900';
+async function loadRegionRun(deps: RegionsRouteDeps, network: string, generation: number): Promise<RunRow | null> {
+  // The rebuild publishes the UKMesh family only. Never apply its aggregates to
+  // test-network nodes which happen to share a public key.
+  if (network !== 'ukmesh') return null;
+  const result = await deps.query<RunRow & { visibility_generation: string | null }>(
+    `SELECT finished_at, window_days, visibility_generation FROM core.region_scope_run WHERE network = $1 LIMIT 1`,
+    [network],
+  );
+  const run = result.rows[0];
+  if (!run) return null;
+  if (Number(run.visibility_generation) !== generation) throw new Error('REGION_SNAPSHOT_VISIBILITY_UNAVAILABLE');
+  return run;
+}
 
 // Nodes can briefly hold more than one row per network; pick the most recently
 // seen row for stable public metadata. The network predicate comes from the
@@ -398,23 +412,25 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
-      const [run, stats, members] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
-        deps.query<RegionStatRow>(
-          `SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
-             FROM core.region_scope_stats
-            ORDER BY packets_total DESC, region ASC`,
-        ),
-        deps.query<RegionMemberRow>(
-          `SELECT m.region, m.node_id, m.packets, meta.name, meta.role, meta.lat, meta.lon
-             FROM core.region_scope_members m
-             ${nodeMetaLateral('m', filters)}
-            ORDER BY m.region ASC, m.packets DESC, m.node_id ASC`,
-          [...filters.params],
-        ),
-      ]);
-      res.setHeader('Cache-Control', REGIONS_CACHE_CONTROL);
-      res.json(shapeRegionSummaryPayload(run.rows[0] ?? null, stats.rows, members.rows));
+      await publicJson(res, deps.getPublicVisibilityGeneration, async (generation) => {
+        const run = await loadRegionRun(deps, network, generation);
+        if (!run) return shapeRegionSummaryPayload(null, [], []);
+        const [stats, members] = await Promise.all([
+          deps.query<RegionStatRow>(
+            `SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
+               FROM core.region_scope_stats
+              ORDER BY packets_total DESC, region ASC`,
+          ),
+          deps.query<RegionMemberRow>(
+            `SELECT m.region, m.node_id, m.packets, meta.name, meta.role, meta.lat, meta.lon
+               FROM core.region_scope_members m
+               ${nodeMetaLateral('m', filters)}
+              ORDER BY m.region ASC, m.packets DESC, m.node_id ASC`,
+            [...filters.params],
+          ),
+        ]);
+        return shapeRegionSummaryPayload(run, stats.rows, members.rows);
+      });
     } catch (err) {
       console.error('[api] GET /regions/summary', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -425,37 +441,42 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
-      const [run, repeaters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
-        deps.query<RegionRepeaterRow>(
-          `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
-                  meta.name, meta.role, meta.lat, meta.lon
-             FROM core.repeater_scope_status s
-             ${nodeMetaLateral('s', filters)}
-            ORDER BY s.scoped_packets DESC, s.node_id ASC`,
-          [...filters.params],
-        ),
-      ]);
-      res.setHeader('Cache-Control', REGIONS_CACHE_CONTROL);
-      res.json(shapeRegionRepeatersPayload(run.rows[0] ?? null, repeaters.rows));
+      await publicJson(res, deps.getPublicVisibilityGeneration, async (generation) => {
+        const run = await loadRegionRun(deps, network, generation);
+        if (!run) return shapeRegionRepeatersPayload(null, []);
+        const [repeaters] = await Promise.all([
+          deps.query<RegionRepeaterRow>(
+            `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
+                    meta.name, meta.role, meta.lat, meta.lon
+               FROM core.repeater_scope_status s
+               ${nodeMetaLateral('s', filters)}
+              ORDER BY s.scoped_packets DESC, s.node_id ASC`,
+            [...filters.params],
+          ),
+        ]);
+        return shapeRegionRepeatersPayload(run, repeaters.rows);
+      });
     } catch (err) {
       console.error('[api] GET /regions/repeaters', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
     }
   });
 
-  router.get('/regions/unattributed', deps.limiter, async (_req, res) => {
+  router.get('/regions/unattributed', deps.limiter, async (req, res) => {
     try {
-      const [run, clusters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
-        deps.query<UnattributedClusterRow>(
-          `SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes
-             FROM core.region_scope_unattributed
-            ORDER BY packets DESC, cluster_id ASC`,
-        ),
-      ]);
-      res.setHeader('Cache-Control', REGIONS_CACHE_CONTROL);
-      res.json(shapeUnattributedPayload(run.rows[0] ?? null, clusters.rows));
+      const network = resolvePublicNetworkScope(req.query['network'], req.headers);
+      await publicJson(res, deps.getPublicVisibilityGeneration, async (generation) => {
+        const run = await loadRegionRun(deps, network, generation);
+        if (!run) return shapeUnattributedPayload(null, []);
+        const [clusters] = await Promise.all([
+          deps.query<UnattributedClusterRow>(
+            `SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes
+               FROM core.region_scope_unattributed
+              ORDER BY packets DESC, cluster_id ASC`,
+          ),
+        ]);
+        return shapeUnattributedPayload(run, clusters.rows);
+      });
     } catch (err) {
       console.error('[api] GET /regions/unattributed', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -472,42 +493,44 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const idParam = `$${filters.params.length + 1}`;
-      const [status, members, node] = await Promise.all([
-        deps.query<RegionRepeaterRow>(
-          `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
-                  meta.name, meta.role, meta.lat, meta.lon
-             FROM core.repeater_scope_status s
-             ${nodeMetaLateral('s', filters)}
-            WHERE s.node_id = ${idParam}`,
-          [...filters.params, rawId],
-        ),
-        deps.query<ScopeMemberRow>(
-          `SELECT region, packets
-             FROM core.region_scope_members
-            WHERE node_id = $1
-            ORDER BY packets DESC, region ASC`,
-          [rawId],
-        ),
-        deps.query<RegionScopeNodeRow>(
-          `SELECT n.node_id, n.name, n.role, n.lat, n.lon
-             FROM core.nodes n
-            WHERE n.node_id = ${idParam} ${filters.nodesAlias('n')}
-            ORDER BY n.last_seen DESC NULLS LAST
-            LIMIT 1`,
-          [...filters.params, rawId],
-        ),
-      ]);
-      const payload = shapeRegionScopePayload(
-        node.rows[0] ?? null,
-        status.rows[0] ?? null,
-        members.rows,
-      );
-      if (!payload) {
-        res.status(404).json({ error: 'Repeater not found' });
-        return;
-      }
-      res.setHeader('Cache-Control', REGIONS_CACHE_CONTROL);
-      res.json(payload);
+      await publicJson(res, deps.getPublicVisibilityGeneration, async (generation) => {
+        const run = await loadRegionRun(deps, network, generation);
+        const [status, members, node] = await Promise.all([
+          deps.query<RegionRepeaterRow>(
+            `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
+                    meta.name, meta.role, meta.lat, meta.lon
+               FROM core.repeater_scope_status s
+               ${nodeMetaLateral('s', filters)}
+              WHERE s.node_id = ${idParam}`,
+            [...filters.params, rawId],
+          ),
+          deps.query<ScopeMemberRow>(
+            `SELECT region, packets
+               FROM core.region_scope_members
+              WHERE node_id = $1
+              ORDER BY packets DESC, region ASC`,
+            [rawId],
+          ),
+          deps.query<RegionScopeNodeRow>(
+            `SELECT n.node_id, n.name, n.role, n.lat, n.lon
+               FROM core.nodes n
+              WHERE n.node_id = ${idParam} ${filters.nodesAlias('n')}
+              ORDER BY n.last_seen DESC NULLS LAST
+              LIMIT 1`,
+            [...filters.params, rawId],
+          ),
+        ]);
+        const payload = shapeRegionScopePayload(
+          node.rows[0] ?? null,
+          run ? status.rows[0] ?? null : null,
+          run ? members.rows : [],
+        );
+        if (!payload) {
+          res.status(404);
+          return { error: 'Repeater not found' };
+        }
+        return payload;
+      });
     } catch (err) {
       console.error('[api] GET /repeaters/:id/scope', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

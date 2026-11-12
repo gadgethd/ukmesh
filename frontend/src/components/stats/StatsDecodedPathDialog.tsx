@@ -1,9 +1,17 @@
-import React, { useMemo } from 'react';
+import React, { lazy, Suspense, useMemo } from 'react';
 import { Dialog, DialogTitle } from '../ui/Dialog.js';
-import {
-  DecodedPathMapView,
-  type DecodedPathNode,
-} from './StatsPrimitives.js';
+import type { DecodedPathNode } from './StatsPrimitives.js';
+import { LoadingIndicator } from '../LoadingIndicator.js';
+
+const DecodedPathMapView = lazy(() => import('./DecodedPathMapView.js'));
+
+class PathMapBoundary extends React.Component<React.PropsWithChildren, { failed: boolean }> {
+  state = { failed: false };
+  static getDerivedStateFromError() { return { failed: true }; }
+  render() {
+    return this.state.failed ? <p role="alert">The path map could not be loaded. Reload the page to try again.</p> : this.props.children;
+  }
+}
 
 export interface DecodedPathSelection {
   title: string;
@@ -50,7 +58,11 @@ export const StatsDecodedPathDialog: React.FC<{
             </button>
           </div>
           <div className="stats-page__path-modal-map">
-            <DecodedPathMapView nodes={nodes} />
+            <PathMapBoundary key={selection.hash}>
+              <Suspense fallback={<LoadingIndicator label="Loading path map..." variant="block" />}>
+                <DecodedPathMapView nodes={nodes} />
+              </Suspense>
+            </PathMapBoundary>
           </div>
           <div className="stats-page__path-modal-list">
             {nodes.map((node) => (

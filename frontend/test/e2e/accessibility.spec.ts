@@ -329,10 +329,15 @@ test('dashboard dialogs trap focus, close with Escape, and restore the trigger',
 
 test('stats tabs support Arrow, Home, and End and the path dialog restores focus', async ({ page }) => {
   await installFixtures(page);
+  const mapRequests: string[] = [];
+  page.on('request', request => {
+    if (/\/assets\/.*(?:maplibre|deck-|DecodedPathMapView)/i.test(request.url())) mapRequests.push(request.url());
+  });
   await page.goto('/stats');
 
   const overview = page.getByRole('tab', { name: 'Overview' });
   await expect(overview).toHaveAttribute('aria-selected', 'true');
+  expect(mapRequests).toEqual([]);
   await overview.focus();
   await page.keyboard.press('End');
   await expect(page.getByRole('tab', { name: 'Signal' })).toHaveAttribute('aria-selected', 'true');
@@ -347,9 +352,27 @@ test('stats tabs support Arrow, Home, and End and the path dialog restores focus
   await pathTrigger.click();
   const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
   await expect(dialog).toBeVisible();
+  await expect(dialog.locator('canvas')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();
   await expect(pathTrigger).toBeFocused();
+});
+
+test.describe('lazy path-map delivery failures', () => {
+  test.use({ serviceWorkers: 'block' });
+  test('a failed lazy path-map chunk leaves an accessible error and a working close button', async ({ page }) => {
+    await installFixtures(page);
+    let blocked = 0;
+    await page.route(/\/(?:assets\/DecodedPathMapView-[^/]+\.js|src\/components\/stats\/DecodedPathMapView\.tsx)/,
+      route => { blocked++; return route.abort(); });
+    await page.goto('/stats?tab=paths');
+    await page.getByRole('button', { name: 'North -> South' }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
+    await expect(dialog.getByRole('alert')).toContainText('The path map could not be loaded');
+    expect(blocked).toBeGreaterThan(0);
+    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await expect(dialog).toBeHidden();
+  });
 });
 
 test('repeater search exposes keyboard selection and tolerates IME composition', async ({ page }) => {

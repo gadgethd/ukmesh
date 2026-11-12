@@ -1,3 +1,4 @@
+import '../docs-pages.css';
 import React, { useState } from 'react';
 import { ObserverRegistrationForm } from '../../components/ObserverRegistrationForm.js';
 

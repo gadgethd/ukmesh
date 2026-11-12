@@ -76,11 +76,17 @@ let citiesPromise: Promise<GeoJSON.FeatureCollection> | null = null;
 
 export function loadFallbackCities(): Promise<GeoJSON.FeatureCollection> {
   if (!citiesPromise) {
-    citiesPromise = fetch(FALLBACK_CITIES_URL, { headers: { accept: 'application/geo+json' } })
-      .then((response) => {
-        if (!response.ok) throw new Error(`cities ${response.status}`);
-        return response.json() as Promise<GeoJSON.FeatureCollection>;
-      })
+    citiesPromise = fetchJson(FALLBACK_CITIES_URL, { headers: { accept: 'application/geo+json' } }, {
+      maxBytes: 2 * 1024 * 1024,
+      validate: (value): value is GeoJSON.FeatureCollection => {
+        if (!value || typeof value !== 'object' || !('type' in value) || value.type !== 'FeatureCollection'
+          || !('features' in value) || !Array.isArray(value.features) || value.features.length > 5000) return false;
+        return value.features.every(feature => feature?.type === 'Feature' && feature.geometry?.type === 'Point'
+          && Array.isArray(feature.geometry.coordinates) && feature.geometry.coordinates.length >= 2
+          && feature.geometry.coordinates.every((coordinate: unknown) => typeof coordinate === 'number' && Number.isFinite(coordinate))
+          && typeof feature.properties?.name === 'string');
+      },
+    })
       .catch((error) => {
         citiesPromise = null;
         throw error;
@@ -132,3 +138,4 @@ export function installFallbackMarkers(
     for (const marker of markers) marker.remove();
   };
 }
+import { fetchJson } from '../../utils/api.js';

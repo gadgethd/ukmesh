@@ -63,3 +63,24 @@ test('JSON error messages require opt-in and are bounded while preserving the HT
     await assert.rejects(checkedJson(new Response(body, { status: 403, headers }), { readErrorMessage: true }), /Request failed \(403\)/);
   }
 });
+
+test('unknown-length bodies are cancelled at the byte cap instead of being fully buffered', async () => {
+  let cancelled = false;
+  let pulls = 0;
+  const response = new Response(new ReadableStream<Uint8Array>({
+    pull(controller) { pulls += 1; controller.enqueue(new Uint8Array(1024)); },
+    cancel() { cancelled = true; },
+  }));
+  await assert.rejects(checkedJson(response, { maxBytes: 1024 }), /byte limit/);
+  assert.equal(cancelled, true);
+  assert.ok(pulls < 10, 'an unbounded response must stop being consumed');
+});
+
+test('bounded streaming preserves UTF-8 characters split across chunks', async () => {
+  const bytes = new TextEncoder().encode('{"value":"café"}');
+  const stream = new ReadableStream<Uint8Array>({ start(controller) {
+    for (const byte of bytes) controller.enqueue(Uint8Array.of(byte));
+    controller.close();
+  } });
+  assert.deepEqual(await checkedJson(new Response(stream)), { value: 'café' });
+});

@@ -24,6 +24,7 @@ import {
   getTopAdvertingRepeaters,
   getPacketDetail,
   getPublicVisibilityGeneration,
+  getPublicResponseGeneration,
   getChannelMessageHistory,
   getRecentMessageTags,
   getRecentPacketEvents,
@@ -242,22 +243,23 @@ registerStatsRoutes(router, {
   networkFilters,
   query,
   analyticsQuery,
-  getPublicVisibilityGeneration,
+  getPublicVisibilityGeneration: getPublicResponseGeneration,
   maskDecodedPathNodes,
   runHeavyWork: (workload, task) => withHeavyWorkAdmission({ pool, workload, task }),
 });
 registerTelemetryRoutes(router, { query });
-registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER });
+registerSpamRoutes(router, { expensiveLimiter: EXPENSIVE_LIMITER, getPublicVisibilityGeneration: getPublicResponseGeneration });
 registerTopologyRoutes(router, {
   query,
   networkFilters,
-  getPublicVisibilityGeneration,
+  getPublicVisibilityGeneration: getPublicResponseGeneration,
   limiter: EXPENSIVE_LIMITER,
 });
 registerRegionsRoutes(router, {
   query,
   networkFilters,
   limiter: EXPENSIVE_LIMITER,
+  getPublicVisibilityGeneration: getPublicResponseGeneration,
 });
 registerActivityTimelineRoutes(router, {
   query,

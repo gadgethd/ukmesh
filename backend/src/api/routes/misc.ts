@@ -238,7 +238,7 @@ export function registerMiscRoutes(router: Router, deps: MiscRouteDeps): void {
         limit,
         cursor: decodePlannedNodeCursor(req.query['cursor']),
       });
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+      res.setHeader('Cache-Control', 'private, no-cache, must-revalidate');
       res.json(page);
     } catch (err) {
       if ((err as Error).message === 'INVALID_PLANNED_NODE_CURSOR') {

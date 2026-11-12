@@ -1,3 +1,4 @@
+import '../docs-pages.css';
 import React from 'react';
 
 export const UKBestPracticePage: React.FC = () => (

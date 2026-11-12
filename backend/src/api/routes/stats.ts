@@ -1,3 +1,4 @@
+import { publicJson } from '../../http/publicJson.js';
 import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createStatsRepository } from '../../stats/statsRepository.js';
@@ -82,7 +83,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      res.json(await service.getStatsSummary(network, observer));
+      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getStatsSummary(network, observer));
     } catch (err) {
       if (err instanceof StatsWorkOverloadedError) {
         res.status(503).json({ error: 'Statistics are busy', retryable: true });
@@ -97,7 +98,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const observer = normalizeObserverQuery(req.query['observer']);
-      res.json(await service.getCharts(network, observer));
+      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getCharts(network, observer));
     } catch (err) {
       if (err instanceof StatsWorkOverloadedError) {
         res.status(503).json({ error: 'Statistics are busy', retryable: true });
@@ -111,7 +112,7 @@ export function registerStatsRoutes(router: Router, deps: StatsRouteDeps): void 
   router.get('/observer-activity', deps.expensiveLimiter, async (req, res) => {
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      res.json(await service.getObserverActivity(network));
+      await publicJson(res, deps.getPublicVisibilityGeneration, () => service.getObserverActivity(network));
     } catch (err) {
       console.error('[api] GET /observer-activity', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

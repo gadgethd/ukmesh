@@ -1,4 +1,5 @@
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useRef, useState } from 'react';
+import { fetchJson } from '../utils/api.js';
 
 export function ObserverRegistrationForm() {
   const [publicKey, setPublicKey] = useState('');
@@ -7,23 +8,31 @@ export function ObserverRegistrationForm() {
   const [contact, setContact] = useState('');
   const [message, setMessage] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
 
   const submit = (event: FormEvent) => {
     event.preventDefault();
     setSubmitting(true);
     setMessage(null);
-    fetch('/api/observers/register', {
+    request.current?.abort();
+    const controller = new AbortController();
+    request.current = controller;
+    fetchJson('/api/observers/register', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ publicKey, iata, name, contact }),
+      signal: controller.signal,
+    }, { maxBytes: 64 * 1024, readErrorMessage: true,
+      validate: (value): value is { requestId: string } => !!value && typeof value === 'object'
+        && 'requestId' in value && typeof value.requestId === 'string',
     })
-      .then(async (response) => {
-        const value = await response.json().catch(() => ({})) as { error?: string; requestId?: string };
-        if (!response.ok) throw new Error(value.error ?? `HTTP ${response.status}`);
+      .then((value) => {
+        if (controller.signal.aborted) return;
         setMessage(`Request ${value.requestId ?? ''} submitted. An operator will provision the MQTT account.`);
       })
-      .catch((error: Error) => setMessage(error.message))
-      .finally(() => setSubmitting(false));
+      .catch((error: Error) => { if (!controller.signal.aborted) setMessage(error.message); })
+      .finally(() => { if (!controller.signal.aborted) setSubmitting(false); });
   };
 
   return (

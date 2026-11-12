@@ -47,6 +47,34 @@ export function uncachedEndpoint(url: string): string {
   return `${url}${sep}_ts=${Date.now()}`;
 }
 
+async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
+  const declaredLength = Number(response.headers.get('content-length'));
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('maxBytes must be a positive integer');
+  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+    void response.body?.cancel().catch(() => {});
+    throw new ApiResponseError('Response exceeds byte limit', response.status, response.url);
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  const parts: string[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > maxBytes) {
+        void reader.cancel().catch(() => {});
+        throw new ApiResponseError('Response exceeds byte limit', response.status, response.url);
+      }
+      parts.push(decoder.decode(value, { stream: true }));
+    }
+    parts.push(decoder.decode());
+    return parts.join('');
+  } finally { reader.releaseLock(); }
+}
+
 export async function checkedJson<T>(
   response: Response,
   options: Pick<FetchJsonOptions<T>, 'maxBytes' | 'validate' | 'readErrorMessage'> = {},
@@ -61,7 +89,7 @@ export async function checkedJson<T>(
     if (options.readErrorMessage && response.headers.get('content-type')?.includes('application/json')
       && (!Number.isFinite(declaredLength) || declaredLength <= errorLimit)) {
       try {
-        const body = await response.text();
+        const body = await boundedResponseText(response, errorLimit);
         if (new TextEncoder().encode(body).byteLength <= errorLimit) {
           const value: unknown = JSON.parse(body);
           if (value && typeof value === 'object' && 'error' in value
@@ -71,20 +99,14 @@ export async function checkedJson<T>(
         }
       } catch { /* Retain the HTTP status message for unreadable error bodies. */ }
     }
+    void response.body?.cancel().catch(() => {});
     throw new ApiResponseError(
       message,
       response.status,
       response.url,
     );
   }
-  const declaredLength = Number(response.headers.get('content-length'));
-  if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
-    throw new ApiResponseError('Response exceeds byte limit', response.status, response.url);
-  }
-  const body = await response.text();
-  if (new TextEncoder().encode(body).byteLength > maxBytes) {
-    throw new ApiResponseError('Response exceeds byte limit', response.status, response.url);
-  }
+  const body = await boundedResponseText(response, maxBytes);
   let value: unknown;
   try {
     value = JSON.parse(body);

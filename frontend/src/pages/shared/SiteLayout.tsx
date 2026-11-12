@@ -28,11 +28,25 @@ type NavItem = {
 };
 
 import { OWNER_SESSION_EVENT } from '../../utils/appEvents.js';
+import { fetchJson } from '../../utils/api.js';
+import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 
 type OwnerSessionSummary = {
   ok: boolean;
   mqttUsername?: string | null;
 };
+
+function isOwnerSessionSummary(value: unknown): value is OwnerSessionSummary {
+  if (!value || typeof value !== 'object') return false;
+  const row = value as Record<string, unknown>;
+  return typeof row.ok === 'boolean'
+    && (row.mqttUsername == null || typeof row.mqttUsername === 'string');
+}
+
+function isSpamSummary(value: unknown): value is { activeIncidents: number } {
+  return !!value && typeof value === 'object' && 'activeIncidents' in value
+    && Number.isSafeInteger(value.activeIncidents) && Number(value.activeIncidents) >= 0;
+}
 
 function navClassName({ isActive }: { isActive: boolean }): string {
   return isActive ? 'site-nav__link site-nav__link--active' : 'site-nav__link';
@@ -57,6 +71,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showTopology = false,
   showSpam = false,
 }) => {
+  const { privacyGeneration } = useRuntimeFeatures();
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
@@ -89,13 +104,13 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   useEffect(() => {
     if (!showSpam) return;
+    setActiveSpamIncidents(0);
     const controller = new AbortController();
-    fetch('/api/spam/messages/status', { signal: controller.signal })
-      .then((response) => response.ok ? response.json() as Promise<{ activeIncidents?: number }> : null)
+    fetchJson('/api/spam/messages/status', { signal: controller.signal }, { maxBytes: 64 * 1024, validate: isSpamSummary })
       .then((value) => setActiveSpamIncidents(Number(value?.activeIncidents ?? 0)))
       .catch(() => {});
     return () => controller.abort();
-  }, [showSpam]);
+  }, [showSpam, privacyGeneration]);
 
   useEffect(() => {
     if (!menuOpen) return undefined;
@@ -117,13 +132,11 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
 
     const loadOwnerSession = () => {
-      fetch('/api/owner/session', { cache: 'no-store' })
-        .then(async (res) => {
-          if (!res.ok) return null;
-          return (await res.json()) as OwnerSessionSummary;
-        })
+      fetchJson('/api/owner/session', { cache: 'no-store', credentials: 'same-origin', signal: controller.signal },
+        { maxBytes: 1024 * 1024, validate: isOwnerSessionSummary })
         .then((json) => {
           if (cancelled) return;
           setOwnerLabel(json?.mqttUsername?.trim() || null);
@@ -143,6 +156,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     window.addEventListener(OWNER_SESSION_EVENT, handleOwnerSession as EventListener);
     return () => {
       cancelled = true;
+      controller.abort();
       window.removeEventListener(OWNER_SESSION_EVENT, handleOwnerSession as EventListener);
     };
   }, []);

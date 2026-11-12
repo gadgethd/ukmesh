@@ -33,6 +33,9 @@
  */
 
 import pg from 'pg';
+import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
+import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
+import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
 import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from '../mqtt/decodePacket.js';
 import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.js';
@@ -111,6 +114,7 @@ async function main(): Promise<void> {
   });
 
   try {
+    const visibilityGeneration = await readPublicResponseGeneration((sql) => pool.query(sql));
     const startedAt = Date.now();
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
 
@@ -124,7 +128,9 @@ async function main(): Promise<void> {
               (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
          FROM mesh.packets p
          LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
-        WHERE p.route_type IN (0, 3)
+        WHERE p.network IN (${UKMESH_NETWORK_SQL_LIST})
+          AND ${publicPacketPrivacySql('p')}
+          AND p.route_type IN (0, 3)
           AND p.time > now() - make_interval(days => $1)
         GROUP BY p.packet_hash`,
       [windowDays],
@@ -170,6 +176,7 @@ async function main(): Promise<void> {
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
          FROM core.nodes
+        WHERE network IN (${UKMESH_NETWORK_SQL_LIST})
         ORDER BY node_id, last_seen DESC NULLS LAST`,
     );
     const nodeRoles = new Map<string, number | null>();
@@ -277,7 +284,9 @@ async function main(): Promise<void> {
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(
       `SELECT e, count(DISTINCT p.packet_hash) AS c
          FROM mesh.packets p, unnest(p.path_hashes) AS e
-        WHERE p.route_type = 1
+        WHERE p.network IN (${UKMESH_NETWORK_SQL_LIST})
+          AND ${publicPacketPrivacySql('p')}
+          AND p.route_type = 1
           AND p.path_hash_size_bytes >= 2
           AND p.time > now() - interval '7 days'
           AND length(e) >= 4
@@ -457,10 +466,13 @@ async function main(): Promise<void> {
       }
 
       await client.query(
-        `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
-         VALUES (TRUE, now(), $1, $2, $3)`,
-        [windowDays, scopedRows.length, decodedCount],
+        `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets, visibility_generation, network)
+         VALUES (TRUE, now(), $1, $2, $3, $4, 'ukmesh')`,
+        [windowDays, scopedRows.length, decodedCount, visibilityGeneration],
       );
+      if (await readPublicResponseGeneration((sql) => client.query(sql)) !== visibilityGeneration) {
+        throw new Error('REGION_SNAPSHOT_VISIBILITY_CHANGED');
+      }
       await client.query('COMMIT');
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);

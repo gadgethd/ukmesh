@@ -1,3 +1,5 @@
+import '../docs-pages.css';
+import '../../styles/companion.css';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
 import type { WSMessage } from '../../hooks/useWebSocket.js';

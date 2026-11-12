@@ -1,3 +1,4 @@
+import { publicJson } from '../../http/publicJson.js';
 import { Router, RequestHandler } from 'express';
 import { getSpamSuspects, getSpamPacketObservers, getSpamAllObservers, getSpamSuspectSummary } from '../../db/index.js';
 import { getPublicIncident, getPublicIncidents, getPublicStatus } from '../../spam/repository.js';
@@ -11,6 +12,7 @@ import {
 
 interface SpamRouteDeps {
   expensiveLimiter: RequestHandler;
+  getPublicVisibilityGeneration: () => Promise<number>;
 }
 
 const SPAM_MSG_CFG = loadSpamMessageConfig();
@@ -62,7 +64,7 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
   router.get('/spam/messages/status', async (req, res) => {
     const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
     try {
-      res.json(await getPublicStatus(minConfidence));
+      await publicJson(res, deps.getPublicVisibilityGeneration, () => getPublicStatus(minConfidence));
     } catch (err: unknown) {
       console.error('[api/spam] message status error:', (err as Error).message);
       res.status(500).json({ error: 'internal error' });
@@ -76,11 +78,13 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
     const offset = numberParam(req.query['offset'], 0, 0, 100000);
     const minConfidence = floatParam(req.query['minConfidence'], SPAM_MSG_CFG.publicMinScore, 0, 1);
     try {
-      const incidents = await getPublicIncidents({ status, limit, offset, minConfidence });
-      res.json({
-        filters: { status: status ?? 'all', minConfidence, limit, offset },
-        returned: incidents.length,
-        incidents,
+      await publicJson(res, deps.getPublicVisibilityGeneration, async () => {
+        const incidents = await getPublicIncidents({ status, limit, offset, minConfidence });
+        return {
+          filters: { status: status ?? 'all', minConfidence, limit, offset },
+          returned: incidents.length,
+          incidents,
+        };
       });
     } catch (err: unknown) {
       console.error('[api/spam] message incidents error:', (err as Error).message);
@@ -97,12 +101,14 @@ export function registerSpamRoutes(router: Router, deps: SpamRouteDeps): void {
       return;
     }
     try {
-      const incident = await getPublicIncident(id);
-      if (!incident) {
-        res.status(404).json({ error: 'not found' });
-        return;
-      }
-      res.json(incident);
+      await publicJson(res, deps.getPublicVisibilityGeneration, async () => {
+        const incident = await getPublicIncident(id);
+        if (!incident) {
+          res.status(404);
+          return { error: 'not found' };
+        }
+        return incident;
+      });
     } catch (err: unknown) {
       console.error('[api/spam] message incident error:', (err as Error).message);
       res.status(500).json({ error: 'internal error' });

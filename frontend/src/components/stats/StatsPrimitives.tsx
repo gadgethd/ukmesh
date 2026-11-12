@@ -1,7 +1,4 @@
-import React, { lazy, memo, Suspense, useEffect } from 'react';
-import type * as maplibregl from 'maplibre-gl';
-import { AnimatedPathOverlay, type AerialPath } from '../Map/AnimatedPathOverlay.js';
-import { OPENFREEMAP_STYLE_DARK } from '../Map/mapConfig.js';
+import React, { lazy, memo, Suspense } from 'react';
 import { timeAgo as relativeTime } from '../../utils/time.js';
 
 export const C_CYAN = '#00c4ff';
@@ -249,55 +246,3 @@ export const ChartCard: React.FC<{
 export const EmptyPacketState: React.FC<{ label?: string }> = ({
   label = 'No packet data in this window.',
 }) => <div className="stats-page__empty">{label}</div>;
-
-export const DecodedPathMapView: React.FC<{ nodes: DecodedPathNode[] }> = ({ nodes }) => {
-  const containerRef = React.useRef<HTMLDivElement>(null);
-  const [mapInstance, setMapInstance] = React.useState<maplibregl.Map | null>(null);
-  const paths = React.useMemo<AerialPath[]>(() => [{
-    id: 'decoded-path',
-    confidence: 1,
-    nodes: nodes.map((node) => ({
-      position: [Number(node.lon), Number(node.lat)],
-      nodeId: node.node_id,
-      name: node.name ?? undefined,
-    })),
-  }], [nodes]);
-  useEffect(() => {
-    if (!containerRef.current || nodes.length < 2) return undefined;
-    let cancelled = false;
-    let map: maplibregl.Map | null = null;
-    void Promise.all([
-      import('../Map/maplibre.js'),
-      import('maplibre-gl/dist/maplibre-gl.css'),
-    ]).then(([maplibreModule]) => {
-      if (cancelled || !containerRef.current) return;
-      const maplibre = maplibreModule;
-      map = new maplibre.Map({
-        container: containerRef.current,
-        style: OPENFREEMAP_STYLE_DARK,
-        center: [Number(nodes[0]!.lon), Number(nodes[0]!.lat)],
-        zoom: 8,
-      });
-      map.on('load', () => {
-        if (cancelled || !map) return;
-        const bounds = new maplibre.LngLatBounds();
-        for (const node of nodes) bounds.extend([Number(node.lon), Number(node.lat)]);
-        map.fitBounds(bounds, { padding: 24, animate: false });
-        map.setPitch(50);
-        map.setBearing(-8);
-        setMapInstance(map);
-      });
-    });
-    return () => {
-      cancelled = true;
-      setMapInstance(null);
-      map?.remove();
-    };
-  }, [nodes]);
-  return (
-    <div style={{ position: 'relative', height: '100%', width: '100%' }}>
-      <div ref={containerRef} style={{ height: '100%', width: '100%' }} />
-      <AnimatedPathOverlay map={mapInstance} paths={paths} active />
-    </div>
-  );
-};

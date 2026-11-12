@@ -1,3 +1,4 @@
+import { publicJson } from '../../http/publicJson.js';
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
@@ -265,9 +266,7 @@ export function registerTopologyRoutes(router: Router, deps: TopologyRouteDeps):
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const dto = await topologyLoader.load(network, limit);
-      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
-      res.json(dto);
+      await publicJson(res, deps.getPublicVisibilityGeneration, () => topologyLoader.load(network, limit));
     } catch (err) {
       console.error('[api] GET /topology', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });

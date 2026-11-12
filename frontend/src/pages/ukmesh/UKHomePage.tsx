@@ -1,25 +1,38 @@
+import '../site-content.css';
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { LiveStatsSection } from '../../components/LiveStatsSection.js';
 import { getCurrentSite } from '../../config/site.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
+import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
+
+type RecentSummary = { packet_hash: string; time: string; summary?: string | null; packet_type?: number | null };
+function isRecentSummaries(value: unknown): value is RecentSummary[] {
+  return Array.isArray(value) && value.length <= 5 && value.every(row => row && typeof row === 'object'
+    && typeof row.packet_hash === 'string' && typeof row.time === 'string' && Number.isFinite(Date.parse(row.time))
+    && (row.summary == null || typeof row.summary === 'string')
+    && (row.packet_type == null || Number.isSafeInteger(row.packet_type)));
+}
 
 export const UKHomePage: React.FC = () => {
   const site = getCurrentSite();
-  const [recent, setRecent] = useState<Array<{ packet_hash: string; time: string; summary?: string | null; packet_type?: number | null }>>([]);
+  const { privacyGeneration } = useRuntimeFeatures();
+  const [recent, setRecent] = useState<RecentSummary[]>([]);
   useEffect(() => {
+    setRecent([]);
     const controller = new AbortController();
-    void fetchJson<Array<{ packet_hash: string; time: string; summary?: string | null; packet_type?: number | null }>>(
+    void fetchJson(
       withScopeParams('/api/packets/recent?limit=5', {
         network: site.networkFilter,
         observer: site.observerId,
       }),
       { signal: controller.signal },
+      { maxBytes: 256 * 1024, validate: isRecentSummaries },
     )
-      .then((packets) => setRecent(Array.isArray(packets) ? packets : []))
+      .then((packets) => { if (!controller.signal.aborted) setRecent(packets); })
       .catch(() => {});
     return () => controller.abort();
-  }, []);
+  }, [privacyGeneration, site.networkFilter, site.observerId]);
 
   return (
     <>

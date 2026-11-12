@@ -1,0 +1,40 @@
+{
+  "baselineRevision": "2bb41dd",
+  "note": "Baseline 2bb41dd. CSS and stats ceilings tightened after the B1 production-browser qualification; remaining route ceilings await structural map work.",
+  "routes": {
+    "/": {
+      "module": "src/pages/ukmesh/UKHomePage.tsx",
+      "scriptGzipKiB": 105,
+      "cssGzipKiB": 8,
+      "forbiddenChunks": []
+    },
+    "/docs": {
+      "module": "src/pages/ukmesh/UKBestPracticePage.tsx",
+      "scriptGzipKiB": 105,
+      "cssGzipKiB": 9,
+      "forbiddenChunks": []
+    },
+    "/stats": {
+      "module": "src/pages/StatsPage.tsx",
+      "scriptGzipKiB": 270,
+      "cssGzipKiB": 9,
+      "forbiddenChunks": [
+        "maplibre",
+        "MapLibreMap",
+        "deck-"
+      ]
+    },
+    "/feed": {
+      "module": "src/pages/ukmesh/UKFeedPage.tsx",
+      "scriptGzipKiB": 500,
+      "cssGzipKiB": 11,
+      "forbiddenChunks": []
+    },
+    "/regions": {
+      "module": "src/pages/RegionsPage.tsx",
+      "scriptGzipKiB": 648,
+      "cssGzipKiB": 9,
+      "forbiddenChunks": []
+    }
+  }
+}

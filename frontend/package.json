@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
-    "budget": "node scripts/check-performance-budgets.mjs",
+    "budget": "node scripts/check-performance-budgets.mjs && npm run budget:routes",
     "lint:css": "node scripts/check-css-structure.mjs",
     "soak:production": "node scripts/soak-production.mjs",
     "preview": "vite preview",
@@ -17,7 +17,8 @@
     "test:dev-renderer": "playwright test --config=playwright.development.config.ts",
     "test:regions": "playwright test --config=playwright.regions.config.ts",
     "bench:website": "node scripts/benchmark-website.mjs",
-    "check": "tsc --noEmit && npm test && npm run lint:css"
+    "check": "tsc --noEmit && npm test && npm run lint:css",
+    "budget:routes": "node scripts/check-route-budgets.mjs"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",

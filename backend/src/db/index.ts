@@ -1,3 +1,4 @@
+import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import pg from 'pg';
 import {
   analyticsStatementTimeoutMs,
@@ -1209,6 +1210,10 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
       hopCount: r.hop_count as number | null,
     })),
   };
+}
+
+export async function getPublicResponseGeneration(): Promise<number> {
+  return readPublicResponseGeneration(query);
 }
 
 export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {

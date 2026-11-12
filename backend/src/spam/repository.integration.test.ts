@@ -28,6 +28,7 @@ async function fixture(t: TestContext) {
     CREATE SCHEMA mesh;
     CREATE SCHEMA analytics;
     CREATE SCHEMA ops;
+    CREATE TABLE core.region_scope_run (id BOOLEAN);
     CREATE TABLE core.nodes (node_id TEXT PRIMARY KEY, name TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
     CREATE TABLE mesh.packets (
       packet_hash TEXT, time TIMESTAMPTZ, network TEXT, packet_type INTEGER,
@@ -54,7 +55,7 @@ async function fixture(t: TestContext) {
   `);
   for (const migration of [
     '005_spam_message_incidents.sql', '012_analysis_run_protocol.sql',
-    '024_analysis_run_leases.sql',
+    '024_analysis_run_leases.sql', '136_public_snapshot_visibility.sql',
   ]) {
     await db.exec(await readFile(new URL(`../db/migrations/${migration}`, import.meta.url), 'utf8'));
   }
@@ -208,4 +209,17 @@ test('PostgreSQL loader retains a rotating burst on a busy day and reports cap r
   assert.equal(capped.length, 2_000);
   assert.equal(buildIncidents(capped, Date.now(), CFG).length, 0, 'the former cap really does lose this burst');
   assert.match(warnings[0]!, /phase=messages limit=2000 observed_at_least=2907 omitted_at_least=907/);
+});
+
+
+test('stored incident geometry is withheld when its publication generation changes', options, async (t) => {
+  const f = await fixture(t);
+  const items = buildIncidents(burst(9, Date.now(), 0), Date.now(), CFG);
+  await persistIncidents(items, CFG, f.run);
+  assert.equal((await getPublicIncidents()).length, 1);
+  assert.ok(await getPublicIncident(items[0]!.incident.key));
+  await f.db.exec(`UPDATE ops.public_visibility_state SET generation = 2;
+    UPDATE ops.packet_visibility_materialization_state SET visibility_generation = 2`);
+  assert.deepEqual(await getPublicIncidents(), []);
+  assert.equal(await getPublicIncident(items[0]!.incident.key), null);
 });

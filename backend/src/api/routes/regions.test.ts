@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
+import express, { Router } from 'express';
+import { networkFilters } from '../../platform/query/networkFilters.js';
 import {
   confidenceFor,
   isWithinUkDisplayEnvelope,
@@ -7,6 +11,7 @@ import {
   shapeRegionScopePayload,
   shapeRegionSummaryPayload,
   shapeUnattributedPayload,
+  registerRegionsRoutes,
   type RegionMemberRow,
   type RegionStatRow,
 } from './regions.js';
@@ -14,6 +19,52 @@ import {
 const NODE_ID = 'A'.repeat(64);
 const PRIVATE_ID = 'B'.repeat(64);
 const OTHER_ID = 'C'.repeat(64);
+
+test('region reads validate snapshot provenance before conditional delivery and isolate networks', async (t) => {
+  let generation = 1;
+  let snapshotGeneration: number | null = 1;
+  let derivedReads = 0;
+  const router = Router();
+  registerRegionsRoutes(router, {
+    networkFilters,
+    getPublicVisibilityGeneration: async () => generation,
+    limiter: ((_req, _res, next) => next()) as Parameters<typeof registerRegionsRoutes>[1]['limiter'],
+    query: async <T>(sql: string) => {
+      if (sql.includes('FROM core.region_scope_run')) return { rows: [{
+        finished_at: '2026-01-01T00:00:00Z', window_days: 92, visibility_generation: snapshotGeneration,
+      }] as T[] };
+      derivedReads++;
+      return { rows: [] as T[] };
+    },
+  });
+  const app = express();
+  app.use(router);
+  const server = app.listen(0, '127.0.0.1');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  t.mock.method(console, 'error', () => {});
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  for (const path of ['/regions/summary', '/regions/repeaters', '/regions/unattributed']) {
+    const first = await fetch(base + path);
+    assert.equal(first.status, 200);
+    const etag = first.headers.get('etag')!;
+    const options = { cache: 'force-cache' as const, headers: { 'If-None-Match': etag } };
+    assert.equal((await fetch(base + path, options)).status, 304);
+    const before = derivedReads;
+    const other = await fetch(`${base}${path}?network=test`, options);
+    assert.equal(other.status, 200);
+    assert.equal(derivedReads, before, 'the UK snapshot is never read for the test network');
+    generation = 2;
+    const invalidated = await fetch(base + path, options);
+    assert.equal(invalidated.status, 500);
+    assert.equal(invalidated.headers.get('cache-control'), 'no-store');
+    assert.equal(derivedReads, before, 'old geometry is withheld before reading derived rows');
+    snapshotGeneration = null;
+    assert.equal((await fetch(base + path)).status, 500, 'pre-migration snapshots have no certificate');
+    generation = 1;
+    snapshotGeneration = 1;
+  }
+});
 
 test('confidenceFor applies confirmed / probable / single tiers', () => {
   assert.equal(confidenceFor(12), 'confirmed');
