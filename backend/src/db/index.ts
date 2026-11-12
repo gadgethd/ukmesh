@@ -21,10 +21,6 @@ import {
   nodeEffectiveLastSeenSql,
   nodeEffectiveOnlineSql,
 } from '../nodes/presence.js';
-import {
-  reactivateHistoricPathNodes,
-  type HistoricPathNode,
-} from '../repositories/pathEvidence.js';
 import { channelHashesForName, isPublicChannelName, sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { buildPacketBatchInput, type InsertPacketInput } from './packetInput.js';
 import { getRamIngestMode } from '../ram/protocol.js';
@@ -356,32 +352,6 @@ export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void
      WHERE node_id = ANY($1::text[])`,
     [ids],
   );
-}
-
-/**
- * Credit path evidence from the multibyte path hashes of a single
- * freshly-ingested packet: each repeater whose prefix uniquely matches gets
- * `last_path_evidence_at = seenAt`. Returns the
- * preserved historic node rows so the caller can broadcast their coordinates.
- *
- * Only 2- and 3-byte hashes are accepted (single-byte is too collision-prone), and
- * prefixes shared by more than one repeater are skipped (ambiguous). Best-effort:
- * callers fire-and-forget.
- */
-export async function recordMultibyteEvidence(
-  pathHashes: string[],
-  sizeBytes: number,
-  seenAt: Date,
-  routeType?: number,
-  network?: string,
-): Promise<HistoricPathNode[]> {
-  return reactivateHistoricPathNodes(query, {
-    pathHashes,
-    sizeBytes,
-    seenAt,
-    routeType,
-    network,
-  });
 }
 
 export async function upsertNode(nodeId: string, updates: {

@@ -2,7 +2,8 @@ import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import type { MqttClient } from 'mqtt';
 import { createHash } from 'node:crypto';
 import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore-decoder';
-import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect, recordMultibyteEvidence } from '../db/index.js';
+import { insertNodeNeighborSample, insertNodeStatusSample, insertPacket, upsertNode, query, insertOrUpdateSpamSuspect } from '../db/index.js';
+import { reactivateHistoricPathNodes } from '../repositories/pathEvidence.js';
 import { ingestQuery } from '../db/ingest.js';
 import { closePacketBatch, flush as flushPacketBatch, loadCurrentPublicPrivacyPolicy } from '../db/packetBatch.js';
 import { evaluateAdvert, initSpamDetector } from './spamDetector.js';
@@ -1172,16 +1173,16 @@ async function runPostPersistFollowUps(args: PostPersistFollowUpArgs): Promise<v
   // the stale node can restore it at its original location. Best-effort.
   if (decodedPathHashSizeBytes != null && decodedPathHashSizeBytes >= 2 && path && path.length > 0) {
     try {
-      const historicNodes = await recordMultibyteEvidence(
-        path,
-        decodedPathHashSizeBytes,
-        new Date(),
-        decodedRouteType,
+      const historicNodes = await reactivateHistoricPathNodes(query, {
+        pathHashes: path,
+        sizeBytes: decodedPathHashSizeBytes,
+        seenAt: new Date(),
+        routeType: decodedRouteType,
         network,
-      );
+      });
       for (const node of historicNodes) emitNodeUpsert({ ...node });
     } catch (err) {
-      console.error('[mqtt] recordMultibyteEvidence error:', (err as Error).message);
+      console.error('[mqtt] path evidence error:', (err as Error).message);
     }
     // Slow mode: schedule ONE final multi-observer resolution after the
     // propagation window closes so the complete observer set is included
