@@ -477,7 +477,7 @@ docker exec "$backend_name" wget -qO- 'http://127.0.0.1:3000/api/stats?network=u
 
 owner_lookup_count="$(
   docker exec "$postgres_name" psql -U meshcore -d meshcore_owner_auth -Atc \
-    'SELECT COUNT(*) FROM owner_accounts oa LEFT JOIN owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username'
+    'SELECT COUNT(*) FROM core.owner_accounts oa LEFT JOIN core.owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username'
 )"
 case "$owner_lookup_count" in
   ''|*[!0-9]*) echo "owner lookup verification failed" >&2; exit 65 ;;
