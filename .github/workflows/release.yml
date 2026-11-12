@@ -134,6 +134,8 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ env.SOURCE_REVISION }}
             io.ukmesh.release.version=${{ steps.identity.outputs.version }}
+            ${{ matrix.component == 'hopreach' && 'org.opencontainers.image.source=https://github.com/gadgethd/hopreach' || '' }}
+            ${{ matrix.component == 'hopreach' && 'org.opencontainers.image.licenses=AGPL-3.0-only WITH Commons-Clause' || '' }}
           tags: |
             type=sha,format=long
             type=ref,event=tag

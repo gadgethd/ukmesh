@@ -14,7 +14,9 @@ the Commons Clause. The complete license and notices are preserved in
 fork through `org.opencontainers.image.source`. Direct builds can identify the
 fork commit through `SOURCE_REVISION`; the UKMesh release workflow overrides the
 OCI revision label with the integration release commit and records that commit
-in its signed inventory. The calculator build/version remains pinned to the
+in its signed inventory. It explicitly retains the fork source URL and
+`AGPL-3.0-only WITH Commons-Clause` licence label instead of repository defaults.
+The calculator build/version remains pinned to the
 fork revision and tag above, also recorded in `third_party/hopreach/UPSTREAM_COMMIT`. Production rollout is gated on all of those
 references being publicly accessible before the calculator or coverage UI is
 exposed.
