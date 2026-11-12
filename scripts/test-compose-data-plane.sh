@@ -13,7 +13,7 @@ compose=(docker compose -f "$repo/docker-compose.yml" -f "$repo/docker-compose.c
 readback=''
 for ((attempt=0; attempt<30; attempt++)); do
   readback=$("${compose[@]}" exec -T timescaledb psql -U meshcore -d meshcore -Atc \
-    "SELECT EXISTS(SELECT 1 FROM core.nodes WHERE node_id = LOWER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packets WHERE rx_node_id = LOWER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_paths WHERE rx_node_id = LOWER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_hourly_stats WHERE network = 'test')")
+    "SELECT EXISTS(SELECT 1 FROM core.nodes WHERE node_id = UPPER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packets WHERE rx_node_id = UPPER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_paths WHERE rx_node_id = UPPER('$observer') AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_hourly_stats WHERE network = 'test')")
   [[ $readback == 't|t|t|t' ]] && break
   sleep 1
 done
