@@ -121,6 +121,14 @@ benchmark separately measures backend work, real payload sizes and map providers
 Navigation audits do not measure INP. Field Web Vitals need real user interactions
 on an authorized deployment.
 
+The public build uses the standard [web-vitals library](https://github.com/GoogleChrome/web-vitals)
+to report document LCP/CLS and observed INP through bounded same-origin
+telemetry. Reports use the initial fixed public route and omit attribution and
+identifiers; soft-navigation metrics are disabled consistently across browsers.
+The [operations guide](operations.md#metrics) describes quotas, opt-out,
+monitoring panels and p95/cache-hit warnings. Local browser interactions verify
+transport; production delivery and field distributions require deployment.
+
 The lightweight regions/topology base imports the native MapLibre stylesheet.
 The earlier wrapper omitted it on those public routes, leaving native controls
 without their required styles. Regions therefore includes about 10.7 KiB more CSS

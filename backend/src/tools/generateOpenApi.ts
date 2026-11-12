@@ -26,6 +26,7 @@ function successStatus(contract: ApiContract): string {
   if (
     contract.path === '/observers/register'
     || contract.path === '/coverage/planned'
+    || contract.path.startsWith('/telemetry/')
     || contract.path.includes('/test')
     || contract.access === 'operator' && contract.method === 'POST'
   ) return '202';

@@ -29,8 +29,8 @@ export function createGlobalApiLimiter(): RequestHandler {
 
   return (req, res, next) => {
     // Match Express's case-insensitive, optional-trailing-slash routes. Only
-    // the diagnostic POST bypasses this budget; its route retains 10/min.
-    if (req.method === 'POST' && /^\/telemetry\/frontend-error\/?$/i.test(req.path)) {
+    // diagnostic POSTs bypass this budget; each route retains its own quota.
+    if (req.method === 'POST' && /^\/telemetry\/(?:frontend-error|web-vitals)\/?$/i.test(req.path)) {
       next();
       return;
     }
@@ -111,6 +111,11 @@ export const TELEMETRY_LIMITER = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: 'Too many diagnostic reports' },
+});
+
+export const WEB_VITALS_LIMITER = rateLimit({
+  windowMs: 60_000, max: 30, standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many performance reports' },
 });
 
 // Exports have an independent budget so downloads do not consume the shared

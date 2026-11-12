@@ -36,6 +36,7 @@
     "react-is": "^19.3.0",
     "react-router": "8.4.0",
     "recharts": "^3.10.1",
+    "web-vitals": "6.2.3",
     "zustand": "^5.0.15"
   },
   "devDependencies": {

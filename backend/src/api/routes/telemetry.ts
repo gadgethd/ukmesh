@@ -1,7 +1,8 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { createHash, createHmac } from 'node:crypto';
-import { TELEMETRY_LIMITER } from '../bootstrap/limiters.js';
+import { TELEMETRY_LIMITER, WEB_VITALS_LIMITER } from '../bootstrap/limiters.js';
+import { recordWebVital } from '../../telemetry/webVitals.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -14,6 +15,12 @@ type TelemetryRouteDeps = {
 
 export function registerTelemetryRoutes(router: Router, deps: TelemetryRouteDeps): void {
   const { query } = deps;
+
+  router.post('/telemetry/web-vitals', WEB_VITALS_LIMITER, (req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    if (!recordWebVital(req.body)) { res.status(400).json({ error: 'Invalid performance report' }); return; }
+    res.status(202).json({ ok: true });
+  });
 
   // This strict independent limit also applies to rejected/malformed reports.
   router.post('/telemetry/frontend-error', TELEMETRY_LIMITER, async (req, res) => {

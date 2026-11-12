@@ -1,4 +1,37 @@
 groups:
+  - name: meshcore-public-performance
+    interval: 30s
+    rules:
+      - alert: PublicRouteP95High
+        expr: |
+          (histogram_quantile(0.95, sum by (le, route) (rate(meshcore_public_route_duration_seconds_bucket{status_class="2xx"}[5m]))) > 1)
+          and on (route) (sum by (route) (increase(meshcore_public_route_duration_seconds_count{status_class="2xx"}[5m])) >= 100)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Public route {{ $labels.route }} p95 exceeds one second
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#publicroutep95high
+
+      - alert: PublicCacheHitRateLow
+        expr: |
+          (
+            (
+              sum by (cache) (rate(meshcore_cache_operations_total{cache=~"api_stats|api_charts|topology_dto|stats_observer",outcome="hit"}[5m]))
+              or on (cache) (0 * sum by (cache) (rate(meshcore_cache_operations_total{cache=~"api_stats|api_charts|topology_dto|stats_observer",outcome=~"hit|miss"}[5m])))
+            )
+            / sum by (cache) (rate(meshcore_cache_operations_total{cache=~"api_stats|api_charts|topology_dto|stats_observer",outcome=~"hit|miss"}[5m])) < 0.2
+          )
+          and on (cache) (sum by (cache) (increase(meshcore_cache_operations_total{cache=~"api_stats|api_charts|topology_dto|stats_observer",outcome=~"hit|miss"}[5m])) >= 100)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: Public cache {{ $labels.cache }} hit rate is below 20 percent
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#publiccachehitratelow
+
   - name: meshcore-availability
     interval: 15s
     rules:

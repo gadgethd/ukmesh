@@ -104,9 +104,43 @@ Never set this approval on a fresh database or for any other missing migration.
 
 ## Metrics
 
+The provisioned **MeshCore — Public performance** dashboard shows bounded public
+route p95, selected cache hit ratios and anonymous document LCP/CLS/INP samples.
+Browser metrics arrive at `/api/telemetry/web-vitals`; the endpoint accepts only
+six fixed public paths, a metric name and a bounded numeric value. Reports omit
+cookies, referrers, query/hash values, identifiers and interaction attribution.
+They update aggregate process metrics and create no database rows.
+
 Prometheus scrapes the backend registry from `backend:9091/metrics` on the
 internal Compose network. Port 9091 is deliberately not published by Compose or
 proxied by Nginx; `/metrics` on a public website origin must return 404.
+
+The browser sends at most one sample per metric per document and supports
+`?telemetry=off`. Samples remain attributed to the initial document route across
+client-side navigation. INP is absent until a real interaction is observed; lab
+navigation results do not substitute for field INP. Check sample counts and
+delivery after deployment before interpreting percentiles. Public samples are
+diagnostic input, not authenticated availability or release-gate evidence.
+The first reported lifecycle sample is retained; interactions after returning
+to an already-backgrounded document do not produce additional samples.
+
+### PublicRouteP95High
+
+This warning requires at least 100 successful requests in five minutes and a
+server-observed p95 above one second for ten minutes. Inspect the affected
+fixed route, SQL plans, backend queues and cache outcomes. Compare against the
+qualified fixture and current visibility generation before changing query or
+cache behavior. The operational warning threshold does not replace the tighter
+before/after performance qualification budgets.
+
+### PublicCacheHitRateLow
+
+This warning covers `api_stats`, `api_charts`, `topology_dto` and `stats_observer`.
+It requires at least 100 lookups in five minutes and a hit ratio below 20% for
+15 minutes, including a cache that has never recorded a hit. Check expiry,
+scope distribution, concurrent refresh failures and privacy-generation churn.
+Preserve the fresh authority/publication fences while diagnosing invalidations.
+
 
 ## Health endpoints
 

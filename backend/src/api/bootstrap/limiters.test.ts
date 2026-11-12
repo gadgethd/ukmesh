@@ -82,6 +82,24 @@ test('telemetry keeps its strict quota without consuming API or reserved stats q
   });
 });
 
+test('Web Vitals have a separate bounded quota and cannot consume ordinary reads', async () => {
+  await withLimitedApi(async base => {
+    for (let i = 0; i < 31; i++) {
+      const response = await fetch(`${base}/Telemetry/Web-Vitals/`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ route: '/docs', metric: 'LCP', value: 1000, extra: 'rejected' }),
+      });
+      assert.equal(response.status, i < 30 ? 400 : 429);
+      await response.arrayBuffer();
+    }
+    for (let i = 0; i < 3; i++) {
+      const response = await fetch(`${base}/other`);
+      assert.equal(response.status, i < 2 ? 200 : 429);
+      await response.arrayBuffer();
+    }
+  });
+});
+
 test('reserved stats quota is bounded and cannot consume the shared API allowance', async () => {
   await withLimitedApi(async (base) => {
     for (let i = 0; i < 241; i += 1) {

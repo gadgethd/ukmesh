@@ -2,6 +2,9 @@ import { expect, test, type Page } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { installMapRoutes } from './mapFixtures.js';
 import { publicFixture } from '../../scripts/lighthouse-fixtures.mjs';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import type { AddressInfo } from 'node:net';
 
 async function installPublicPolicy(page: Page) {
   await page.route('**/api/runtime-config', route => route.fulfill({ json: {
@@ -10,58 +13,128 @@ async function installPublicPolicy(page: Page) {
 }
 
 test.describe('lazy public map delivery', () => {
-test.use({ serviceWorkers: 'block' });
-for (const name of ['Regions', 'Topology'] as const) {
-  for (const failure of [false, true]) {
-    test(`${name} content survives a ${failure ? 'failed' : 'pending'} renderer chunk`, async ({ page }) => {
-      await installMapRoutes(page);
-      await page.route('**/api/**', route => {
-        const url = new URL(route.request().url());
-        const payload = url.pathname === '/api/topology' ? {
-          generatedAt: new Date().toISOString(), windowDays: 30, limited: false,
-          summary: { nodes: 2, links: 1, observations: 25, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
-          analysis: { connectedComponents: 1, bridgeNodeIds: [], isolatedNodeIds: [] },
-          nodes: [
-            { nodeId: 'A'.repeat(64), name: 'Invented Alpha', lat: 52, lon: -1, degree: 1, observations: 25 },
-            { nodeId: 'B'.repeat(64), name: 'Invented Bravo', lat: 53, lon: -2, degree: 1, observations: 25 },
-          ],
-          links: [{ source: 'A'.repeat(64), target: 'B'.repeat(64), observations: 25,
-            strongObservations: 5, pathLossDb: 110, lastObserved: new Date().toISOString() }],
-        } : publicFixture(url.pathname, url.searchParams) ?? {};
-        return route.fulfill({ json: payload });
+  test.use({ serviceWorkers: 'block' });
+  for (const name of ['Regions', 'Topology'] as const) {
+    for (const failure of [false, true]) {
+      test(`${name} content survives a ${failure ? 'failed' : 'pending'} renderer chunk`, async ({ page }) => {
+        await installMapRoutes(page);
+        await page.route('**/api/**', route => {
+          const url = new URL(route.request().url());
+          const payload = url.pathname === '/api/topology' ? {
+            generatedAt: new Date().toISOString(), windowDays: 30, limited: false,
+            summary: { nodes: 2, links: 1, observations: 25, connectedComponents: 1, likelyBridges: 0, isolatedNodes: 0 },
+            analysis: { connectedComponents: 1, bridgeNodeIds: [], isolatedNodeIds: [] },
+            nodes: [
+              { nodeId: 'A'.repeat(64), name: 'Invented Alpha', lat: 52, lon: -1, degree: 1, observations: 25 },
+              { nodeId: 'B'.repeat(64), name: 'Invented Bravo', lat: 53, lon: -2, degree: 1, observations: 25 },
+            ],
+            links: [{ source: 'A'.repeat(64), target: 'B'.repeat(64), observations: 25,
+              strongObservations: 5, pathLossDb: 110, lastObserved: new Date().toISOString() }],
+          } : publicFixture(url.pathname, url.searchParams) ?? {};
+          return route.fulfill({ json: payload });
+        });
+        let release = () => {};
+        let requested = 0;
+        const held = new Promise<void>(resolve => { release = resolve; });
+        await page.route(new RegExp(`/assets/${name}Map-[^/]+\\.js$`), async route => {
+          requested++;
+          await held;
+          return failure ? route.abort('failed') : route.continue();
+        });
+        try {
+          await page.goto(`/${name.toLowerCase()}`);
+          await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+          await expect(page.getByRole('heading', { name: name === 'Regions' ? 'Most active regions' : 'Most connected' })).toBeVisible();
+          await expect(page.getByText('Loading map…', { exact: true })).toBeVisible();
+          await expect.poll(() => requested).toBeGreaterThan(0);
+          const container = page.locator(`.${name.toLowerCase()}-page__map`);
+          const before = await container.boundingBox();
+          expect(before!.height).toBeGreaterThanOrEqual(430);
+          release();
+          if (failure) {
+            await expect(page.getByRole('alert')).toContainText('The map could not be loaded.');
+            await expect(page.getByRole('button', { name: 'Reload map' })).toBeVisible();
+          } else {
+            await expect(container.locator('canvas')).toBeVisible();
+            await expect(page.getByText('Loading map…', { exact: true })).toHaveCount(0);
+          }
+          const after = await container.boundingBox();
+          expect(after!.height).toBeCloseTo(before!.height, 0);
+          await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+        } finally { release(); }
       });
-      let release = () => {};
-      let requested = 0;
-      const held = new Promise<void>(resolve => { release = resolve; });
-      await page.route(new RegExp(`/assets/${name}Map-[^/]+\\.js$`), async route => {
-        requested++;
-        await held;
-        return failure ? route.abort('failed') : route.continue();
-      });
-      try {
-        await page.goto(`/${name.toLowerCase()}`);
-        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-        await expect(page.getByRole('heading', { name: name === 'Regions' ? 'Most active regions' : 'Most connected' })).toBeVisible();
-        await expect(page.getByText('Loading map…', { exact: true })).toBeVisible();
-        expect(requested).toBeGreaterThan(0);
-        const container = page.locator(`.${name.toLowerCase()}-page__map`);
-        const before = await container.boundingBox();
-        expect(before!.height).toBeGreaterThanOrEqual(430);
-        release();
-        if (failure) {
-          await expect(page.getByRole('alert')).toContainText('The map could not be loaded.');
-          await expect(page.getByRole('button', { name: 'Reload map' })).toBeVisible();
-        } else {
-          await expect(container.locator('canvas')).toBeVisible();
-          await expect(page.getByText('Loading map…', { exact: true })).toHaveCount(0);
-        }
-        const after = await container.boundingBox();
-        expect(after!.height).toBeCloseTo(before!.height, 0);
-        await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
-      } finally { release(); }
-    });
+    }
   }
-}
+});
+
+test.describe('public Web Vitals delivery', () => {
+  test.use({ serviceWorkers: 'block' });
+  test('observed document metrics use only a fixed route and never send URL or interaction attribution', async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.addInitScript(() => localStorage.setItem('meshcore-cookie-consent-v1', '1'));
+    const reports: Record<string, unknown>[] = [];
+    const headers: Record<string, string>[] = [];
+    const upstream = new URL(String(testInfo.project.use.baseURL));
+    expect(['127.0.0.1', 'localhost']).toContain(upstream.hostname);
+    // Keep unload-time keepalive requests on a real HTTP transport. DevTools
+    // route interception can lose the request when its source frame disappears.
+    const server = createServer(async (req, res) => {
+      try {
+        const url = new URL(req.url!, upstream);
+        if (url.pathname === '/api/telemetry/web-vitals') {
+          const chunks: Buffer[] = [];
+          let bytes = 0;
+          for await (const chunk of req) { bytes += chunk.length; if (bytes > 512) throw new Error('report too large'); chunks.push(chunk); }
+          reports.push(JSON.parse(Buffer.concat(chunks).toString()));
+          headers.push(req.headers as Record<string, string>);
+          res.writeHead(202, { 'Content-Type': 'application/json' }); res.end('{"ok":true}');
+        } else if (url.pathname.startsWith('/api/')) {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify(publicFixture(url.pathname, url.searchParams) ?? {}));
+        } else if (url.pathname === '/__exit') { res.end('<!doctype html><title>Document exit</title>'); }
+        else {
+          const response = await fetch(url, { signal: AbortSignal.timeout(10_000) });
+          res.writeHead(response.status, { 'Content-Type': response.headers.get('content-type') ?? 'application/octet-stream' });
+          res.end(Buffer.from(await response.arrayBuffer()));
+        }
+      } catch { res.writeHead(500); res.end(); }
+    });
+    server.listen(0, '127.0.0.1'); await once(server, 'listening');
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    try {
+      await page.goto(`${origin}/docs?untracked=example#private-fragment`);
+      await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
+      // A real trusted interaction with a known long event ensures Event Timing
+      // has an observed INP candidate; this is transport qualification, not RUM.
+      await page.evaluate(() => {
+        const state = window as typeof window & { __vitalInteractionObserved: boolean };
+        state.__vitalInteractionObserved = false;
+        new PerformanceObserver(list => {
+          if (list.getEntries().some(entry => Number((entry as PerformanceEventTiming).interactionId) > 0 && entry.duration >= 80)) {
+            state.__vitalInteractionObserved = true;
+          }
+        }).observe({ type: 'event', durationThreshold: 16, buffered: true } as PerformanceObserverInit);
+        document.addEventListener('click', () => {
+          const end = performance.now() + 80;
+          while (performance.now() < end) { /* bounded browser test interaction */ }
+        }, { once: true });
+      });
+      await page.getByRole('button', { name: 'Open menu', exact: true }).click();
+      await expect.poll(() => page.evaluate(() => (window as typeof window & { __vitalInteractionObserved: boolean }).__vitalInteractionObserved)).toBe(true);
+      await page.evaluate(() => new Promise<void>(resolve => requestIdleCallback(() => resolve())));
+      // Exit only after Event Timing and the library's idle processing have
+      // published the trusted interaction. Native visibility flushes final data.
+      await page.goto(`${origin}/__exit`);
+      await expect.poll(() => reports.map(report => report.metric).sort()).toEqual(['CLS', 'INP', 'LCP']);
+      for (const report of reports) {
+        expect(Object.keys(report).sort()).toEqual(['metric', 'route', 'value']);
+        expect(report.route).toBe('/docs');
+        expect(Number.isFinite(report.value)).toBe(true);
+      }
+      expect(headers.every(header => !header.referer && !header.cookie)).toBe(true);
+      expect(Number(reports.find(report => report.metric === 'INP')?.value)).toBeGreaterThanOrEqual(80);
+    } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
+  });
 });
 
 test('former node names resolve to the current name in repeater search', async ({ page }) => {

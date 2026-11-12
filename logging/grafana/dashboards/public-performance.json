@@ -1,0 +1,190 @@
+{
+  "editable": false,
+  "uid": "meshcore-public-performance",
+  "title": "MeshCore \u2014 Public performance",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-24h",
+    "to": "now"
+  },
+  "tags": [
+    "meshcore",
+    "public",
+    "performance"
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "Public API p95",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.95, sum by (le, route) (rate(meshcore_public_route_duration_seconds_bucket{status_class=\"2xx\"}[5m])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "description": "Fixed route/cache labels; investigate scope and privacy-generation churn before changing a cache."
+    },
+    {
+      "id": 2,
+      "title": "Public cache hit ratio",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "(sum by (cache) (rate(meshcore_cache_operations_total{cache=~\"api_stats|api_charts|topology_dto|stats_observer\",outcome=\"hit\"}[5m])) or on (cache) (0 * sum by (cache) (rate(meshcore_cache_operations_total{cache=~\"api_stats|api_charts|topology_dto|stats_observer\",outcome=~\"hit|miss\"}[5m])))) / sum by (cache) (rate(meshcore_cache_operations_total{cache=~\"api_stats|api_charts|topology_dto|stats_observer\",outcome=~\"hit|miss\"}[5m]))",
+          "legendFormat": "{{cache}}"
+        }
+      ],
+      "description": "Fixed route/cache labels; investigate scope and privacy-generation churn before changing a cache."
+    },
+    {
+      "id": 3,
+      "title": "Observed document LCP p75",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.75, sum by (le, route) (rate(meshcore_frontend_lcp_seconds_bucket[1h])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "description": "Initial document browser samples are anonymous diagnostics. Missing INP means no observed/reported interaction. Check sample counts before interpreting percentiles."
+    },
+    {
+      "id": 4,
+      "title": "Observed document INP p75",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 9,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.75, sum by (le, route) (rate(meshcore_frontend_inp_seconds_bucket[1h])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "description": "Initial document browser samples are anonymous diagnostics. Missing INP means no observed/reported interaction. Check sample counts before interpreting percentiles."
+    },
+    {
+      "id": 5,
+      "title": "Observed document CLS p75",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "histogram_quantile(0.75, sum by (le, route) (rate(meshcore_frontend_cls_bucket[1h])))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "description": "Initial document browser samples are anonymous diagnostics. Missing INP means no observed/reported interaction. Check sample counts before interpreting percentiles."
+    },
+    {
+      "id": 6,
+      "title": "Document samples per hour",
+      "type": "timeseries",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 18,
+        "w": 12,
+        "h": 9
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (route) (increase(meshcore_frontend_lcp_seconds_count[1h]))",
+          "legendFormat": "{{route}}"
+        }
+      ],
+      "description": "Initial document browser samples are anonymous diagnostics. Missing INP means no observed/reported interaction. Check sample counts before interpreting percentiles."
+    }
+  ],
+  "templating": {
+    "list": []
+  }
+}

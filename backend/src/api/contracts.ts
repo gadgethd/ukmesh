@@ -1,5 +1,6 @@
 import type { Router } from 'express';
 import { listRegisteredRoutes } from './routeRegistry.js';
+import { WEB_VITAL_SCHEMA } from '../telemetry/webVitals.js';
 
 export type ContractAccess = 'public' | 'test' | 'owner' | 'operator';
 export type HttpMethod = 'GET' | 'POST' | 'DELETE';
@@ -395,6 +396,8 @@ export const API_CONTRACTS: readonly ApiContract[] = [
   ...contracts('GET', ['/local/test-diagnostics'], 'test'),
   ...contracts('GET', OWNER_GET, 'owner'),
   ...contracts('POST', ['/coverage/planned', '/observers/register', '/telemetry/frontend-error'], 'public'),
+  { method: 'POST', path: '/telemetry/web-vitals', access: 'public', summary: 'Record one anonymous document Web Vital',
+    requestSchema: WEB_VITAL_SCHEMA, responseSchema: { type: 'object', required: ['ok'], properties: { ok: { const: true } }, additionalProperties: false } } satisfies ApiContract,
   ...contracts('POST', [
     '/owner/alert-rules',
     '/owner/alert-rules/:id/test',

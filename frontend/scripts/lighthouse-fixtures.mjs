@@ -22,6 +22,7 @@ export const basemapStyle = { version: 8, glyphs: 'https://tiles.openfreemap.org
 export function publicFixture(path, query = new URLSearchParams()) {
   const recent = () => messages.map((row, index) => ({ ...row, time: new Date(Date.now() - index * 1000).toISOString() }));
   switch (path) {
+    case '/api/telemetry/web-vitals': return { ok: true };
     case '/api/runtime-config': return { version: 1, packetArcs: false, heatmap: false, regionScoping: true,
       privacyGeneration: 1, refreshAfterSeconds: 30 };
     case '/api/owner/session': return { ok: false };

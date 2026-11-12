@@ -5,6 +5,96 @@ rule_files:
 evaluation_interval: 15s
 
 tests:
+  - name: sustained public p95 warns with adequate traffic
+    interval: 1m
+    input_series:
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats/charts",status_class="2xx",le="0.5"}'
+        values: 0+10x30
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats/charts",status_class="2xx",le="1"}'
+        values: 0+10x30
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats/charts",status_class="2xx",le="2.5"}'
+        values: 0+100x30
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats/charts",status_class="2xx",le="+Inf"}'
+        values: 0+100x30
+      - series: 'meshcore_public_route_duration_seconds_count{route="/api/stats/charts",status_class="2xx"}'
+        values: 0+100x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PublicRouteP95High
+        exp_alerts:
+          - exp_labels:
+              route: /api/stats/charts
+              severity: warning
+            exp_annotations:
+              summary: Public route /api/stats/charts p95 exceeds one second
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#publicroutep95high
+
+  - name: low sample volume does not page on p95
+    interval: 1m
+    input_series:
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats",status_class="2xx",le="1"}'
+        values: 0+0x30
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats",status_class="2xx",le="2.5"}'
+        values: 0+10x30
+      - series: 'meshcore_public_route_duration_seconds_bucket{route="/api/stats",status_class="2xx",le="+Inf"}'
+        values: 0+10x30
+      - series: 'meshcore_public_route_duration_seconds_count{route="/api/stats",status_class="2xx"}'
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PublicRouteP95High
+        exp_alerts: []
+
+  - name: miss-only public cache fires and recovers after hits return
+    interval: 1m
+    input_series:
+      - series: 'meshcore_cache_operations_total{cache="api_charts",outcome="miss"}'
+        values: 0+100x30 3001+1x10
+      - series: 'meshcore_cache_operations_total{cache="api_charts",outcome="hit"}'
+        values: 0+0x30 1000+1000x10
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PublicCacheHitRateLow
+        exp_alerts:
+          - exp_labels:
+              cache: api_charts
+              severity: warning
+            exp_annotations:
+              summary: Public cache api_charts hit rate is below 20 percent
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#publiccachehitratelow
+      - eval_time: 40m
+        alertname: PublicCacheHitRateLow
+        exp_alerts: []
+
+  - name: public cache with only misses and no hit series still warns
+    interval: 1m
+    input_series:
+      - series: 'meshcore_cache_operations_total{cache="topology_dto",outcome="miss"}'
+        values: 0+100x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PublicCacheHitRateLow
+        exp_alerts:
+          - exp_labels:
+              cache: topology_dto
+              severity: warning
+            exp_annotations:
+              summary: Public cache topology_dto hit rate is below 20 percent
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#publiccachehitratelow
+
+  - name: low cache volume does not page
+    interval: 1m
+    input_series:
+      - series: 'meshcore_cache_operations_total{cache="api_stats",outcome="miss"}'
+        values: 0+10x30
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: PublicCacheHitRateLow
+        exp_alerts: []
+
   - name: equal privacy generations remain healthy and do not page
     interval: 1m
     input_series:

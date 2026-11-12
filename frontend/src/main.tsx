@@ -11,6 +11,7 @@ import './styles/tokens.css';
 import './styles/globals.css';
 import { registerServiceWorker } from './serviceWorkerUpdates.js';
 import { installClientErrorReporting } from './telemetry/clientErrors.js';
+import { installPublicWebVitals } from './telemetry/webVitals.js';
 
 // Dedicated release targets eliminate routes belonging to the other host.
 // An unset target retains the combined local/development behaviour.
@@ -38,6 +39,7 @@ if (isAppDomain) document.title = 'MeshCore Analytics';
 async function bootstrap(): Promise<void> {
   // Client error capture must be installed before any module can throw.
   installClientErrorReporting();
+  if (!isAppDomain && buildSite !== 'dev') installPublicWebVitals(window.location.pathname);
   // The map is not mounted until its same-origin kill switches have resolved.
   // initializeRuntimeFeatures handles timeout/malformed/offline failures by
   // publishing the all-disabled snapshot.

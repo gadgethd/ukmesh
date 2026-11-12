@@ -547,8 +547,9 @@ This project is built on the following open source libraries and tools:
 | [TypeScript](https://www.typescriptlang.org) | Apache 2.0 |
 | [MapLibre GL JS](https://maplibre.org/maplibre-gl-js/docs/) | BSD 3-Clause |
 | [deck.gl](https://deck.gl) | MIT |
-| [react-router-dom](https://reactrouter.com) | MIT |
+| [react-router](https://reactrouter.com) | MIT |
 | [Recharts](https://recharts.org) | MIT |
+| [web-vitals](https://github.com/GoogleChrome/web-vitals) | Apache 2.0 |
 | [polygon-clipping](https://github.com/mfogel/polygon-clipping) | MIT |
 
 ### Backend
