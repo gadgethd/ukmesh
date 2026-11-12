@@ -50,10 +50,15 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): void
              WHERE p.time > NOW() - ${windowParam}::interval
                ${filters.packetsAlias('p')}
            ),
-           packet_buckets AS (
-             SELECT bucket,
-                    COUNT(DISTINCT packet_hash)::text AS packet_count
+           distinct_packets AS (
+             SELECT bucket, packet_hash
              FROM scoped
+             WHERE packet_hash IS NOT NULL
+             GROUP BY bucket, packet_hash
+           ),
+           packet_buckets AS (
+             SELECT bucket, COUNT(*)::text AS packet_count
+             FROM distinct_packets
              GROUP BY bucket
            ),
            raw_nodes AS MATERIALIZED (

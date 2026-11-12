@@ -32,7 +32,7 @@ completion of the candidate gates and separate release authorization.
 - Region snapshots recover outside HTTP through a bounded supervised worker.
   Node responses and cached links validate current privacy before delivery,
   including conditional responses.
-- Timeline identity grouping reduces repeated lookup work. Timeline, RF,
+- Timeline identity and packet-hash grouping reduce lookup and sorting work. Timeline, RF,
   observer-health, link-history and firmware responses fence privacy at delivery;
   busy relay rows no longer block best-effort live-map reactivation.
 - Link-worker geometry dependencies load when needed, reducing measured startup

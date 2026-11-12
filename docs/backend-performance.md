@@ -265,6 +265,9 @@ before canonical identity lookup. It retains distinct packet counts, canonical
 observer counts, null-observer buckets, weighted node ordering and the 250-node
 per-bucket limit. Actual PostgreSQL regressions cover aliases, duplicate
 receptions, nulls and a privacy change committed while an HTTP query is held.
+Packet hashes are grouped before counting each bucket, allowing PostgreSQL to
+use hash aggregation instead of sorting every observation for `COUNT(DISTINCT)`.
+The grouping preserves database equality semantics and excludes null hashes.
 
 On a quiet retained corpus of 54,000 invented ACKs, three alternating pairs used
 the actual compiled route, two request warm-ups, 20 measurements per trial and
@@ -273,6 +276,12 @@ of the 120 measured response hashes matched after removing `generatedAt`.
 Both versions used a no-op limiter for this isolated query comparison; deployed
 rate limits remain unchanged. PostgreSQL/OS buffers were warm and neither route
 had a response cache. The new timing includes both privacy fence reads.
+
+On the later retained 72,000-packet corpus, three alternating pairs compared the
+grouped-hash count with the preceding query. Median trial HTTP p95 fell from
+193 to 132 ms (32%), including both fresh privacy reads. All 120 normalized
+response hashes matched. This quiet comparison does not replace the sustained
+load gate or establish production capacity.
 
 Historic relay reactivation is a best-effort live-map hint after durable ingest.
 It skips rows held by another writer and can update them on later traffic.
