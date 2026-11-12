@@ -111,6 +111,20 @@ done
 npm run budget
 ```
 
+### Served compression
+
+The locally built website image uses Nginx 1.31.8 from the pinned base. Its
+compiled modules include gzip/gzip-static; neither the compiled arguments nor
+the installed dynamic modules include Brotli. The updated `brotli-libs` package
+is a security dependency and does not enable an HTTP compression module.
+
+A loopback-only check of the actual image served `/stats` as 3,145 bytes with
+identity encoding and 959 bytes with gzip, with `Vary: Accept-Encoding` in both
+responses. A Brotli-only request received identity; `br, gzip` received gzip.
+Gzip remains the qualified origin behavior. These checks do not establish what
+an external CDN adds; production edge behavior needs separately authorized
+cutover verification. No Brotli module or CDN setting was changed.
+
 ## HopReach RF calculator
 
 The indexed CPU path must match the executable upstream v0.1.32 oracle within
