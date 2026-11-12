@@ -7,7 +7,9 @@ import { fileURLToPath } from 'node:url';
 const rootArgument = process.argv.indexOf('--root');
 const root = rootArgument < 0 ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
   : path.resolve(process.argv[rootArgument + 1]);
-const historical = (name) => name.startsWith('docs/reviews/') || /(?:^|\/)\S*\d{4}-\d{2}-\d{2}\S*\.md$/.test(name);
+// Explicitly classified review evidence predating the current release audit.
+const historicalReports = new Set(['docs/security-closure.md']);
+const historical = (name) => historicalReports.has(name) || name.startsWith('docs/reviews/') || /(?:^|\/)\S*\d{4}-\d{2}-\d{2}\S*\.md$/.test(name);
 function walk(directory) {
   return fs.readdirSync(path.join(root, directory), { withFileTypes: true }).flatMap((entry) => {
     const name = path.posix.join(directory, entry.name);

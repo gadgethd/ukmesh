@@ -1,5 +1,12 @@
 # Security finding closure
 
+Historical evidence retained from revision `4553647f` (2026-08-02). The
+`plan.md` reference below identifies the earlier review's source document,
+which is absent from this checkout. This report records that review's findings;
+it is not a current candidate security or deployment receipt. Current release
+verification follows [the release and rollback runbook](runbook-release-rollback.md) and
+[operations guidance](operations.md).
+
 This report revalidates the security and privacy findings in `plan.md` against
 the implementation that is prepared for deployment. A finding is closed only
 when the vulnerable behavior is removed or an explicitly recorded product
