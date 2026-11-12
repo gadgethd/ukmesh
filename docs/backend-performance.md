@@ -283,6 +283,28 @@ grouped-hash count with the preceding query. Median trial HTTP p95 fell from
 response hashes matched. This quiet comparison does not replace the sustained
 load gate or establish production capacity.
 
+Timeline responses also reuse completed snapshots for the same network, window,
+bucket and ready privacy generation. They are fresh for 30 seconds and may be
+served during one background refresh up to a maximum age of 90 seconds, matching
+the earlier HTTP content-cache window. Browser responses still require private
+revalidation; every 200/304 checks current authority before and after loading its
+payload. A refresh checks authority again before publication. Query/authority
+failures never extend snapshot age or publish partial/error data.
+
+The cache retains at most 16 entries and 8 MiB of estimated serialized values.
+At most four fills are coalesced or detached; at capacity another cold request
+keeps the original awaited SQL path. Physical TTL expiry and fixture shutdown
+release retention. `meshcore_activity_timeline_refresh_inflight` and the fixed
+`api_activity_timeline` cache label expose work and occupancy without scope IDs.
+
+Three alternating comparisons on the same quiet 72k corpus measured warm HTTP
+p95 at 126 → 3 ms (98% lower), with two warm-ups and 20 measured requests per
+trial. A separate cold burst of 16 requests on each new router measured p95 at
+1,081 → 138 ms (87% lower) and aggregate SQL calls at 16 → 1. All 216 measured
+normalized bodies matched. Both servers used the same three-connection pool
+and no-op limiter; deployed rate limits remain. These component measurements
+do not replace the final sustained replay, polling and freshness checks.
+
 Historic relay reactivation is a best-effort live-map hint after durable ingest.
 It skips rows held by another writer and can update them on later traffic.
 This avoids waiting or deadlocking on hot relay rows; packet/path/ledger writes

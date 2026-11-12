@@ -35,6 +35,9 @@ completion of the candidate gates and separate release authorization.
 - Timeline identity and packet-hash grouping reduce lookup and sorting work. Timeline, RF,
   observer-health, link-history and firmware responses fence privacy at delivery;
   busy relay rows no longer block best-effort live-map reactivation.
+- Timeline snapshots have bounded retention and coalesced refreshes. Content is
+  fresh for 30 seconds and expires after 90 seconds; cached delivery still checks
+  current privacy authority, including conditional responses.
 - Link-worker geometry dependencies load when needed, reducing measured startup
   time and memory. RF calculations, queue protocols and authority remain intact.
 - A local contributor stack provides invented-data and private archive profiles,

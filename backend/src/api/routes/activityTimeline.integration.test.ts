@@ -68,10 +68,11 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
     return result;
   };
   const router = Router(), limiter: RequestHandler = (_req, _res, next) => next();
-  registerActivityTimelineRoutes(router, {
+  const shutdownCache = registerActivityTimelineRoutes(router, {
     query, networkFilters, getPublicVisibilityGeneration: () => readPublicResponseGeneration(query),
     limiter: limiter as Parameters<typeof registerActivityTimelineRoutes>[1]['limiter'],
   });
+  t.after(shutdownCache);
   const app = express(); app.use(router);
   const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
@@ -88,6 +89,7 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
   ]);
   const conditional = { cache: 'force-cache' as const, headers: { 'If-None-Match': first.headers.get('etag')! } };
   assert.equal((await fetch(target, conditional)).status, 304);
+  t.mock.timers.setTime(Date.now() + 91_000); // Expire the complete snapshot before holding a cold load.
   hold = true; const racing = fetch(target, conditional); await reached;
   const writer = new pg.Client({ connectionString: url.href }); await writer.connect();
   try { await writer.query("UPDATE core.nodes SET name='Invented private peer 🚫' WHERE node_id=$1", [peer]); }

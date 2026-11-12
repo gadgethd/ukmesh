@@ -628,6 +628,7 @@ const METRIC_CACHES = new Set([
   'api_node_links',
   'api_charts',
   'topology_dto',
+  'api_activity_timeline',
   'api_owner_live',
   'mqtt_channels',
   'owner_auth',
@@ -729,6 +730,12 @@ export function updateDbPoolMetrics(
 export const postPersistInFlightGauge = new Gauge({
   name: 'meshcore_mqtt_post_persist_inflight',
   help: 'Best-effort post-persist follow-ups currently in flight (bounded).',
+  registers: [metricsRegistry],
+});
+
+export const activityTimelineRefreshInflight = new Gauge({
+  name: 'meshcore_activity_timeline_refresh_inflight',
+  help: 'Coalesced or background timeline fills currently running (maximum four per API router).',
   registers: [metricsRegistry],
 });
 

@@ -79,6 +79,12 @@ certified incidents. A privacy change during a rebuild rejects its
 publication. Public derived reads fail closed while privacy rematerialization is
 pending and require HTTP revalidation, including conditional requests.
 
+Activity timeline content uses a bounded generation-keyed snapshot: 30 seconds
+fresh, at most 90 seconds old while refreshing. This preserves the earlier HTTP
+content-cache window while retaining fresh authority checks on every 200/304.
+Failed refreshes do not extend that window; privacy changes cannot reuse a
+snapshot from the preceding generation. The complete response shape is unchanged.
+
 ## Owner authorization and configuration
 
 Preserve the separate owner-auth database unless the deployment's audited
