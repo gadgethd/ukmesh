@@ -48,6 +48,7 @@ jobs:
       TEST_OWNER_ACL_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_VACUUM_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_INGEST_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
+      TEST_OWNER_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/meshcore_owner_auth_ci
       TEST_STATUS_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
     defaults:
       run:
@@ -81,6 +82,7 @@ jobs:
           }
           JS
       - run: npm test
+      - run: npm run test:owner-integration
       - name: Analysis integration (fails fast when PostgreSQL is absent)
         timeout-minutes: 5
         run: npm run test:analysis-integration
