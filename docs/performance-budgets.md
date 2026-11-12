@@ -111,6 +111,21 @@ done
 npm run budget
 ```
 
+### CI isolation and cache reuse
+
+The HopReach RF gates and monitoring validation run in separate Actions jobs.
+Neither needs the live Compose browser fixture. The RF job keeps its compiler
+and module caches shared between the parity suite and the performance gate;
+its benchmarks run on a separate runner from the browser journeys. The live
+Compose smoke checks and browser suites remain together, with sequential
+frontend builds and explicit cleanup of their shared fixture.
+
+Compare whole-run and job/step timestamps separately from local build timings.
+Before this split, one successful run spent 358 seconds on the independent RF
+checks and 132 seconds on monitoring within the 1,877-second critical job.
+That is the scheduling opportunity, not a measured saving from the new layout.
+Retain npm and BuildKit cache-hit evidence with the before/after comparison.
+
 ### Stats route delivery
 
 The initial stats dependency closure is 213.8 KiB gzip, versus the qualified
