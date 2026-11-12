@@ -12,6 +12,8 @@ completion of the candidate gates and separate release authorization.
 - Regions and topology use lightweight embedded maps. Basemap recovery and
   fallback behavior cover failed styles, missing sources and worker errors.
 - Feed rows support measured heights, wrapping, prepends and viewport changes.
+- Service-worker v10 retains v9 for seven days, including offline old-tab lazy
+  chunks, explicit update activation and retained-cache rollback.
 - Dashboard map updates avoid rebuilding unchanged node geometry. Coverage
   polling observes document/layer visibility and pending-work deadlines.
 - Optional field performance reports contain bounded route and Web Vitals data,

@@ -132,6 +132,31 @@ window. Rehearse an already-open old tab, waiting/activation and rollback on
 an isolated local origin before any live cache invalidation. Prepare mutable
 HTML/worker/metadata invalidation separately from hashed immutable assets.
 
+The candidate uses service-worker namespace `v10`, retains `v9`, and stores its
+metadata at `/__meshcore_sw_metadata_v10__`. Waiting workers require activation;
+an already-open old client can load cached old hashed chunks through the retained
+namespace when its network request fails. That fallback does not copy old entries
+into the new cache or extend their seven-day retention. Stable worker `.mjs` URLs
+continue to bypass the immutable app-asset cache.
+
+Run `npm --prefix frontend run test:sw-cutover` for the isolated native Chromium
+protocol check. It uses invented HTML/hashed assets and a temporary browser
+profile; production website journeys remain a separate quality gate. Supply
+`--previous-runtime /absolute/path/to/archived-sw-runtime.js` to rehearse the
+actual recorded prior source, and `--output /absolute/ignored/evidence-directory`
+to retain runtime hashes and checks. Without that input, CI uses a previous-
+namespace fixture. The check covers an old tab, a waiting update, activation,
+offline lazy loading, online/offline rollback and persisted seven-day expiry
+after a worker restart. Its simulated expiry affects only the temporary origin.
+
+For an authorized cutover, invalidate mutable HTML, `/sw.js` and `/sw-runtime.js`
+as required by the deployed edge policy. The metadata key belongs to browser
+CacheStorage; its new namespace creates fresh local metadata. Keep old hashed
+assets on the origin for at least seven days and through any longer agreed
+rollback window; a cached copy cannot recover an old chunk that a client never
+loaded. Hashed immutable assets receive new URLs and need no blanket purge.
+No live cache purge or asset deletion is part of local candidate qualification.
+
 Record actual Timescale jobs and compression/retention settings after the
 schema moves. A migration declaration does not prove a policy is active.
 Disabled policies are not permission to activate destructive lifecycle work;

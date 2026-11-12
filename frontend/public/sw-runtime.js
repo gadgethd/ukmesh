@@ -1,13 +1,13 @@
 export const SW_CACHE_POLICY = Object.freeze({
-  version: 'v9',
-  tileCache: 'meshcore-tiles-v9',
-  appCache: 'meshcore-app-v9',
-  metadataCache: 'meshcore-meta-v9',
-  basemapMetadataCache: 'meshcore-basemap-v9',
-  previousTileCache: 'meshcore-tiles-v8',
-  previousAppCache: 'meshcore-app-v8',
-  previousMetadataCache: 'meshcore-meta-v8',
-  previousBasemapMetadataCache: 'meshcore-basemap-v8',
+  version: 'v10',
+  tileCache: 'meshcore-tiles-v10',
+  appCache: 'meshcore-app-v10',
+  metadataCache: 'meshcore-meta-v10',
+  basemapMetadataCache: 'meshcore-basemap-v10',
+  previousTileCache: 'meshcore-tiles-v9',
+  previousAppCache: 'meshcore-app-v9',
+  previousMetadataCache: 'meshcore-meta-v9',
+  previousBasemapMetadataCache: 'meshcore-basemap-v9',
   maxTileEntries: 6_000,
   maxTileBytes: 96 * 1024 * 1024,
   pruneTargetRatio: 0.9,
@@ -120,7 +120,7 @@ export function createTileMetadata(initial = []) {
 export function createServiceWorkerRuntime(environment) {
   const policy = { ...SW_CACHE_POLICY, ...(environment.policy ?? {}) };
   const now = environment.now ?? Date.now;
-  const metadataUrl = new URL('/__meshcore_sw_metadata_v9__', environment.origin).toString();
+  const metadataUrl = new URL(`/__meshcore_sw_metadata_${policy.version}__`, environment.origin).toString();
   let metadata;
   let metadataState = {
     version: 1,
@@ -297,14 +297,22 @@ export function createServiceWorkerRuntime(environment) {
     const cache = await environment.caches.open(activeAppCacheName());
     const cached = await cache.match(request);
     if (cached) return cached;
+    const retainedAsset = async () => {
+      if (metadataState.rollbackMode || (metadataState.activatedAt > 0
+        && now() - metadataState.activatedAt >= policy.rollbackWindowMs)) return undefined;
+      const previous = await environment.caches.open(policy.previousAppCache);
+      return previous.match(request);
+    };
     try {
       const response = await environment.fetch(request);
       if (response.ok && !metadataState.rollbackMode) {
         await cache.put(request, response.clone());
       }
-      return response;
+      // An old tab can still request its old hashed chunks after activation.
+      // Keep fallback in the previous namespace so its expiry is not extended.
+      return response.ok ? response : await retainedAsset() ?? response;
     } catch {
-      return Response.error();
+      return await retainedAsset() ?? Response.error();
     }
   };
 

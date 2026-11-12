@@ -20,7 +20,8 @@
     "check": "tsc --noEmit && npm test && npm run lint:css",
     "budget:routes": "node scripts/check-route-budgets.mjs",
     "lighthouse:ci": "node scripts/lighthouse-ci.mjs",
-    "bench:map": "node scripts/benchmark-map.mjs"
+    "bench:map": "node scripts/benchmark-map.mjs",
+    "test:sw-cutover": "node scripts/check-service-worker-cutover.mjs"
   },
   "dependencies": {
     "@deck.gl/aggregation-layers": "^9.4.0",

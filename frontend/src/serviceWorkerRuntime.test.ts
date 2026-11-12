@@ -385,3 +385,45 @@ test('a waiting worker activates automatically once the tab is hidden', async ()
     resetServiceWorkerUpdatesForTests();
   }
 });
+
+test('an activated worker can load retained old hashed assets offline until the rollback window expires', async () => {
+  let currentTime = 100;
+  const fixture = await createRuntimeFixture({ now: () => currentTime });
+  await fixture.runtime.install();
+  await fixture.runtime.activate();
+  const previous = await fixture.cacheStorage.open(String(fixture.runtime.policy['previousAppCache']));
+  const request = new Request('https://mesh.test/assets/old-lazy-a1b2c3.js');
+  await previous.put(request, new Response('retained old lazy chunk'));
+  assert.equal(await (await fixture.runtime.handleFetch(request)).text(), 'retained old lazy chunk');
+  const current = await fixture.cacheStorage.open(String(fixture.runtime.policy['appCache']));
+  assert.equal(await current.match(request), undefined, 'fallback must not extend old asset retention by promotion');
+  currentTime += Number(fixture.runtime.policy['rollbackWindowMs']);
+  assert.equal((await fixture.runtime.handleFetch(request)).status, 0, 'old assets expire at the seven-day boundary');
+});
+
+test('v10 cache and metadata identity retain v9 as the previous generation', async () => {
+  const fixture = await createRuntimeFixture();
+  const policy = fixture.runtime.policy;
+  assert.equal(policy['version'], 'v10');
+  for (const [current, previous] of [['tileCache', 'previousTileCache'], ['appCache', 'previousAppCache'], ['metadataCache', 'previousMetadataCache'], ['basemapMetadataCache', 'previousBasemapMetadataCache']]) {
+    assert.ok(String(policy[current]).endsWith('-v10'));
+    assert.ok(String(policy[previous]).endsWith('-v9'));
+  }
+  assert.equal(policy['rollbackWindowMs'], 7 * 24 * 60 * 60_000);
+  await fixture.runtime.install();
+  const metadata = await fixture.cacheStorage.open(String(policy['metadataCache']));
+  assert.ok(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v10__'));
+  assert.equal(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v9__'), undefined);
+});
+
+test('missing old assets can use the retained cache without masking new asset errors or reviving stale workers', async () => {
+  const fixture = await createRuntimeFixture({ fetch: async () => new Response('missing', { status: 404 }) });
+  await fixture.runtime.install();
+  await fixture.runtime.activate();
+  const previous = await fixture.cacheStorage.open(String(fixture.runtime.policy['previousAppCache']));
+  const old = new Request('https://mesh.test/assets/old-a1b2.js');
+  await previous.put(old, new Response('old bytes'));
+  assert.equal(await (await fixture.runtime.handleFetch(old)).text(), 'old bytes');
+  assert.equal((await fixture.runtime.handleFetch(new Request('https://mesh.test/assets/new-missing-c3d4.js'))).status, 404);
+  assert.equal(fixture.runtime.shouldHandle(new Request('https://mesh.test/assets/maplibre-worker.mjs')), false);
+});

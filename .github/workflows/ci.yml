@@ -651,6 +651,9 @@ jobs:
           npm ci
           python ../scripts/ci-retry.py apt npx --no-install playwright install-deps chromium
           npx --no-install playwright install chromium
+      - name: Rehearse browser cache cutover and rollback
+        working-directory: frontend
+        run: npm run test:sw-cutover
       - name: Run production browser journeys
         working-directory: frontend
         run: npm run test:e2e
