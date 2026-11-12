@@ -29,7 +29,7 @@ export function generate(publicData, link, lua) {
     || new Set(Object.values(keys)).size !== Object.keys(keys).length
     || !Array.isArray(link.admitKeys) || link.admitKeys.some(k => !Object.hasOwn(keys, k))
     || new Set(link.admitKeys).size !== link.admitKeys.length
-    || link.admitKeys.length !== 13 || link.admitArguments.length !== 9 || !lua.trim()) {
+    || link.admitKeys.length !== 13 || !lua.trim()) {
     throw new Error('Invalid link-v3 bindings');
   }
   for (const spec of Object.values(link.limits)) {
