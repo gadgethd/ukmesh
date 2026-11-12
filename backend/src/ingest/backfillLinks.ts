@@ -40,7 +40,6 @@ export async function backfillHistoricalLinks(
       try {
         compat = decodePacketCompat(row.raw_hex, keyStore);
       } catch {
-        // Skip undecipherable packets
         continue;
       }
       if (compat.metadataValid && (compat.pathHashSize ?? 1) > 1 && compat.pathHashes && compat.pathHashes.length > 0) {

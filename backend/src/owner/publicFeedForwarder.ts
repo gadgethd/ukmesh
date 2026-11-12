@@ -1,4 +1,6 @@
-import mqtt, { type MqttClient } from 'mqtt';
+import { createMqttPublisher, type MessagePublisher } from '../forwarding/mqttPublisher.js';
+import { createPublisherCache } from '../forwarding/publisherCache.js';
+import { createClaimedDeliveryLoop } from '../forwarding/claimedDeliveryLoop.js';
 import { withDeadline } from '../platform/deadline.js';
 import { randomUUID } from 'node:crypto';
 import type { LivePacket } from '../types/index.js';
@@ -19,10 +21,7 @@ const DEFAULT_BATCH_SIZE = 25;
 const DEFAULT_OWNERSHIP_REFRESH_INTERVAL_MS = 15_000;
 const PUBLISH_TIMEOUT_MS = 10_000;
 
-export type PublicFeedPublisher = {
-  publish: (topic: string, payload: string) => Promise<void>;
-  close: () => Promise<void>;
-};
+export type PublicFeedPublisher = MessagePublisher;
 
 export type PublicFeedPublisherFactory = (config: PublicFeedConfig) => PublicFeedPublisher;
 
@@ -40,77 +39,26 @@ function configFingerprint(config: PublicFeedConfig): string {
 }
 
 function connectPublicFeedPublisher(config: PublicFeedConfig): PublicFeedPublisher {
-  let client: MqttClient | null = null;
-  let connecting: Promise<MqttClient> | null = null;
-
-  const closeClient = async (force = true): Promise<void> => {
-    const current = client;
-    client = null;
-    connecting = null;
-    if (current) await current.endAsync(force).catch(() => undefined);
-  };
-
-  const connect = async (): Promise<MqttClient> => {
-    if (client?.connected) return client;
-    if (connecting) return connecting;
-    const url = configUrl(config);
-    if (!config.username || !config.password) throw new Error('public feed publisher credentials are missing');
-    const created = mqtt.connect(url.toString(), {
-      clientId: `meshcore-public-feed-${randomUUID().replaceAll('-', '').slice(0, 24)}`,
-      username: config.username,
-      password: config.password,
-      clean: true,
-      reconnectPeriod: 0,
-      connectTimeout: PUBLISH_TIMEOUT_MS,
-    });
-    client = created;
-    created.on('error', (error) => {
-      console.error('[public-feed] MQTT publisher error:', error.message);
-    });
-    connecting = new Promise<MqttClient>((resolve, reject) => {
-      let settled = false;
-      let timer: NodeJS.Timeout;
-      const cleanup = () => {
-        clearTimeout(timer);
-        created.removeListener('connect', onConnect);
-        created.removeListener('close', onClose);
-      };
-      const finish = (error?: Error) => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        if (error) {
-          if (client === created) client = null;
-          created.end(true);
-          reject(error);
-        } else {
-          resolve(created);
-        }
-      };
-      const onConnect = () => finish();
-      const onClose = () => finish(new Error('public feed MQTT connection closed before connect'));
-      timer = setTimeout(() => finish(new Error('public feed MQTT connection timed out')), PUBLISH_TIMEOUT_MS);
-      created.once('connect', onConnect);
-      created.once('close', onClose);
-    }).finally(() => {
-      connecting = null;
-    });
-    return connecting;
-  };
-
-  return {
-    async publish(topic: string, payload: string): Promise<void> {
-      const current = await connect();
-      // CoreScope subscribes at QoS 0. The feed is an observation stream, so
-      // retaining messages or requesting broker redelivery is undesirable.
-      await current.publishAsync(topic, payload, { qos: 0, retain: false });
-      if (!current.connected) {
-        await closeClient();
-        throw new Error('public feed MQTT connection closed after publish');
-      }
+  return createMqttPublisher({
+    connection() {
+      const url = configUrl(config);
+      if (!config.username || !config.password) throw new Error('public feed publisher credentials are missing');
+      return { url: url.toString(), options: {
+        clientId: `meshcore-public-feed-${randomUUID().replaceAll('-', '').slice(0, 24)}`,
+        username: config.username,
+        password: config.password,
+        clean: true,
+        reconnectPeriod: 0,
+        connectTimeout: PUBLISH_TIMEOUT_MS,
+      } };
     },
-    close: closeClient,
-  };
+    connectionLabel: 'public feed MQTT',
+    publishLabel: 'public feed publish',
+    // The curated observation stream remains QoS 0 and nonretained.
+    publishOptions: { qos: 0, retain: false },
+    connectTimeoutMs: PUBLISH_TIMEOUT_MS,
+    logError: error => console.error('[public-feed] MQTT publisher error:', error.message),
+  });
 }
 
 export type PublicFeedForwarderDeps = {
@@ -138,27 +86,13 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
   );
   const publishTimeoutMs = deps.publishTimeoutMs ?? 10_000;
   const deliveryTimeoutMs = deps.deliveryTimeoutMs ?? 25_000;
-  const closePublisher = (publisher: PublicFeedPublisher) => withDeadline(
-    publisher.close(), deps.closeTimeoutMs ?? 2_000, 'public feed cleanup',
-  ).catch(() => undefined);
-  const publishers = new Map<string, { publisher: PublicFeedPublisher; fingerprint: string }>();
-  let pollTimer: NodeJS.Timeout | null = null;
+  const publishers = createPublisherCache(deps.closeTimeoutMs ?? 2_000, 'public feed cleanup');
   let ownershipTimer: NodeJS.Timeout | null = null;
-  let processing: Promise<void> | null = null;
   let ownershipRefresh: Promise<void> | null = null;
   let stopping = false;
 
-  async function publisherFor(config: PublicFeedConfig): Promise<PublicFeedPublisher> {
-    const fingerprint = configFingerprint(config);
-    const existing = publishers.get('public-feed');
-    if (existing?.fingerprint === fingerprint) return existing.publisher;
-    if (existing) {
-      publishers.delete('public-feed');
-      await closePublisher(existing.publisher);
-    }
-    const created = publisherFactory(config);
-    publishers.set('public-feed', { publisher: created, fingerprint });
-    return created;
+  function publisherFor(config: PublicFeedConfig): Promise<PublicFeedPublisher> {
+    return publishers.get('public-feed', configFingerprint(config), () => publisherFactory(config));
   }
 
   async function refreshOwnership(): Promise<void> {
@@ -215,7 +149,6 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
       publicFeedOutcomesTotal.inc({ outcome: 'queue_error' });
       console.error('[public-feed] queue error:', error instanceof Error ? error.message : error);
       throw error;
-      return;
     }
     void processDue();
   }
@@ -249,75 +182,55 @@ export function createPublicFeedForwarder(deps: PublicFeedForwarderDeps) {
       publicFeedOutcomesTotal.inc({ outcome: 'delivered' });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const entry = publishers.get('public-feed');
-      if (entry) {
-        publishers.delete('public-feed');
-        await closePublisher(entry.publisher);
-      }
+      await publishers.discard('public-feed');
       await deps.repository.markFailed(row.id, claimToken, row.attempts, message);
       publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
     }
   }
 
-  async function processDue(): Promise<void> {
-    if (stopping) return;
-    if (processing) {
-      await processing;
-      return;
-    }
-    processing = (async () => {
+  const deliveryLoop = createClaimedDeliveryLoop<PublicFeedDeliveryRow>({
+    pollIntervalMs,
+    deliveryTimeoutMs,
+    async claim(claimToken) {
+      await deps.repository.discardInactiveDeliveries();
+      await deps.repository.reclaimExpiredClaims();
+      return getPublicFeedConfig().configured ? deps.repository.claimDue(batchSize, claimToken) : [];
+    },
+    deliver,
+    deliveryLabel: () => 'public feed delivery',
+    async aborted(row, claimToken, error) {
+      publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
+      await withDeadline(deps.repository.markFailed(row.id, claimToken, row.attempts,
+        error instanceof Error ? error.message : String(error)), 2_000, 'public feed claim release').catch(() => undefined);
+    },
+    failed(error) {
+      publicFeedOutcomesTotal.inc({ outcome: 'worker_error' });
+      console.error('[public-feed] worker error:', error instanceof Error ? error.message : error);
+    },
+    async settled() {
       try {
-        await deps.repository.discardInactiveDeliveries();
-        await deps.repository.reclaimExpiredClaims();
-        if (!getPublicFeedConfig().configured) return;
-        const claimToken = randomUUID();
-        const rows = await deps.repository.claimDue(batchSize, claimToken);
-        await Promise.all(rows.map(async (row) => {
-          const cancellation = new AbortController();
-          try { await withDeadline(deliver(row, claimToken, cancellation.signal), deliveryTimeoutMs, 'public feed delivery'); }
-          catch (error) {
-            cancellation.abort();
-            publicFeedOutcomesTotal.inc({ outcome: 'delivery_error' });
-            await withDeadline(deps.repository.markFailed(row.id, claimToken, row.attempts,
-              error instanceof Error ? error.message : String(error)), 2_000, 'public feed claim release').catch(() => undefined);
-          }
-        }));
-      } catch (error) {
-        publicFeedOutcomesTotal.inc({ outcome: 'worker_error' });
-        console.error('[public-feed] worker error:', error instanceof Error ? error.message : error);
-      } finally {
-        try {
-          const stats = await deps.repository.queueStats?.();
-          if (stats) { publicFeedQueueDepth.set(stats.count); publicFeedOldestAgeSeconds.set(stats.oldestAgeSeconds); }
-        } catch { publicFeedQueueDepth.set(-1); publicFeedOldestAgeSeconds.set(-1); }
-        processing = null;
-      }
-    })();
-    await processing;
-  }
+        const stats = await deps.repository.queueStats?.();
+        if (stats) { publicFeedQueueDepth.set(stats.count); publicFeedOldestAgeSeconds.set(stats.oldestAgeSeconds); }
+      } catch { publicFeedQueueDepth.set(-1); publicFeedOldestAgeSeconds.set(-1); }
+    },
+  });
+  const { processDue } = deliveryLoop;
 
   function start(): void {
-    if (pollTimer || stopping) return;
-    stopping = false;
-    pollTimer = setInterval(() => void processDue(), pollIntervalMs);
-    pollTimer.unref();
+    if (ownershipTimer || stopping) return;
     ownershipTimer = setInterval(() => void refreshOwnership(), ownershipRefreshIntervalMs);
     ownershipTimer.unref();
     void refreshOwnership();
-    void processDue();
+    deliveryLoop.start();
   }
 
   async function stop(): Promise<void> {
     stopping = true;
-    if (pollTimer) clearInterval(pollTimer);
     if (ownershipTimer) clearInterval(ownershipTimer);
-    pollTimer = null;
     ownershipTimer = null;
-    if (processing) await processing.catch(() => undefined);
+    await deliveryLoop.stop();
     if (ownershipRefresh) await ownershipRefresh.catch(() => undefined);
-    const current = [...publishers.values()].map(({ publisher }) => publisher);
-    publishers.clear();
-    await Promise.all(current.map((publisher) => closePublisher(publisher)));
+    await publishers.close();
   }
 
   return { enqueuePacket, processDue, refreshOwnership, start, stop };

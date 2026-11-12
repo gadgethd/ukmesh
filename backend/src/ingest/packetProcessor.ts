@@ -7,8 +7,7 @@ import { calcRegionKey, transportCodeMatchesRegion } from '@michaelhart/meshcore
 import { insertNodeNeighborSample, insertNodeStatusSample, upsertNode } from '../repositories/nodeState.js';
 import { insertPacket } from '../db/packetPersistence.js';
 import { insertOrUpdateSpamSuspect } from '../spam/suspectRepository.js';
-import { query } from '../db/runtime.js';
-import { ingestQuery } from '../db/ingest.js';
+import { query, ingestQuery } from '../db/runtime.js';
 import { evaluateAdvert } from '../mqtt/spamDetector.js';
 import { invalidateResolveCache } from '../path-beta/resolveCache.js';
 import type { LivePacket } from '../types/index.js';

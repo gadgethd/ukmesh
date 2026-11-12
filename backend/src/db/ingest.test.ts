@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import type pg from 'pg';
-import { createIngestDatabase, ingestPoolOptions } from './ingest.js';
+import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import { dbQueriesTotal } from '../metrics/database.js';
 
 test('ingest has a nonzero timeout independent of the general/analytics pool', () => {

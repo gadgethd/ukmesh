@@ -1,10 +1,11 @@
 import pg from 'pg';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
-import { databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
+import { loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import type { DatabaseQueryFn } from './contracts.js';
 
-export function ingestPoolOptions(env: NodeJS.ProcessEnv = process.env): pg.PoolConfig {
+export function ingestPoolOptions(env: NodeJS.ProcessEnv): pg.PoolConfig {
+  const databaseConfig = loadDatabaseConfig(env);
   const timeoutMs = boundedIntegerSetting(
     'MQTT_INGEST_STATEMENT_TIMEOUT_MS', env['MQTT_INGEST_STATEMENT_TIMEOUT_MS'], 10_000, 100, 30_000,
   );
@@ -73,9 +74,3 @@ export function createIngestDatabase(pool: pg.Pool) {
   }
   return { query, withTransaction };
 }
-
-export const ingestPool = new pg.Pool(ingestPoolOptions());
-ingestPool.on('error', (error) => console.error('[ingest-db] unexpected pool error', error.message));
-const ingestDatabase = createIngestDatabase(ingestPool);
-export const ingestQuery = ingestDatabase.query;
-export const withIngestTransaction = ingestDatabase.withTransaction;

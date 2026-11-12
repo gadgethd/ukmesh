@@ -76,5 +76,3 @@ export function databaseUrlForRole(
   const fallback = String(legacyFallback ?? env['DATABASE_URL'] ?? '').trim();
   return fallback || undefined;
 }
-
-export const databaseConfig = loadDatabaseConfig(process.env);

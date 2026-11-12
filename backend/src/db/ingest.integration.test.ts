@@ -5,7 +5,7 @@ import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import pg from 'pg';
-import { createIngestDatabase, ingestPoolOptions } from './ingest.js';
+import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import { dbQueriesTotal } from '../metrics/database.js';
 
 const moduleUrl = process.env['TEST_INGEST_POSTGRES_MODULE'];

@@ -1,6 +1,4 @@
-import { pool } from '../db/runtime.js';
-import { ingestQuery } from '../db/ingest.js';
-import { withIngestTransaction } from '../db/ingest.js';
+import { pool, ingestQuery, withIngestTransaction } from '../db/runtime.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
 
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);

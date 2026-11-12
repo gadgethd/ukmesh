@@ -1,5 +1,6 @@
 import pg from 'pg';
-import { databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
+import { databaseConfig } from '../platform/config/processDatabase.js';
+import { databaseUrlForRole } from '../platform/config/database.js';
 import { runMigrations } from '../db/migrations.js';
 
 const { Pool } = pg;

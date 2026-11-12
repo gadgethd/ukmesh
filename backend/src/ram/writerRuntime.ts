@@ -2,12 +2,12 @@
  * RAM-first MQTT ingestion — writer runtime wiring.
  *
  * Kept separate from writer.ts so the writer core (and its unit tests) do not
- * import database or MQTT client modules. This module is only imported by
- * index.ts in the running application.
+ * import database or MQTT client modules. The application and standalone
+ * drainer compose this runtime explicitly.
  */
 import { Redis } from 'ioredis';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
-import { ingestQuery as query, withIngestTransaction as withTransaction } from '../db/ingest.js';
+import { ingestQuery as query, withIngestTransaction as withTransaction } from '../db/runtime.js';
 import { persistEntriesCore, refreshAdmissionPrivacyCache } from '../db/packetBatch.js';
 import type { CommittedFollowUps } from '../ingest/committedFollowUps.js';
 import { queueLinkJob } from '../queue/publisher.js';

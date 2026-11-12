@@ -1,5 +1,5 @@
 import pg, { type QueryResultRow } from 'pg';
-import { databaseConfig } from '../platform/config/database.js';
+import { databaseConfig } from '../platform/config/processDatabase.js';
 import type { NetworkFilters } from '../platform/query/networkFilters.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
