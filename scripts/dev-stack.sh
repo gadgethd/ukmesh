@@ -13,7 +13,7 @@ chmod 700 "$state"
 compose=(docker compose -f "$repo/scripts/local-sample/compose.yml")
 action=${1:-up}
 if (($#)); then shift; fi
-data_dir= profile=ingest shift_to= redact_content=false replay_limit=20 synthetic_count=200
+data_dir= profile=ingest shift_to= redact_content=false replay_limit=20 synthetic_count=200 ingest_flush_ms=
 while (($#)); do
   case "$1" in
     --data-dir) data_dir=$(realpath "$2"); shift 2 ;;
@@ -22,11 +22,13 @@ while (($#)); do
     --redact-content) redact_content=true; shift ;;
     --replay-limit) replay_limit=$2; shift 2 ;;
     --synthetic-count) synthetic_count=$2; shift 2 ;;
+    --ingest-flush-ms) ingest_flush_ms=$2; shift 2 ;;
     *) echo "Unknown option: $1" >&2; exit 2 ;;
   esac
 done
 case "$profile" in snapshot|ingest) ;; *) echo 'Profile must be snapshot or ingest' >&2; exit 2 ;; esac
 [[ $replay_limit =~ ^[0-9]+$ && $replay_limit -le 1000 ]] || { echo '--replay-limit must be 0..1000' >&2; exit 2; }
+[[ -z $ingest_flush_ms || ( $ingest_flush_ms =~ ^[0-9]+$ && $ingest_flush_ms -le 1000 ) ]] || { echo '--ingest-flush-ms must be 0..1000' >&2; exit 2; }
 case "$action" in
   help|--help)
     echo 'scripts/dev-stack.sh [up|start|status|stop|reset|cleanup] [--profile snapshot|ingest] [--data-dir DIR] [--shift-to ISO] [--redact-content]'
@@ -64,6 +66,7 @@ case "$action" in
     [[ -f "$state/fixture-ready" ]] || { echo 'No prepared fixture; use up or reset' >&2; exit 1; }
     profile=$(cat "$state/fixture-ready")
     data_dir=$(cat "$state/data-dir")
+    if [[ -z $ingest_flush_ms && -f "$state/ingest-flush-ms" ]]; then ingest_flush_ms=$(cat "$state/ingest-flush-ms"); fi
     stop_processes ;;
   up)
     if [[ -f "$state/fixture-ready" ]] || [[ -n $("${compose[@]}" ps -aq) ]]; then
@@ -89,6 +92,12 @@ export OWNER_ACL_SHADOW_PATH="$state/owner-acl.shadow" MOSQUITTO_LOG_PATH="$stat
 export PATH_BETA_PRERESOLVE_ENABLED=0 DATA_LIFECYCLE_RETENTION_ENABLED=false
 export PUBLIC_FEED_PUBLISH_ENABLED=false
 export MQTT_CLIENT_ID=ukmesh-local-sample MQTT_INGEST_SHARE_GROUP=ukmesh-local-sample
+if [[ -n $ingest_flush_ms ]]; then
+  export MQTT_INGEST_FLUSH_MS=$ingest_flush_ms
+  printf '%s\n' "$ingest_flush_ms" > "$state/ingest-flush-ms"
+else
+  rm -f "$state/ingest-flush-ms"
+fi
 export UKMESH_DEV_API_TARGET=http://127.0.0.1:3100
 export VITE_BUILD_TARGET=public-website VITE_SITE=ukmesh VITE_APP_HOSTNAME=localhost
 tsx=(node --import "$repo/backend/node_modules/tsx/dist/loader.mjs")

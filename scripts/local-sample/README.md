@@ -150,6 +150,17 @@ npm --prefix backend run bench:ingest -- \
   --data-dir "$(cat plans/dev-stack/data-dir)" --limit 2000 --speed 0
 ```
 
+For a complete repeatable pair, run `scripts/benchmark-ingest-local.sh ingest-baseline`.
+This explicitly recreates the owned sample stack twice, generates one invented
+2,000-packet source, and runs saturation then 100 packets/second sequentially.
+It retains source checksums, image/resource limits, DB CPU and WAL deltas,
+steady-state SQL rankings, RSS/heap/event-loop samples and the decode benchmark.
+Use `--data-dir plans/measurements/ingest-baseline/dataset --flush-ms 0` with a
+new label to compare a flush setting against exactly the same source. The default
+comparison setting is explicitly 10 ms; it does not read a project `.env`.
+The local broker has bounded per-client queues (10,000 messages / 16 MiB), and
+the 2 GiB database pins 100 connections to accommodate the backend's pools.
+
 Reset between saturation and paced runs. `bench:ingest` verifies SQL row counts
 and drained queues, records throughput, before/after process/cache metrics and
 the enqueue-to-commit histogram's p95 upper bound. It does not label the broker

@@ -1,5 +1,7 @@
 /** One controlled/saturation replay on a clean fixture; verifies SQL drain. */
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import os from 'node:os';
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import pg from 'pg';
@@ -32,14 +34,31 @@ async function metrics(): Promise<Map<string, number>> {
 try {
   const rowCount = async () => Number((await pool.query('SELECT COUNT(*)::text AS n FROM mesh.packets')).rows[0].n);
   if (await rowCount() !== 0) throw new Error('ingest benchmark requires a fresh fixture with no packets; reset backend/Redis too');
+  const queryStats = async () => (await pool.query<{
+    queryid: string; query: string; calls: string; total_exec_time: number; rows: string;
+  }>(`SELECT queryid::text, query, calls::text, total_exec_time, rows::text FROM pg_stat_statements
+       WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())`)).rows;
+  const beforeQueries = new Map((await queryStats()).map(row => [row.queryid, row]));
+  const walBefore = String((await pool.query('SELECT pg_current_wal_lsn()::text AS lsn')).rows[0].lsn);
   const before = await metrics();
+  const samples: { elapsedMs: number; values: Record<string, number> }[] = [];
+  let sampling = false;
   const started = performance.now();
-  await replaySampleMqtt(['--data-dir', directory, '--limit', String(count), '--speed', speed, '--qos', '1', '--concurrency', concurrency]);
-  const acknowledgedMs = performance.now() - started;
-  const deadline = Date.now() + 120_000;
+  const timer = setInterval(() => {
+    if (sampling || samples.length >= 2400) return;
+    sampling = true;
+    void metrics().then(values => samples.push({ elapsedMs: performance.now() - started,
+      values: Object.fromEntries([...values].filter(([key]) => /resident_memory|heap_size_used|eventloop_lag|queue_depth|mqtt_ingest_active/.test(key))),
+    })).catch(() => undefined).finally(() => { sampling = false; });
+  }, 250);
+  let acknowledgedMs: number;
   let persisted = 0;
   let after = before;
   let drained = false;
+  try {
+  await replaySampleMqtt(['--data-dir', directory, '--limit', String(count), '--speed', speed, '--qos', '1', '--concurrency', concurrency]);
+  acknowledgedMs = performance.now() - started;
+  const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
     persisted = await rowCount();
     after = await metrics();
@@ -48,8 +67,16 @@ try {
       && (after.get('meshcore_mqtt_ingest_active') ?? -1) === 0) { drained = true; break; }
     await wait(250);
   }
+  } finally { clearInterval(timer); }
   if (persisted !== count || !drained) throw new Error(`replay did not persist/drain expected unique rows: ${persisted}/${count}`);
   const drainedMs = performance.now() - started;
+  const walBytes = Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(), $1)::text AS bytes', [walBefore])).rows[0].bytes);
+  const queries = (await queryStats()).map(row => {
+    const previous = beforeQueries.get(row.queryid);
+    const calls = Number(row.calls) - Number(previous?.calls ?? 0);
+    const totalMs = row.total_exec_time - (previous?.total_exec_time ?? 0);
+    return { queryid: row.queryid, query: row.query, calls, totalMs, meanMs: calls > 0 ? totalMs / calls : 0 };
+  }).filter(row => row.calls > 0).sort((a, b) => b.totalMs - a.totalMs);
   const deltas = [...after].map(([key, value]) => ({ key, value: value - (before.get(key) ?? 0) }))
     .filter(({ key }) => /packet_batch|mqtt_ingest|process_resident|process_heap|eventloop|cache/.test(key));
   const prefix = 'meshcore_packet_batch_queue_wait_seconds';
@@ -62,11 +89,15 @@ try {
   if (observations < count || p95UpperBound === undefined) throw new Error('missing enqueue-to-commit histogram evidence');
   await mkdir(output, { recursive: true });
   await writeFile(path.join(output, 'ingest.json'), JSON.stringify({
-    version: 1, at: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    version: 2, at: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    diffSha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'], { maxBuffer: 16 * 1024 * 1024 })).digest('hex'),
+    hardware: { cpus: os.cpus().length, model: os.cpus()[0]?.model, memory: os.totalmem() },
     node: process.version, count, persisted, acknowledgedMs, drainedMs, persistedPerSecond: count / (drainedMs / 1000),
     enqueueToCommitP95UpperBoundSeconds: p95UpperBound, histogramObservations: observations,
     settings: { speed: Number(speed), concurrency: Number(concurrency), qos: 1, order: 'timestamp ascending', mode: 'durable' },
     beforeMetrics: Object.fromEntries(before), afterMetrics: Object.fromEntries(after), deltas,
+    // Gauges are time samples, not counter deltas. SQL rankings exclude fixture preparation.
+    samples, walBytes, walBytesPerPacket: walBytes / count, queries,
   }, null, 2) + '\n');
   console.log(JSON.stringify({ persisted, persistedPerSecond: count / (drainedMs / 1000), enqueueToCommitP95UpperBoundSeconds: p95UpperBound, output }));
 } finally { await pool.end(); }
