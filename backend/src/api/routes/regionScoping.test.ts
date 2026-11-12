@@ -1,3 +1,4 @@
+import { createSlowResolutionScheduler } from '../../path-beta/slowMode.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
@@ -45,6 +46,7 @@ test('region API validates before reads, scopes each node/packet path and preser
     packetDetailLimiter: limiter as Parameters<typeof registerMiscRoutes>[1]['packetDetailLimiter'],
   });
   registerPathingRoutes(router, {
+    slowMode: createSlowResolutionScheduler({ pool: { runBackground: async () => null }, record: async () => {} }),
     pathBetaLimiter: limiter as Parameters<typeof registerPathingRoutes>[1]['pathBetaLimiter'],
     pathLearningLimiter: limiter as Parameters<typeof registerPathingRoutes>[1]['pathLearningLimiter'],
     getResolveCache: () => undefined, setResolveCache: () => {},

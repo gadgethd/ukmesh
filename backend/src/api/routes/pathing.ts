@@ -2,11 +2,7 @@ import type { Router } from 'express';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
 import { createPathingRepository } from '../../pathing/pathingRepository.js';
 import { createPathingService } from '../../pathing/pathingService.js';
-import {
-  slowModeRemainingMs,
-  slowModeStatus,
-  slowModeWindowMs,
-} from '../../path-beta/slowMode.js';
+import type { SlowResolutionScheduler } from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
 import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
@@ -28,6 +24,7 @@ type PathingRouteDeps = {
   getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
   setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
   resolvePool: ResolvePoolFn;
+  slowMode: Pick<SlowResolutionScheduler, 'slowModeRemainingMs' | 'slowModeStatus' | 'slowModeWindowMs'>;
   getPublicVisibilityGeneration: () => Promise<number>;
   getMultibytePathSegments: (network?: string, observer?: string, region?: string) => Promise<{
     maxCount: number;
@@ -43,6 +40,7 @@ type PathingRouteDeps = {
 };
 
 export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): void {
+  const { slowModeRemainingMs, slowModeStatus, slowModeWindowMs } = deps.slowMode;
   const repository = createPathingRepository({
     getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
     query: deps.query,

@@ -1,6 +1,6 @@
 import 'node:process';
 import { initDb, pool, query } from '../db/runtime.js';
-import { backfillHistoricalLinks } from '../mqtt/client.js';
+import { backfillHistoricalLinks } from '../ingest/backfillLinks.js';
 import { queueLinkJob, closeQueuePublisher } from '../queue/publisher.js';
 import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';

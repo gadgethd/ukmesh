@@ -25,7 +25,7 @@ import {
 } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
 import { getResolveCache, setResolveCache, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
-import { resolvePool } from '../path-beta/resolvePool.js';
+import type { IngestRuntime } from '../ingest/runtime.js';
 import { maskDecodedPathNodes } from '../stats/maskDecodedPathNodes.js';
 import {
   COVERAGE_LIMITER,
@@ -80,11 +80,12 @@ import { ApiInputError, wrapAsyncHandlers } from './errors.js';
 import { createOwnerSessionGuard } from './ownerSessionGuard.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
-export function createApiRuntime(healthRuntime: HealthRuntime) {
+export function createApiRuntime(healthRuntime: HealthRuntime, ingestRuntime: IngestRuntime) {
+  const { resolvePool, slowMode } = ingestRuntime;
   const router = Router();
   const caches = createApiCaches();
   const { statsCache, inferredNodesCache, inferredNodesInflight, nodeLinksCache, nodeLinksInflight, chartsCache, chartsInflight, ownerLiveCache } = caches;
-  const health = createHealthRoutes(healthRuntime);
+  const health = createHealthRoutes(healthRuntime, ingestRuntime.mqtt.getMqttRuntimeStatus);
   // Anonymous cross-network aggregation is not a public API capability. Operator
   // diagnostics must use separately authenticated/local-only entry points.
   router.use((req, res, next) => {
@@ -212,6 +213,7 @@ export function createApiRuntime(healthRuntime: HealthRuntime) {
     getHeldPath,
     setHeldPath,
     resolvePool,
+    slowMode,
     getPublicVisibilityGeneration,
     getMultibytePathSegments,
     query,

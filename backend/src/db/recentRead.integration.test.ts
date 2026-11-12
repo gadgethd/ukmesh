@@ -1,3 +1,4 @@
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -73,6 +74,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
   await pool.query(`INSERT INTO core.node_identity_aliases
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [alias, canonical]);
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* finish fixture policy */ }
+  const loadPolicy = createPublicPolicyReader(query);
   const aliases = async () => new Map([[alias, canonical]]);
   const summaries = (entries: PendingSummary[]) => resolvePendingSummaries(entries,query);
   const observed = Date.now();
@@ -103,7 +105,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     for (const observer of [undefined, alias, canonical, other]) {
       for (const fields of ['full', 'slim'] as const) {
         for (const limit of [1, 5]) {
-          const opts = { limit, network: scope, observer, fields, resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed };
+          const opts = { limit, network: scope, observer, fields, loadPolicy, resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed };
           merged.set(JSON.stringify(opts), json(await readRecentWithPending(
             (hashes) => getRecentPackets(limit, scope, observer, fields, undefined, query, hashes), opts)));
         }
@@ -111,18 +113,18 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     }
   }
   const messages = json(await readRecentWithPending((hashes) => getRecentMessages(5, 'ukmesh', undefined, undefined, query, hashes),
-    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed }));
+    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], loadPolicy, resolveAliases: aliases, resolveSummaries:summaries, nowMs: observed }));
   await persistEntriesCore(pending, query, true, transaction);
   await redis.del(key); // compare against the complete SQL projection, without overlap
   for (const [serialized, expected] of merged) {
     const opts = JSON.parse(serialized);
     const actual = await readRecentWithPending(
       () => getRecentPackets(opts.limit, opts.network, opts.observer, opts.fields, undefined, query),
-      { ...opts, resolveAliases: aliases, nowMs: observed });
+      { ...opts, loadPolicy, resolveAliases: aliases, nowMs: observed });
     assert.deepEqual(json(actual), expected, serialized);
   }
   assert.deepEqual(json(await readRecentWithPending(() => getRecentMessages(5, 'ukmesh', undefined, undefined, query),
-    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], resolveAliases: aliases, nowMs: observed })), messages);
+    { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], loadPolicy, resolveAliases: aliases, nowMs: observed })), messages);
   const snapshot = await pool.connect();
   try {
     await snapshot.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
@@ -132,7 +134,7 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
     await pool.query('UPDATE ops.public_visibility_state SET generation = generation + 1 WHERE singleton');
     await pool.query(`UPDATE ops.packet_visibility_materialization_state SET visibility_generation =
       (SELECT generation FROM ops.public_visibility_state WHERE singleton) WHERE singleton`);
-    assert.deepEqual(await mergePendingPacketsIntoRecentRows(before, { limit: 5, network: 'ukmesh' }), [],
+    assert.deepEqual(await mergePendingPacketsIntoRecentRows(before, { limit: 5, network: 'ukmesh', loadPolicy }), [],
       'fresh authority rejects a genuine older SQL aggregate snapshot');
     await snapshot.query('COMMIT');
   } finally { await snapshot.query('ROLLBACK'); snapshot.release(); }

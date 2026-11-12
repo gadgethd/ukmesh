@@ -15,8 +15,7 @@ import {
   getOwnerAuthorizationSnapshot,
   initOwnerAuthDb,
 } from './owner/ownerAuth.js';
-import { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient, onPacket, onNodeSeen, onNodeUpsert } from './mqtt/client.js';
-import { startRamWriter, closeRamWriter } from './ram/writerRuntime.js';
+import { createIngestRuntime } from './ingest/runtime.js';
 import { getRamIngestMode } from './ram/protocol.js';
 import {
   getMqttConnectionMonitorStatus,
@@ -40,7 +39,6 @@ import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
 import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
 import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
-import { resolvePool } from './path-beta/resolvePool.js';
 import {
   LifecycleCoordinator,
   LifecycleDeadlineError,
@@ -86,6 +84,12 @@ const OWNER_LAST_HOP_PREWARM_INTERVAL_MS = Number(process.env['OWNER_LAST_HOP_PR
 const OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS = Number(process.env['OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS'] ?? 150);
 const OWNER_LAST_HOP_PREWARM_CONCURRENCY = Number(process.env['OWNER_LAST_HOP_PREWARM_CONCURRENCY'] ?? 1);
 const lifecycle = new LifecycleCoordinator(SHUTDOWN_DEADLINE_MS);
+const ingestRuntime = createIngestRuntime();
+const { getMqttRuntimeStatus, publishMqtt, startMqttClient, stopMqttClient } = ingestRuntime.mqtt;
+const { startRamWriter, closeRamWriter } = ingestRuntime.writer;
+const { onPacket, onNodeSeen, onNodeUpsert } = ingestRuntime.events;
+const { resolvePool } = ingestRuntime;
+
 /**
  * Packet-share authority is the same live owner grant the owner routes
  * evaluate per request — never the persisted rule row on its own.
@@ -116,6 +120,9 @@ const forwardingOutbox = createForwardingOutbox(async (packet, envelope) => {
 });
 lifecycle.register({ name: 'forwarding-outbox', stage: 25, close: forwardingOutbox.stop });
 lifecycle.register({ name: 'spam-detector', stage: 10, close: stopSpamDetector });
+lifecycle.register({ name: 'committed-followups', stage: 35, close: ingestRuntime.committedFollowUps.close });
+lifecycle.register({ name: 'slow-path-scheduler', stage: 35, close: ingestRuntime.slowMode.close });
+lifecycle.register({ name: 'ingest-events', stage: 36, close: ingestRuntime.events.close });
 let shutdownExitCode = 0;
 let shutdownDeadlineAt = 0;
 function shutdownTimeLeft(): number {
@@ -165,7 +172,7 @@ lifecycle.register({
 });
 lifecycle.register({
   name: 'path-resolve-workers',
-  stage: 30,
+  stage: 38,
   close: () => resolvePool.close(),
 });
 lifecycle.register({
@@ -249,6 +256,7 @@ process.on('uncaughtException', (error) => {
 
 async function main() {
   initializePacketPersistence();
+  ingestRuntime.committedFollowUps.start();
   const healthRuntime = createHealthRuntime();
   healthRuntime.startTelemetry();
   lifecycle.register({ name: 'health-runtime', stage: 30, close: healthRuntime.close });
@@ -277,7 +285,7 @@ async function main() {
   nodeIdentityRefreshTimer.unref();
   // Visibility-dependent chart work must pin its generation only after the
   // initial identity reconciliation has settled the alias mapping.
-  const apiRuntime = createApiRuntime(healthRuntime);
+  const apiRuntime = createApiRuntime(healthRuntime, ingestRuntime);
   lifecycle.register({ name: 'api-runtime', stage: 30, close: apiRuntime.close });
   apiRuntime.startBackgroundWork();
   await initOwnerAuthDb();
@@ -285,19 +293,15 @@ async function main() {
   // Keep the owner dashboard RX-strength cache warm for every active MQTT owner
   // so the panel (and its 7d/30d toggle) never pays for a cold scan on open.
   const ownerService = apiRuntime.ownerService;
-  if (ownerService) {
-    ownerLastHopPrewarmStop = createOwnerLastHopPrewarm({
-      listOwnerNodes: getOwnerAuthorizationSnapshot,
-      refreshLastHop: (ownedNodeIds, nodeId, windowDays, minAgeMs) => (
-        ownerService.refreshOwnerLastHopStrength(ownedNodeIds, nodeId, windowDays, minAgeMs)
-      ),
-      intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
-      nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
-      concurrency: OWNER_LAST_HOP_PREWARM_CONCURRENCY,
-    });
-  } else {
-    console.warn('[owner-last-hop-prewarm] owner service is not registered; prewarm disabled');
-  }
+  ownerLastHopPrewarmStop = createOwnerLastHopPrewarm({
+    listOwnerNodes: getOwnerAuthorizationSnapshot,
+    refreshLastHop: (ownedNodeIds, nodeId, windowDays, minAgeMs) => (
+      ownerService.refreshOwnerLastHopStrength(ownedNodeIds, nodeId, windowDays, minAgeMs)
+    ),
+    intervalMs: OWNER_LAST_HOP_PREWARM_INTERVAL_MS,
+    nodeDelayMs: OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS,
+    concurrency: OWNER_LAST_HOP_PREWARM_CONCURRENCY,
+  });
 
   // 2. Start the audit-only MQTT connection monitor.
   if (MQTT_INGEST_ENABLED) {

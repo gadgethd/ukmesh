@@ -6,14 +6,16 @@
 import { Redis } from 'ioredis';
 import { query, closeDb, withTransaction } from '../db/runtime.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
-import { resolvePool } from '../path-beta/resolvePool.js';
+import { createIngestRuntime } from '../ingest/runtime.js';
 import { getRedisConnectionOptions, getRedisUrl } from '../platform/config/redis.js';
 import { getRamQuarantineKey, getRamStreamKey } from './protocol.js';
 import { closeRamStore, configureRamStore, reconcileRamQueueBytes, type RamStoreRedis } from './liveStore.js';
-import { startRamWriter, closeRamWriter } from './writerRuntime.js';
 
 async function main(): Promise<void> {
   process.env['MQTT_INGEST_MODE'] = 'ram';
+  const ingest = createIngestRuntime();
+  const { startRamWriter, closeRamWriter } = ingest.writer;
+  ingest.committedFollowUps.start();
   const deadlineMs = Number(process.env['MQTT_RAM_DRAIN_DEADLINE_MS'] ?? 600_000);
   if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 130_000 || deadlineMs > 3_600_000) {
     throw new Error('MQTT_RAM_DRAIN_DEADLINE_MS must be 130000..3600000');
@@ -66,7 +68,10 @@ async function main(): Promise<void> {
     }
     await closeRamStore();
     redis.disconnect();
-    await resolvePool.close();
+    await ingest.committedFollowUps.close();
+    await ingest.slowMode.close();
+    ingest.events.close();
+    await ingest.resolvePool.close();
     await closeDb();
   }
 }

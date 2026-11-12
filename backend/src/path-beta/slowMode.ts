@@ -31,184 +31,149 @@ import {
   resolveCacheKey,
 } from './resolveCache.js';
 
-type PendingEntry = {
-  timer: NodeJS.Timeout;
-  network: string;
-  scheduledAt: number;
-};
-
-const pending = new Map<string, PendingEntry>();
-
-function pendingMax(): number {
-  const v = Number(process.env['PATH_SLOW_MODE_PENDING_MAX']);
-  if (Number.isFinite(v) && v > 0) return Math.min(50_000, Math.floor(v));
-  return 20_000;
-}
-
-export function slowModeEnabled(): boolean {
-  const v = process.env['PATH_SLOW_MODE_ENABLED'];
-  if (v !== undefined) return v !== 'false';
-  return pathingConfig.slowModeEnabled;
-}
-
-export function slowModeWindowMs(): number {
-  const v = Number(process.env['PATH_SLOW_MODE_WINDOW_MS']);
-  if (Number.isFinite(v) && v > 0) return Math.min(300_000, Math.max(50, v));
-  return pathingConfig.slowModeWindowMs;
-}
-
-/** Register the first sighting of a path-bearing packet: schedules exactly
- * one final multi-observer resolution after the propagation window closes.
- * Idempotent per (packetHash, network); bounded in-flight set. */
-export function scheduleSlowResolution(packetHash: string, network: string): void {
-  if (!slowModeEnabled()) return;
-  if (!packetHash || !network) return;
-  const key = `${packetHash}|${network}`;
-  if (pending.has(key)) return;
-  const max = pendingMax();
-  if (pending.size >= max) {
-    // evict the oldest entry (Map insertion order) to bound memory
-    const oldest = pending.keys().next().value as string | undefined;
-    if (oldest !== undefined) {
-      const entry = pending.get(oldest);
-      if (entry) clearTimeout(entry.timer);
-      pending.delete(oldest);
-    }
-  }
-  const windowMs = slowModeWindowMs();
-  const timer = setTimeout(() => {
-    pending.delete(key);
-    void finalizeSlowResolution(packetHash, network);
-  }, windowMs);
-  timer.unref?.();
-  pending.set(key, { timer, network, scheduledAt: Date.now() });
-}
-
-/** Milliseconds until the window closes for this packet, or 0 if not pending. */
-export function slowModeRemainingMs(packetHash: string, network: string): number {
-  const entry = pending.get(`${packetHash}|${network}`);
-  if (!entry) return 0;
-  const remaining = entry.scheduledAt + slowModeWindowMs() - Date.now();
-  return Math.max(0, remaining);
-}
-
-export function slowModePendingCount(): number {
-  return pending.size;
-}
-
-/** Test seam: drop all pending schedules (clears their timers). */
-export function __resetSlowModeForTests(): void {
-  for (const entry of pending.values()) clearTimeout(entry.timer);
-  pending.clear();
-}
-
-export function slowModeStatus(): {
-  enabled: boolean;
-  windowMs: number;
-  pending: number;
-  pendingMax: number;
-} {
-  return {
-    enabled: slowModeEnabled(),
-    windowMs: slowModeWindowMs(),
-    pending: slowModePendingCount(),
-    pendingMax: pendingMax(),
-  };
-}
-
-// ---- seams for unit tests (defaults = production implementations) -------
 type SlowModePool = { runBackground<T>(job: unknown): Promise<T | null> };
-let slowPool: SlowModePool | null = null;
-async function getSlowPool(): Promise<SlowModePool> {
-  if (slowPool) return slowPool;
-  const { resolvePool } = await import('./resolvePool.js');
-  slowPool = resolvePool;
-  return slowPool;
-}
-export function __setSlowModePoolForTests(pool: SlowModePool): void {
-  slowPool = pool;
-}
-
 type SlowRecorder = (
   packetHash: string,
   network: string,
   result: { observers?: unknown; canonicalPath?: unknown },
 ) => Promise<void>;
-let slowRecorder: SlowRecorder | null = null;
-async function getSlowRecorder(): Promise<SlowRecorder> {
-  if (slowRecorder) return slowRecorder;
-  return recordSlowResolution;
-}
-export function __setSlowModeRecorderForTests(fn: SlowRecorder): void {
-  slowRecorder = fn;
-}
+export function createSlowResolutionScheduler(deps: { pool: SlowModePool; record: SlowRecorder }) {
+  let closed = false;
+  const active = new Set<Promise<void>>();
+  type PendingEntry = {
+    timer: NodeJS.Timeout;
+    network: string;
+    scheduledAt: number;
+  };
 
-async function finalizeSlowResolution(packetHash: string, network: string): Promise<void> {
-  try {
-    // Force the next API read to re-resolve with the complete observer set.
-    invalidateResolveCache(packetHash);
-    const stickyEntry = getStickyNodeMap(packetHash, network);
-    const stickyMap = stickyEntry
-      ? Object.fromEntries(stickyEntry.hashToNodeId)
-      : undefined;
-    const stickyAgeFraction = stickyEntry?.ageFraction;
-    const heldPath = getHeldPath(packetHash, network);
-    const result = await (await getSlowPool()).runBackground<{
-      stickyUpdates?: Record<string, string>;
-      observers?: unknown;
-      canonicalPath?: unknown;
-    }>({
-      type: 'resolveMulti',
-      packetHash,
-      network,
-      ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}),
-      ...(heldPath ? { heldPath } : {}),
-    });
-    if (!result) return;
-    const { stickyUpdates, ...cacheableResult } = result;
-    setResolveCache(resolveCacheKey('multi', packetHash, network), cacheableResult);
-    if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
-      mergeStickyNodes(packetHash, network, stickyUpdates);
-    }
-    const canonicalPath = Array.isArray(result.canonicalPath) ? result.canonicalPath : [];
-    const heldNodes = canonicalPath
-      .map((hop) => hop && typeof hop === 'object' && 'nodeId' in hop
-        ? String((hop as { nodeId?: unknown }).nodeId ?? '')
-        : '')
-      .filter(Boolean);
-    if (heldNodes.length > 0 && heldNodes.length === canonicalPath.length) {
-      setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-    }
-    await (await getSlowRecorder())(packetHash, network, result).catch(() => {
-      /* observability is best-effort */
-    });
-  } catch (err) {
-    console.error('[slow-mode] finalize failed', (err as Error).message);
+  const pending = new Map<string, PendingEntry>();
+
+  function pendingMax(): number {
+    const v = Number(process.env['PATH_SLOW_MODE_PENDING_MAX']);
+    if (Number.isFinite(v) && v > 0) return Math.min(50_000, Math.floor(v));
+    return 20_000;
   }
-}
 
-/** Observability row for the slow final — best-effort, never blocks ingest. */
-async function recordSlowResolution(
-  packetHash: string,
-  network: string,
-  result: { observers?: unknown; canonicalPath?: unknown },
-): Promise<void> {
-  const { query } = await import('../db/runtime.js');
-  await query(
-    `INSERT INTO analytics.path_slow_resolutions
-       (packet_hash, network, window_ms, observers_seen, resolved_at, canonical_path)
-     VALUES ($1, $2, $3, $4, now(), $5)
-     ON CONFLICT (packet_hash, network) DO UPDATE SET
-       window_ms = EXCLUDED.window_ms,
-       observers_seen = EXCLUDED.observers_seen,
-       resolved_at = now(),
-       canonical_path = EXCLUDED.canonical_path`,
-    [
-      packetHash,
-      network,
-      slowModeWindowMs(),
-      Array.isArray(result.observers) ? result.observers.length : 0,
-      result.canonicalPath != null ? JSON.stringify(result.canonicalPath) : null,
-    ],
-  );
+  function slowModeEnabled(): boolean {
+    const v = process.env['PATH_SLOW_MODE_ENABLED'];
+    if (v !== undefined) return v !== 'false';
+    return pathingConfig.slowModeEnabled;
+  }
+
+  function slowModeWindowMs(): number {
+    const v = Number(process.env['PATH_SLOW_MODE_WINDOW_MS']);
+    if (Number.isFinite(v) && v > 0) return Math.min(300_000, Math.max(50, v));
+    return pathingConfig.slowModeWindowMs;
+  }
+
+  /** Register the first sighting of a path-bearing packet: schedules exactly
+   * one final multi-observer resolution after the propagation window closes.
+   * Idempotent per (packetHash, network); bounded in-flight set. */
+  function scheduleSlowResolution(packetHash: string, network: string): void {
+    if (closed || !slowModeEnabled()) return;
+    if (!packetHash || !network) return;
+    const key = `${packetHash}|${network}`;
+    if (pending.has(key)) return;
+    const max = pendingMax();
+    if (pending.size >= max) {
+      // evict the oldest entry (Map insertion order) to bound memory
+      const oldest = pending.keys().next().value as string | undefined;
+      if (oldest !== undefined) {
+        const entry = pending.get(oldest);
+        if (entry) clearTimeout(entry.timer);
+        pending.delete(oldest);
+      }
+    }
+    const windowMs = slowModeWindowMs();
+    const timer = setTimeout(() => {
+      pending.delete(key);
+      const work = finalizeSlowResolution(packetHash, network).finally(() => active.delete(work));
+      active.add(work);
+    }, windowMs);
+    timer.unref?.();
+    pending.set(key, { timer, network, scheduledAt: Date.now() });
+  }
+
+  /** Milliseconds until the window closes for this packet, or 0 if not pending. */
+  function slowModeRemainingMs(packetHash: string, network: string): number {
+    const entry = pending.get(`${packetHash}|${network}`);
+    if (!entry) return 0;
+    const remaining = entry.scheduledAt + slowModeWindowMs() - Date.now();
+    return Math.max(0, remaining);
+  }
+
+  function slowModePendingCount(): number {
+    return pending.size;
+  }
+
+  function slowModeStatus(): {
+    enabled: boolean;
+    windowMs: number;
+    pending: number;
+    pendingMax: number;
+  } {
+    return {
+      enabled: slowModeEnabled(),
+      windowMs: slowModeWindowMs(),
+      pending: slowModePendingCount(),
+      pendingMax: pendingMax(),
+    };
+  }
+
+  async function finalizeSlowResolution(packetHash: string, network: string): Promise<void> {
+    try {
+      // Force the next API read to re-resolve with the complete observer set.
+      invalidateResolveCache(packetHash);
+      const stickyEntry = getStickyNodeMap(packetHash, network);
+      const stickyMap = stickyEntry
+        ? Object.fromEntries(stickyEntry.hashToNodeId)
+        : undefined;
+      const stickyAgeFraction = stickyEntry?.ageFraction;
+      const heldPath = getHeldPath(packetHash, network);
+      const result = await deps.pool.runBackground<{
+        stickyUpdates?: Record<string, string>;
+        observers?: unknown;
+        canonicalPath?: unknown;
+      }>({
+        type: 'resolveMulti',
+        packetHash,
+        network,
+        ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}),
+        ...(heldPath ? { heldPath } : {}),
+      });
+      if (!result || closed) return;
+      const { stickyUpdates, ...cacheableResult } = result;
+      setResolveCache(resolveCacheKey('multi', packetHash, network), cacheableResult);
+      if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
+        mergeStickyNodes(packetHash, network, stickyUpdates);
+      }
+      const canonicalPath = Array.isArray(result.canonicalPath) ? result.canonicalPath : [];
+      const heldNodes = canonicalPath
+        .map((hop) => hop && typeof hop === 'object' && 'nodeId' in hop
+          ? String((hop as { nodeId?: unknown }).nodeId ?? '')
+          : '')
+        .filter(Boolean);
+      if (heldNodes.length > 0 && heldNodes.length === canonicalPath.length) {
+        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
+      }
+      await deps.record(packetHash, network, result).catch(() => {
+        /* observability is best-effort */
+      });
+    } catch (err) {
+      console.error('[slow-mode] finalize failed', (err as Error).message);
+    }
+  }
+
+  return {
+    scheduleSlowResolution, slowModeRemainingMs, slowModePendingCount,
+    slowModeStatus, slowModeWindowMs,
+    async close() {
+      if (closed) return;
+      closed = true;
+      for (const entry of pending.values()) clearTimeout(entry.timer);
+      pending.clear();
+      await Promise.allSettled([...active]);
+    },
+  };
 }
+export type SlowResolutionScheduler = ReturnType<typeof createSlowResolutionScheduler>;

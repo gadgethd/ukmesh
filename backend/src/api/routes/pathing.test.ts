@@ -1,3 +1,4 @@
+import { createSlowResolutionScheduler } from '../../path-beta/slowMode.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
@@ -13,6 +14,7 @@ async function withPathingServer(
 ): Promise<void> {
   const router = Router();
   registerPathingRoutes(router, {
+    slowMode: createSlowResolutionScheduler({ pool: { runBackground: async () => null }, record: async () => {} }),
     pathBetaLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathBetaLimiter'],
     pathLearningLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathLearningLimiter'],
     getResolveCache: () => undefined,

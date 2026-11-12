@@ -3,10 +3,10 @@ import { HEALTH_CACHE_TTL_MS } from '../bootstrap/caches.js';
 import { HealthSnapshotCache } from '../../health/snapshot.js';
 import { toPublicHealthOverview } from '../../health/projections.js';
 import type { HealthRuntime } from '../../health/runtime.js';
-import { getMqttRuntimeStatus } from '../../mqtt/client.js';
+import type { MqttRuntime } from '../../mqtt/client.js';
 import { withMqttDeliveryHealth } from '../../health/mqttDelivery.js';
 
-export function createHealthRoutes(healthRuntime: HealthRuntime) {
+export function createHealthRoutes(healthRuntime: HealthRuntime, getMqttRuntimeStatus: MqttRuntime['getMqttRuntimeStatus']) {
     const router = Router();
     const healthSnapshot = new HealthSnapshotCache(healthRuntime.getWorkerHealthOverview, Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000));
     let timer: ReturnType<typeof setInterval> | undefined;

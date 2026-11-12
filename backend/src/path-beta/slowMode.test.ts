@@ -8,15 +8,13 @@ import { setImmediate as nextTurn } from 'node:timers/promises';
 process.env['PATH_SLOW_MODE_ENABLED'] = 'true';
 process.env['PATH_SLOW_MODE_WINDOW_MS'] = '40';
 
-import {
-  scheduleSlowResolution,
-  slowModeRemainingMs,
-  slowModePendingCount,
-  slowModeStatus,
-  __setSlowModePoolForTests,
-  __setSlowModeRecorderForTests,
-  __resetSlowModeForTests,
-} from './slowMode.js';
+import { createSlowResolutionScheduler, type SlowResolutionScheduler } from './slowMode.js';
+
+let scheduler: SlowResolutionScheduler;
+const scheduleSlowResolution: SlowResolutionScheduler['scheduleSlowResolution'] = (...args) => scheduler.scheduleSlowResolution(...args);
+const slowModeRemainingMs: SlowResolutionScheduler['slowModeRemainingMs'] = (...args) => scheduler.slowModeRemainingMs(...args);
+const slowModePendingCount = () => scheduler.slowModePendingCount();
+const slowModeStatus = () => scheduler.slowModeStatus();
 
 type FakePool = {
   calls: Array<{ type: string; packetHash: string; network: string }>;
@@ -46,10 +44,9 @@ beforeEach((t) => {
   process.env['PATH_SLOW_MODE_ENABLED'] = 'true';
   process.env['PATH_SLOW_MODE_WINDOW_MS'] = '40';
   delete process.env['PATH_SLOW_MODE_PENDING_MAX'];
-  __resetSlowModeForTests();
   fakePool = makeFakePool();
-  __setSlowModePoolForTests(fakePool);
-  __setSlowModeRecorderForTests(recorder.fn.bind(recorder));
+  scheduler = createSlowResolutionScheduler({ pool: fakePool, record: recorder.fn.bind(recorder) });
+  t.after(scheduler.close);
   recorder.calls.length = 0;
 });
 
@@ -100,4 +97,34 @@ test('remaining ms tracks the window and reaches 0 after close', async (t) => {
   await nextTurn();
   assert.equal(slowModeRemainingMs('DD33', 'ukmesh'), 0);
   assert.ok(Date.now() - t0 >= 50);
+});
+
+test('closing one scheduler cancels only its own pending work', async t => {
+  const firstPool = makeFakePool(), secondPool = makeFakePool();
+  const first = createSlowResolutionScheduler({ pool: firstPool, record: async () => {} });
+  const second = createSlowResolutionScheduler({ pool: secondPool, record: async () => {} });
+  t.after(first.close); t.after(second.close);
+  first.scheduleSlowResolution('owned-first', 'ukmesh');
+  second.scheduleSlowResolution('owned-second', 'ukmesh');
+  await first.close();
+  t.mock.timers.tick(120); await nextTurn();
+  assert.equal(firstPool.calls.length, 0);
+  assert.equal(secondPool.calls.length, 1);
+});
+
+test('scheduler close joins active work and withholds late publication', async t => {
+  let finish!: (value: unknown) => void, recorded = 0;
+  const gate = new Promise<unknown>(resolve => { finish = resolve; });
+  const runtime = createSlowResolutionScheduler({
+    pool: { runBackground: async () => await gate as never },
+    record: async () => { recorded++; },
+  });
+  t.after(async () => { finish(null); await runtime.close(); });
+  runtime.scheduleSlowResolution('owned-active', 'ukmesh');
+  t.mock.timers.tick(120); await nextTurn();
+  const closing = runtime.close();
+  finish({ observers: [], canonicalPath: [] }); await closing;
+  assert.equal(recorded, 0);
+  runtime.scheduleSlowResolution('closed', 'ukmesh');
+  assert.equal(runtime.slowModePendingCount(), 0);
 });

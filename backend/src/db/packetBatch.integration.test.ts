@@ -1,3 +1,4 @@
+import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
@@ -395,7 +396,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
       await snapshot.query('ROLLBACK');
       snapshot.release();
     }
-  }, { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
+  }, { limit: 10, network: 'ukmesh', loadPolicy: createPublicPolicyReader((sql,params)=>pool.query(sql,params)), resolveAliases: async () => new Map(),
     resolveSummaries: entries=>resolvePendingSummaries(entries,(sql,params)=>pool.query(sql,params)) });
   assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
   const later = await readRecentWithPending(async () => (await pool.query(`
@@ -403,7 +404,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
            (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
            0 AS _representative_rank,
            1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
-  { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
+  { limit: 10, network: 'ukmesh', loadPolicy: createPublicPolicyReader((sql,params)=>pool.query(sql,params)), resolveAliases: async () => new Map(),
     resolveSummaries: entries=>resolvePendingSummaries(entries,(sql,params)=>pool.query(sql,params)) });
   assert.deepEqual(new Set(later.map((row) => row.packet_hash)), new Set([input.packetHash, '61'.repeat(32)]));
   const durableIds = (await pool.query('SELECT observation_id::text FROM packets')).rows.map((row) => row.observation_id);

@@ -183,11 +183,14 @@ function evictOldest<K, V>(map: Map<K, V>, capacity: number): void {
 
 let refreshInFlight: Promise<void> | undefined;
 let initialized = false;
+let runtimeGeneration = 0;
 
 let closeMetrics: (() => void) | undefined;
 const refreshTimers = new Set<ReturnType<typeof setInterval>>();
 export async function initSpamDetector(): Promise<void> {
+  const generation = runtimeGeneration;
   await refreshSpamDetectorCaches();
+  if (generation !== runtimeGeneration) return;
   if (initialized) return;
   initialized = true;
   closeMetrics = setSpamDetectorRuntimeCollector(spamDetectorRuntimeCounts);
@@ -198,6 +201,7 @@ export async function initSpamDetector(): Promise<void> {
 }
 
 export function stopSpamDetector(): void {
+  runtimeGeneration++;
   initialized = false;
   closeMetrics?.(); closeMetrics = undefined;
   for (const timer of refreshTimers) clearInterval(timer);
