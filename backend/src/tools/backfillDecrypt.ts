@@ -5,9 +5,9 @@
  *  Phase A: materialise the candidate list ONCE into backfill_candidates
  *           (single DISTINCT scan of the 90-day type-5 corpus).
  *  Phase B: keyset-paginate the candidates table (pk index — instant),
- *           decrypt each raw packet, INSERT into packet_decryptions.
+ *           decrypt each raw packet, INSERT into mesh.packet_decryptions.
  *
- * Results live in packet_decryptions (joined by the feed queries); the
+ * Results live in mesh.packet_decryptions (joined by the feed queries); the
  * packets hypertable is never rewritten (TimescaleDB UPDATEs seq-scan all
  * chunks). Idempotent + resumable: candidates exclude already-decrypted
  * hashes; decryptions INSERT uses ON CONFLICT DO NOTHING.
@@ -44,11 +44,11 @@ async function phaseA(): Promise<number> {
   await pool.query(
     `CREATE TABLE backfill_candidates AS
        SELECT DISTINCT ON (packet_hash) packet_hash, upper(raw_hex) AS raw_hex
-         FROM packets p
+         FROM mesh.packets p
         WHERE packet_type = 5
           AND raw_hex IS NOT NULL
           AND time > NOW() - ($1::int * INTERVAL '1 day')
-          AND NOT EXISTS (SELECT 1 FROM packet_decryptions d WHERE d.packet_hash = p.packet_hash)
+          AND NOT EXISTS (SELECT 1 FROM mesh.packet_decryptions d WHERE d.packet_hash = p.packet_hash)
         ORDER BY packet_hash`,
     [DAYS],
   );
@@ -69,7 +69,7 @@ async function fetchBatch(gt: string, limit: number): Promise<Array<{ packet_has
 
 async function applyDecryptions(rows: Array<{ packet_hash: string; decrypted: unknown; summary: string }>): Promise<void> {
   await pool.query(
-    `INSERT INTO packet_decryptions (packet_hash, decrypted, summary)
+    `INSERT INTO mesh.packet_decryptions (packet_hash, decrypted, summary)
      SELECT * FROM jsonb_to_recordset($1::jsonb) AS x(packet_hash text, decrypted jsonb, summary text)
      ON CONFLICT (packet_hash) DO NOTHING`,
     [JSON.stringify(rows.map((r) => ({ packet_hash: r.packet_hash, decrypted: r.decrypted, summary: r.summary })))],

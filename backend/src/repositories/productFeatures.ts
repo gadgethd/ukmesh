@@ -55,7 +55,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
          COUNT(*) AS packets_48h,
          COUNT(DISTINCT meshcore_canonical_node_id(p.src_node_id))
            FILTER (WHERE p.src_node_id IS NOT NULL) AS unique_src_48h
-       FROM packets p
+       FROM mesh.packets p
        WHERE p.time > NOW() - INTERVAL '48 hours'
          AND p.network = ANY($1::text[])
          AND p.rx_node_id IS NOT NULL
@@ -65,7 +65,7 @@ export async function observerHealthRows(query: QueryFn, networks: string[]) {
      SELECT n.node_id, n.name, n.lat, n.lon,
        oa.active_hours::text, oa.packets_48h::text, oa.unique_src_48h::text
      FROM observer_activity oa
-     JOIN node_identity_nodes n ON n.node_id = oa.rx_node_id
+     JOIN core.node_identity_nodes n ON n.node_id = oa.rx_node_id
      WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')`,
     [networks],
@@ -79,7 +79,7 @@ export async function visibleLinkNodeIds(
 ) {
   return query<{ node_id: string }>(
     `SELECT n.node_id
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
       WHERE n.node_id = ANY($1::text[])
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
         AND (
@@ -88,7 +88,7 @@ export async function visibleLinkNodeIds(
             n.network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-                FROM node_identity_sightings sighting
+                FROM core.node_identity_sightings sighting
                WHERE sighting.node_id = n.node_id
                  AND sighting.network = ANY($2::text[])
                  AND sighting.last_seen_at > NOW() - INTERVAL '30 days'
@@ -121,7 +121,7 @@ export async function linkHistoryRows(
               ${nodeAliasArraySql('$2')} AS b_ids
      ), recent AS (
        SELECT p.time, p.observation_id, p.snr, p.rssi
-       FROM packets p
+       FROM mesh.packets p
        WHERE p.time > NOW() - ($3::text || ' hours')::interval
          AND p.time <= NOW()
          AND p.network = ANY($4::text[])
@@ -141,7 +141,7 @@ export async function linkHistoryRows(
      ), path_loss AS MATERIALIZED (
        -- Match the identity view's MIN without materializing every network link.
        SELECT MIN(links.itm_path_loss_db) AS value
-       FROM node_links links CROSS JOIN ids
+       FROM core.node_links links CROSS JOIN ids
        WHERE (links.node_a_id = ANY(ids.a_ids) AND links.node_b_id = ANY(ids.b_ids))
           OR (links.node_a_id = ANY(ids.b_ids) AND links.node_b_id = ANY(ids.a_ids))
      )
@@ -158,7 +158,7 @@ export async function repeaterFirmwareRows(query: QueryFn, networks: string[]) {
     `SELECT COALESCE(hardware_model, 'Unknown') AS hardware_model,
             COALESCE(NULLIF(firmware_version, ''), 'Unknown') AS firmware_version,
             COUNT(*)::text AS count
-     FROM node_identity_nodes
+     FROM core.node_identity_nodes
      WHERE network = ANY($1::text[])
        AND (role IS NULL OR role = 2)
        AND last_seen > NOW() - INTERVAL '30 days'
@@ -175,7 +175,7 @@ export async function submitObserverRegistration(
 ): Promise<{ requestId: string; accepted: boolean }> {
   const result = await query<{ id: string; accepted: boolean }>(
     `WITH inserted AS (
-       INSERT INTO observer_registration_requests (
+       INSERT INTO core.observer_registration_requests (
          public_key, iata, display_name, contact, expires_at
        ) VALUES ($1, $2, $3, $4, NOW() + INTERVAL '90 days')
        ON CONFLICT (public_key) DO NOTHING
@@ -184,7 +184,7 @@ export async function submitObserverRegistration(
      SELECT id::text, TRUE AS accepted FROM inserted
      UNION ALL
      SELECT existing.id::text, FALSE
-       FROM observer_registration_requests existing
+       FROM core.observer_registration_requests existing
       WHERE existing.public_key = $1
         AND NOT EXISTS (SELECT 1 FROM inserted)
      LIMIT 1`,

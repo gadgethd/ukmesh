@@ -10,12 +10,14 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
   const byTable = new Map(RETENTION_TARGETS.map((target) => [target.table, target]));
   assert.deepEqual(byTable.get('packets'), {
     table: 'packets',
+    qualifiedTable: 'mesh.packets',
     timestampColumn: 'time',
     retention: '30 days',
     batchSize: 25_000,
   });
   assert.deepEqual(byTable.get('observer_registration_requests'), {
     table: 'observer_registration_requests',
+    qualifiedTable: 'core.observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
     batchSize: 1_000,
@@ -24,12 +26,14 @@ test('retention targets include hard packet boundary and reviewed long-lived tab
   assert.equal(byTable.get('operator_audit_events')?.retention, '730 days');
   assert.deepEqual(byTable.get('node_status_samples'), {
     table: 'node_status_samples',
+    qualifiedTable: 'core.node_status_samples',
     timestampColumn: 'time',
     retention: '30 days',
     batchSize: 25_000,
   });
   assert.deepEqual(byTable.get('owner_packet_share_deliveries'), {
     table: 'owner_packet_share_deliveries',
+    qualifiedTable: 'core.owner_packet_share_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     batchSize: 2_000,

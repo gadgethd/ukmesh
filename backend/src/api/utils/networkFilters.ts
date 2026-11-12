@@ -20,7 +20,7 @@ export function nodeAliasArraySql(requestedNodeParam: string): string {
     WITH requested_identity AS MATERIALIZED (
       SELECT COALESCE(
         (SELECT alias.canonical_node_id
-           FROM node_identity_aliases alias
+           FROM core.node_identity_aliases alias
           WHERE alias.source_node_id = UPPER(BTRIM(${requestedNodeParam}))),
         UPPER(BTRIM(${requestedNodeParam}))
       ) AS canonical_node_id
@@ -28,7 +28,7 @@ export function nodeAliasArraySql(requestedNodeParam: string): string {
     SELECT canonical_node_id FROM requested_identity
     UNION
     SELECT alias.source_node_id
-      FROM node_identity_aliases alias
+      FROM core.node_identity_aliases alias
       JOIN requested_identity requested
         ON requested.canonical_node_id = alias.canonical_node_id
   )`;
@@ -41,15 +41,15 @@ export function publicPacketPrivacySql(alias?: string): string {
     AND ${prefix}is_private IS NOT TRUE
     AND EXISTS (
       SELECT 1
-      FROM packet_visibility_materialization_state cached_visibility
-      JOIN public_visibility_state current_visibility
+      FROM ops.packet_visibility_materialization_state cached_visibility
+      JOIN ops.public_visibility_state current_visibility
         ON current_visibility.singleton = cached_visibility.singleton
       WHERE cached_visibility.singleton = TRUE
         AND cached_visibility.visibility_generation = current_visibility.generation
     )
     AND NOT EXISTS (
       SELECT 1
-      FROM privacy_rematerialization_queue remat
+      FROM ops.privacy_rematerialization_queue remat
       WHERE remat.target = 'packets'
         AND remat.status IN ('pending', 'processing', 'failed')
         AND (
@@ -139,7 +139,7 @@ export function networkFilters(
   } else {
     packetConditions.push(`network IS DISTINCT FROM 'test'`);
     packetConditions.push(excludesLegacyTestTopic(''));
-    packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
+    packetConditions.push(`COALESCE(rx_node_id, '') NOT IN (SELECT node_id FROM core.nodes WHERE network = 'test')`);
   }
   if (observerParam) {
     packetConditions.push(
@@ -171,7 +171,7 @@ export function networkFilters(
             ${prefix}network IS DISTINCT FROM 'test'
             AND EXISTS (
               SELECT 1
-              FROM node_identity_sightings s
+              FROM core.node_identity_sightings s
               WHERE s.node_id = ${nodeRef}
                 AND s.network ${netMatch}
                 AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -193,8 +193,8 @@ export function networkFilters(
           ${nodeRef} = ANY(${nodeAliasArraySql(observerParam)})
           OR ${nodeRef} IN (
             SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
-            FROM packets p
-            LEFT JOIN node_identity_aliases src_alias
+            FROM mesh.packets p
+            LEFT JOIN core.node_identity_aliases src_alias
               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
             WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})
               AND p.time > NOW() - INTERVAL '7 days'
@@ -227,7 +227,7 @@ export function networkFilters(
       } else {
         conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
         conditions.push(excludesLegacyTestTopic(prefix));
-        conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM nodes WHERE network = 'test')`);
+        conditions.push(`COALESCE(${prefix}rx_node_id, '') NOT IN (SELECT node_id FROM core.nodes WHERE network = 'test')`);
       }
       if (observerParam) {
         conditions.push(

@@ -64,7 +64,7 @@ test('chart snapshot store pins the schema version and refuses older overwrites'
         }] as T[],
       };
     }
-    if (text.includes('INSERT INTO stats_chart_snapshots')) {
+    if (/INSERT INTO (?:analytics\.)?stats_chart_snapshots/.test(text)) {
       return { rows: [{ scope_key: 'ukmesh' }] as T[] };
     }
     return { rows: [] };
@@ -83,7 +83,7 @@ test('chart snapshot store pins the schema version and refuses older overwrites'
   assert.ok(write);
   assert.match(write.text, /ON CONFLICT \(scope_key\) DO UPDATE/);
   assert.match(write.text, /generated_at <= EXCLUDED\.generated_at/);
-  assert.match(write.text, /FROM public_visibility_state/);
+  assert.match(write.text, /FROM ops.public_visibility_state/);
   assert.match(write.text, /generation = \$3/);
   assert.equal(write.params?.[0], 'ukmesh');
   assert.equal(write.params?.[1], CHART_SNAPSHOT_SCHEMA_VERSION);

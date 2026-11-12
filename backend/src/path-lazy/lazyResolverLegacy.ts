@@ -88,7 +88,7 @@ export async function lazyResolvePathLegacy(
     rx_node_id: string; path_hashes: string[] | null; path_hash_size_bytes: number | null;
   }>(
     `SELECT DISTINCT ON (rx_node_id) rx_node_id, path_hashes, path_hash_size_bytes
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1 AND ($2::text[] IS NULL OR network = ANY($2)) AND rx_node_id IS NOT NULL
       ORDER BY rx_node_id, COALESCE(cardinality(path_hashes), 0) DESC, COALESCE(path_hash_size_bytes, 0) DESC, time ASC`,
     [packetHash, scopedNetworks],
@@ -99,13 +99,13 @@ export async function lazyResolvePathLegacy(
   const allObserverIds = canonicalObs.rows.map((r) => r.rx_node_id);
 
   const allHopRows = await query<{ rx_node_id: string; hop_count: number | null }>(
-    `SELECT rx_node_id, hop_count FROM packets
+    `SELECT rx_node_id, hop_count FROM mesh.packets
       WHERE packet_hash = $1 AND ($2::text[] IS NULL OR network = ANY($2)) AND rx_node_id IS NOT NULL AND hop_count IS NOT NULL`,
     [packetHash, scopedNetworks],
   );
 
   const obsNodeResult = await query<{ node_id: string; lat: number | null; lon: number | null; name: string | null }>(
-    `SELECT node_id, lat, lon, name FROM nodes
+    `SELECT node_id, lat, lon, name FROM core.nodes
       WHERE node_id = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0`,
     [allObserverIds],
   );
@@ -149,7 +149,7 @@ export async function lazyResolvePathLegacy(
   if (allUniqueHashes.length > 0) {
     const whereClauses = allUniqueHashes.map((_, i) => `upper(node_id) LIKE $${i + 2}`);
     const nodeResult = await query<{ node_id: string; name: string | null; lat: number | null; lon: number | null }>(
-      `SELECT node_id, name, lat, lon FROM nodes
+      `SELECT node_id, name, lat, lon FROM core.nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (${whereClauses.join(' OR ')})`,
       [scopedNetworks, ...allUniqueHashes.map((h) => h + '%')],
     );
@@ -250,24 +250,24 @@ export async function lazyResolvePathLegacy(
   const [linkResult, prefixPriorRows, edgePriorRows, mlScoreRows] = await Promise.all([
     allCandidateNodeIds.length > 0
       ? query<{ node_a_id: string; node_b_id: string }>(
-          `SELECT node_a_id, node_b_id FROM node_links WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1)) AND observed_count >= 2`,
+          `SELECT node_a_id, node_b_id FROM core.node_links WHERE (node_a_id = ANY($1) OR node_b_id = ANY($1)) AND observed_count >= 2`,
           [allCandidateNodeIds])
       : Promise.resolve({ rows: [] as { node_a_id: string; node_b_id: string }[] }),
     allUniqueHashes.length > 0
       ? query<{ prefix: string; prev_prefix: string | null; node_id: string; total_count: string }>(
-          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count FROM path_prefix_priors
+          `SELECT prefix, prev_prefix, node_id, SUM(count)::text as total_count FROM analytics.path_prefix_priors
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND prefix = ANY($2) GROUP BY prefix, prev_prefix, node_id`,
           [scopedNetworks, allUniqueHashes])
       : Promise.resolve({ rows: [] as { prefix: string; prev_prefix: string | null; node_id: string; total_count: string }[] }),
     allCandidateNodeIds.length > 0
       ? query<{ from_node_id: string; to_node_id: string; best_score: string }>(
-          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score FROM path_edge_priors
+          `SELECT from_node_id, to_node_id, MAX(score)::text as best_score FROM analytics.path_edge_priors
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (from_node_id = ANY($2) OR to_node_id = ANY($2)) GROUP BY from_node_id, to_node_id`,
           [scopedNetworks, allCandidateNodeIds])
       : Promise.resolve({ rows: [] as { from_node_id: string; to_node_id: string; best_score: string }[] }),
     allUnique2charHashes.length > 0
       ? query<{ hash_2char: string; node_id: string; score: string; observation_count: string }>(
-          `SELECT hash_2char, node_id, score::text, observation_count::text FROM ml_path_prefix_scores
+          `SELECT hash_2char, node_id, score::text, observation_count::text FROM analytics.ml_path_prefix_scores
             WHERE ($1::text[] IS NULL OR network = ANY($1)) AND hash_2char = ANY($2) AND score >= 0.80`,
           [scopedNetworks, allUnique2charHashes])
       : Promise.resolve({ rows: [] as { hash_2char: string; node_id: string; score: string; observation_count: string }[] }),

@@ -122,12 +122,12 @@ async function waitForGeneration(
 ): Promise<void> {
   while (true) {
     const completed = await query<{ count: string }>(
-      'SELECT COUNT(*)::text AS count FROM link_job_commits WHERE generation = $1',
+      'SELECT COUNT(*)::text AS count FROM ops.link_job_commits WHERE generation = $1',
       [generation],
     );
     const completedJobs = Number(completed.rows[0]?.count ?? 0);
     await query(
-      `UPDATE link_rebuild_runs
+      `UPDATE ops.link_rebuild_runs
           SET completed_jobs = $2, status = 'processing', updated_at = NOW()
         WHERE generation = $1`,
       [generation, completedJobs],
@@ -200,16 +200,16 @@ async function main(): Promise<void> {
     await ensureLease();
     windowEnd = new Date();
     await query(`CREATE SCHEMA ${schemaName}`);
-    await query(`CREATE TABLE ${schemaName}.node_links (LIKE public.node_links INCLUDING ALL)`);
+    await query(`CREATE TABLE ${schemaName}.node_links (LIKE core.node_links INCLUDING ALL)`);
     await query(
-      `INSERT INTO link_rebuild_runs (generation, schema_name, status, window_end)
+      `INSERT INTO ops.link_rebuild_runs (generation, schema_name, status, window_end)
        VALUES ($1, $2, 'preparing', $3)`,
       [generation, schemaName, windowEnd],
     );
 
     const nodes = await query<PhysicalNodeRow>(
       `SELECT n.node_id, n.lat, n.lon
-         FROM nodes n
+         FROM core.nodes n
         WHERE n.lat IS NOT NULL
           AND n.lon IS NOT NULL
           AND n.lat BETWEEN 49.5 AND 61.5
@@ -270,7 +270,7 @@ async function main(): Promise<void> {
 
     await ensureLease();
     await query(
-      `UPDATE link_rebuild_runs
+      `UPDATE ops.link_rebuild_runs
           SET status = 'processing',
               expected_jobs = $2,
               admitted_jobs = $2,
@@ -291,32 +291,32 @@ async function main(): Promise<void> {
       await client.query('BEGIN');
       await client.query("SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))");
       await client.query(`CREATE SCHEMA ${rollbackSchema}`);
-      await client.query(`CREATE TABLE ${rollbackSchema}.node_links (LIKE public.node_links INCLUDING ALL)`);
-      await client.query(`INSERT INTO ${rollbackSchema}.node_links SELECT * FROM public.node_links`);
-      await client.query('LOCK TABLE public.node_links IN ACCESS EXCLUSIVE MODE');
-      await client.query('TRUNCATE public.node_links');
-      await client.query(`INSERT INTO public.node_links SELECT * FROM ${schemaName}.node_links`);
+      await client.query(`CREATE TABLE ${rollbackSchema}.node_links (LIKE core.node_links INCLUDING ALL)`);
+      await client.query(`INSERT INTO ${rollbackSchema}.node_links SELECT * FROM core.node_links`);
+      await client.query('LOCK TABLE core.node_links IN ACCESS EXCLUSIVE MODE');
+      await client.query('TRUNCATE core.node_links');
+      await client.query(`INSERT INTO core.node_links SELECT * FROM ${schemaName}.node_links`);
       // A live job admitted during the freeze may represent a packet already
       // incorporated into this generation. Record its stable logical ID before
       // releasing deferred work so replay becomes an idempotent ACK.
       await client.query(
-        `INSERT INTO link_job_commits
+        `INSERT INTO ops.link_job_commits
            (job_id, job_type, generation, logical_job_id, payload_hash)
          SELECT logical_job_id, job_type, NULL, logical_job_id, payload_hash
-           FROM link_job_commits
+           FROM ops.link_job_commits
           WHERE generation = $1
             AND logical_job_id IS NOT NULL
          ON CONFLICT (job_id) DO NOTHING`,
         [generation],
       );
       await client.query(
-        `INSERT INTO public.node_links
+        `INSERT INTO core.node_links
          SELECT * FROM ${rollbackSchema}.node_links WHERE force_viable = true
          ON CONFLICT (node_a_id, node_b_id) DO UPDATE
            SET force_viable = true`,
       );
       await client.query(
-        `UPDATE link_rebuild_runs
+        `UPDATE ops.link_rebuild_runs
             SET status = 'published', published_at = NOW(), updated_at = NOW()
           WHERE generation = $1`,
         [generation],
@@ -340,7 +340,7 @@ async function main(): Promise<void> {
     observeWorkerOutcome('link', 'rebuild', 'failure');
     if (!published) {
       await query(
-        `UPDATE link_rebuild_runs
+        `UPDATE ops.link_rebuild_runs
             SET status = 'failed', error = $2, updated_at = NOW()
           WHERE generation = $1`,
         [generation, error instanceof Error ? error.message : String(error)],

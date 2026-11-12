@@ -1,11 +1,9 @@
 import pg from 'pg';
-import fs from 'node:fs';
 import {
   analyticsStatementTimeoutMs,
   databaseConfig,
+  databaseUrlForRole,
 } from '../platform/config/database.js';
-import { resolveDbAssetPath } from './assets.js';
-import { runMigrations } from './migrations.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import {
   configurePacketBatch,
@@ -34,13 +32,14 @@ import { ingestPool, ingestQuery, withIngestTransaction } from './ingest.js';
 import { regionMemberIdsSql } from '../regions/filter.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
 import { mapVisiblePredicate, publicMapBasePredicate } from '../nodes/publicMap.js';
+import { packetIdentityKeySql, packetIdentityReadAuthority } from './packetIdentityRead.js';
 
 const { Pool } = pg;
 const COORDINATE_RECALC_THRESHOLD_M = Number(process.env['NODE_COORDINATE_RECALC_THRESHOLD_M'] ?? 25);
 const MAX_MULTIBYTE_PATH_SEGMENT_KM = 150;
 
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrlForRole('http'),
   application_name: databaseConfig.applicationName,
   options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
   max: databaseConfig.poolMax,
@@ -58,7 +57,7 @@ configurePacketBatch(ingestQuery, withIngestTransaction);
 // Dedicated pool for long-running analytical queries (e.g. refreshRecentPathEvidence).
 // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
 const analyticsPool = new Pool({
-  connectionString: process.env.DATABASE_URL,
+  connectionString: databaseUrlForRole('worker'),
   application_name: `${databaseConfig.applicationName}-analytics`,
   options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
   max: 2,
@@ -299,7 +298,7 @@ function buildNodeScopeClause(
           ${prefix}network IS DISTINCT FROM 'test'
           AND EXISTS (
             SELECT 1
-            FROM node_identity_sightings s
+            FROM core.node_identity_sightings s
             WHERE s.node_id = ${nodeRef}
               AND s.network ${netMatch}
               AND s.last_seen_at > NOW() - INTERVAL '30 days'
@@ -325,8 +324,8 @@ function buildNodeScopeClause(
       `${nodeRef} = ANY(${nodeAliasArraySql(placeholders.observerParam)})`,
       `OR ${nodeRef} IN (
          SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
-         FROM packets p
-         LEFT JOIN node_identity_aliases src_alias
+         FROM mesh.packets p
+         LEFT JOIN core.node_identity_aliases src_alias
            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
          WHERE p.rx_node_id = ANY(${nodeAliasArraySql(placeholders.observerParam)})
            AND p.time > NOW() - INTERVAL '7 days'
@@ -342,44 +341,17 @@ function buildNodeScopeClause(
 }
 
 export async function initDb(): Promise<void> {
-  if (databaseConfig.skipSchemaInit) {
-    console.log('[db] schema initialisation skipped by DATABASE_SKIP_SCHEMA_INIT');
-    return;
-  }
-
-  const schemaPath = resolveDbAssetPath('schema', 'base.sql');
-  const sql = fs.readFileSync(schemaPath, 'utf8');
-  const startupPool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    application_name: `${databaseConfig.applicationName}-startup`,
-    options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
-    max: 1,
-    idleTimeoutMillis: databaseConfig.idleTimeoutMs,
-    connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
-    statement_timeout: 0,
-    query_timeout: 0,
-  });
-
-  let executedMigrations: string[] = [];
-  try {
-    if (databaseConfig.schema) {
-      await startupPool.query(`CREATE SCHEMA IF NOT EXISTS "${databaseConfig.schema}"`);
-    }
-    await startupPool.query(sql);
-    executedMigrations = await runMigrations(startupPool);
-  } finally {
-    await startupPool.end();
-  }
-  console.log(
-    `[db] base schema initialised${executedMigrations.length > 0 ? `, migrations applied: ${executedMigrations.join(', ')}` : ', no pending migrations'}`,
-  );
+  // P1-9: schema creation and migrations are an explicit migrate-job step.
+  // Keeping them on every service/worker startup races replicas, hides drift
+  // and lets an application role execute DDL.
+  console.warn('[db] startup schema initialisation is disabled; run the migrate job before starting services');
 }
 
 export async function touchNodesPredictedOnline(nodeIds: string[]): Promise<void> {
   const ids = Array.from(new Set(nodeIds.map((id) => String(id).trim()).filter(Boolean)));
   if (ids.length < 1) return;
   await pool.query(
-    `UPDATE nodes
+    `UPDATE core.nodes
      SET last_predicted_online_at = NOW()
      WHERE node_id = ANY($1::text[])`,
     [ids],
@@ -413,7 +385,7 @@ export async function refreshRecentPathEvidence(
        SELECT p.path_hash_size_bytes,
               UPPER(h.hash) AS hash,
               MAX(p.time) AS max_time
-       FROM packets p
+       FROM mesh.packets p
        CROSS JOIN LATERAL unnest(p.path_hashes) AS h(hash)
        WHERE p.time > NOW() - INTERVAL '1 hour' * $1
          AND p.path_hash_size_bytes >= 2
@@ -427,14 +399,14 @@ export async function refreshRecentPathEvidence(
      ),
      node_hashes AS (
        SELECT 2 AS path_hash_size_bytes, UPPER(LEFT(node_id, 4)) AS hash, node_id
-       FROM nodes
+       FROM core.nodes
        WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
          AND lat BETWEEN -90 AND 90
          AND lon BETWEEN -180 AND 180
          AND NOT (ABS(lat) < 1e-9 AND ABS(lon) < 1e-9)
        UNION ALL
        SELECT 3 AS path_hash_size_bytes, UPPER(LEFT(node_id, 6)) AS hash, node_id
-       FROM nodes
+       FROM core.nodes
        WHERE (role = 2 OR role IS NULL) AND ${pathEvidenceNodeScope}
          AND lat BETWEEN -90 AND 90
          AND lon BETWEEN -180 AND 180
@@ -456,7 +428,7 @@ export async function refreshRecentPathEvidence(
        GROUP BY nh.node_id
      ),
      updated AS (
-       UPDATE nodes n
+       UPDATE core.nodes n
        SET last_path_evidence_at = m.max_time
        FROM matched m
        WHERE n.node_id = m.node_id
@@ -523,13 +495,13 @@ export async function upsertNode(nodeId: string, updates: {
   if (!hasIncomingPosition) {
     const result = await ingestQuery<{ advert_count: number }>(
       `WITH advert_once AS (
-         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         INSERT INTO core.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
          WHERE $13::text IS NOT NULL
          ON CONFLICT (canonical_advert_hash) DO NOTHING
          RETURNING 1
        )
-       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       INSERT INTO core.nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
@@ -565,20 +537,20 @@ export async function upsertNode(nodeId: string, updates: {
   return withIngestTransaction(async (transactionQuery) => {
     const existing = hasIncomingPosition
       ? await transactionQuery<{ lat: number | null; lon: number | null }>(
-          'SELECT lat, lon FROM nodes WHERE node_id = $1 FOR UPDATE',
+          'SELECT lat, lon FROM core.nodes WHERE node_id = $1 FOR UPDATE',
           [nodeId],
         )
       : null;
 
     const upsert = await transactionQuery<{ advert_count: number }>(
       `WITH advert_once AS (
-         INSERT INTO node_counted_adverts (canonical_advert_hash, node_id, counted_at)
+         INSERT INTO core.node_counted_adverts (canonical_advert_hash, node_id, counted_at)
          SELECT $13, $1, NOW()
          WHERE $13::text IS NOT NULL
          ON CONFLICT (canonical_advert_hash) DO NOTHING
          RETURNING 1
        )
-       INSERT INTO nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
+       INSERT INTO core.nodes (node_id, name, lat, lon, iata, role, hardware_model, firmware_version, public_key, last_seen, is_online, network, last_mqtt_observer_seen_at, advert_count)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), TRUE, $10, CASE WHEN $12 THEN NOW() ELSE NULL END, (SELECT COUNT(*) FROM advert_once))
        ON CONFLICT (node_id) DO UPDATE SET
          name             = COALESCE(EXCLUDED.name, nodes.name),
@@ -622,8 +594,8 @@ export async function upsertNode(nodeId: string, updates: {
     );
 
     if (coordinatesChanged) {
-      await transactionQuery('UPDATE nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
-      await transactionQuery('DELETE FROM node_coverage WHERE node_id = $1', [nodeId]);
+      await transactionQuery('UPDATE core.nodes SET elevation_m = NULL WHERE node_id = $1', [nodeId]);
+      await transactionQuery('DELETE FROM core.node_coverage WHERE node_id = $1', [nodeId]);
     }
 
     return {
@@ -655,12 +627,12 @@ export async function insertNodeStatusSample(sample: {
 }): Promise<void> {
   await ingestQuery(
     `WITH sample_insert AS (
-       INSERT INTO node_status_samples
+       INSERT INTO core.node_status_samples
        (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
        VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING time
      )
-     UPDATE nodes
+     UPDATE core.nodes
         SET last_status_at = GREATEST(last_status_at, (SELECT time FROM sample_insert)),
             last_seen = GREATEST(last_seen, (SELECT time FROM sample_insert)),
             is_online = is_online OR (SELECT time FROM sample_insert) > NOW() - INTERVAL '15 minutes'
@@ -687,7 +659,7 @@ export async function insertNodeNeighborSample(sample: {
   neighbors: unknown[];
 }): Promise<void> {
   await ingestQuery(
-    `INSERT INTO node_neighbor_samples (node_id, time, neighbors, network)
+    `INSERT INTO core.node_neighbor_samples (node_id, time, neighbors, network)
      VALUES ($1, NOW(), $2::jsonb, $3)`,
     [sample.nodeId, JSON.stringify(sample.neighbors), sample.network ?? 'ukmesh'],
   );
@@ -713,7 +685,7 @@ export async function getNodes(
   let mapConditions = '';
   if (options.mapVisible) {
     const visible = `(${mapVisiblePredicate('n')}
-      AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id))`;
+      AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id))`;
     if (options.referencedNodeIds?.length) {
       params.push([...new Set(options.referencedNodeIds.map((id) => id.trim().toUpperCase()))]);
       // The explicit safety-net union bypasses age/suppression only. Never
@@ -759,7 +731,7 @@ export async function getNodes(
        ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
+     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'core.node_identity_nodes'} n
      ${whereClause}
      ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
     params,
@@ -781,8 +753,8 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
     SELECT p.time, p.packet_hash,
            COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
            topic, packet_type, hop_count, rssi, snr, payload
-    FROM packets p
-    LEFT JOIN node_identity_aliases src_alias
+    FROM mesh.packets p
+    LEFT JOIN core.node_identity_aliases src_alias
       ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
     WHERE p.${column} = requested.node_id
       ${column === 'src_node_id' ? `AND NOT COALESCE(p.rx_node_id = ANY(${aliases}), FALSE)` : ''}
@@ -811,7 +783,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
   // Location packets are sent as part of the advert broadcast
   const res = await pool.query(
     `SELECT time, packet_hash
-     FROM packets p
+     FROM mesh.packets p
      WHERE p.packet_type = 4
        AND UPPER(BTRIM(COALESCE(p.src_node_id, p.payload->>'publicKey')))
              = ANY(${nodeAliasArraySql('$1')})
@@ -827,7 +799,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
 
 /**
  * Top adverting repeaters over a rolling window. Counts come from
- * node_counted_adverts (deduplicated per canonical advert hash, ~16k rows),
+ * core.node_counted_adverts (deduplicated per canonical advert hash, ~16k rows),
  * joined to the node identity view for display fields. Cheap enough to run
  * directly; the route wraps it in a 1h in-memory cache.
  */
@@ -846,8 +818,8 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
        n.advert_count,
        COUNT(*) AS adverts_in_window,
        MAX(nca.counted_at) AS last_advert_at
-     FROM node_counted_adverts nca
-     JOIN node_identity_nodes n ON n.node_id = nca.node_id
+     FROM core.node_counted_adverts nca
+     JOIN core.node_identity_nodes n ON n.node_id = nca.node_id
      WHERE nca.counted_at > NOW() - INTERVAL '1 hour' * $1
        AND n.role = 2
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -860,6 +832,50 @@ export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network =
     [hours, limit, ...scope.params]
   );
   return res.rows;
+}
+
+/**
+ * Resolve durable decryption summaries for a bounded set of packet identities.
+ *
+ * `mesh.packet_decryptions` is keyed by the observation `packet_hash` that was
+ * decrypted, which is not necessarily the observation the feed keeps as the
+ * representative of a UID group (decryption backfill runs per stored hash, and
+ * one wire content can be retained under several observation hashes). Joining
+ * the decryption on the representative's exact hash therefore reports a NULL
+ * summary for an identity that *is* decrypted.
+ *
+ * The subquery re-expands each identity to its observation hashes through
+ * `mesh.packets.packet_uid` (indexed by `packets_packet_uid_idx`) and keys the
+ * result with `packetIdentityKeySql`, the same expression the representative,
+ * statistics and tag CTEs group by, so the summary is attributed to the identity
+ * rather than to one arbitrary observation. Rows without a UID keep the hash
+ * fallback identity, and `hash` read authority keeps its one-observation-per-
+ * identity rollback shape untouched.
+ *
+ * Only identities already admitted by the caller's privacy-filtered CTE are
+ * resolved, so this cannot surface a row that the representative scan excluded.
+ */
+function identityDecryptionCteSql(cteName: string, windowSql: string, scopeClause: string): string {
+  // Resolve decryptions set-based over the same bounded window the reader
+  // already uses. An earlier attempt expanded each identity through
+  // mesh.packets.packet_uid, but with no predicate on the packets side the
+  // planner hash-joined the entire hypertable: 3.67M rows and ~3.7 GiB of
+  // buffers per call, 4.3 s p50 against 10 ms for the old exact-hash join.
+  // Reading only the window keeps the packets_time_idx path (~25 ms p50) and
+  // still attributes a sibling observation's decryption to the identity.
+  const authority = packetIdentityReadAuthority();
+  const key = packetIdentityKeySql('p', authority);
+  return `${cteName} AS (
+      SELECT DISTINCT ON (identity_key) identity_key, summary
+        FROM (
+          SELECT ${key} AS identity_key, pd.summary, pd.created_at, pd.packet_hash
+            FROM mesh.packets p
+            JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+           WHERE p.time > ${windowSql}
+             ${scopeClause}
+        ) decryption_candidates
+       ORDER BY identity_key, created_at DESC, packet_hash
+    )`;
 }
 
 export async function getRecentPackets(
@@ -878,27 +894,27 @@ export async function getRecentPackets(
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await readQuery(
     `WITH recent_packets AS (
-      SELECT DISTINCT ON (p.packet_hash)
+      SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? `(CASE WHEN p.payload ? 'appData' THEN 16 ELSE 0 END
                + CASE WHEN p.src_node_id IS NOT NULL THEN 8 ELSE 0 END
                + CASE WHEN p.advert_count IS NOT NULL THEN 4 ELSE 0 END
                + CASE WHEN p.packet_type = 4 THEN 2 ELSE 0 END) AS _representative_rank,` : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
-             p.time, p.packet_hash,
+             p.time, p.packet_hash, p.packet_uid,
+             ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.topic_prefix, p.iata, p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
-             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
+             p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.transport_codes, p.region_scope
-      FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
-      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
+      FROM mesh.packets p
+      LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
-      ORDER BY p.packet_hash,
+      ORDER BY ${packetIdentityKeySql('p')},
                CASE WHEN p.payload ? 'appData' THEN 1 ELSE 0 END DESC,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
@@ -906,8 +922,8 @@ export async function getRecentPackets(
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
     packet_stats AS (
-      SELECT 
-        packet_hash,
+      SELECT
+        ${packetIdentityKeySql('packets')} AS identity_key,
         ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
           FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
@@ -916,29 +932,42 @@ export async function getRecentPackets(
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
-      FROM packets
-      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM recent_packets)
+      FROM mesh.packets
+      LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
+      WHERE ${packetIdentityKeySql('packets')} = ANY(SELECT identity_key FROM recent_packets)
         AND time > ${fiveMinAgo}
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
-      GROUP BY packet_hash
-    )
+      GROUP BY ${packetIdentityKeySql('packets')}
+    ),
+    packet_tags AS (
+      SELECT DISTINCT ON (${packetIdentityKeySql('p2')})
+             ${packetIdentityKeySql('p2')} AS identity_key,
+             mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE p2.time > ${fiveMinAgo}
+         AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM recent_packets)
+         AND mt2.tags IS NOT NULL
+       ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
+    ),
+    ${identityDecryptionCteSql('identity_decryptions', fiveMinAgo, buildPacketScopeClause(scope, 'p', network))}
     SELECT
       rp.time, rp.packet_hash, rp.rx_node_id, rp.src_node_id,
       rp.packet_type, rp.hop_count, rp.rssi, rp.snr,
-      rp.summary, rp.advert_count, rp.path_hashes, rp.path_hash_size_bytes,
+      COALESCE(rp.summary, ids.summary) AS summary, rp.advert_count, rp.path_hashes, rp.path_hash_size_bytes,
       ${fields === 'full'
         ? 'rp.topic, rp.topic_prefix, rp.iata, rp.route_type, rp.network, rp.transport_codes, rp.region_scope,'
         : ''}
       ${includeObservationIds ? `ps._observation_ids, rp.network AS _policy_network,
-        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
         rp._representative_rank, rp._representative_id,` : ''}
       ps.observer_node_ids, ps.observer_iatas, ps.rx_count, ps.tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM recent_packets rp
-    LEFT JOIN packet_stats ps ON ps.packet_hash = rp.packet_hash
-    LEFT JOIN message_tags mt ON mt.packet_hash = rp.packet_hash
+    LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
+    LEFT JOIN packet_tags mt ON mt.identity_key = rp.identity_key
+    LEFT JOIN identity_decryptions ids ON ids.identity_key = rp.identity_key
     ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
       OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
@@ -968,26 +997,26 @@ export async function getRecentMessages(
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const res = await readQuery(
     `WITH recent_msgs AS (
-      SELECT DISTINCT ON (p.packet_hash)
+      SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? 'CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END AS _representative_rank,' : ''}
              ${includeObservationIds ? 'p.observation_id::text AS _representative_id,' : ''}
-             p.time, p.packet_hash,
+             p.time, p.packet_hash, p.packet_uid,
+             ${packetIdentityKeySql('p')} AS identity_key,
              COALESCE(pa_rx.canonical_node_id, upper(btrim(p.rx_node_id))) AS rx_node_id,
              COALESCE(pa_src.canonical_node_id, upper(btrim(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             COALESCE(p.payload->>'_summary', pd.summary) AS summary,
+             p.payload->>'_summary' AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network
-      FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
-      LEFT JOIN node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
+      FROM mesh.packets p
+      LEFT JOIN core.node_identity_aliases pa_rx ON pa_rx.source_node_id = upper(btrim(p.rx_node_id))
+      LEFT JOIN core.node_identity_aliases pa_src ON pa_src.source_node_id = upper(btrim(p.src_node_id))
       WHERE p.packet_type = 5
         AND p.time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, 'p', network)}
         ${buildPublicPacketPrivacyClause('p')}
-      ORDER BY p.packet_hash,
+      ORDER BY ${packetIdentityKeySql('p')},
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
@@ -1000,7 +1029,7 @@ export async function getRecentMessages(
     ),
     msg_stats AS (
       SELECT
-        packet_hash,
+        ${packetIdentityKeySql('packets')} AS identity_key,
         ${includeObservationIds ? `ARRAY_AGG(DISTINCT packets.observation_id::text)
           FILTER (WHERE packets.observation_id IS NOT NULL) AS _observation_ids,` : ''}
         ARRAY_AGG(DISTINCT COALESCE(pa2.canonical_node_id, upper(btrim(packets.rx_node_id)))
@@ -1009,26 +1038,39 @@ export async function getRecentMessages(
         ARRAY_AGG(DISTINCT iata ORDER BY iata) FILTER (WHERE NULLIF(TRIM(iata), '') IS NOT NULL) AS observer_iatas,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') <> 'tx')::int AS rx_count,
         COUNT(*) FILTER (WHERE COALESCE(payload->>'direction', 'rx') = 'tx')::int AS tx_count
-      FROM packets
-      LEFT JOIN node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
-      WHERE packet_hash = ANY(SELECT packet_hash FROM selected_msgs)
+      FROM mesh.packets
+      LEFT JOIN core.node_identity_aliases pa2 ON pa2.source_node_id = upper(btrim(packets.rx_node_id))
+      WHERE ${packetIdentityKeySql('packets')} = ANY(SELECT identity_key FROM selected_msgs)
         AND time > NOW() - INTERVAL '24 hours'
         ${buildPacketScopeClause(scope, '', network)}
         ${buildPublicPacketPrivacyClause('packets')}
-      GROUP BY packet_hash
-    )
+      GROUP BY ${packetIdentityKeySql('packets')}
+    ),
+    msg_tags AS (
+      SELECT DISTINCT ON (${packetIdentityKeySql('p2')})
+             ${packetIdentityKeySql('p2')} AS identity_key,
+             mt2.tags, mt2.confidence
+        FROM mesh.packets p2
+        JOIN mesh.message_tags mt2 ON mt2.packet_hash = p2.packet_hash
+       WHERE p2.time > NOW() - INTERVAL '24 hours'
+         AND ${packetIdentityKeySql('p2')} = ANY(SELECT identity_key FROM selected_msgs)
+         AND mt2.tags IS NOT NULL
+       ORDER BY ${packetIdentityKeySql('p2')}, mt2.tagged_at DESC
+    ),
+    ${identityDecryptionCteSql('message_decryptions', "NOW() - INTERVAL '24 hours'", buildPacketScopeClause(scope, 'p', network))}
     SELECT
       m.time, m.packet_hash, m.rx_node_id, m.src_node_id, m.topic, m.iata,
       m.packet_type, m.hop_count, m.rssi, m.snr, m.payload,
-      m.summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
+      COALESCE(m.summary, md.summary) AS summary, m.advert_count, m.path_hashes, m.path_hash_size_bytes,
       ${includeObservationIds ? `ms._observation_ids, m.network AS _policy_network,
-        (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+        (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
         m._representative_rank, m._representative_id,` : ''}
       ms.observer_node_ids, ms.observer_iatas, ms.rx_count, ms.tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM selected_msgs m
-    LEFT JOIN msg_stats ms ON ms.packet_hash = m.packet_hash
-    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
+    LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
+    LEFT JOIN msg_tags mt ON mt.identity_key = m.identity_key
+    LEFT JOIN message_decryptions md ON md.identity_key = m.identity_key
     ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
       OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY m.time DESC, m.packet_hash
@@ -1049,10 +1091,10 @@ export async function getRecentMessageTags(limit = 200, network?: string) {
   const scope = buildScopePlaceholders(2, network);
   const res = await query(
     `SELECT mt.packet_hash, mt.tags, mt.confidence, mt.tagged_at
-       FROM message_tags mt
+       FROM mesh.message_tags mt
       WHERE mt.tagged_at > NOW() - INTERVAL '24 hours'
         AND EXISTS (
-          SELECT 1 FROM packets p
+          SELECT 1 FROM mesh.packets p
            WHERE p.packet_hash = mt.packet_hash
              AND p.time > NOW() - INTERVAL '24 hours'
              ${buildPacketScopeClause(scope, 'p', network)}
@@ -1081,7 +1123,7 @@ export async function getChannelMessageHistory(
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   // A historical packet may retain the ingest-time "[encrypted]" marker in
-  // payload while packet_decryptions has the channel-specific summary. Prefer
+  // payload while mesh.packet_decryptions has the channel-specific summary. Prefer
   // the durable decryption summary for channel matching and display.
   const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
   const historyWindow = `NOW() - INTERVAL '90 days'`;
@@ -1094,8 +1136,8 @@ export async function getChannelMessageHistory(
   while (selected.size < selectionLimit) {
     const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
       `SELECT p.time, p.packet_hash
-       FROM packets p
-       LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       FROM mesh.packets p
+       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
        WHERE p.packet_type = 5
          AND p.time > ${historyWindow}
          AND (
@@ -1150,11 +1192,11 @@ export async function getChannelMessageHistory(
              ${summaryExpr} AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
-      FROM packets p
-      LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash
-      LEFT JOIN node_identity_aliases rx_alias
+      FROM mesh.packets p
+      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-      LEFT JOIN node_identity_aliases src_alias
+      LEFT JOIN core.node_identity_aliases src_alias
         ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
       WHERE p.packet_hash = ANY($1::text[])
         AND p.packet_type = 5
@@ -1178,7 +1220,7 @@ export async function getChannelMessageHistory(
       CASE WHEN COALESCE(m.payload->>'direction', 'rx') = 'tx' THEN 1 ELSE 0 END::int AS tx_count,
       mt.tags, mt.confidence AS tag_confidence
     FROM channel_candidates m
-    LEFT JOIN message_tags mt ON mt.packet_hash = m.packet_hash
+    LEFT JOIN mesh.message_tags mt ON mt.packet_hash = m.packet_hash
     WHERE 1 = 1
       ${buildPublicPacketPrivacyClause('m')}
     ORDER BY m.time DESC`,
@@ -1208,10 +1250,10 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
         p.payload->>'_summary' AS summary,
         p.advert_count, p.path_hashes, p.path_hash_size_bytes,
         p.region_scope
-     FROM packets p
-     LEFT JOIN node_identity_aliases rx_alias
+     FROM mesh.packets p
+     LEFT JOIN core.node_identity_aliases rx_alias
        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-     LEFT JOIN node_identity_aliases src_alias
+     LEFT JOIN core.node_identity_aliases src_alias
        ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
      WHERE p.time > NOW() - INTERVAL '24 hours'
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -1231,8 +1273,8 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex,
               mt.tags, mt.confidence AS tag_confidence
-       FROM packets p
-       LEFT JOIN message_tags mt ON mt.packet_hash = p.packet_hash
+       FROM mesh.packets p
+       LEFT JOIN mesh.message_tags mt ON mt.packet_hash = p.packet_hash
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
          ${buildPublicPacketPrivacyClause('p')}
@@ -1246,8 +1288,8 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
     pool.query(
       `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
               p.iata, p.time, p.rssi, p.snr, p.hop_count
-       FROM packets p
-       LEFT JOIN node_identity_aliases rx_alias
+       FROM mesh.packets p
+       LEFT JOIN core.node_identity_aliases rx_alias
          ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
        WHERE p.packet_hash = $1
          ${buildPacketScopeClause(scope, 'p', network)}
@@ -1290,7 +1332,7 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
 export async function getPublicVisibilityGeneration(signal?: AbortSignal): Promise<number> {
   const result = await query<{ generation: string }>(
     `SELECT generation::text AS generation
-       FROM public_visibility_state
+       FROM ops.public_visibility_state
       WHERE singleton = TRUE`,
     undefined,
     signal,
@@ -1327,7 +1369,7 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       name: string | null;
     }>(
       `SELECT node_id, lat, lon, name
-       FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'node_identity_nodes'} n
+       FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'core.node_identity_nodes'} n
        WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
       params,
     ),
@@ -1337,7 +1379,7 @@ export async function getMultibytePathSegments(network?: string, observer?: stri
       multibyte_observed_count: number;
     }>(
       `SELECT node_a_id, node_b_id, multibyte_observed_count
-       FROM node_identity_links
+       FROM core.node_identity_links
        WHERE multibyte_observed_count > 0
          AND itm_viable = true
          ${scope.regionParam ? `AND node_a_id IN (${regionMemberIdsSql('$1')})
@@ -1412,10 +1454,10 @@ export async function getViableLinks(
          COALESCE(nr.neighbor_report_count, 0) AS neighbor_report_count,
          nr.neighbor_best_snr_db, nl.itm_viable, nl.itm_path_loss_db,
          nl.count_a_to_b, nl.count_b_to_a, nl.last_observed::text AS last_observed
-       FROM node_identity_links nl
+       FROM core.node_identity_links nl
        LEFT JOIN LATERAL (
          SELECT SUM(sample_count)::int AS neighbor_report_count, MAX(best_snr_db) AS neighbor_best_snr_db
-         FROM node_identity_link_radio_reports r
+         FROM core.node_identity_link_radio_reports r
          WHERE r.node_a_id = nl.node_a_id AND r.node_b_id = nl.node_b_id
        ) nr ON TRUE
        WHERE nl.node_a_id = ANY($1::text[]) AND nl.node_b_id = ANY($1::text[])
@@ -1435,7 +1477,7 @@ export async function getViableLinks(
     const [nodesRes, linksRes] = await Promise.all([
       query<{ node_id: string }>(
         `SELECT DISTINCT node_id
-         FROM node_identity_nodes
+         FROM core.node_identity_nodes
          WHERE network = ANY($1::text[])
            AND (name IS NULL OR name NOT LIKE '%🚫%')`,
         [scopedNetworks],
@@ -1454,12 +1496,12 @@ export async function getViableLinks(
            nl.count_a_to_b,
            nl.count_b_to_a,
            nl.last_observed::text AS last_observed
-         FROM node_identity_links nl
+         FROM core.node_identity_links nl
          LEFT JOIN (
            SELECT node_a_id, node_b_id,
              SUM(sample_count)::int AS neighbor_report_count,
              MAX(best_snr_db) AS neighbor_best_snr_db
-           FROM node_identity_link_radio_reports
+           FROM core.node_identity_link_radio_reports
            GROUP BY node_a_id, node_b_id
          ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
          WHERE (nl.itm_viable = true OR nl.force_viable = true)`,
@@ -1489,16 +1531,16 @@ export async function getViableLinks(
        nl.count_a_to_b,
        nl.count_b_to_a,
        nl.last_observed::text AS last_observed
-     FROM node_identity_links nl
+     FROM core.node_identity_links nl
      LEFT JOIN (
        SELECT node_a_id, node_b_id,
          SUM(sample_count)::int AS neighbor_report_count,
          MAX(best_snr_db) AS neighbor_best_snr_db
-       FROM node_identity_link_radio_reports
+       FROM core.node_identity_link_radio_reports
        GROUP BY node_a_id, node_b_id
      ) nr ON nr.node_a_id = nl.node_a_id AND nr.node_b_id = nl.node_b_id
-     JOIN node_identity_nodes a ON a.node_id = nl.node_a_id
-     JOIN node_identity_nodes b ON b.node_id = nl.node_b_id
+     JOIN core.node_identity_nodes a ON a.node_id = nl.node_a_id
+     JOIN core.node_identity_nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
        AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
@@ -1535,18 +1577,18 @@ export interface SpamSuspectRow {
 
 export async function insertOrUpdateSpamSuspect(s: SpamSuspectRow): Promise<void> {
   await pool.query(
-    `INSERT INTO spam_suspects
+    `INSERT INTO analytics.spam_suspects
        (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
         canonical_key, verdict, signals, total_score, network)
      VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      ON CONFLICT (network, src_node_id) DO UPDATE SET
        time        = NOW(),
-       first_seen  = COALESCE(spam_suspects.first_seen, EXCLUDED.first_seen),
+       first_seen  = COALESCE(analytics.spam_suspects.first_seen, EXCLUDED.first_seen),
        verdict     = EXCLUDED.verdict,
        signals     = EXCLUDED.signals,
        total_score = EXCLUDED.total_score,
-       claimed_lat = COALESCE(EXCLUDED.claimed_lat, spam_suspects.claimed_lat),
-       claimed_lon = COALESCE(EXCLUDED.claimed_lon, spam_suspects.claimed_lon)`,
+       claimed_lat = COALESCE(EXCLUDED.claimed_lat, analytics.spam_suspects.claimed_lat),
+       claimed_lon = COALESCE(EXCLUDED.claimed_lon, analytics.spam_suspects.claimed_lon)`,
     [s.srcNodeId, s.spoofedName, s.publicKey ?? null, s.claimedLat ?? null, s.claimedLon ?? null,
      s.canonicalKey ?? null, s.verdict, JSON.stringify(s.signals), s.totalScore, s.network]
   );
@@ -1561,10 +1603,10 @@ export async function replaceSpamSuspects(
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
-    await client.query('DELETE FROM spam_suspects WHERE network = ANY($1)', [sourceNetworks]);
+    await client.query('DELETE FROM analytics.spam_suspects WHERE network = ANY($1)', [sourceNetworks]);
     for (const s of suspects) {
       await client.query(
-        `INSERT INTO spam_suspects
+        `INSERT INTO analytics.spam_suspects
            (time, first_seen, src_node_id, spoofed_name, public_key, claimed_lat, claimed_lon,
             canonical_key, verdict, signals, total_score, network)
          VALUES (NOW(), NOW(), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
@@ -1607,7 +1649,7 @@ function buildSpamSuspectWhere(options: SpamSuspectQueryOptions, params: unknown
     `ss.spoofed_name NOT LIKE '%🚫%'`,
     `NOT EXISTS (
        SELECT 1
-       FROM nodes private_node
+       FROM core.nodes private_node
        WHERE private_node.node_id = ss.src_node_id
          AND private_node.name LIKE '%🚫%'
      )`,
@@ -1654,7 +1696,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
          NULL::int AS packet_count,
          NULL::timestamptz AS first_packet,
          NULL::timestamptz AS last_packet
-       FROM spam_suspects ss
+       FROM analytics.spam_suspects ss
        WHERE ${where}
        ORDER BY ss.total_score DESC, ss.time DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}`,
@@ -1678,7 +1720,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
          ss.network,
          ss.time,
          ss.first_seen
-       FROM spam_suspects ss
+       FROM analytics.spam_suspects ss
        WHERE ${where}
        ORDER BY ss.total_score DESC, ss.time DESC
        LIMIT $${limitParam} OFFSET $${offsetParam}
@@ -1700,7 +1742,7 @@ export async function getSpamSuspects(options: number | SpamSuspectQueryOptions 
        MIN(p.time) AS first_packet,
        MAX(p.time) AS last_packet
      FROM filtered f
-     LEFT JOIN packets p ON p.src_node_id = f.src_node_id
+     LEFT JOIN mesh.packets p ON p.src_node_id = f.src_node_id
        AND p.network = f.network
        AND p.time > NOW() - INTERVAL '1 hour' * $1
      GROUP BY f.src_node_id, f.spoofed_name, f.public_key, f.claimed_lat, f.claimed_lon,
@@ -1716,7 +1758,7 @@ export async function getSpamSuspectSummary(options: SpamSuspectQueryOptions = {
   const where = buildSpamSuspectWhere(options, params);
   const res = await pool.query(
     `SELECT verdict, COUNT(*)::int AS count
-     FROM spam_suspects ss
+     FROM analytics.spam_suspects ss
      WHERE ${where}
      GROUP BY verdict`,
     params
@@ -1746,9 +1788,9 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        ss.claimed_lat,
        ss.claimed_lon,
        ss.spoofed_name
-     FROM packets p
-     LEFT JOIN nodes n ON n.node_id = p.rx_node_id
-     LEFT JOIN spam_suspects ss ON ss.src_node_id = p.src_node_id
+     FROM mesh.packets p
+     LEFT JOIN core.nodes n ON n.node_id = p.rx_node_id
+     LEFT JOIN analytics.spam_suspects ss ON ss.src_node_id = p.src_node_id
        AND ss.network = p.network
      WHERE p.src_node_id = $1
        AND p.network = ANY($2)
@@ -1758,7 +1800,7 @@ export async function getSpamPacketObservers(srcNodeId: string) {
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND (ss.spoofed_name IS NULL OR ss.spoofed_name NOT LIKE '%🚫%')
        AND NOT EXISTS (
-         SELECT 1 FROM nodes source_node
+         SELECT 1 FROM core.nodes source_node
          WHERE source_node.node_id = p.src_node_id
            AND source_node.name LIKE '%🚫%'
        )
@@ -1781,14 +1823,14 @@ export async function getSpamAllObservers() {
        n.lon               AS observer_lon,
        MIN(p.hop_count)    AS hop_count,
        MAX(p.rssi)         AS rssi
-     FROM spam_suspects ss
-     JOIN packets p
+     FROM analytics.spam_suspects ss
+     JOIN mesh.packets p
        ON  p.src_node_id = ss.src_node_id
        AND p.network = ss.network
        AND p.packet_type  = 4
        AND p.time > NOW() - INTERVAL '30 days'
        AND p.rx_node_id   IS NOT NULL
-     JOIN nodes n ON n.node_id = p.rx_node_id
+     JOIN core.nodes n ON n.node_id = p.rx_node_id
      WHERE ss.claimed_lat IS NOT NULL
        AND ss.claimed_lon IS NOT NULL
        AND ss.network = ANY($1)
@@ -1798,7 +1840,7 @@ export async function getSpamAllObservers() {
        AND ss.spoofed_name NOT LIKE '%🚫%'
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        AND NOT EXISTS (
-         SELECT 1 FROM nodes source_node
+         SELECT 1 FROM core.nodes source_node
          WHERE source_node.node_id = ss.src_node_id
            AND source_node.name LIKE '%🚫%'
        )

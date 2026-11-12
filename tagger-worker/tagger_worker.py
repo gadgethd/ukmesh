@@ -5,11 +5,11 @@ Polls the packets table for new public-channel messages, asks Jev to tag each
 one (speaker / kind / topic + flags), and stores the result in message_tags.
 Tags are displayed on the public feed and app.ukmesh.com detail panels; private
 or out-of-scope packets are never sent to the API (public visibility predicate +
-network scope applied in the query). Monitoring data lives in tagger_state
+network scope applied in the query). Monitoring data lives in ops.tagger_state
 (heartbeat + counters).
 
 Failure handling: a message that fails all inline API attempts is persisted to
-tagger_retry and retried on every subsequent poll (up to TAGGER_MAX_RETRY_ATTEMPTS)
+ops.tagger_retry and retried on every subsequent poll (up to TAGGER_MAX_RETRY_ATTEMPTS)
 so a TypeSafe outage cannot silently drop tags (2026-09-17 hardening; the old
 20s overlap window lost 6 messages during two 503 bursts).
 """
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS message_tags (
   tags         jsonb NOT NULL,
   confidence   jsonb
 );
-CREATE TABLE IF NOT EXISTS tagger_state (
+CREATE TABLE IF NOT EXISTS ops.tagger_state (
   id int PRIMARY KEY CHECK (id = 1),
   cursor_time timestamptz,
   seen bigint NOT NULL DEFAULT 0,
@@ -90,10 +90,10 @@ CREATE TABLE IF NOT EXISTS tagger_state (
   started_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz
 );
-INSERT INTO tagger_state (id) VALUES (1) ON CONFLICT DO NOTHING;
-ALTER TABLE tagger_state ADD COLUMN IF NOT EXISTS retried bigint NOT NULL DEFAULT 0;
-ALTER TABLE tagger_state ADD COLUMN IF NOT EXISTS given_up bigint NOT NULL DEFAULT 0;
-CREATE TABLE IF NOT EXISTS tagger_retry (
+INSERT INTO ops.tagger_state (id) VALUES (1) ON CONFLICT DO NOTHING;
+ALTER TABLE ops.tagger_state ADD COLUMN IF NOT EXISTS retried bigint NOT NULL DEFAULT 0;
+ALTER TABLE ops.tagger_state ADD COLUMN IF NOT EXISTS given_up bigint NOT NULL DEFAULT 0;
+CREATE TABLE IF NOT EXISTS ops.tagger_retry (
   packet_hash      text PRIMARY KEY,
   packet_time      timestamptz NOT NULL,
   attempts         int NOT NULL DEFAULT 0,
@@ -114,8 +114,8 @@ PUBLIC_PACKET_PRIVACY_SQL = """
       AND is_private IS NOT TRUE
       AND EXISTS (
         SELECT 1
-        FROM packet_visibility_materialization_state cached_visibility
-        JOIN public_visibility_state current_visibility
+        FROM ops.packet_visibility_materialization_state cached_visibility
+        JOIN ops.public_visibility_state current_visibility
           ON current_visibility.singleton = cached_visibility.singleton
         WHERE cached_visibility.singleton = TRUE
           AND cached_visibility.visibility_generation = current_visibility.generation
@@ -168,11 +168,11 @@ def load_public_message(cur, ph, ts, rx_node_id, network):
     cur.execute(f"""
       WITH policy AS (
         SELECT EXISTS (
-          SELECT 1 FROM packet_visibility_materialization_state cached
-          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          SELECT 1 FROM ops.packet_visibility_materialization_state cached
+          JOIN ops.public_visibility_state current ON current.singleton = cached.singleton
           WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
         ) AND NOT EXISTS (
-          SELECT 1 FROM privacy_rematerialization_queue
+          SELECT 1 FROM ops.privacy_rematerialization_queue
           WHERE status IN ('pending', 'processing', 'failed')
         ) AS ready
       )
@@ -214,7 +214,7 @@ def tag_message(cur, ph, ts, rx_node_id, network):
             return True, ms, None
         except urllib.error.HTTPError as e:
             if e.code == 429:
-                cur.execute("UPDATE tagger_state SET http_429=http_429+1 WHERE id=1")
+                cur.execute("UPDATE ops.tagger_state SET http_429=http_429+1 WHERE id=1")
                 time.sleep(min(CALL_FLOOR_S * (2 ** attempt), 30))
                 continue
             err = f'http {e.code}: {e.read().decode()[:160]}'
@@ -234,11 +234,11 @@ def public_packet_keys(cur, ph, ts):
     cur.execute(f"""
       WITH policy AS (
         SELECT EXISTS (
-          SELECT 1 FROM packet_visibility_materialization_state cached
-          JOIN public_visibility_state current ON current.singleton = cached.singleton
+          SELECT 1 FROM ops.packet_visibility_materialization_state cached
+          JOIN ops.public_visibility_state current ON current.singleton = cached.singleton
           WHERE cached.singleton = TRUE AND cached.visibility_generation = current.generation
         ) AND NOT EXISTS (
-          SELECT 1 FROM privacy_rematerialization_queue
+          SELECT 1 FROM ops.privacy_rematerialization_queue
           WHERE status IN ('pending', 'processing', 'failed')
         ) AS ready
       )
@@ -259,7 +259,7 @@ def public_packet_keys(cur, ph, ts):
 def process_retries(cur):
     """Retry previously failed messages. Returns (ok_count, fail_count, pending)."""
     cur.execute("""
-      SELECT packet_hash, packet_time, attempts FROM tagger_retry
+      SELECT packet_hash, packet_time, attempts FROM ops.tagger_retry
       WHERE NOT exhausted AND attempts < %s
       ORDER BY first_failed_at ASC LIMIT %s
     """, (MAX_RETRY_ATTEMPTS, RETRY_BATCH))
@@ -268,29 +268,29 @@ def process_retries(cur):
     for ph, ts, attempts in due:
         cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
         if cur.fetchone():
-            cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
+            cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
             continue
         keys = public_packet_keys(cur, ph, ts)
         if keys is None:
             # Became private (or vanished) after it was queued: never re-egress.
-            cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
+            cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
             continue
         good, ms, err = tag_message(cur, *keys)
         if good:
-            cur.execute("DELETE FROM tagger_retry WHERE packet_hash=%s", (ph,))
-            cur.execute("UPDATE tagger_state SET retried=retried+1 WHERE id=1")
+            cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
+            cur.execute("UPDATE ops.tagger_state SET retried=retried+1 WHERE id=1")
             ok += 1
         else:
             fail += 1
             if attempts + 1 >= MAX_RETRY_ATTEMPTS:
-                cur.execute("""UPDATE tagger_retry SET attempts=attempts+1, last_error=%s,
+                cur.execute("""UPDATE ops.tagger_retry SET attempts=attempts+1, last_error=%s,
                                exhausted=true WHERE packet_hash=%s""", (err, ph))
-                cur.execute("UPDATE tagger_state SET given_up=given_up+1 WHERE id=1")
+                cur.execute("UPDATE ops.tagger_state SET given_up=given_up+1 WHERE id=1")
             else:
-                cur.execute("""UPDATE tagger_retry SET attempts=attempts+1, last_error=%s
+                cur.execute("""UPDATE ops.tagger_retry SET attempts=attempts+1, last_error=%s
                                WHERE packet_hash=%s""", (err, ph))
         time.sleep(CALL_FLOOR_S)
-    cur.execute("SELECT count(*) FROM tagger_retry WHERE NOT exhausted")
+    cur.execute("SELECT count(*) FROM ops.tagger_retry WHERE NOT exhausted")
     pending = cur.fetchone()[0]
     return ok, fail, pending
 
@@ -303,14 +303,14 @@ def main():
     conn.autocommit = True
     cur = conn.cursor()
     cur.execute(DDL)
-    cur.execute("SELECT cursor_time FROM tagger_state WHERE id=1")
+    cur.execute("SELECT cursor_time FROM ops.tagger_state WHERE id=1")
     cursor = cur.fetchone()[0]
     if cursor is None:
         if START:
-            cur.execute("UPDATE tagger_state SET cursor_time=%s::timestamptz WHERE id=1", (START,))
+            cur.execute("UPDATE ops.tagger_state SET cursor_time=%s::timestamptz WHERE id=1", (START,))
         else:
-            cur.execute("UPDATE tagger_state SET cursor_time=now() - interval '5 minutes' WHERE id=1")
-        cur.execute("SELECT cursor_time FROM tagger_state WHERE id=1")
+            cur.execute("UPDATE ops.tagger_state SET cursor_time=now() - interval '5 minutes' WHERE id=1")
+        cur.execute("SELECT cursor_time FROM ops.tagger_state WHERE id=1")
         cursor = cur.fetchone()[0]
     log(f"started; model={MODEL} poll={POLL_S}s floor={CALL_FLOOR_S}s overlap={OVERLAP_S}s "
         f"networks={','.join(NETWORKS)} cursor={cursor.isoformat()}")
@@ -337,7 +337,7 @@ def main():
                   {PUBLIC_PACKET_PRIVACY_SQL}
                   AND NOT EXISTS (SELECT 1 FROM message_tags tagged
                                   WHERE tagged.packet_hash = packets.packet_hash)
-                  AND NOT EXISTS (SELECT 1 FROM tagger_retry retry
+                  AND NOT EXISTS (SELECT 1 FROM ops.tagger_retry retry
                                   WHERE retry.packet_hash = packets.packet_hash)
                 ORDER BY packet_hash, time DESC
               ) x ORDER BY time ASC LIMIT %s
@@ -366,7 +366,7 @@ def main():
                         break
                     except urllib.error.HTTPError as e:
                         if e.code == 429:
-                            cur.execute("UPDATE tagger_state SET http_429=http_429+1 WHERE id=1")
+                            cur.execute("UPDATE ops.tagger_state SET http_429=http_429+1 WHERE id=1")
                             time.sleep(min(CALL_FLOOR_S * (2 ** attempt), 30))
                             continue
                         err = f'http {e.code}: {e.read().decode()[:160]}'
@@ -388,19 +388,19 @@ def main():
                     lat_hist = lat_hist[-50:]
                 else:
                     errs += 1
-                    cur.execute("UPDATE tagger_state SET errors=errors+1, last_error=%s WHERE id=1", (err,))
+                    cur.execute("UPDATE ops.tagger_state SET errors=errors+1, last_error=%s WHERE id=1", (err,))
                     # Persist for retry instead of letting the cursor move past it.
-                    cur.execute("""INSERT INTO tagger_retry (packet_hash, packet_time, attempts, last_error)
+                    cur.execute("""INSERT INTO ops.tagger_retry (packet_hash, packet_time, attempts, last_error)
                                    VALUES (%s, %s, 1, %s)
                                    ON CONFLICT (packet_hash) DO UPDATE
-                                   SET attempts=tagger_retry.attempts+1, last_error=EXCLUDED.last_error""",
+                                   SET attempts=ops.tagger_retry.attempts+1, last_error=EXCLUDED.last_error""",
                                 (ph, ts, err))
                 time.sleep(CALL_FLOOR_S)
             if max_t and max_t != cursor:
-                cur.execute("UPDATE tagger_state SET cursor_time=%s WHERE id=1", (max_t,))
+                cur.execute("UPDATE ops.tagger_state SET cursor_time=%s WHERE id=1", (max_t,))
                 cursor = max_t
             avg = (sum(lat_hist) / len(lat_hist)) if lat_hist else None
-            cur.execute("""UPDATE tagger_state SET seen=seen+%s, tagged=tagged+%s,
+            cur.execute("""UPDATE ops.tagger_state SET seen=seen+%s, tagged=tagged+%s,
                            avg_latency_ms_50=%s, updated_at=now() WHERE id=1""",
                         (new + errs, new, avg))
             if new or errs or retry_ok or retry_fail or (time.time() - last_log) > 120:

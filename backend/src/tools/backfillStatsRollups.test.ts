@@ -34,10 +34,10 @@ test('cutover reconciliation closes the completed-checkpoint gap in bounded lock
     source.indexOf('/**\n * Reconstruct small stats rollups'),
   );
   assert.match(cutover, /MAX_CUTOVER_GAP_HOURS = 48/);
-  assert.match(cutover, /maintenance_backfill_checkpoints/);
+  assert.match(cutover, /ops.maintenance_backfill_checkpoints/);
   assert.match(cutover, /completed_at IS NOT NULL/);
   assert.match(cutover, /while \(cursor < windowEnd\)/);
-  assert.match(cutover, /LOCK TABLE packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE/);
+  assert.match(cutover, /LOCK TABLE (?:mesh\.)?packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE/);
   assert.match(cutover, /p\.time >= \$1::timestamptz/);
   assert.match(cutover, /p\.time < \$2::timestamptz/);
 });

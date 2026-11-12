@@ -386,7 +386,7 @@ const REGIONS_CACHE_CONTROL = 'public, max-age=300, stale-while-revalidate=900';
 function nodeMetaLateral(alias: string, filters: NetworkFilters): string {
   return `LEFT JOIN LATERAL (
     SELECT n.name, n.role, n.lat, n.lon
-      FROM nodes n
+      FROM core.nodes n
      WHERE n.node_id = ${alias}.node_id ${filters.nodesAlias('n')}
      ORDER BY n.last_seen DESC NULLS LAST
      LIMIT 1
@@ -399,15 +399,15 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const [run, stats, members] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<RegionStatRow>(
           `SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
-             FROM region_scope_stats
+             FROM core.region_scope_stats
             ORDER BY packets_total DESC, region ASC`,
         ),
         deps.query<RegionMemberRow>(
           `SELECT m.region, m.node_id, m.packets, meta.name, meta.role, meta.lat, meta.lon
-             FROM region_scope_members m
+             FROM core.region_scope_members m
              ${nodeMetaLateral('m', filters)}
             ORDER BY m.region ASC, m.packets DESC, m.node_id ASC`,
           [...filters.params],
@@ -426,11 +426,11 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
       const filters = deps.networkFilters(network);
       const [run, repeaters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<RegionRepeaterRow>(
           `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
                   meta.name, meta.role, meta.lat, meta.lon
-             FROM repeater_scope_status s
+             FROM core.repeater_scope_status s
              ${nodeMetaLateral('s', filters)}
             ORDER BY s.scoped_packets DESC, s.node_id ASC`,
           [...filters.params],
@@ -447,10 +447,10 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
   router.get('/regions/unattributed', deps.limiter, async (_req, res) => {
     try {
       const [run, clusters] = await Promise.all([
-        deps.query<RunRow>('SELECT finished_at, window_days FROM region_scope_run LIMIT 1'),
+        deps.query<RunRow>('SELECT finished_at, window_days FROM core.region_scope_run LIMIT 1'),
         deps.query<UnattributedClusterRow>(
           `SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes
-             FROM region_scope_unattributed
+             FROM core.region_scope_unattributed
             ORDER BY packets DESC, cluster_id ASC`,
         ),
       ]);
@@ -476,21 +476,21 @@ export function registerRegionsRoutes(router: Router, deps: RegionsRouteDeps): v
         deps.query<RegionRepeaterRow>(
           `SELECT s.node_id, s.status, s.evidence, s.scoped_packets, s.unscoped_packets_7d, s.regions,
                   meta.name, meta.role, meta.lat, meta.lon
-             FROM repeater_scope_status s
+             FROM core.repeater_scope_status s
              ${nodeMetaLateral('s', filters)}
             WHERE s.node_id = ${idParam}`,
           [...filters.params, rawId],
         ),
         deps.query<ScopeMemberRow>(
           `SELECT region, packets
-             FROM region_scope_members
+             FROM core.region_scope_members
             WHERE node_id = $1
             ORDER BY packets DESC, region ASC`,
           [rawId],
         ),
         deps.query<RegionScopeNodeRow>(
           `SELECT n.node_id, n.name, n.role, n.lat, n.lon
-             FROM nodes n
+             FROM core.nodes n
             WHERE n.node_id = ${idParam} ${filters.nodesAlias('n')}
             ORDER BY n.last_seen DESC NULLS LAST
             LIMIT 1`,

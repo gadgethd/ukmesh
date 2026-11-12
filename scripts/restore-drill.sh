@@ -454,12 +454,12 @@ integrity_json="$(
   docker exec "$postgres_name" psql -U meshcore -d meshcore -Atc "
     WITH packet_sample AS (
       SELECT packet_hash, time, network
-      FROM packets
+      FROM mesh.packets
       ORDER BY time, packet_hash
       LIMIT 1000
     ), node_sample AS (
       SELECT node_id, COALESCE(name, '') AS name
-      FROM nodes
+      FROM core.nodes
       ORDER BY node_id
       LIMIT 1000
     )

@@ -1,15 +1,13 @@
 import pg from 'pg';
-import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { resolveDbAssetPath } from './assets.js';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
+import { databaseUrlForRole } from '../platform/config/database.js';
 import { planOperatorConfiguredOwnerGrantSync } from '../owner/ownerGrantReconciliation.js';
 import { createOwnerAclArtifactStore } from '../owner/ownerAclArtifacts.js';
 
 const { Pool } = pg;
 const OWNER_DB_NAME = process.env['OWNER_POSTGRES_DB'] ?? 'meshcore_owner_auth';
 const ownerDatabaseApplicationName = String(process.env['OWNER_DATABASE_APPLICATION_NAME'] ?? 'meshcore-owner-auth').trim() || 'meshcore-owner-auth';
-const ownerAdminDatabaseApplicationName = String(process.env['OWNER_DATABASE_ADMIN_APPLICATION_NAME'] ?? 'meshcore-owner-auth-admin').trim() || 'meshcore-owner-auth-admin';
 const ownerDatabaseStatementTimeoutMs = boundedIntegerSetting(
   'OWNER_DATABASE_STATEMENT_TIMEOUT_MS',
   process.env['OWNER_DATABASE_STATEMENT_TIMEOUT_MS'],
@@ -54,12 +52,11 @@ function withDatabaseName(connectionString: string, databaseName: string): strin
 }
 
 function getOwnerDatabaseUrl(): string {
-  return String(process.env['OWNER_DATABASE_URL'] ?? '').trim()
-    || withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
-}
-
-function getAdminDatabaseUrl(): string {
-  return withDatabaseName(getPrimaryDatabaseUrl(), 'postgres');
+  return databaseUrlForRole(
+    'owner',
+    process.env,
+    withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME),
+  ) ?? withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
 }
 
 const ownerPool = new Pool({
@@ -82,44 +79,10 @@ ownerPool.on('error', (err) => {
   console.error('[owner-auth] unexpected pool error', err.message);
 });
 
-function quoteIdentifier(value: string): string {
-  return `"${value.replace(/"/g, '""')}"`;
-}
-
-async function ensureOwnerDatabase(): Promise<void> {
-  const ownerUrl = new URL(getOwnerDatabaseUrl());
-  const databaseName = ownerUrl.pathname.replace(/^\//, '').trim();
-  if (!databaseName) throw new Error('OWNER_DATABASE_URL is missing a database name');
-
-  const adminPool = new Pool({
-    connectionString: getAdminDatabaseUrl(),
-    application_name: ownerAdminDatabaseApplicationName,
-    max: 1,
-    idleTimeoutMillis: 5_000,
-    connectionTimeoutMillis: 5_000,
-    statement_timeout: ownerDatabaseStatementTimeoutMs,
-    query_timeout: ownerDatabaseStatementTimeoutMs,
-  });
-
-  try {
-    const exists = await adminPool.query<{ exists: number }>(
-      'SELECT 1 AS exists FROM pg_database WHERE datname = $1',
-      [databaseName],
-    );
-    if (exists.rowCount && exists.rows[0]?.exists === 1) return;
-    await adminPool.query(`CREATE DATABASE ${quoteIdentifier(databaseName)}`);
-    console.log(`[owner-auth] created database ${databaseName}`);
-  } finally {
-    await adminPool.end().catch(() => undefined);
-  }
-}
-
 export async function initOwnerAuthDb(): Promise<void> {
-  await ensureOwnerDatabase();
-  const schemaPath = resolveDbAssetPath('owner-auth.sql');
-  const sql = fs.readFileSync(schemaPath, 'utf8');
-  await ownerPool.query(sql);
-  console.log('[owner-auth] schema initialised');
+  // P1-9: the owner database and schema are provisioned by an explicit
+  // migrate/operator step. The application must not CREATE DATABASE or DDL.
+  console.warn('[owner-auth] startup schema initialisation is disabled; run the owner-auth migrate job');
 }
 
 export async function createOwnerSession(
@@ -244,8 +207,8 @@ export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<
   if (!normalized) return [];
   const res = await ownerPool.query<{ node_id: string }>(
     `SELECT DISTINCT oan.node_id
-     FROM owner_account_nodes oan
-     JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
+     FROM core.owner_account_nodes oan
+     JOIN core.owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
      WHERE oa.is_active = true
        AND oan.mqtt_username = $1
        AND oan.node_id ~ '^[0-9A-F]{64}$'
@@ -281,8 +244,8 @@ export async function getOwnerAuthorizationSnapshot(): Promise<OwnerAuthorizatio
               ),
               ARRAY[]::text[]
             ) AS node_ids
-       FROM owner_accounts oa
-       LEFT JOIN owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username
+       FROM core.owner_accounts oa
+       LEFT JOIN core.owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username
       GROUP BY oa.mqtt_username, oa.is_active
       ORDER BY oa.mqtt_username ASC`,
   );
@@ -315,8 +278,8 @@ export async function getOwnerAuthorizationInventory(): Promise<{
     }>(
       `SELECT oa.mqtt_username, oa.is_active, oan.node_id, oan.verification_method,
               oan.verified_at, oan.revoked_at
-         FROM owner_accounts oa
-         LEFT JOIN owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username
+         FROM core.owner_accounts oa
+         LEFT JOIN core.owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username
         ORDER BY oa.mqtt_username, oan.node_id`,
     ),
     ownerPool.query<{
@@ -325,7 +288,7 @@ export async function getOwnerAuthorizationInventory(): Promise<{
       last_connected_at: string;
     }>(
       `SELECT mqtt_username, node_id, last_connected_at
-         FROM mqtt_node_logins
+         FROM core.mqtt_node_logins
         ORDER BY last_connected_at DESC
         LIMIT 10000`,
     ),
@@ -355,7 +318,7 @@ export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
   const normalized = mqttUsername.trim();
   if (!normalized) return;
   await ownerPool.query(
-    `INSERT INTO owner_accounts (mqtt_username, is_active, updated_at)
+    `INSERT INTO core.owner_accounts (mqtt_username, is_active, updated_at)
      VALUES ($1, true, NOW())
      ON CONFLICT (mqtt_username)
      DO UPDATE SET is_active = true, updated_at = NOW()`,
@@ -380,7 +343,7 @@ async function insertGrantAudit(
   input: GrantAuditInput,
 ): Promise<void> {
   await client.query(
-    `INSERT INTO owner_grant_audit (
+    `INSERT INTO core.owner_grant_audit (
        event_id, mqtt_username, node_id, event_type, source, actor, reason, generation
      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
     [
@@ -422,13 +385,13 @@ export async function upsertVerifiedOwnerGrant(
   try {
     await client.query('BEGIN');
     await client.query(
-      `INSERT INTO owner_accounts (mqtt_username, is_active, updated_at)
+      `INSERT INTO core.owner_accounts (mqtt_username, is_active, updated_at)
        VALUES ($1, TRUE, NOW())
        ON CONFLICT (mqtt_username) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
       [grant.mqttUsername],
     );
     const existing = await client.query<{ revoked_at: string | null }>(
-      `SELECT revoked_at FROM owner_account_nodes
+      `SELECT revoked_at FROM core.owner_account_nodes
         WHERE mqtt_username = $1 AND node_id = $2
         FOR UPDATE`,
       [grant.mqttUsername, grant.nodeId],
@@ -437,7 +400,7 @@ export async function upsertVerifiedOwnerGrant(
     if (wasRevoked && !options.reauthorize) throw new Error('OWNER_GRANT_REAUTHORIZATION_REQUIRED');
 
     await client.query(
-      `INSERT INTO owner_account_nodes (
+      `INSERT INTO core.owner_account_nodes (
          mqtt_username, node_id, verification_method, verified_at, grant_id,
          revoked_at, revocation_reason, grant_generation, updated_at
        ) VALUES ($1, $2, $3, NOW(), $4, NULL, NULL, $5, NOW())
@@ -482,7 +445,7 @@ export async function syncOperatorConfiguredOwnerGrants(
     updated_at: string | Date | null;
   }>(
     `SELECT mqtt_username, node_id, revoked_at, verification_method, grant_generation, updated_at
-       FROM owner_account_nodes`,
+       FROM core.owner_account_nodes`,
   );
 
   const actions = planOperatorConfiguredOwnerGrantSync(
@@ -527,7 +490,7 @@ export async function revokeOwnerGrant(
   try {
     await client.query('BEGIN');
     const updated = await client.query<{ verification_method: OwnerGrantVerificationMethod }>(
-      `UPDATE owner_account_nodes
+      `UPDATE core.owner_account_nodes
           SET revoked_at = NOW(), revocation_reason = $3, updated_at = NOW()
         WHERE mqtt_username = $1 AND node_id = $2 AND revoked_at IS NULL
       RETURNING verification_method`,
@@ -587,13 +550,13 @@ export async function recordUntrustedMqttNodeObservation(mqttUsername: string, n
       [`mqtt-audit:${normalizedUsername}`],
     );
     await client.query(
-      `INSERT INTO mqtt_node_logins (mqtt_username, node_id, last_connected_at)
+      `INSERT INTO core.mqtt_node_logins (mqtt_username, node_id, last_connected_at)
        VALUES ($1, $2, NOW())
        ON CONFLICT (mqtt_username, node_id) DO UPDATE SET last_connected_at = NOW()`,
       [normalizedUsername, normalizedNodeId],
     );
     await client.query(
-      `DELETE FROM mqtt_node_logins
+      `DELETE FROM core.mqtt_node_logins
         WHERE last_connected_at < NOW() - ($1 * INTERVAL '1 day')`,
       [mqttAuditRetentionDays],
     );
@@ -605,10 +568,10 @@ export async function recordUntrustedMqttNodeObservation(mqttUsername: string, n
                   PARTITION BY mqtt_username
                   ORDER BY last_connected_at DESC, node_id
                 ) AS retained_rank
-           FROM mqtt_node_logins
+           FROM core.mqtt_node_logins
           WHERE mqtt_username = $1
        )
-       DELETE FROM mqtt_node_logins target
+       DELETE FROM core.mqtt_node_logins target
         USING ranked
         WHERE target.mqtt_username = ranked.mqtt_username
           AND target.node_id = ranked.node_id
@@ -634,7 +597,7 @@ export type OwnerAclStateUpdate = {
 
 export async function updateOwnerAclState(update: OwnerAclStateUpdate): Promise<void> {
   await ownerPool.query(
-    `UPDATE owner_acl_state SET
+    `UPDATE core.owner_acl_state SET
        desired_generation = COALESCE($1, desired_generation),
        rendered_generation = COALESCE($2, rendered_generation),
        applied_generation = COALESCE($3, applied_generation),
@@ -671,7 +634,7 @@ export async function getOwnerAclReadiness(): Promise<{
   }>(
     `SELECT desired_generation, rendered_generation, applied_generation,
             last_verified_at, last_error
-       FROM owner_acl_state
+       FROM core.owner_acl_state
       WHERE singleton = TRUE`,
   );
   const row = result.rows[0];

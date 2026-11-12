@@ -93,7 +93,7 @@ interface ReceptionRow extends Record<string, unknown> {
 
 /**
  * Walk a relay path backward from the observer to the source, choosing at each
- * hop the candidate node that has a confirmed RF link (`node_links`) to the
+ * hop the candidate node that has a confirmed RF link (`core.node_links`) to the
  * previously-resolved node — else the nearest candidate within link range. Each
  * consecutive (AA,BB) hash pair is only realisable where two such repeaters sit
  * within range, so the adjacency chain disambiguates the 1-byte hashes and pins
@@ -141,7 +141,7 @@ function walkChainToSource(
  * Method: a flood is heard by many observers, each reception carrying its
  * ordered relay path. We take the lowest-hop receptions (closest to the source)
  * and walk each path BACKWARD from the observer, hop by hop, choosing at each
- * step the candidate that has a confirmed RF link (`node_links`) to the previous
+ * step the candidate that has a confirmed RF link (`core.node_links`) to the previous
  * node — else the nearest candidate within range. Because a consecutive (AA,BB)
  * hash pair is only realisable where two such repeaters are within range, the
  * adjacency chain disambiguates the 1-byte hashes; the chain's FIRST repeater is
@@ -165,8 +165,8 @@ export async function resolveSpamOrigin(
   // 1. Receptions that carry a path, with the observer's id, hop, location.
   const recRes = await query<ReceptionRow>(
     `SELECT p.rx_node_id, p.hop_count, p.path_hashes, n.lat AS olat, n.lon AS olon
-       FROM packets p
-       JOIN nodes n ON n.node_id = p.rx_node_id
+       FROM mesh.packets p
+       JOIN core.nodes n ON n.node_id = p.rx_node_id
       WHERE p.packet_hash = ANY($1)
         AND ($2::text[] IS NULL OR p.network = ANY($2))
         AND p.path_hashes IS NOT NULL AND cardinality(p.path_hashes) > 0
@@ -175,7 +175,7 @@ export async function resolveSpamOrigin(
         AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
         AND NOT EXISTS (
           SELECT 1
-          FROM nodes private_node
+          FROM core.nodes private_node
           WHERE private_node.name LIKE '%🚫%'
             AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
             AND (
@@ -202,7 +202,7 @@ export async function resolveSpamOrigin(
 
   // 2. Located nodes across the physical mesh, indexed by path-hash prefix.
   const nodeRes = await query<NodeLoc>(
-    `SELECT node_id, name, lat, lon FROM nodes
+    `SELECT node_id, name, lat, lon FROM core.nodes
       WHERE ($1::text[] IS NULL OR network = ANY($1))
         AND lat IS NOT NULL AND lon IS NOT NULL AND lat <> 0 AND lon <> 0
         AND (name IS NULL OR name NOT LIKE '%🚫%')
@@ -212,7 +212,7 @@ export async function resolveSpamOrigin(
   if (nodeRes.rows.length === 0) return null;
   const index = buildNodePathHashIndex(nodeRes.rows, [2, 4, 6]);
 
-  // 3. Confirmed RF links (node_links) among the candidate universe + observers,
+  // 3. Confirmed RF links (core.node_links) among the candidate universe + observers,
   //    so each hop can be resolved to the node that actually links to the next.
   const universe = new Set<string>();
   for (const r of cohort) {
@@ -225,7 +225,7 @@ export async function resolveSpamOrigin(
   if (universe.size > 0) {
     const uni = [...universe];
     const linkRes = await query<{ node_a_id: string; node_b_id: string }>(
-      `SELECT node_a_id, node_b_id FROM node_links
+      `SELECT node_a_id, node_b_id FROM core.node_links
         WHERE node_a_id = ANY($1) AND node_b_id = ANY($1)
           AND (observed_count > 0 OR itm_viable = true OR force_viable = true)`,
       [uni],

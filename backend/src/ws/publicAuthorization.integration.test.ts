@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import http from 'node:http';
 import { once } from 'node:events';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
 import { WebSocket } from 'ws';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 
 const databaseURL = process.env['TEST_INGEST_DATABASE_URL'];
 const redisURL = process.env['TEST_REDIS_URL'];
@@ -20,9 +19,8 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
   const name = `meshcore_ws_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseURL!); url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
+  await bootstrapBaseSchemaFixture(pool);
   const observer = 'AA'.repeat(32), source = 'CC'.repeat(32);
   await pool.query(`INSERT INTO nodes(node_id, public_key, network, name) VALUES
     ($1, $1, 'teesside', 'Observer'), ($2, $2, 'teesside', 'Relay')`, [observer, 'BB'.repeat(32)]);
@@ -70,9 +68,9 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
     // Frozen vo=1 and a stale WS private-name index cannot grant permission.
     await pool.query(`INSERT INTO private_node_prefixes(node_id, network, prefix_size_bytes, prefix)
       VALUES ($1, 'teesside', 1, 'AA'), ($2, 'teesside', 2, 'BBBB')`, [observer, 'BB'.repeat(32)]);
-    await pool.query('UPDATE public_visibility_state SET generation = generation + 1 WHERE singleton');
-    await pool.query(`UPDATE packet_visibility_materialization_state SET visibility_generation =
-      (SELECT generation FROM public_visibility_state WHERE singleton) WHERE singleton`);
+    await pool.query('UPDATE ops.public_visibility_state SET generation = generation + 1 WHERE singleton');
+    await pool.query(`UPDATE ops.packet_visibility_materialization_state SET visibility_generation =
+      (SELECT generation FROM ops.public_visibility_state WHERE singleton) WHERE singleton`);
     await pub.publish('meshcore:live', packet('revoked-observer'));
     await pub.publish('meshcore:live', packet('revoked-path', { rxNodeId: source, path: ['BBBB'], pathHashSizeBytes: 2 }));
     await delay(150);
@@ -83,7 +81,7 @@ test('F01 ready WebSocket batches and cached initial state obey current authorit
     assert.deepEqual(new Set(seen.filter((h) => h.startsWith('burst-'))), new Set(burst), 'a ready, bounded reader receives the full batch');
     // This DB is owned by the test. Missing authority suppresses broadcasts
     // and cached initial data, even though the cached epoch was once public.
-    await pool.query('ALTER TABLE public_visibility_state RENAME TO public_visibility_unavailable');
+    await pool.query('ALTER TABLE ops.public_visibility_state RENAME TO public_visibility_unavailable');
     await pub.publish('meshcore:live', packet('unavailable', { rxNodeId: source }));
     await delay(150);
     assert.equal(seen.includes('unavailable'), false);

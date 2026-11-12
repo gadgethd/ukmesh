@@ -3,11 +3,48 @@
 BEGIN;
 SET LOCAL lock_timeout = '5s';
 SET LOCAL statement_timeout = '30s';
-DROP TRIGGER IF EXISTS private_node_prefixes_visibility_insert ON private_node_prefixes;
-DROP TRIGGER IF EXISTS private_node_prefixes_visibility_update ON private_node_prefixes;
-DROP TRIGGER IF EXISTS private_node_prefixes_visibility_delete ON private_node_prefixes;
-DROP TRIGGER IF EXISTS private_node_prefixes_visibility_truncate ON private_node_prefixes;
-DROP FUNCTION IF EXISTS bump_visibility_for_changed_prefixes();
+-- 134 re-attaches the prefix fence to core.private_node_prefixes after 113 moved
+-- the registry, and 087 no longer creates any triggers. Any of these triggers
+-- left in place makes the function drop below fail with SQLSTATE 2BP01, so drop
+-- every historical name explicitly, on whichever relation currently owns the
+-- registry. Nothing else depends on bump_visibility_for_changed_prefixes() (only
+-- these triggers do), so an explicit list is enough and a bare CASCADE would
+-- also remove anything unexpected that ever attached to it.
+DO $fence_deps$
+DECLARE
+  registry regclass;
+  fence_trigger text;
+BEGIN
+  registry := COALESCE(
+    to_regclass('core.private_node_prefixes'),
+    to_regclass('public.private_node_prefixes')
+  );
+  IF registry IS NULL THEN
+    RETURN;
+  END IF;
+  FOREACH fence_trigger IN ARRAY ARRAY[
+    -- 134's row fence on the post-move registry.
+    'private_node_prefixes_visibility_insert_rows',
+    'private_node_prefixes_visibility_update_rows',
+    'private_node_prefixes_visibility_delete_rows',
+    -- 074's row fence name, kept for a database that still has it.
+    'private_node_prefixes_visibility_rows',
+    -- 066's statement triggers, still present pre-move or after a reapply.
+    'private_node_prefixes_visibility_insert',
+    'private_node_prefixes_visibility_update',
+    'private_node_prefixes_visibility_delete',
+    'private_node_prefixes_visibility_truncate'
+  ] LOOP
+    EXECUTE format('DROP TRIGGER IF EXISTS %I ON %s', fence_trigger, registry);
+  END LOOP;
+END
+$fence_deps$;
+-- The fence function follows the registry: it is created in public and only ever
+-- referenced from the relations above, so name every schema that can own a copy
+-- rather than relying on the caller's search_path.
+DROP FUNCTION IF EXISTS public.bump_visibility_for_changed_prefixes();
+DROP FUNCTION IF EXISTS core.bump_visibility_for_changed_prefixes();
+DROP FUNCTION IF EXISTS ops.bump_visibility_for_changed_prefixes();
 
 CREATE OR REPLACE FUNCTION bump_visibility_for_identity_table()
 RETURNS TRIGGER

@@ -14,7 +14,7 @@ const client = await pool.connect();
 try {
   await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
   const visibility = await client.query<{ generation: string }>(
-    'SELECT generation::text AS generation FROM public_visibility_state WHERE singleton = TRUE',
+    'SELECT generation::text AS generation FROM ops.public_visibility_state WHERE singleton = TRUE',
   );
   const query = client.query.bind(client);
   const legacyFilters = networkFilters(network);

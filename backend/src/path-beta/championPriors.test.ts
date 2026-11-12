@@ -22,9 +22,9 @@ test('loads all four count tables and fails visibly if a bounded model would be 
   const tables: string[] = [];
   await loadChampionPriors('ukmesh', async (sql, params) => {
     assert.equal(params[0], 'ukmesh');
-    tables.push(sql.match(/FROM (\w+)/)![1]!);
+    tables.push(sql.match(/FROM ([\w.]+)/)![1]!);
     return { rows: [] };
   });
-  assert.deepEqual(tables.sort(), ['path_corridor_priors', 'path_position_prefix_priors', 'path_position_transition_priors', 'path_transition_priors']);
+  assert.deepEqual(tables.sort(), ['analytics.path_corridor_priors', 'analytics.path_position_prefix_priors', 'analytics.path_position_transition_priors', 'analytics.path_transition_priors']);
   await assert.rejects(loadChampionPriors('ukmesh', async () => ({ rows: new Array(100_001) })), /PATH_CHAMPION_PRIOR_LIMIT/);
 });

@@ -7,6 +7,7 @@ import {
   packetBatchQueueWait,
   packetBatchRetryTotal,
   packetBatchSize,
+  packetBatchWriterContentionTotal,
   privacyFilterTotal,
 } from '../metrics.js';
 import {
@@ -57,6 +58,9 @@ const RETRYABLE_DATABASE_CODES = new Set([
 
 export type PacketBatchInput = {
   forwardingJson?: string | null;
+  packetUid?: string | null;
+  identityVersion?: string | null;
+  identityProvenance?: string | null;
   time: Date;
   packetHash: string;
   rxNodeId: string | null;
@@ -160,7 +164,7 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
     SELECT visibility.generation::text AS generation,
            materialized.visibility_generation::text AS materialized_generation,
            EXISTS (
-             SELECT 1 FROM privacy_rematerialization_queue
+             SELECT 1 FROM ops.privacy_rematerialization_queue
               WHERE status IN ('pending', 'processing', 'failed')
            ) AS remat_active,
            COALESCE(jsonb_agg(jsonb_build_object(
@@ -169,10 +173,10 @@ export async function loadCurrentPublicPrivacyPolicy(): Promise<PrivatePrefixCac
              'prefix_size_bytes', prefix.prefix_size_bytes,
              'prefix', prefix.prefix
            )) FILTER (WHERE prefix.node_id IS NOT NULL), '[]'::jsonb) AS prefixes
-      FROM public_visibility_state visibility
-      JOIN packet_visibility_materialization_state materialized
+      FROM ops.public_visibility_state visibility
+      JOIN ops.packet_visibility_materialization_state materialized
         ON materialized.singleton = visibility.singleton
-      LEFT JOIN private_node_prefixes prefix ON TRUE
+      LEFT JOIN core.private_node_prefixes prefix ON TRUE
      WHERE visibility.singleton = TRUE
      GROUP BY visibility.generation, materialized.visibility_generation
   `, [], AbortSignal.timeout(30_000));
@@ -213,8 +217,8 @@ function refreshPrivatePrefixCache(query: QueryFn): Promise<void> {
                 FILTER (WHERE prefix.node_id IS NOT NULL),
               '[]'::jsonb
             ) AS prefixes
-       FROM public_visibility_state visibility
-       LEFT JOIN private_node_prefixes prefix ON TRUE
+       FROM ops.public_visibility_state visibility
+       LEFT JOIN core.private_node_prefixes prefix ON TRUE
       WHERE visibility.singleton = TRUE
       GROUP BY visibility.generation`,
   ).then(({ rows }) => {
@@ -351,11 +355,12 @@ export async function persistEntriesCore(
     }
   }
 
-  const columnsPerRow = 27;
+  const columnsPerRow = 30;
   const casts = [
     'int', 'uuid', 'timestamptz', 'text', 'text', 'text', 'text', 'text', 'text',
     'int', 'int', 'int', 'double precision', 'double precision', 'text', 'text',
     'text', 'int', 'text[]', 'int', 'text', 'text', 'text', 'bigint', 'boolean', 'boolean', 'jsonb',
+    'text', 'text', 'text',
   ];
   const params: unknown[] = [];
   const values = entries.map(({ input: packet, observationId }, rowIndex) => {
@@ -395,6 +400,9 @@ export async function persistEntriesCore(
       privacy.isPrivate,
       privacy.pathIsValid,
       packet.forwardingJson ?? null,
+      packet.packetUid ?? null,
+      packet.identityVersion ?? null,
+      packet.identityProvenance ?? null,
     );
     const placeholders = Array.from(
       { length: columnsPerRow },
@@ -424,7 +432,7 @@ export async function persistEntriesCore(
          WHERE d.identity_rank = 1
            AND (d.observation_id_in IS NOT NULL OR NOT EXISTS (
              SELECT 1
-             FROM packets existing
+             FROM mesh.packets existing
              WHERE existing.time = d.time
                AND existing.packet_hash = d.packet_hash
                AND existing.rx_node_id IS NOT DISTINCT FROM d.rx_node_id
@@ -446,18 +454,20 @@ export async function persistEntriesCore(
       "SELECT pg_try_advisory_xact_lock(hashtext('meshcore:packet-batch-writer')) AS ok",
     );
     if (lock.rows[0]?.ok !== true) {
+      packetBatchWriterContentionTotal.inc();
+      console.warn('[packet-batch] writer contention: another ingest writer holds the batch lock');
       throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
     }
     const result = await txQuery<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
          SELECT generation
-           FROM public_visibility_state
+           FROM ops.public_visibility_state
           WHERE singleton = TRUE
           FOR KEY SHARE
        ),
        privacy_remat_state AS MATERIALIZED (
          SELECT EXISTS (
-           SELECT 1 FROM privacy_rematerialization_queue
+           SELECT 1 FROM ops.privacy_rematerialization_queue
             WHERE status IN ('pending', 'processing', 'failed')
          ) AS active
        ),
@@ -465,7 +475,8 @@ export async function persistEntriesCore(
          row_id, observation_id_in, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
          iata, packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
          advert_count, path_hashes, path_hash_size_bytes, network, transport_codes, region_scope,
-         prefix_cache_generation, classified_private, path_is_valid, forwarding_payload
+         prefix_cache_generation, classified_private, path_is_valid, forwarding_payload,
+         packet_uid, identity_version, identity_provenance
        ) AS (VALUES ${values}),
        classified AS MATERIALIZED (
          SELECT i.*,
@@ -490,7 +501,7 @@ export async function persistEntriesCore(
          ORDER BY observation_id, row_id
        ),
        claimed AS (
-         INSERT INTO ingest_observation_ledger
+         INSERT INTO mesh.ingest_observation_ledger
            (observation_id, observed_at, packet_hash, network)
          SELECT observation_id, time, packet_hash, network
          FROM candidate_rows
@@ -503,47 +514,50 @@ export async function persistEntriesCore(
          JOIN claimed USING (observation_id)
        ),
        inserted AS (
-         INSERT INTO packets (
+         INSERT INTO mesh.packets (
            observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
            packet_type, route_type, hop_count, rssi, snr, payload, companion_sender, raw_hex,
            advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
-           region_scope, is_private, visibility_ok
+           region_scope, is_private, visibility_ok, packet_uid, identity_version, identity_provenance
          )
          SELECT observation_id, time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix, iata,
                 packet_type, route_type, hop_count, rssi, snr, payload::jsonb, companion_sender, raw_hex,
                 advert_count, path_hashes, path_hash_size_bytes, network, transport_codes,
-                region_scope, is_private, path_is_valid AND NOT is_private
+                region_scope, is_private, path_is_valid AND NOT is_private,
+                CASE WHEN packet_uid IS NULL THEN NULL ELSE decode(packet_uid, 'hex') END,
+                identity_version, identity_provenance
          FROM new_rows
          RETURNING 1
        ),
        forwarding_intents AS (
-         INSERT INTO packet_forwarding_outbox (observation_id, payload)
+         INSERT INTO mesh.packet_forwarding_outbox (observation_id, payload)
          SELECT observation_id, forwarding_payload FROM new_rows
          WHERE forwarding_payload IS NOT NULL AND path_is_valid AND NOT is_private
-           AND (EXISTS (SELECT 1 FROM owner_packet_share_rules rule
+           AND (EXISTS (SELECT 1 FROM core.owner_packet_share_rules rule
                         WHERE rule.node_id = new_rows.rx_node_id AND rule.enabled)
-             OR EXISTS (SELECT 1 FROM owner_public_feed_nodes feed_node
-                        JOIN owner_public_feed_settings setting USING (owner_username)
+             OR EXISTS (SELECT 1 FROM core.owner_public_feed_nodes feed_node
+                        JOIN core.owner_public_feed_settings setting USING (owner_username)
                         WHERE feed_node.node_id = new_rows.rx_node_id AND setting.enabled))
          ON CONFLICT (observation_id) DO NOTHING
          RETURNING 1
        ),
        path_inserted AS (
-         INSERT INTO packet_paths (
+         INSERT INTO mesh.packet_paths (
            time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
            route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
-           is_private, visibility_ok, network, observation_id
+           is_private, visibility_ok, network, observation_id, packet_uid
          )
          SELECT time, packet_hash, rx_node_id, src_node_id, topic, topic_prefix,
                 route_type, hop_count, rssi, snr, path_hashes, path_hash_size_bytes,
-                is_private, path_is_valid AND NOT is_private, network, observation_id
+                is_private, path_is_valid AND NOT is_private, network, observation_id,
+                CASE WHEN packet_uid IS NULL THEN NULL ELSE decode(packet_uid, 'hex') END
          FROM new_rows
          WHERE path_hashes IS NOT NULL AND path_hash_size_bytes > 1
          ON CONFLICT DO NOTHING
          RETURNING 1
        ),
        observer_updates AS (
-         INSERT INTO nodes (
+         INSERT INTO core.nodes (
            node_id, iata, observer_iata, last_seen, last_rx_at, is_online,
            network, last_mqtt_observer_seen_at
          )
@@ -570,7 +584,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        network_sightings AS (
-         INSERT INTO node_network_sightings
+         INSERT INTO core.node_network_sightings
            (node_id, network, first_seen_at, last_seen_at)
          SELECT src_node_id, network, MIN(time), MAX(time)
          FROM new_rows
@@ -580,11 +594,11 @@ export async function persistEntriesCore(
          GROUP BY src_node_id, network
          ON CONFLICT (node_id, network) DO UPDATE SET
            first_seen_at = LEAST(
-             node_network_sightings.first_seen_at,
+             core.node_network_sightings.first_seen_at,
              EXCLUDED.first_seen_at
            ),
            last_seen_at = GREATEST(
-             node_network_sightings.last_seen_at,
+             core.node_network_sightings.last_seen_at,
              EXCLUDED.last_seen_at
            )
          RETURNING 1
@@ -603,7 +617,7 @@ export async function persistEntriesCore(
          ORDER BY network, time::date, hop_count DESC, row_id ASC
        ),
        daily_updates AS (
-         INSERT INTO packet_daily_stats
+         INSERT INTO mesh.packet_daily_stats
            (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
          SELECT network, day, hop_count, packet_hash, time, NOW()
          FROM daily_candidates
@@ -612,12 +626,12 @@ export async function persistEntriesCore(
            max_hop_hash = EXCLUDED.max_hop_hash,
            max_hop_seen_at = EXCLUDED.max_hop_seen_at,
            updated_at = NOW()
-         WHERE packet_daily_stats.max_hop_count IS NULL
-            OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count
+         WHERE mesh.packet_daily_stats.max_hop_count IS NULL
+            OR EXCLUDED.max_hop_count > mesh.packet_daily_stats.max_hop_count
          RETURNING 1
        ),
        hourly_updates AS (
-         INSERT INTO packet_hourly_stats (
+         INSERT INTO mesh.packet_hourly_stats (
            network, hour, packet_type, hop_count, route_type,
            transport_code, region_scope, packet_count,
            rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -650,16 +664,16 @@ export async function persistEntriesCore(
            network, hour, packet_type, hop_count, route_type,
            transport_code, region_scope
          ) DO UPDATE SET
-           packet_count = packet_hourly_stats.packet_count + EXCLUDED.packet_count,
-           rssi_sum = packet_hourly_stats.rssi_sum + EXCLUDED.rssi_sum,
-           rssi_count = packet_hourly_stats.rssi_count + EXCLUDED.rssi_count,
-           snr_sum = packet_hourly_stats.snr_sum + EXCLUDED.snr_sum,
-           snr_count = packet_hourly_stats.snr_count + EXCLUDED.snr_count,
+           packet_count = mesh.packet_hourly_stats.packet_count + EXCLUDED.packet_count,
+           rssi_sum = mesh.packet_hourly_stats.rssi_sum + EXCLUDED.rssi_sum,
+           rssi_count = mesh.packet_hourly_stats.rssi_count + EXCLUDED.rssi_count,
+           snr_sum = mesh.packet_hourly_stats.snr_sum + EXCLUDED.snr_sum,
+           snr_count = mesh.packet_hourly_stats.snr_count + EXCLUDED.snr_count,
            updated_at = NOW()
          RETURNING 1
        ),
        packet_region_updates AS (
-         INSERT INTO observer_region_packet_sightings
+         INSERT INTO core.observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, MIN(time), MAX(time)
          FROM new_rows
@@ -683,7 +697,7 @@ export async function persistEntriesCore(
          RETURNING 1
        ),
        observer_region_updates AS (
-         INSERT INTO observer_region_observer_sightings
+         INSERT INTO core.observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, MIN(time), MAX(time)
          FROM new_rows

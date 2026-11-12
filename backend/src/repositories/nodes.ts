@@ -78,7 +78,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              raw_hex,
              path_hash_size_bytes,
              path_hashes
-           FROM packets
+           FROM mesh.packets
            WHERE network = 'test'
            ORDER BY time DESC
            LIMIT 2000`,
@@ -101,8 +101,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                n.iata,
                n.hardware_model,
                n.firmware_version
-             FROM node_identity_status_samples nss
-             LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id
+             FROM core.node_identity_status_samples nss
+             LEFT JOIN core.node_identity_nodes n ON n.node_id = nss.node_id
              WHERE nss.network = 'test'
              ORDER BY nss.node_id, nss.time DESC
            ) latest
@@ -121,7 +121,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
              channel_utilization,
              air_util_tx,
              stats
-           FROM node_identity_status_samples
+           FROM core.node_identity_status_samples
            WHERE network = 'test'
            ORDER BY time DESC`,
           [],
@@ -167,7 +167,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                WHEN jsonb_typeof(stats->'tx_queue_depth_peak') = 'number' THEN (stats->>'tx_queue_depth_peak')::double precision
                ELSE NULL
              END AS tx_queue_depth_peak
-           FROM node_identity_status_samples
+           FROM core.node_identity_status_samples
            WHERE node_id = $1
              AND network = 'test'
              AND time > NOW() - INTERVAL '24 hours'
@@ -194,8 +194,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         OR STRPOS(LOWER(n.node_id), LOWER(${searchParameter})) > 0
         OR STRPOS(LOWER(COALESCE(n.iata, '')), LOWER(${searchParameter})) > 0
         OR EXISTS (
-          SELECT 1 FROM node_name_history history
-          JOIN nodes name_source ON name_source.node_id = history.node_id
+          SELECT 1 FROM core.node_name_history history
+          JOIN core.nodes name_source ON name_source.node_id = history.node_id
           WHERE history.node_id = ANY(n.identity_source_ids)
             AND history.name NOT LIKE '%🚫%'
             AND (name_source.name IS NULL OR name_source.name NOT LIKE '%🚫%')
@@ -216,9 +216,9 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         .join(', ');
       const result = await query<Record<string, unknown>>(
         `SELECT ${selectedFields}
-           FROM ${filters.nodeSource ?? 'node_identity_nodes'} n
+           FROM ${filters.nodeSource ?? 'core.node_identity_nodes'} n
           WHERE ${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
-            AND NOT EXISTS (SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id)
+            AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
             ${filters.nodesAlias('n')}
             ${searchCondition}
             AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})
@@ -230,13 +230,13 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
     },
 
     async listAllNodeIds() {
-      return (await query<{ node_id: string }>('SELECT node_id FROM node_identity_nodes')).rows;
+      return (await query<{ node_id: string }>('SELECT node_id FROM core.node_identity_nodes')).rows;
     },
 
     async listInferredPackets(scope, limit) {
       return (await query<InferredPacketRow>(
         `SELECT p.packet_hash, p.time::text, p.path_hashes, p.path_hash_size_bytes
-           FROM packets p
+           FROM mesh.packets p
           WHERE p.time > NOW() - INTERVAL '7 days'
             ${scope.packetsAlias('p')}
             AND p.path_hash_size_bytes > 1
@@ -253,12 +253,12 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       const links = (await query<Omit<NodeLinkRow, 'recent_count_72h'>>(
         `WITH requested_identity AS MATERIALIZED (
            SELECT COALESCE(
-             (SELECT canonical_node_id FROM node_identity_aliases
+             (SELECT canonical_node_id FROM core.node_identity_aliases
                WHERE source_node_id = UPPER(BTRIM(${idParam}))),
              UPPER(BTRIM(${idParam}))
            ) AS node_id
          ), link_nodes AS MATERIALIZED (
-           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'node_identity_nodes'}
+           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'core.node_identity_nodes'}
          ), source_node AS MATERIALIZED (
            SELECT node_id
              FROM link_nodes sn
@@ -277,7 +277,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
                   THEN nl.count_a_to_b ELSE nl.count_b_to_a END AS count_this_to_peer,
              CASE WHEN nl.node_a_id = (SELECT node_id FROM requested_identity)
                   THEN nl.count_b_to_a ELSE nl.count_a_to_b END AS count_peer_to_this
-             FROM node_identity_links nl
+             FROM core.node_identity_links nl
             WHERE (nl.node_a_id = (SELECT node_id FROM requested_identity)
                    OR nl.node_b_id = (SELECT node_id FROM requested_identity))
               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
@@ -321,7 +321,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
            SELECT ARRAY(SELECT source_node_id FROM peer_aliases) AS ids
          ), recent_counts AS (
            SELECT pa.peer_id, COUNT(*)::integer AS recent_count_72h
-             FROM packets p
+             FROM mesh.packets p
              JOIN peer_aliases pa ON pa.source_node_id = CASE
                WHEN p.rx_node_id = ANY((SELECT ids FROM source_ids)::text[])
                  THEN p.src_node_id ELSE p.rx_node_id END

@@ -12,7 +12,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
 export function privatePrefixPathFilterSql(columnExpr: string, alias = 'private_prefix'): string {
   return `EXISTS (
            SELECT 1
-           FROM private_node_prefixes ${alias}
+           FROM core.private_node_prefixes ${alias}
            WHERE LENGTH(${columnExpr}) > 0
              AND LEFT(UPPER(${alias}.node_id), LENGTH(${columnExpr}))
                  = UPPER(${columnExpr})
@@ -44,8 +44,8 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         count: number;
       }>(
         `SELECT pp.prefix, pp.receiver_region, pp.prev_prefix, pp.node_id, pp.probability, pp.count
-         FROM path_prefix_priors pp
-         JOIN nodes n ON n.node_id = pp.node_id
+         FROM analytics.path_prefix_priors pp
+         JOIN core.nodes n ON n.node_id = pp.node_id
          WHERE pp.network = $1
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            AND NOT ${privatePrefixPathFilterSql('pp.prefix')}
@@ -62,9 +62,9 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         count: number;
       }>(
         `SELECT pt.from_node_id, pt.to_node_id, pt.receiver_region, pt.probability, pt.count
-         FROM path_transition_priors pt
-         JOIN nodes from_node ON from_node.node_id = pt.from_node_id
-         JOIN nodes to_node ON to_node.node_id = pt.to_node_id
+         FROM analytics.path_transition_priors pt
+         JOIN core.nodes from_node ON from_node.node_id = pt.from_node_id
+         JOIN core.nodes to_node ON to_node.node_id = pt.to_node_id
          WHERE pt.network = $1
            AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
            AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
@@ -90,9 +90,9 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         `SELECT pe.from_node_id, pe.to_node_id, pe.receiver_region, pe.hour_bucket,
                 pe.observed_count, pe.expected_count, pe.missing_count, pe.directional_support,
                 pe.recency_score, pe.reliability, pe.itm_path_loss_db, pe.score, pe.consistency_penalty
-         FROM path_edge_priors pe
-         JOIN nodes from_node ON from_node.node_id = pe.from_node_id
-         JOIN nodes to_node ON to_node.node_id = pe.to_node_id
+         FROM analytics.path_edge_priors pe
+         JOIN core.nodes from_node ON from_node.node_id = pe.from_node_id
+         JOIN core.nodes to_node ON to_node.node_id = pe.to_node_id
          WHERE pe.network = $1
            AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
            AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
@@ -109,11 +109,11 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         count: number;
       }>(
         `SELECT pm.receiver_region, pm.hour_bucket, pm.motif_len, pm.node_ids, pm.probability, pm.count
-         FROM path_motif_priors pm
+         FROM analytics.path_motif_priors pm
          WHERE pm.network = $1
            AND NOT EXISTS (
              SELECT 1
-             FROM nodes private_node
+             FROM core.nodes private_node
              WHERE private_node.name LIKE '%🚫%'
                AND private_node.node_id = ANY(string_to_array(pm.node_ids, '>'))
            )
@@ -130,7 +130,7 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         recommended_threshold: number;
       }>(
         `SELECT evaluated_packets, top1_accuracy, mean_pred_confidence, confidence_scale, confidence_bias, recommended_threshold
-         FROM path_model_calibration
+         FROM analytics.path_model_calibration
          WHERE network = $1`,
         [network],
       ),

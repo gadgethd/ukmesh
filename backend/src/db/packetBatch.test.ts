@@ -12,9 +12,9 @@ test('a poison row cannot reject the valid packet sharing its transaction', asyn
   const query = async (sql: string, params: unknown[] = []) => {
     if (sql.includes('jsonb_agg(jsonb_build_object')) return { rows: [{ generation: '7', prefixes: [] }] };
     if (sql.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
-    const count = params.length / 27;
+    const count = params.length / 30;
     for (let index = 0; index < count; index++) {
-      if (params[index * 27 + 9] === 5.5) throw Object.assign(new Error('invalid integer'), { code: '22P02' });
+      if (params[index * 30 + 9] === 5.5) throw Object.assign(new Error('invalid integer'), { code: '22P02' });
     }
     return { rows: Array.from({ length: count }, (_, row_id) => ({ row_id, is_private: false, visibility_ok: true, prefix_cache_fresh: true })) };
   };
@@ -87,15 +87,15 @@ test('packet batches retry transient database failures without losing the pendin
   assert.equal(attempts, 3);
   assert.doesNotMatch(statements[0]!, /new_rows AS MATERIALIZED/);
   assert.match(statements[3]!, /new_rows AS MATERIALIZED/);
-  assert.match(statements[3]!, /INSERT INTO ingest_observation_ledger/);
+  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?ingest_observation_ledger/);
   assert.match(statements[3]!, /JOIN claimed/);
   assert.match(statements[3]!, /existing\.packet_hash = d\.packet_hash/);
   assert.match(statements[3]!, /ROW_NUMBER\(\) OVER/);
   assert.match(statements[2]!, /pg_try_advisory_xact_lock\(hashtext\(.meshcore:packet-batch-writer.\)\)/);
-  assert.match(statements[3]!, /INSERT INTO packets \(\s*observation_id,/);
+  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?packets \(\s*observation_id,/);
   assert.match(statements[3]!, /COALESCE\(i\.observation_id_in, gen_random_uuid\(\)\) AS observation_id/);
   assert.match(statements[3]!, /SELECT observation_id, time, packet_hash/);
-  assert.match(statements[3]!, /network, observation_id\s+FROM new_rows/);
+  assert.match(statements[3]!, /network, observation_id[\s\S]*FROM new_rows/);
   assert.match(statements[3]!, /FOR KEY SHARE/);
   assert.doesNotMatch(statements[3]!, /FROM private_node_prefixes pp/);
 });
@@ -131,7 +131,7 @@ test('F03 batch arbitration retains distinct same-hash paths at one hop count', 
   await flush();
   await Promise.all([first, second]);
   assert.match(batchSql, /incoming/);
-  assert.equal(batchParams.length, 54);
+  assert.equal(batchParams.length, 60);
 });
 
 test('F02 refuses a contended writer before any mutation and gates the hourly predicate', async () => {

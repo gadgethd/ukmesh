@@ -208,7 +208,7 @@ export async function buildOwnerDashboard(nodeIds: string[]) {
             n.iata,
             n.role,
             n.identity_source_ids AS members
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
       WHERE n.node_id IN (
         SELECT meshcore_canonical_node_id(source_node_id)
           FROM unnest($1::text[]) AS source(source_node_id)

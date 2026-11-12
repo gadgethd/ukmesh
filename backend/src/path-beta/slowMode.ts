@@ -195,7 +195,7 @@ async function recordSlowResolution(
 ): Promise<void> {
   const { query } = await import('../db/index.js');
   await query(
-    `INSERT INTO path_slow_resolutions
+    `INSERT INTO analytics.path_slow_resolutions
        (packet_hash, network, window_ms, observers_seen, resolved_at, canonical_path)
      VALUES ($1, $2, $3, $4, now(), $5)
      ON CONFLICT (packet_hash, network) DO UPDATE SET

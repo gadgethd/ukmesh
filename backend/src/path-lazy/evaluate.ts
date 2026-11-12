@@ -103,7 +103,7 @@ function degradePacketRows(rows: Array<Record<string, unknown>>): void {
   }
 }
 
-/** Truncate packets-table path_hashes to 1-byte prefixes; force size = 1. */
+/** Truncate mesh.packets-table path_hashes to 1-byte prefixes; force size = 1. */
 function degradingQuery(real: QueryFn): QueryFn {
   return (async (text: string, params?: unknown[]) => {
     const res = await real(text, params);
@@ -144,7 +144,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   const scope = expandResolverScope(network);
 
   const nodeRows = await analyticsQuery<{ node_id: string; lat: number; lon: number }>(
-    `SELECT node_id, lat, lon FROM nodes
+    `SELECT node_id, lat, lon FROM core.nodes
       WHERE network = ANY($1) AND lat IS NOT NULL AND lon IS NOT NULL AND lat != 0 AND lon != 0
         AND (name IS NULL OR name NOT LIKE '%🚫%')`,
     [scope],
@@ -162,7 +162,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   }>(
     `SELECT DISTINCT ON (packet_hash) packet_hash, network, rx_node_id, src_node_id, path_hashes,
             time::text AS observed_at
-      FROM packets
+      FROM mesh.packets
       WHERE network = ANY($1) AND path_hash_size_bytes > 1 AND path_hashes IS NOT NULL
         AND cardinality(path_hashes) >= 2 AND rx_node_id IS NOT NULL AND src_node_id IS NOT NULL
         AND time > NOW() - INTERVAL '45 days'
@@ -242,7 +242,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
       rx_node_id: string;
     }>(
       `SELECT DISTINCT src_node_id, rx_node_id
-         FROM path_corridor_priors
+         FROM analytics.path_corridor_priors
         WHERE network = ANY($1)
           AND (${pairClauses.join(' OR ')})
        `,
@@ -276,7 +276,7 @@ async function loadGoldPackets(network: string, sampleSize: number): Promise<Gol
   const pairCount = new Map<string, number>();
   if (fromIds.size > 0) {
     const rows = await analyticsQuery<{ from_node_id: string; to_node_id: string; c: string }>(
-      `SELECT from_node_id, to_node_id, SUM(count)::text as c FROM path_transition_priors
+      `SELECT from_node_id, to_node_id, SUM(count)::text as c FROM analytics.path_transition_priors
         WHERE network = ANY($1) AND from_node_id = ANY($2) AND to_node_id = ANY($3)
         GROUP BY from_node_id, to_node_id`,
       [scope, [...fromIds], [...toIds]],

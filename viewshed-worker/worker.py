@@ -281,15 +281,15 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
         cur.execute(
             '''SELECT
                  (SELECT MAX(p.time)
-                    FROM packets p
+                    FROM mesh.packets p
                    WHERE p.snr IS NOT NULL
                      AND p.rx_node_id IS NOT NULL
                      AND p.src_node_id IS NOT NULL
                      AND p.rx_node_id <> p.src_node_id
                      AND p.hop_count = 0
                      AND p.time > NOW() - (%s * INTERVAL '1 hour')),
-                 (SELECT MAX(nl.itm_computed_at) FROM node_links nl),
-                 (SELECT COUNT(*) FROM node_links nl
+                 (SELECT MAX(nl.itm_computed_at) FROM core.node_links nl),
+                 (SELECT COUNT(*) FROM core.node_links nl
                    WHERE nl.itm_path_loss_db IS NOT NULL AND nl.force_viable = false)''',
             (RADIO_NEIGHBOR_MAX_AGE_HOURS,),
         )
@@ -305,7 +305,7 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
                 GREATEST(p.rx_node_id, p.src_node_id) AS node_b_id,
                 PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY p.snr) AS median_snr_db,
                 COUNT(*)                               AS packet_count
-              FROM packets p
+              FROM mesh.packets p
               WHERE p.snr IS NOT NULL
                 AND p.rx_node_id IS NOT NULL
                 AND p.src_node_id IS NOT NULL
@@ -319,7 +319,7 @@ def refresh_rf_calibration(db, force: bool = False) -> None:
               nl.itm_path_loss_db,
               lps.packet_count    AS neighbor_report_count,
               lps.median_snr_db   AS neighbor_best_snr_db
-            FROM node_links nl
+            FROM core.node_links nl
             JOIN link_packet_stats lps
               ON lps.node_a_id = nl.node_a_id
              AND lps.node_b_id = nl.node_b_id
@@ -450,7 +450,7 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                 a_id, b_id = sorted((reporter_id, peer_id))
                 cur.execute(
                     '''
-                    INSERT INTO node_links (
+                    INSERT INTO core.node_links (
                       node_a_id, node_b_id, observed_count, last_observed, count_a_to_b, count_b_to_a
                     )
                     VALUES (%s, %s, 0, NOW(), 0, 0)
@@ -460,7 +460,7 @@ def refresh_radio_neighbor_reports(db, r_client, force: bool = False) -> None:
                 )
                 cur.execute(
                     '''
-                    INSERT INTO node_link_radio_reports (
+                    INSERT INTO core.node_link_radio_reports (
                       node_a_id, node_b_id, reporter_node_id, peer_node_id,
                       last_snr_db, best_snr_db, last_seen, sample_count
                     )
@@ -506,7 +506,7 @@ def refresh_support_context(db, force: bool = False) -> None:
         cur.execute(
             '''WITH positioned AS (
                  SELECT node_id, lat, lon
-                 FROM nodes
+                 FROM core.nodes
                  WHERE lat IS NOT NULL
                    AND lon IS NOT NULL
                    AND lat BETWEEN %s AND %s
@@ -516,7 +516,7 @@ def refresh_support_context(db, force: bool = False) -> None:
                    AND (role IS NULL OR role = 2)
                ), viable AS (
                  SELECT node_a_id, node_b_id, itm_viable, force_viable
-                 FROM node_links
+                 FROM core.node_links
                  WHERE itm_viable = true OR force_viable = true
                )
                SELECT
@@ -535,7 +535,7 @@ def refresh_support_context(db, force: bool = False) -> None:
         cur.execute(
             '''
             SELECT node_id, lat, lon
-            FROM nodes
+            FROM core.nodes
             WHERE lat IS NOT NULL
               AND lon IS NOT NULL
               AND lat BETWEEN %s AND %s
@@ -551,9 +551,9 @@ def refresh_support_context(db, force: bool = False) -> None:
             '''
             SELECT nl.node_a_id, nl.node_b_id,
                    na.lat, na.lon, nb.lat, nb.lon
-            FROM node_links nl
-            JOIN nodes na ON na.node_id = nl.node_a_id
-            JOIN nodes nb ON nb.node_id = nl.node_b_id
+            FROM core.node_links nl
+            JOIN core.nodes na ON na.node_id = nl.node_a_id
+            JOIN core.nodes nb ON nb.node_id = nl.node_b_id
             WHERE na.lat IS NOT NULL
               AND na.lon IS NOT NULL
               AND nb.lat IS NOT NULL
@@ -1136,8 +1136,8 @@ def already_calculated(db, node_id: str, *, require_predicted_links: bool = Fals
     with db.cursor() as cur:
         cur.execute(
             '''SELECT 1
-               FROM node_coverage nc
-               LEFT JOIN nodes n ON n.node_id = nc.node_id
+               FROM core.node_coverage nc
+               LEFT JOIN core.nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s
                  AND nc.model_version >= %s
                  AND nc.calculation_status IN ('computed', 'permanent')
@@ -1180,8 +1180,8 @@ def replay_coverage_side_effects(db, r_client, node_id: str) -> None:
     with db.cursor() as cur:
         cur.execute(
             '''SELECT geom, strength_geoms, radius_m, elevation_m
-               FROM node_coverage nc
-               LEFT JOIN nodes n ON n.node_id = nc.node_id
+               FROM core.node_coverage nc
+               LEFT JOIN core.nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s''',
             (node_id,),
         )
@@ -1201,7 +1201,7 @@ def _replay_link_jobs(db, r_client, node_id: str, radius_m: Optional[float]) -> 
     """Reload the node position and enqueue physical link jobs (idempotent)."""
     with db.cursor() as cur:
         cur.execute(
-            'SELECT lat, lon FROM nodes WHERE node_id = %s',
+            'SELECT lat, lon FROM core.nodes WHERE node_id = %s',
             (node_id,),
         )
         row = cur.fetchone()
@@ -1236,7 +1236,7 @@ def store_coverage(
 ):
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (
+            '''INSERT INTO core.node_coverage (
                    node_id, geom, strength_geoms, antenna_height_m, radius_m,
                    model_version, calculation_status, permanent_reason,
                    last_error, retry_after
@@ -1256,7 +1256,7 @@ def store_coverage(
             (node_id, json.dumps(geom), json.dumps(strength_geoms), antenna_height_m, radius_m, COVERAGE_MODEL_VERSION),
         )
         cur.execute(
-            'UPDATE nodes SET elevation_m = %s WHERE node_id = %s',
+            'UPDATE core.nodes SET elevation_m = %s WHERE node_id = %s',
             (round(elevation_m, 1), node_id),
         )
     if commit:
@@ -1274,7 +1274,7 @@ def store_permanent_coverage(
     safe_reason = str(reason).strip()[:240] or 'unsupported'
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_coverage (
+            '''INSERT INTO core.node_coverage (
                    node_id, geom, strength_geoms, antenna_height_m, radius_m,
                    model_version, calculation_status, permanent_reason,
                    last_error, retry_after, is_planned
@@ -1319,8 +1319,8 @@ def load_positioned_repeaters(db) -> dict[str, dict]:
         cur.execute(
             '''
             SELECT n.node_id, n.lat, n.lon, n.elevation_m, n.name, n.role, nc.radius_m, nc.antenna_height_m
-            FROM nodes n
-            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            FROM core.nodes n
+            LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
             WHERE n.lat IS NOT NULL
               AND n.lon IS NOT NULL
               AND n.lat BETWEEN %s AND %s
@@ -1357,7 +1357,7 @@ def refresh_link_topology(db, force: bool = False) -> None:
     nodes = load_positioned_repeaters(db)
     with db.cursor() as cur:
         cur.execute(
-            'SELECT node_a_id, node_b_id FROM node_links WHERE itm_viable = true OR force_viable = true',
+            'SELECT node_a_id, node_b_id FROM core.node_links WHERE itm_viable = true OR force_viable = true',
         )
         physical_pairs = {link_pair_key(a_id, b_id) for a_id, b_id in cur.fetchall()}
 
@@ -1521,7 +1521,7 @@ def compute_planned_links(db, lat: float, lon: float, elevation_m: float,
 def store_planned_links(db, node_id: str, links: list[dict]) -> None:
     with db.cursor() as cur:
         cur.execute(
-            'UPDATE node_coverage SET predicted_links = %s::jsonb WHERE node_id = %s',
+            'UPDATE core.node_coverage SET predicted_links = %s::jsonb WHERE node_id = %s',
             (json.dumps(links), node_id),
         )
     db.commit()
@@ -1550,7 +1550,7 @@ def upsert_link_pair(db, a_id: str, b_id: str, inc_atob: int, inc_btoa: int, inc
     obs_delta = inc_atob + inc_btoa
     with db.cursor() as cur:
         cur.execute(
-            '''INSERT INTO node_links
+            '''INSERT INTO core.node_links
                    (node_a_id, node_b_id, observed_count, last_observed,
                     count_a_to_b, count_b_to_a, multibyte_observed_count)
                VALUES (%s, %s, %s, NOW(), %s, %s, %s)
@@ -1576,14 +1576,14 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
     # race-safe insert-and-reread path for a genuinely absent pair.
     select_pair_sql = '''SELECT observed_count, itm_computed_at, itm_path_loss_db, itm_viable,
                                 count_a_to_b, count_b_to_a, multibyte_observed_count
-                         FROM node_links
+                         FROM core.node_links
                          WHERE node_a_id = %s AND node_b_id = %s'''
     with db.cursor() as cur:
         cur.execute(select_pair_sql, (a_id, b_id))
         row = cur.fetchone()
         if row is None:
             cur.execute(
-                '''INSERT INTO node_links
+                '''INSERT INTO core.node_links
                      (node_a_id, node_b_id, observed_count, last_observed,
                       count_a_to_b, count_b_to_a, multibyte_observed_count)
                    VALUES (%s, %s, 0, NOW(), 0, 0, 0)
@@ -1626,7 +1626,7 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
                 a['elevation_m'] = a_elev
                 with db.cursor() as cur:
                     cur.execute(
-                        'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                        'UPDATE core.nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
                         (round(a_elev, 1), a_id),
                     )
             if b_elev is None:
@@ -1634,7 +1634,7 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
                 b['elevation_m'] = b_elev
                 with db.cursor() as cur:
                     cur.execute(
-                        'UPDATE nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
+                        'UPDATE core.nodes SET elevation_m = %s WHERE node_id = %s AND elevation_m IS NULL',
                         (round(b_elev, 1), b_id),
                     )
             result = compute_path_loss(
@@ -1648,7 +1648,7 @@ def ensure_physical_link_metrics(db, a_id: str, a: dict, b_id: str, b: dict):
             itm_viable = result.viable
             with db.cursor() as cur:
                 cur.execute(
-                    '''UPDATE node_links
+                    '''UPDATE core.node_links
                        SET itm_path_loss_db = %s,
                            itm_viable = %s,
                            itm_computed_at = NOW(),
@@ -1856,7 +1856,7 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
             try:
                 with db.cursor() as cur:
                     cur.execute(
-                        'SELECT 1 FROM public.link_job_commits WHERE job_id = %s',
+                        'SELECT 1 FROM ops.link_job_commits WHERE job_id = %s',
                         (job_id,),
                     )
                     already_committed = cur.fetchone() is not None
@@ -1890,7 +1890,7 @@ def process_claimed_link_job(db, r_client, claimed) -> None:
                             json.dumps(job, separators=(',', ':'), sort_keys=True).encode()
                         ).hexdigest()
                         cur.execute(
-                            '''INSERT INTO public.link_job_commits
+                            '''INSERT INTO ops.link_job_commits
                                  (job_id, job_type, generation, logical_job_id, payload_hash)
                                VALUES (%s, %s, %s, %s, %s)
                                ON CONFLICT (job_id) DO NOTHING''',
@@ -1927,8 +1927,8 @@ def enqueue_physical_link_jobs_for_node(db, r_client, node_id: str, lat: float, 
         cur.execute(
             '''
             SELECT n.node_id, n.lat, n.lon, nc.radius_m
-            FROM nodes n
-            LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+            FROM core.nodes n
+            LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
             WHERE n.node_id <> %s
               AND n.lat IS NOT NULL
               AND n.lon IS NOT NULL
@@ -1961,8 +1961,8 @@ def enqueue_uncovered(db, r_client):
     # Remove any coverage that was previously computed for hidden or non-repeater nodes.
     with db.cursor() as cur:
         cur.execute("""
-            DELETE FROM node_coverage WHERE node_id IN (
-                SELECT node_id FROM nodes
+            DELETE FROM core.node_coverage WHERE node_id IN (
+                SELECT node_id FROM core.nodes
                 WHERE name LIKE '%🚫%' OR (role IS NOT NULL AND role != 2)
             )
         """)
@@ -1971,8 +1971,8 @@ def enqueue_uncovered(db, r_client):
     with db.cursor() as cur:
         cur.execute('''
             SELECT n.node_id, n.lat, n.lon
-            FROM nodes n
-            LEFT JOIN node_coverage nc ON n.node_id = nc.node_id
+            FROM core.nodes n
+            LEFT JOIN core.node_coverage nc ON n.node_id = nc.node_id
             WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
               AND n.lat BETWEEN %s AND %s
               AND n.lon BETWEEN %s AND %s
@@ -2045,7 +2045,7 @@ def recover_planned_coverage_jobs(db, r_client) -> int:
                   AND expires_at > NOW()'''
         )
         cur.execute(
-            '''DELETE FROM node_coverage coverage
+            '''DELETE FROM core.node_coverage coverage
                 USING planned_coverage_jobs jobs
                WHERE coverage.node_id = jobs.job_id
                  AND coverage.is_planned = TRUE
@@ -2170,7 +2170,7 @@ def process_planned_job(
                 (expires_at, job_id),
             )
             cur.execute(
-                '''UPDATE node_coverage
+                '''UPDATE core.node_coverage
                       SET is_planned = TRUE, expires_at = %s
                     WHERE node_id = %s''',
                 (expires_at, job_id),
@@ -2262,8 +2262,8 @@ def process_job(
         with db.cursor() as cur:
             cur.execute(
                 '''SELECT n.name, n.role, nc.antenna_height_m
-                   FROM nodes n
-                   LEFT JOIN node_coverage nc ON nc.node_id = n.node_id
+                   FROM core.nodes n
+                   LEFT JOIN core.node_coverage nc ON nc.node_id = n.node_id
                    WHERE n.node_id = %s''',
                 (node_id,),
             )
@@ -2631,13 +2631,13 @@ def resolve_node_ref(db, ref: str) -> dict:
     with db.cursor() as cur:
         if len(ref) == 64 and all(ch in '0123456789abcdefABCDEF' for ch in ref):
             cur.execute(
-                'SELECT node_id, name, lat, lon, elevation_m FROM nodes WHERE lower(node_id) = lower(%s)',
+                'SELECT node_id, name, lat, lon, elevation_m FROM core.nodes WHERE lower(node_id) = lower(%s)',
                 (ref,),
             )
             rows = cur.fetchall()
         elif len(ref) >= 6 and all(ch in '0123456789abcdefABCDEF' for ch in ref):
             cur.execute(
-                'SELECT node_id, name, lat, lon, elevation_m FROM nodes WHERE lower(node_id) LIKE lower(%s) ORDER BY node_id LIMIT 2',
+                'SELECT node_id, name, lat, lon, elevation_m FROM core.nodes WHERE lower(node_id) LIKE lower(%s) ORDER BY node_id LIMIT 2',
                 (f'{ref}%',),
             )
             rows = cur.fetchall()
@@ -2645,7 +2645,7 @@ def resolve_node_ref(db, ref: str) -> dict:
             cur.execute(
                 '''
                 SELECT node_id, name, lat, lon, elevation_m
-                FROM nodes
+                FROM core.nodes
                 WHERE lower(coalesce(name, '')) = lower(%s)
                    OR lower(coalesce(name, '')) LIKE lower(%s)
                 ORDER BY node_id

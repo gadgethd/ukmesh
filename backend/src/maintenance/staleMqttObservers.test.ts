@@ -45,7 +45,7 @@ test('does nothing when no MQTT observers have crossed the stale threshold', asy
     observerSightings: 0,
     networkSightings: 0,
   });
-  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM nodes')), false);
+  assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM core.nodes')), false);
   assert.equal(stub.released(), true);
 });
 
@@ -83,17 +83,17 @@ test('inactive companions, room servers and never-bridged nodes are archived bef
   assert.deepEqual(result, {
     batchId: 'inactive-batch', candidates: 3, nodes: 3, observerSightings: 2, networkSightings: 4,
   });
-  const archiveCalls = stub.calls.filter((call) => call.text.includes('INSERT INTO maintenance_removed_records'));
+  const archiveCalls = stub.calls.filter((call) => call.text.includes('INSERT INTO ops.maintenance_removed_records'));
   assert.equal(archiveCalls.length, 3);
   for (const call of archiveCalls) {
     assert.deepEqual(call.values, ['inactive-batch', 'Node has no observed activity for at least 45 days', ids]);
   }
-  const lastArchive = stub.calls.findLastIndex((call) => call.text.includes('INSERT INTO maintenance_removed_records'));
+  const lastArchive = stub.calls.findLastIndex((call) => call.text.includes('INSERT INTO ops.maintenance_removed_records'));
   const firstDelete = stub.calls.findIndex((call) => call.text.includes('DELETE FROM'));
   assert.ok(lastArchive < firstDelete);
   assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   const lockIndex = stub.calls.findIndex((call) => call.text.includes('FOR UPDATE OF visibility'));
-  const fenceIndex = stub.calls.findIndex((call) => call.text.includes('UPDATE packet_visibility_materialization_state'));
+  const fenceIndex = stub.calls.findIndex((call) => call.text.includes('UPDATE ops.packet_visibility_materialization_state'));
   const recheckIndex = stub.calls.findIndex((call) => call.text.includes('ANY($2::text[])'));
   assert.ok(lockIndex < recheckIndex && recheckIndex < lastArchive && lastArchive < firstDelete);
   assert.ok(fenceIndex > stub.calls.findLastIndex((call) => call.text.includes('DELETE FROM')));
@@ -139,7 +139,7 @@ test('a visibility-lock failure admits no archive or delete', async () => {
   await assert.rejects(cleanupInactiveNodes({ cleanupPool: stub.pool }), /visibility lock failed/);
   assert.equal(stub.calls.at(-1)?.text, 'ROLLBACK');
   assert.equal(stub.calls.some((call) => call.text.includes('DELETE FROM')), false);
-  assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO maintenance_removed_records')), false);
+  assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO ops.maintenance_removed_records')), false);
   assert.equal(stub.released(), true);
 });
 
@@ -154,7 +154,7 @@ test('cleanup never certifies a pre-existing stale or missing privacy materializ
       { rows: [], rowCount: 0 }, { rows: [], rowCount: 0 }, { rows: [], rowCount: 1 },
     ]);
     await cleanupInactiveNodes({ cleanupPool: stub.pool });
-    assert.equal(stub.calls.some((call) => call.text.includes('UPDATE packet_visibility_materialization_state')), false);
+    assert.equal(stub.calls.some((call) => call.text.includes('UPDATE ops.packet_visibility_materialization_state')), false);
     assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   }
 });
@@ -206,7 +206,7 @@ test('archives visibility records before deleting stale observer nodes', async (
   assert.match(stub.calls[2]?.text ?? '', /\(role IS NULL OR role = 2\)/);
   assert.match(stub.calls[2]?.text ?? '', /private_node_prefixes p WHERE p.node_id = n.node_id/);
   const archiveIndex = stub.calls.findIndex((call) => call.text.includes("SELECT $1, 'nodes'"));
-  const deleteIndex = stub.calls.findIndex((call) => call.text.includes('DELETE FROM nodes'));
+  const deleteIndex = stub.calls.findIndex((call) => call.text.includes('DELETE FROM core.nodes'));
   assert.ok(archiveIndex >= 0 && archiveIndex < deleteIndex);
   assert.equal(stub.released(), true);
 });
@@ -221,7 +221,7 @@ test('candidates withdrawn after the visibility lock are never archived or delet
   assert.deepEqual(await cleanupInactiveNodes({ cleanupPool: stub.pool }), {
     batchId: null, candidates: 0, nodes: 0, observerSightings: 0, networkSightings: 0,
   });
-  assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO maintenance_removed_records') || call.text.includes('DELETE FROM')), false);
+  assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO ops.maintenance_removed_records') || call.text.includes('DELETE FROM')), false);
   assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
   assert.deepEqual(stub.calls[4]?.values, [30, ['now-fresh']]);
   assert.equal(stub.released(), true);
@@ -241,7 +241,7 @@ test('both cleanup policies take visibility before node locks and skip busy cand
     assert.match(stub.calls[3]!.text, /FOR UPDATE OF visibility/);
     assert.match(stub.calls[4]!.text, /FOR UPDATE SKIP LOCKED/);
     assert.deepEqual(stub.calls[4]!.values, [30, ['busy']]);
-    assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO maintenance_removed_records') || call.text.includes('DELETE FROM')), false);
+    assert.equal(stub.calls.some((call) => call.text.includes('INSERT INTO ops.maintenance_removed_records') || call.text.includes('DELETE FROM')), false);
     assert.equal(stub.calls.at(-1)?.text, 'COMMIT');
     assert.equal(stub.released(), true);
   }

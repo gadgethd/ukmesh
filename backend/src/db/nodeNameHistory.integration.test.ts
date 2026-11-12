@@ -16,6 +16,9 @@ import { networkFilters } from '../api/utils/networkFilters.js';
 // Worktree-local PostgreSQL WASM only: no DATABASE_URL or existing service.
 const moduleUrl = process.env['TEST_NODE_HISTORY_PGLITE_MODULE'];
 const key = (c: string) => c.repeat(64);
+if (process.env['CI'] && !moduleUrl) {
+  throw new Error('Node name history SQL tests require an explicit test fixture in CI');
+}
 
 test('name retention and search execute the production write paths, migration, identity view and HTTP route', {
   skip: moduleUrl ? false : 'TEST_NODE_HISTORY_PGLITE_MODULE is not configured',
@@ -25,7 +28,14 @@ test('name retention and search execute the production write paths, migration, i
   const db = await PGlite.create();
   t.after(() => db.close());
   await db.exec(`
-    CREATE TABLE nodes (
+    CREATE SCHEMA core;
+    CREATE SCHEMA mesh;
+    CREATE SCHEMA ops;
+    -- Post-move DDL in the applied migrations is unqualified. Resolve it into
+    -- the core namespace: the write paths and repository SQL are core/mesh
+    -- qualified and a public-only search_path cannot stand in for them.
+    SET search_path = core, mesh, public;
+    CREATE TABLE core.nodes (
       node_id TEXT PRIMARY KEY, name TEXT, lat DOUBLE PRECISION, lon DOUBLE PRECISION,
       iata TEXT, role INTEGER, hardware_model TEXT, firmware_version TEXT, public_key TEXT,
       last_seen TIMESTAMPTZ, is_online BOOLEAN, network TEXT, advert_count INTEGER DEFAULT 0,
@@ -33,21 +43,38 @@ test('name retention and search execute the production write paths, migration, i
       last_mqtt_observer_seen_at TIMESTAMPTZ, last_predicted_online_at TIMESTAMPTZ,
       last_path_evidence_at TIMESTAMPTZ, last_rx_at TIMESTAMPTZ, last_status_at TIMESTAMPTZ
     );
-    CREATE TABLE node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
-    CREATE TABLE node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
-    CREATE TABLE node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
-    CREATE TABLE packets (rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT);
-    CREATE TABLE node_status_samples (
+    CREATE TABLE core.node_counted_adverts (canonical_advert_hash TEXT PRIMARY KEY, node_id TEXT, counted_at TIMESTAMPTZ);
+    CREATE TABLE core.node_coverage (node_id TEXT PRIMARY KEY);
+    CREATE TABLE core.node_map_suppressions (node_id TEXT PRIMARY KEY);
+    CREATE TABLE core.node_identity_aliases (source_node_id TEXT PRIMARY KEY, canonical_node_id TEXT);
+    CREATE TABLE core.node_network_sightings (node_id TEXT, network TEXT, first_seen_at TIMESTAMPTZ, last_seen_at TIMESTAMPTZ);
+    CREATE TABLE core.node_status_samples (
       time TIMESTAMPTZ, node_id TEXT, network TEXT, battery_mv INTEGER, uptime_secs BIGINT,
       tx_air_secs DOUBLE PRECISION, rx_air_secs DOUBLE PRECISION,
       channel_utilization DOUBLE PRECISION, air_util_tx DOUBLE PRECISION, stats JSONB, status TEXT
     );
-    INSERT INTO nodes (node_id, name, lat, lon, role, network, last_seen)
+    CREATE TABLE mesh.packets (
+      rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT,
+      is_private BOOLEAN DEFAULT FALSE, visibility_ok BOOLEAN DEFAULT TRUE, path_hashes TEXT[]
+    );
+    -- The public privacy predicate requires a materialised visibility generation.
+    CREATE TABLE ops.public_visibility_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), generation BIGINT NOT NULL DEFAULT 1
+    );
+    INSERT INTO ops.public_visibility_state (singleton) VALUES (TRUE);
+    CREATE TABLE ops.packet_visibility_materialization_state (
+      singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton), visibility_generation BIGINT NOT NULL
+    );
+    INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1);
+    CREATE TABLE ops.privacy_rematerialization_queue (target TEXT, status TEXT, node_id TEXT, network TEXT);
+    INSERT INTO core.nodes (node_id, name, lat, lon, role, network, last_seen)
       VALUES ('${key('A')}', 'Original hill', 54.5, -1.5, 2, 'ukmesh', NOW());
   `);
+  // The canonical resolver is core-qualified after the P1 moves.
+  await db.exec(await readFile(new URL('./migrations/111_repair_canonical_node_id.sql', import.meta.url), 'utf8'));
   const identity = await readFile(new URL('./migrations/036_node_identity_merge.sql', import.meta.url), 'utf8');
   await db.exec(identity.slice(
-    identity.indexOf('CREATE OR REPLACE FUNCTION meshcore_canonical_node_id'),
+    identity.indexOf('CREATE VIEW node_identity_nodes AS'),
     identity.indexOf('CREATE VIEW node_identity_status_samples'),
   ));
   const optimizedIdentity = await readFile(new URL('./migrations/037_node_identity_view_perf.sql', import.meta.url), 'utf8');
@@ -57,7 +84,7 @@ test('name retention and search execute the production write paths, migration, i
   ));
   const migration = await readFile(new URL('./migrations/064_node_name_history.sql', import.meta.url), 'utf8');
   await db.exec(`BEGIN; ${migration} COMMIT;`);
-  assert.equal((await db.query('SELECT * FROM node_name_history')).rows.length, 0, 'migration must not backfill nodes');
+  assert.equal((await db.query('SELECT * FROM core.node_name_history')).rows.length, 0, 'migration must not backfill nodes');
 
   const query = (sql: string, params?: unknown[]) => db.query(sql, params?.map(value => value ?? null));
   t.mock.method(pg.Pool.prototype, 'query', query);
@@ -108,9 +135,9 @@ test('name retention and search execute the production write paths, migration, i
     assert.equal((await search('Current hill'))[0]?.name, 'Third hill');
     assert.equal((await search('Original hill'))[0]?.name, 'Third hill');
     await write(key('A'), 'Third hill');
-    await db.exec("UPDATE node_name_history SET first_seen_at = '2020-01-01' WHERE name = 'Original hill'");
+    await db.exec("UPDATE core.node_name_history SET first_seen_at = '2020-01-01' WHERE name = 'Original hill'");
     await write(key('A'), 'Original hill');
-    const history = await db.query('SELECT name, first_seen_at, last_seen_at FROM node_name_history ORDER BY name');
+    const history = await db.query('SELECT name, first_seen_at, last_seen_at FROM core.node_name_history ORDER BY name');
     assert.equal(history.rows.length, 3, 'repeat names must not create duplicate history');
     const original = history.rows.find((row: { name: string }) => row.name === 'Original hill');
     assert.equal(new Date(original.first_seen_at).getUTCFullYear(), 2020);
@@ -127,10 +154,10 @@ test('name retention and search execute the production write paths, migration, i
     await db.query('UPDATE nodes SET name = $1 WHERE node_id = $2', ['', key('B')]);
     await db.query('UPDATE nodes SET name = NULL WHERE node_id = $1', [key('B')]);
     assert.equal((await search('Temporary'))[0]?.name, null);
-    assert.deepEqual((await db.query("SELECT name FROM node_name_history WHERE BTRIM(name) = ''")).rows, []);
-    const before = (await db.query('SELECT * FROM node_name_history ORDER BY node_id, name')).rows;
+    assert.deepEqual((await db.query("SELECT name FROM core.node_name_history WHERE BTRIM(name) = ''")).rows, []);
+    const before = (await db.query('SELECT * FROM core.node_name_history ORDER BY node_id, name')).rows;
     await upsertNode(key('A'), { mqttObserver: true });
-    assert.deepEqual((await db.query('SELECT * FROM node_name_history ORDER BY node_id, name')).rows, before);
+    assert.deepEqual((await db.query('SELECT * FROM core.node_name_history ORDER BY node_id, name')).rows, before);
   });
 
   await t.test('literal search retains network, observer, freshness and privacy gates', async () => {
@@ -159,7 +186,7 @@ test('name retention and search execute the production write paths, migration, i
     await write(key('F'), 'Former alias name');
     assert.equal((await search('Former alias name')).length, 2, 'a shared name must not merge independent nodes');
     await write(key('F'), 'Alias current');
-    await db.query('INSERT INTO node_identity_aliases VALUES ($1, $2)', [key('F'), key('E')]);
+    await db.query('INSERT INTO core.node_identity_aliases VALUES ($1, $2)', [key('F'), key('E')]);
     assert.deepEqual((await search('Former alias name')).map(n => [n.node_id, n.name]), [[key('E'), 'Canonical name']]);
     await write(key('F'), 'Secret alias history');
     await write(key('F'), 'Alias private 🚫');

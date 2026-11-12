@@ -20,7 +20,7 @@
  *   Emission (node fit):      prefix priors, ML prefix scores, direct-receiver
  *                             observer-anchor proximity.
  *   Transition (hop fit):     hop-distance feasibility (infeasible = -Inf),
- *                             edge/transition/2-gram-motif priors, node_links.
+ *                             edge/transition/2-gram-motif priors, core.node_links.
  *
  * Forward/backward marginals from the same trellis drive the per-node
  * `ambiguous` flag (a position is ambiguous when an alternative node yields a
@@ -101,7 +101,7 @@ export type LazyPathResult = {
 };
 
 // Diagnostics only: when set, the node-id-keyed + ML signals (transition / motif
-// / edge / node_links / ML prefix scores) are forced to zero. Used by the
+// / edge / core.node_links / ML prefix scores) are forced to zero. Used by the
 // accuracy harness to measure the leakage-free floor (structural + prefix-prior
 // + geographic anchoring only). Never set in production.
 const ABLATE_LEAKY_PRIORS = process.env['LAZY_ABLATE_PRIORS'] === '1';
@@ -240,13 +240,13 @@ export async function lazyResolvePath(
   }>(
     `SELECT DISTINCT ON (rx_node_id)
             rx_node_id, src_node_id, path_hashes, path_hash_size_bytes
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND ${packetTimePredicate}
         AND rx_node_id IS NOT NULL
         AND NOT EXISTS (
-          SELECT 1 FROM nodes private_node
+          SELECT 1 FROM core.nodes private_node
           WHERE private_node.name LIKE '%🚫%'
             AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
             AND (
@@ -279,7 +279,7 @@ export async function lazyResolvePath(
     hop_count: number | null;
   }>(
     `SELECT DISTINCT rx_node_id, hop_count
-       FROM packets
+       FROM mesh.packets
       WHERE packet_hash = $1
         AND ($2::text[] IS NULL OR network = ANY($2))
         AND ${packetTimePredicate}
@@ -300,7 +300,7 @@ export async function lazyResolvePath(
     lon: number | null;
     name: string | null;
   }>(
-    `SELECT node_id, lat, lon, name FROM nodes
+    `SELECT node_id, lat, lon, name FROM core.nodes
       WHERE node_id = ANY($1)
         AND lat IS NOT NULL AND lon IS NOT NULL
         AND lat != 0 AND lon != 0
@@ -370,7 +370,7 @@ export async function lazyResolvePath(
       lon: number | null;
     }>(
       `SELECT node_id, name, lat, lon
-         FROM nodes
+         FROM core.nodes
         WHERE ($1::text[] IS NULL OR network = ANY($1))
           AND (name IS NULL OR name NOT LIKE '%🚫%')
           AND (${whereClauses.join(' OR ')})
@@ -416,7 +416,7 @@ export async function lazyResolvePath(
   // ── 8. Fetch recorded links + path-learning priors ──────────────────────
   // Prior data comes from historical resolutions and tells us which node
   // typically appears at a hash position (prefix prior), and which node→node
-  // hops are real (transition / edge / motif priors + node_links).
+  // hops are real (transition / edge / motif priors + core.node_links).
   const allCandidateNodeIds: string[] = [];
   for (const candidates of nodesByHash.values()) {
     for (const c of candidates) allCandidateNodeIds.push(c.nodeId);
@@ -437,7 +437,7 @@ export async function lazyResolvePath(
       uniqueCandidateNodeIds.length > 0
         ? query<{ node_a_id: string; node_b_id: string; observed_count: string; itm_viable: boolean | null; force_viable: boolean }>(
             `SELECT node_a_id, node_b_id, observed_count::text, itm_viable, force_viable
-               FROM node_links
+               FROM core.node_links
               WHERE node_a_id = ANY($1) AND node_b_id = ANY($1)`,
             [uniqueCandidateNodeIds],
           )
@@ -445,7 +445,7 @@ export async function lazyResolvePath(
       ENABLE_POSITION_PREFIX_PRIORS && allUnique2charHashes.length > 0
         ? query<{ prefix: string; position: number; node_id: string; count: string }>(
             `SELECT prefix, position, node_id, SUM(count)::text AS count
-               FROM path_position_prefix_priors
+               FROM analytics.path_position_prefix_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND prefix = ANY($2)
                 AND NOT ${privatePrefixPathFilterSql('prefix')}
@@ -456,7 +456,7 @@ export async function lazyResolvePath(
       ENABLE_CORRIDOR_PRIORS && corridorSourceIds.length > 0 && corridorReceiverIds.length > 0
         ? query<{ src_node_id: string; rx_node_id: string; position: number; node_id: string; count: string }>(
             `SELECT src_node_id, rx_node_id, position, node_id, SUM(count)::text AS count
-               FROM path_corridor_priors
+               FROM analytics.path_corridor_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND src_node_id = ANY($2) AND rx_node_id = ANY($3)
               GROUP BY src_node_id, rx_node_id, position, node_id`,
@@ -466,7 +466,7 @@ export async function lazyResolvePath(
       uniqueCandidateNodeIds.length > 0
         ? query<{ from_node_id: string; to_node_id: string; count: string }>(
             `SELECT from_node_id, to_node_id, SUM(count)::text AS count
-               FROM path_transition_priors
+               FROM analytics.path_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND from_node_id = ANY($2) AND to_node_id = ANY($2)
               GROUP BY from_node_id, to_node_id`,
@@ -476,7 +476,7 @@ export async function lazyResolvePath(
       ENABLE_POSITION_TRANSITIONS && uniqueCandidateNodeIds.length > 0
         ? query<{ position: number; from_node_id: string; to_node_id: string; count: string }>(
             `SELECT position, from_node_id, to_node_id, SUM(count)::text AS count
-               FROM path_position_transition_priors
+               FROM analytics.path_position_transition_priors
               WHERE ($1::text[] IS NULL OR network = ANY($1))
                 AND from_node_id = ANY($2) AND to_node_id = ANY($2)
               GROUP BY position, from_node_id, to_node_id`,
@@ -485,7 +485,7 @@ export async function lazyResolvePath(
         : Promise.resolve({ rows: [] as { position: number; from_node_id: string; to_node_id: string; count: string }[] }),
       query<{ network: string; confidence_scale: string; confidence_bias: string; recommended_threshold: string }>(
         `SELECT network, confidence_scale::text, confidence_bias::text, recommended_threshold::text
-           FROM path_model_calibration
+           FROM analytics.path_model_calibration
           WHERE ($1::text[] IS NULL OR network = ANY($1) OR network = 'all')`,
         [scopedNetworks],
       ),

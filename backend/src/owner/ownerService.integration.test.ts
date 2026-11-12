@@ -9,6 +9,9 @@ const options = {
   skip: moduleUrl ? false : 'TEST_OWNER_LAST_HOP_PGLITE_MODULE is not configured',
   timeout: 20_000,
 };
+if (process.env['CI'] && !moduleUrl) {
+  throw new Error('Owner last-hop SQL tests require an explicit test fixture in CI');
+}
 
 test('actual last-hop SQL replaces renamed and newly resolved groups during a warm refresh', options, async (t) => {
   const { PGlite } = await import(moduleUrl!);
@@ -16,10 +19,12 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
   t.after(() => db.close());
   await db.exec(`
     SET TIME ZONE 'UTC';
-    CREATE TABLE node_identity_nodes (node_id TEXT PRIMARY KEY, name TEXT, role INTEGER, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
-    CREATE TABLE node_identity_aliases (source_node_id TEXT, canonical_node_id TEXT);
-    CREATE TABLE node_identity_links (node_a_id TEXT, node_b_id TEXT, force_viable BOOLEAN, itm_viable BOOLEAN, itm_path_loss_db DOUBLE PRECISION);
-    CREATE TABLE node_identity_packets (
+    -- The owner SQL is core-qualified after the P1 moves.
+    CREATE SCHEMA core;
+    CREATE TABLE core.node_identity_nodes (node_id TEXT PRIMARY KEY, name TEXT, role INTEGER, lat DOUBLE PRECISION, lon DOUBLE PRECISION);
+    CREATE TABLE core.node_identity_aliases (source_node_id TEXT, canonical_node_id TEXT);
+    CREATE TABLE core.node_identity_links (node_a_id TEXT, node_b_id TEXT, force_viable BOOLEAN, itm_viable BOOLEAN, itm_path_loss_db DOUBLE PRECISION);
+    CREATE TABLE core.node_identity_packets (
       time TIMESTAMPTZ, packet_hash TEXT, rx_node_id_raw TEXT, rx_node_id TEXT, src_node_id TEXT,
       hop_count INTEGER, rssi DOUBLE PRECISION, snr DOUBLE PRECISION, path_hashes TEXT[], packet_type INTEGER
     );
@@ -28,8 +33,8 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
     -- It does not install TimescaleDB or exercise the production identity views.
     CREATE FUNCTION time_bucket(width INTERVAL, value TIMESTAMPTZ) RETURNS TIMESTAMPTZ LANGUAGE SQL
       AS $$ SELECT date_trunc('hour', value) $$;
-    INSERT INTO node_identity_nodes (node_id, name, role) VALUES ('BB01', 'Owner', 2), ('AA01', 'Peer', 2);
-    INSERT INTO node_identity_packets VALUES
+    INSERT INTO core.node_identity_nodes (node_id, name, role) VALUES ('BB01', 'Owner', 2), ('AA01', 'Peer', 2);
+    INSERT INTO core.node_identity_packets VALUES
       (date_trunc('hour', NOW()) - INTERVAL '2 hours' + INTERVAL '10 minutes', 'historical', 'BB01', 'BB01', 'AA01', 0, -90, 4, '{}', 5),
       (date_trunc('hour', NOW()) - INTERVAL '1 hour' + INTERVAL '10 minutes', 'direct-1', 'BB01', 'BB01', 'AA01', 0, -90, 4, '{}', 5),
       (date_trunc('hour', NOW()) - INTERVAL '1 hour' + INTERVAL '11 minutes', 'direct-2', 'BB01', 'BB01', 'AA01', 0, -92, 2, '{}', 5),
@@ -53,8 +58,8 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
   ]);
 
   await db.exec(`
-    UPDATE node_identity_nodes SET name = 'Renamed peer' WHERE node_id = 'AA01';
-    INSERT INTO node_identity_nodes (node_id, name, role) VALUES ('CC01', 'New peer', 2);
+    UPDATE core.node_identity_nodes SET name = 'Renamed peer' WHERE node_id = 'AA01';
+    INSERT INTO core.node_identity_nodes (node_id, name, role) VALUES ('CC01', 'New peer', 2);
   `);
   await service.refreshOwnerLastHopStrength(['BB01'], 'BB01', 7, 0);
   const refreshed = await service.getOwnerLastHopStrength(['BB01'], 'BB01');
@@ -66,7 +71,7 @@ test('actual last-hop SQL replaces renamed and newly resolved groups during a wa
   ]);
   assert.equal(refreshed.points.reduce((total, point) => total + point.sampleCount, 0), 4, 'regrouping must not double-count packets');
 
-  await db.query('DELETE FROM node_identity_packets WHERE time >= $1::timestamptz', [latest]);
+  await db.query('DELETE FROM core.node_identity_packets WHERE time >= $1::timestamptz', [latest]);
   await service.refreshOwnerLastHopStrength(['BB01'], 'BB01', 7, 0);
   assert.deepEqual((await service.getOwnerLastHopStrength(['BB01'], 'BB01')).points, history,
     'an empty refreshed query removes the vanished current groups');

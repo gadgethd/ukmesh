@@ -144,11 +144,11 @@ test('public feed persists the account toggle and current owned-node mapping', a
       if (sql.includes('COALESCE(settings.enabled')) {
         return { rows: [{ enabled, recent_packet_count: 1, last_forwarded_at: null }] };
       }
-      if (sql.startsWith('INSERT INTO owner_public_feed_settings')
-        || sql.startsWith('DELETE FROM owner_public_feed_nodes')
-        || sql.startsWith('INSERT INTO owner_public_feed_nodes')) {
+      if (sql.startsWith('INSERT INTO core.owner_public_feed_settings')
+        || sql.startsWith('DELETE FROM core.owner_public_feed_nodes')
+        || sql.startsWith('INSERT INTO core.owner_public_feed_nodes')) {
         writes.push(sql);
-        if (sql.startsWith('INSERT INTO owner_public_feed_settings')) enabled = true;
+        if (sql.startsWith('INSERT INTO core.owner_public_feed_settings')) enabled = true;
       }
       return { rows: [] };
     }, async (baseUrl) => {

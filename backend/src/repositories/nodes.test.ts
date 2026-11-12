@@ -28,7 +28,7 @@ test('public map projects path evidence as the effective seen and online state',
     /n\.last_path_evidence_at > \$2::timestamptz - INTERVAL '60 minutes'[\s\S]*THEN TRUE[\s\S]*AS is_online/,
   );
   assert.doesNotMatch(capturedSql, /n\.last_seen::text AS last_seen/);
-  assert.match(capturedSql, /NOT EXISTS \(SELECT 1 FROM node_map_suppressions s WHERE s.node_id = n.node_id\)/);
+  assert.match(capturedSql, /NOT EXISTS \(SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id\)/);
   assert.match(capturedSql, /INTERVAL '28 days'/);
   assert.deepEqual(capturedParams, [
     ['ukmesh', 'northeast', 'teesside'],
@@ -56,7 +56,7 @@ test('node links preserve metrics and fetch one scoped aggregate for the entire 
   assert.match(calls[0]!.sql, /to_char\(rl.last_observed AT TIME ZONE 'UTC'/);
   const aggregate = calls[1]!;
   assert.deepEqual(aggregate.params, [['ukmesh', 'northeast', 'teesside'], nodeId, JSON.stringify([link])]);
-  assert.equal(aggregate.sql.match(/FROM packets p/g)?.length, 1);
+  assert.equal(aggregate.sql.match(/FROM (?:mesh\.)?packets p/g)?.length, 1);
   assert.match(aggregate.sql, /COUNT\(\*\)::integer AS recent_count_72h/);
   assert.match(aggregate.sql, /GROUP BY pa.peer_id/);
   assert.match(aggregate.sql, /LEFT JOIN recent_counts/);

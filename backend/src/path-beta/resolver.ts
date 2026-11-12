@@ -106,7 +106,7 @@ async function buildLearningModel(
   const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows, champion] = await Promise.all([
     query<PathPrefixPriorEvidence>(
       `SELECT prefix, receiver_region, prev_prefix, node_id, count
-       FROM path_prefix_priors
+       FROM analytics.path_prefix_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -120,7 +120,7 @@ async function buildLearningModel(
       probability: number;
     }>(
       `SELECT from_node_id, to_node_id, receiver_region, probability
-       FROM path_transition_priors
+       FROM analytics.path_transition_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -135,7 +135,7 @@ async function buildLearningModel(
       score: number;
     }>(
       `SELECT from_node_id, to_node_id, receiver_region, hour_bucket, score
-       FROM path_edge_priors
+       FROM analytics.path_edge_priors
        WHERE network = $1
        ORDER BY score DESC, observed_count DESC
        LIMIT $2`,
@@ -150,7 +150,7 @@ async function buildLearningModel(
       probability: number;
     }>(
       `SELECT receiver_region, hour_bucket, motif_len, node_ids, probability
-       FROM path_motif_priors
+       FROM analytics.path_motif_priors
        WHERE network = $1
        ORDER BY count DESC
        LIMIT $2`,
@@ -159,7 +159,7 @@ async function buildLearningModel(
     ),
     query<{ confidence_scale: number; confidence_bias: number }>(
       `SELECT confidence_scale, confidence_bias
-       FROM path_model_calibration
+       FROM analytics.path_model_calibration
        WHERE network = $1`,
       [network],
       signal,
@@ -266,7 +266,7 @@ async function loadContext(
   const [nodeRows, linkRows, learningModel] = await Promise.all([
     query<MeshNode>(
       `SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text AS last_seen
-       FROM nodes
+       FROM core.nodes
        WHERE ($1::text[] IS NULL OR network = ANY($1))
          AND (name IS NULL OR name NOT LIKE '%🚫%')`,
       [resolverScope(network)],
@@ -284,9 +284,9 @@ async function loadContext(
     }>(
       `SELECT nl.node_a_id, nl.node_b_id, nl.observed_count, nl.multibyte_observed_count,
               nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
-       FROM node_links nl
-       JOIN nodes a ON a.node_id = nl.node_a_id
-       JOIN nodes b ON b.node_id = nl.node_b_id
+       FROM core.node_links nl
+       JOIN core.nodes a ON a.node_id = nl.node_a_id
+       JOIN core.nodes b ON b.node_id = nl.node_b_id
        WHERE (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
          AND (a.name IS NULL OR a.name NOT LIKE '%🚫%')
          AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')
@@ -688,12 +688,12 @@ export async function resolveBetaPathForPacketHash(
   throwIfResolutionAborted(options);
   const packetResult = await query<PathPacket>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
-     FROM packets
+     FROM mesh.packets
      WHERE packet_hash = $1
        AND ($2::text[] IS NULL OR network = ANY($2))
        ${observer ? 'AND rx_node_id = $3' : ''}
        AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
+         SELECT 1 FROM core.nodes private_node
          WHERE private_node.name LIKE '%🚫%'
            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
            AND (
@@ -949,13 +949,13 @@ async function loadMultiObserverInputs(
   throwIfResolutionAborted(options);
   const allResult = await query<PathPacket>(
     `SELECT packet_hash, rx_node_id, src_node_id, packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes
-     FROM packets
+     FROM mesh.packets
      WHERE packet_hash = $1
        AND ($2::text[] IS NULL OR network = ANY($2))
        AND time >= NOW() - ($3::int * INTERVAL '1 hour')
        AND rx_node_id IS NOT NULL
        AND NOT EXISTS (
-         SELECT 1 FROM nodes private_node
+         SELECT 1 FROM core.nodes private_node
          WHERE private_node.name LIKE '%🚫%'
            AND ${privateNodePacketNetworkMatchSql('private_node', 'packets')}
            AND (
@@ -1097,14 +1097,14 @@ export async function createMultiObserverPathBatchResolver(
            CROSS JOIN LATERAL (
              SELECT p.packet_hash, p.rx_node_id, p.src_node_id, p.packet_type, p.route_type, p.payload->>'direction' AS direction,
                     p.hop_count, p.path_hashes, p.path_hash_size_bytes, p.time
-               FROM packets p
+               FROM mesh.packets p
               WHERE p.packet_hash = requested.packet_hash
                 AND ($2::text[] IS NULL OR p.network = ANY($2))
                 AND p.time >= $3
                 AND p.time <= $4
                 AND p.rx_node_id IS NOT NULL
                 AND NOT EXISTS (
-                  SELECT 1 FROM nodes private_node
+                  SELECT 1 FROM core.nodes private_node
                    WHERE private_node.name LIKE '%🚫%'
                      AND ${privateNodePacketNetworkMatchSql('private_node', 'p')}
                      AND (

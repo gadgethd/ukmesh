@@ -419,7 +419,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
     heartbeat.assertOwned();
     await assertAnalysisPublicationLease(client, analysisRun);
     const current = await client.query<{ model_hash: string | null }>(
-      `SELECT model_hash FROM path_model_calibration WHERE network = $1 FOR UPDATE`,
+      `SELECT model_hash FROM analytics.path_model_calibration WHERE network = $1 FOR UPDATE`,
       [network],
     );
     let upserted = 0;
@@ -440,7 +440,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
     }
     const mutationCount = upserted + deleted;
     await client.query(
-      `INSERT INTO path_model_calibration
+      `INSERT INTO analytics.path_model_calibration
          (network, evaluated_packets, top1_accuracy, mean_pred_confidence,
           confidence_scale, confidence_bias, recommended_threshold,
           input_hash, model_hash, algorithm_version, privacy_generation,
@@ -495,7 +495,7 @@ async function publishPathLearningRowsDeltaUnderAdmission(
  * public packet reads. */
 export function pathLearningNetworksSql(): string {
   return `SELECT DISTINCT network
-     FROM packets
+     FROM mesh.packets
      WHERE network IS NOT NULL
        AND time > $1::timestamptz
        AND time <= $2::timestamptz
@@ -588,7 +588,7 @@ export function pathLearningTrainingPacketsSql(
   const limitParam = hasSourceNetwork ? 4 : 3;
   return `SELECT DISTINCT ON (packet_hash, rx_node_id, src_node_id, path_hashes)
             time, rx_node_id, src_node_id, path_hashes, payload->>'direction' AS direction
-       FROM packets
+       FROM mesh.packets
       WHERE rx_node_id IS NOT NULL
         AND path_hashes IS NOT NULL
         AND cardinality(path_hashes) > 0
@@ -603,7 +603,7 @@ export function pathLearningTrainingPacketsSql(
       LIMIT $${limitParam}`;
 }
 
-/** `private_node_prefixes` stores 1..3-byte hashes of private node ids, so a raw
+/** `core.private_node_prefixes` stores 1..3-byte hashes of private node ids, so a raw
  * path prefix is private exactly when it is a leading substring of one of those
  * node ids. An empty prefix carries no identity and is never blocked. */
 export function isPrivatePathPrefix(
@@ -620,7 +620,7 @@ export function isPrivatePathPrefix(
 
 /** Publication-side twin of the public path-read filter: a prior row whose own
  * prefix or carried previous-hop prefix resolves onto a private node is dropped
- * before it can reach `path_prefix_priors`. */
+ * before it can reach `analytics.path_prefix_priors`. */
 export function dropPrivatePrefixRows<T extends { prefix: string; prev_prefix: string }>(
   rows: readonly T[],
   privateNodeIds: Iterable<string>,
@@ -677,7 +677,7 @@ async function rebuildNetworkUnderLease(
 
   const nodesResult = await analyticsQuery<LearningNode>(
     `SELECT node_id, lat, lon, elevation_m, iata
-     FROM nodes
+     FROM core.nodes
      WHERE lat IS NOT NULL
        AND lon IS NOT NULL
        AND (name IS NULL OR name NOT LIKE '%🚫%')
@@ -695,7 +695,7 @@ async function rebuildNetworkUnderLease(
   // started, so a private-prefix snapshot taken inside the run cannot go stale
   // before the delta commits.
   const privatePrefixesResult = await analyticsQuery<{ node_id: string }>(
-    'SELECT DISTINCT node_id FROM private_node_prefixes',
+    'SELECT DISTINCT node_id FROM core.private_node_prefixes',
     [],
     heartbeat.signal,
   );
@@ -705,9 +705,9 @@ async function rebuildNetworkUnderLease(
 
   const linksResult = await analyticsQuery<LearningLink>(
     `SELECT nl.node_a_id, nl.node_b_id, nl.itm_path_loss_db, nl.count_a_to_b, nl.count_b_to_a
-     FROM node_links nl
-     JOIN nodes a ON a.node_id = nl.node_a_id
-     JOIN nodes b ON b.node_id = nl.node_b_id
+     FROM core.node_links nl
+     JOIN core.nodes a ON a.node_id = nl.node_a_id
+     JOIN core.nodes b ON b.node_id = nl.node_b_id
      WHERE (nl.itm_viable = true OR nl.force_viable = true)
        ${linkNetworkFilter}
      ORDER BY nl.node_a_id, nl.node_b_id

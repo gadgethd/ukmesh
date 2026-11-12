@@ -5,6 +5,7 @@ import {
 
 export type DataLifecyclePolicy = Readonly<{
   table: string;
+  qualifiedTable?: string;
   timestampColumn: string;
   retention: string;
   kind: 'hypertable' | 'row-table';
@@ -13,6 +14,7 @@ export type DataLifecyclePolicy = Readonly<{
 
 export type DataCompressionPolicy = Readonly<{
   table: 'packets' | 'packet_paths' | 'node_status_samples' | 'node_neighbor_samples';
+  qualifiedTable?: string;
   compressAfter: string;
   compressionSegmentBy: 'network';
   compressionOrderBy: 'time DESC';
@@ -21,15 +23,16 @@ export type DataCompressionPolicy = Readonly<{
 // Compression-only targets are intentionally separate from deletable targets:
 // packet_paths is present here and can never enter a retention allowlist.
 export const DATA_COMPRESSION_POLICIES: readonly DataCompressionPolicy[] = Object.freeze([
-  { table: 'packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
-  { table: 'node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'packets', qualifiedTable: 'mesh.packets', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'packet_paths', qualifiedTable: 'mesh.packet_paths', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', compressAfter: '14 days', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
+  { table: 'node_neighbor_samples', qualifiedTable: 'core.node_neighbor_samples', compressAfter: '1 day', compressionSegmentBy: 'network', compressionOrderBy: 'time DESC' },
 ]);
 
 export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.freeze([
   {
     table: 'packets',
+    qualifiedTable: 'mesh.packets',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'hypertable',
@@ -41,6 +44,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'node_status_samples',
+    qualifiedTable: 'core.node_status_samples',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'hypertable',
@@ -50,6 +54,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'node_neighbor_samples',
+    qualifiedTable: 'core.node_neighbor_samples',
     timestampColumn: 'time',
     retention: '7 days',
     kind: 'hypertable',
@@ -59,6 +64,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'frontend_error_events',
+    qualifiedTable: 'ops.frontend_error_events',
     timestampColumn: 'time',
     retention: '30 days',
     kind: 'row-table',
@@ -66,6 +72,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'packet_decryptions',
+    qualifiedTable: 'mesh.packet_decryptions',
     timestampColumn: 'created_at',
     retention: '30 days',
     kind: 'row-table',
@@ -73,6 +80,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'worker_health_snapshots',
+    qualifiedTable: 'ops.worker_health_snapshots',
     timestampColumn: 'ts',
     retention: '7 days',
     kind: 'row-table',
@@ -80,6 +88,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'operational_check_results',
+    qualifiedTable: 'ops.operational_check_results',
     timestampColumn: 'ts',
     retention: '14 days',
     kind: 'row-table',
@@ -87,6 +96,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'observer_region_packet_sightings',
+    qualifiedTable: 'core.observer_region_packet_sightings',
     timestampColumn: 'last_seen',
     retention: '8 days',
     kind: 'row-table',
@@ -94,6 +104,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'observer_region_observer_sightings',
+    qualifiedTable: 'core.observer_region_observer_sightings',
     timestampColumn: 'last_seen',
     retention: '31 days',
     kind: 'row-table',
@@ -101,6 +112,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'owner_alert_deliveries',
+    qualifiedTable: 'core.owner_alert_deliveries',
     timestampColumn: 'created_at',
     retention: '90 days',
     kind: 'row-table',
@@ -108,6 +120,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'owner_packet_share_deliveries',
+    qualifiedTable: 'core.owner_packet_share_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     kind: 'row-table',
@@ -115,6 +128,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'public_feed_deliveries',
+    qualifiedTable: 'ops.public_feed_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     kind: 'row-table',
@@ -122,6 +136,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'observer_registration_requests',
+    qualifiedTable: 'core.observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
     kind: 'row-table',
@@ -131,6 +146,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'operator_audit_events',
+    qualifiedTable: 'ops.operator_audit_events',
     timestampColumn: 'created_at',
     retention: '730 days',
     kind: 'row-table',
@@ -138,6 +154,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'link_job_commits',
+    qualifiedTable: 'ops.link_job_commits',
     timestampColumn: 'completed_at',
     retention: '180 days',
     kind: 'row-table',
@@ -145,6 +162,7 @@ export const DATA_LIFECYCLE_POLICIES: readonly DataLifecyclePolicy[] = Object.fr
   },
   {
     table: 'ml_model_variant_packet_results',
+    qualifiedTable: 'analytics.ml_model_variant_packet_results',
     timestampColumn: 'created_at',
     retention: '180 days',
     kind: 'row-table',

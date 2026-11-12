@@ -28,7 +28,7 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
     params?: unknown[],
   ): Promise<{ rows: T[] }> => {
     calls.push({ text, params });
-    if (text.includes('FROM multibyte_path_fact_state')) {
+    if (/FROM (?:mesh\.)?multibyte_path_fact_state/.test(text)) {
       return { rows: [{ ready: true }] as T[] };
     }
     return { rows: [] };
@@ -45,7 +45,7 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
   });
 
   await repository.fetchChartsData('ukmesh', undefined, 12);
-  const factCalls = calls.filter((call) => call.text.includes('FROM multibyte_path_facts f'));
+  const factCalls = calls.filter((call) => /FROM (?:mesh\.)?multibyte_path_facts f/.test(call.text));
   assert.equal(factCalls.length, 2);
   assert.ok(factCalls.every((call) => call.params?.at(-1) === 12));
   assert.equal(calls.some((call) => call.text.includes('row_number() OVER () AS obs_id')), false);
@@ -135,7 +135,7 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
     false,
     'chart queries must canonicalize through the identity alias relation',
   );
-  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN node_identity_aliases')));
+  assert.ok(calls.some((call) => call.text.includes('LEFT JOIN core.node_identity_aliases')));
 });
 
 test('canonical charts coalesce six high-volume dimensions into one maintained aggregate read', async () => {
@@ -144,7 +144,7 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
     text: string,
   ): Promise<{ rows: T[] }> => {
     calls.push(text);
-    if (text.includes('FROM packet_hourly_stats')) {
+    if (text.includes('FROM mesh.packet_hourly_stats')) {
       return {
         rows: [{
           packets_per_hour: [{ hour: '2026-07-29T12:00:00.000Z', count: '3' }],
@@ -173,8 +173,8 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
   });
 
   const result = await repository.fetchChartsData('ukmesh', undefined);
-  assert.equal(calls.filter((sql) => sql.includes('FROM packet_hourly_stats')).length, 1);
-  const aggregateSql = calls.find((sql) => sql.includes('FROM packet_hourly_stats'));
+  assert.equal(calls.filter((sql) => sql.includes('FROM mesh.packet_hourly_stats')).length, 1);
+  const aggregateSql = calls.find((sql) => sql.includes('FROM mesh.packet_hourly_stats'));
   assert.ok(aggregateSql);
   assert.match(aggregateSql, /p\.time > \$\d+::timestamptz/);
   assert.match(aggregateSql, /p\.time <= \$\d+::timestamptz/);
@@ -190,7 +190,7 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
 
   calls.length = 0;
   await repository.fetchChartsData('ukmesh', 'A'.repeat(64));
-  assert.equal(calls.filter((sql) => sql.includes('FROM packet_hourly_stats')).length, 0);
+  assert.equal(calls.filter((sql) => sql.includes('FROM mesh.packet_hourly_stats')).length, 0);
   assert.ok(calls.some((sql) =>
     sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count")));
 });
@@ -217,7 +217,7 @@ test('per-network shadowing runs before reads are enabled and stays off for othe
   });
 
   await shadowRepository.fetchChartsData('ukmesh', undefined);
-  assert.ok(calls.some((call) => call.text.includes('FROM packet_hourly_stats')));
+  assert.ok(calls.some((call) => call.text.includes('FROM mesh.packet_hourly_stats')));
   assert.ok(calls.some((call) => call.text.includes('WITH scoped AS MATERIALIZED')));
   assert.ok(calls.every((call) => !/\bNOW\(\)/i.test(call.text)));
 
@@ -234,11 +234,11 @@ test('per-network shadowing runs before reads are enabled and stays off for othe
     aggregateReadNetworks: ['ukmesh'],
   });
   await readRepository.fetchChartsData('ukmesh', undefined);
-  assert.ok(calls.some((call) => call.text.includes('FROM packet_hourly_stats')));
+  assert.ok(calls.some((call) => call.text.includes('FROM mesh.packet_hourly_stats')));
 
   calls.length = 0;
   await readRepository.fetchChartsData('test', undefined);
-  assert.equal(calls.some((call) => call.text.includes('FROM packet_hourly_stats')), false);
+  assert.equal(calls.some((call) => call.text.includes('FROM mesh.packet_hourly_stats')), false);
 });
 
 test('Compose aggregate switch accepts a comma-separated network value', async () => {
@@ -265,11 +265,11 @@ test('Compose aggregate switch accepts a comma-separated network value', async (
       }),
     });
     await repository.fetchChartsData('ukmesh', undefined);
-    assert.ok(calls.some((sql) => sql.includes('FROM packet_hourly_stats')));
+    assert.ok(calls.some((sql) => sql.includes('FROM mesh.packet_hourly_stats')));
 
     calls.length = 0;
     await repository.fetchChartsData('test', undefined);
-    assert.equal(calls.some((sql) => sql.includes('FROM packet_hourly_stats')), false);
+    assert.equal(calls.some((sql) => sql.includes('FROM mesh.packet_hourly_stats')), false);
   } finally {
     if (previousReads === undefined) delete process.env['STATS_AGGREGATE_READS_ENABLED'];
     else process.env['STATS_AGGREGATE_READS_ENABLED'] = previousReads;

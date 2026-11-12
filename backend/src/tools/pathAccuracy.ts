@@ -50,27 +50,27 @@ async function capture(file: string) {
     const rows = async <T extends pg.QueryResultRow>(sql: string, params: unknown[] = [network]): Promise<T[]> =>
       (await client.query<T>(sql, params)).rows;
     const capturedAt = (await rows<{ t: string }>('SELECT now()::text AS t', []))[0]!.t;
-    const calibration = await rows('SELECT * FROM path_model_calibration WHERE network = $1');
+    const calibration = await rows('SELECT * FROM analytics.path_model_calibration WHERE network = $1');
     const nodes = await rows<MeshNode>(`SELECT node_id, name, lat, lon, iata, role, elevation_m, last_seen::text
-      FROM nodes WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (name IS NULL OR name NOT LIKE '%🚫%') ORDER BY node_id`, [scope]);
+      FROM core.nodes WHERE ($1::text[] IS NULL OR network = ANY($1)) AND (name IS NULL OR name NOT LIKE '%🚫%') ORDER BY node_id`, [scope]);
     const links = await rows<Snapshot['links'][number]>(`SELECT nl.node_a_id, nl.node_b_id, nl.observed_count,
       nl.multibyte_observed_count, nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
-      FROM node_links nl JOIN nodes a ON a.node_id = nl.node_a_id JOIN nodes b ON b.node_id = nl.node_b_id
+      FROM core.node_links nl JOIN core.nodes a ON a.node_id = nl.node_a_id JOIN core.nodes b ON b.node_id = nl.node_b_id
       WHERE ($1::text[] IS NULL OR (a.network = ANY($1) AND b.network = ANY($1))) AND (nl.itm_viable IS NOT NULL OR nl.force_viable = true)
       AND (a.name IS NULL OR a.name NOT LIKE '%🚫%') AND (b.name IS NULL OR b.name NOT LIKE '%🚫%')`, [scope]);
     const prefixes = await rows<Snapshot['prefixes'][number]>(`SELECT prefix, prev_prefix, receiver_region, node_id, count
-      FROM path_prefix_priors WHERE network = $1 ORDER BY count DESC LIMIT 6000`);
+      FROM analytics.path_prefix_priors WHERE network = $1 ORDER BY count DESC LIMIT 6000`);
     const transitions = await rows<Snapshot['transitions'][number]>(`SELECT from_node_id, to_node_id, receiver_region, count, probability
-      FROM path_transition_priors WHERE network = $1 ORDER BY count DESC`);
+      FROM analytics.path_transition_priors WHERE network = $1 ORDER BY count DESC`);
     const priors: ChampionPriorRows = {
-      positionPrefixes: await rows('SELECT prefix, position, node_id, count FROM path_position_prefix_priors WHERE network = $1'),
-      corridors: await rows('SELECT src_node_id, rx_node_id, position, node_id, count FROM path_corridor_priors WHERE network = $1'),
+      positionPrefixes: await rows('SELECT prefix, position, node_id, count FROM analytics.path_position_prefix_priors WHERE network = $1'),
+      corridors: await rows('SELECT src_node_id, rx_node_id, position, node_id, count FROM analytics.path_corridor_priors WHERE network = $1'),
       transitions,
-      positionTransitions: await rows('SELECT position, from_node_id, to_node_id, count FROM path_position_transition_priors WHERE network = $1'),
+      positionTransitions: await rows('SELECT position, from_node_id, to_node_id, count FROM analytics.path_position_transition_priors WHERE network = $1'),
     };
     // The learner trains only on buckets 0..69. Split at packet hash so every
     // observation of a held-out packet is excluded from all learned priors.
-    const gold = await rows<{ packet_hash: string }>(`SELECT DISTINCT packet_hash FROM packets
+    const gold = await rows<{ packet_hash: string }>(`SELECT DISTINCT packet_hash FROM mesh.packets
       WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
         AND path_hash_size_bytes = 3 AND cardinality(path_hashes) >= 2
         AND mod(hashtext(packet_hash)::bigint + 2147483648, 100) >= 70`, [scope, windowDays]);
@@ -78,7 +78,7 @@ async function capture(file: string) {
     const observations = await rows<Observation>(`SELECT time::text, network, packet_hash, rx_node_id, src_node_id,
       packet_type, route_type, payload->>'direction' AS direction, hop_count, path_hashes, path_hash_size_bytes,
       mod(hashtext(packet_hash)::bigint + 2147483648, 100)::int AS split
-      FROM packets WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
+      FROM mesh.packets WHERE ($1::text[] IS NULL OR network = ANY($1)) AND time > now() - $2 * interval '1 day'
         AND packet_hash = ANY($3::text[]) ORDER BY time, packet_hash, rx_node_id`,
     [scope, windowDays, gold.map((row) => row.packet_hash)]);
     const snapshot: Snapshot = { capturedAt, network, windowDays, calibration, nodes, links, prefixes, transitions, priors, observations };
@@ -141,7 +141,7 @@ function snapshotQuery(snapshot: Snapshot, observations: Observation[]) {
       if (!set) { set = new Set(ids); membership.set(ids, set); }
       return set.has(id);
     };
-    if (/FROM packets\b/i.test(sql)) {
+    if (/FROM mesh.packets\b/i.test(sql)) {
       if (/SELECT DISTINCT rx_node_id, hop_count/i.test(sql)) return { rows: observations };
       const byObserver = new Map<string | null, Observation>();
       for (const row of [...observations].sort((a, b) => (b.path_hashes?.length ?? 0) - (a.path_hashes?.length ?? 0))) {
@@ -149,14 +149,14 @@ function snapshotQuery(snapshot: Snapshot, observations: Observation[]) {
       }
       return { rows: [...byObserver.values()] };
     }
-    if (/FROM nodes\b/i.test(sql)) return { rows: snapshot.nodes.filter((node) => /node_id = ANY\(\$1\)/i.test(sql)
+    if (/FROM core.nodes\b/i.test(sql)) return { rows: snapshot.nodes.filter((node) => /node_id = ANY\(\$1\)/i.test(sql)
       ? includes(params[0], node.node_id) && node.lat != null && node.lon != null && node.lat !== 0 && node.lon !== 0
       : params.slice(1, -1).some((prefix) => typeof prefix === 'string' && node.node_id.toUpperCase().startsWith(prefix.replace('%', '')))) };
-    if (/FROM node_links\b/i.test(sql)) return { rows: snapshot.links.filter((link) => includes(params[0], link.node_a_id) && includes(params[0], link.node_b_id)) };
-    if (/FROM path_position_prefix_priors\b/i.test(sql)) return { rows: snapshot.priors.positionPrefixes.filter((row) => includes(params[1], row.prefix)) };
-    if (/FROM path_corridor_priors\b/i.test(sql)) return { rows: snapshot.priors.corridors.filter((row) => includes(params[1], row.src_node_id) && includes(params[2], row.rx_node_id)) };
-    if (/FROM path_position_transition_priors\b/i.test(sql)) return { rows: snapshot.priors.positionTransitions.filter((row) => includes(params[1], row.from_node_id) && includes(params[1], row.to_node_id)) };
-    if (/FROM path_transition_priors\b/i.test(sql)) {
+    if (/FROM core.node_links\b/i.test(sql)) return { rows: snapshot.links.filter((link) => includes(params[0], link.node_a_id) && includes(params[0], link.node_b_id)) };
+    if (/FROM analytics.path_position_prefix_priors\b/i.test(sql)) return { rows: snapshot.priors.positionPrefixes.filter((row) => includes(params[1], row.prefix)) };
+    if (/FROM analytics.path_corridor_priors\b/i.test(sql)) return { rows: snapshot.priors.corridors.filter((row) => includes(params[1], row.src_node_id) && includes(params[2], row.rx_node_id)) };
+    if (/FROM analytics.path_position_transition_priors\b/i.test(sql)) return { rows: snapshot.priors.positionTransitions.filter((row) => includes(params[1], row.from_node_id) && includes(params[1], row.to_node_id)) };
+    if (/FROM analytics.path_transition_priors\b/i.test(sql)) {
       const counts = new Map<string, { from_node_id: string; to_node_id: string; count: number }>();
       for (const row of snapshot.transitions) {
         if (!includes(params[1], row.from_node_id) || !includes(params[1], row.to_node_id)) continue;
@@ -166,7 +166,7 @@ function snapshotQuery(snapshot: Snapshot, observations: Observation[]) {
       }
       return { rows: [...counts.values()] };
     }
-    if (/FROM path_model_calibration\b/i.test(sql)) return { rows: snapshot.calibration };
+    if (/FROM analytics.path_model_calibration\b/i.test(sql)) return { rows: snapshot.calibration };
     throw new Error(`Unimplemented snapshot query: ${sql}`);
   };
 }

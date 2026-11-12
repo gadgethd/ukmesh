@@ -127,14 +127,14 @@ export async function refreshNodeMapSuppressions(
     const { rows } = await client.query<MapSuppressionNode>(
       `SELECT n.node_id, n.network, n.lat, n.lon,
               ${nodeEffectiveLastSeenSql('n')} AS last_seen
-         FROM node_identity_nodes n
+         FROM core.node_identity_nodes n
         WHERE ${mapVisiblePredicate('n')}`,
     );
     const suppressions = computeNodeMapSuppressions(rows, clock!.computed_at.getTime(), config);
-    await client.query('DELETE FROM node_map_suppressions');
+    await client.query('DELETE FROM core.node_map_suppressions');
     if (suppressions.length > 0) {
       await client.query(
-        `INSERT INTO node_map_suppressions
+        `INSERT INTO core.node_map_suppressions
            (node_id, suppressed_by_node_id, reason, distance_m, stale_age_days, freshest_age_days)
          SELECT node_id, suppressed_by_node_id, reason, distance_m, stale_age_days, freshest_age_days
            FROM jsonb_to_recordset($1::jsonb) AS s(

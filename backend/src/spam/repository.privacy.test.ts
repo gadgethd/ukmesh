@@ -20,8 +20,8 @@ import {
 function hasCanonicalPrivacyPredicate(sql: string): boolean {
   return /visibility_ok IS TRUE/.test(sql)
     && /is_private IS NOT TRUE/.test(sql)
-    && /packet_visibility_materialization_state/.test(sql)
-    && /public_visibility_state/.test(sql)
+    && /ops.packet_visibility_materialization_state/.test(sql)
+    && /ops.public_visibility_state/.test(sql)
     && /visibility_generation\s*=\s*current_visibility\.generation/.test(sql);
 }
 
@@ -99,8 +99,8 @@ test('public incident list re-applies packet privacy to stored incidents at read
   const sql = captured[0]!;
   assert.ok(hasCanonicalPrivacyPredicate(sql));
   assert.ok(sql.includes(publicPacketPrivacySql('p')));
-  assert.match(sql, /FROM spam_message_incidents i/);
-  assert.match(sql, /JOIN packets p/);
+  assert.match(sql, /FROM (?:analytics\.)?spam_message_incidents i/);
+  assert.match(sql, /JOIN (?:mesh\.)?packets p/);
   assert.match(sql, /p\.packet_hash = m\.packet_hash/);
   assert.match(sql, /p\.network = m\.network/);
   assert.match(sql, /m\.incident_key = i\.incident_key/);
@@ -127,8 +127,8 @@ test('public incident detail re-applies packet privacy to the incident and its t
     assert.ok(sql.includes(publicPacketPrivacySql('p')));
     assert.match(sql, /packets p/);
   }
-  assert.match(captured[0]!, /JOIN packets p/);
-  assert.match(captured[1]!, /FROM spam_message_members m/);
+  assert.match(captured[0]!, /JOIN (?:mesh\.)?packets p/);
+  assert.match(captured[1]!, /FROM (?:analytics\.)?spam_message_members m/);
   assert.match(captured[1]!, /p\.packet_hash = m\.packet_hash/);
 });
 
@@ -144,7 +144,7 @@ test('canonical privacy assertion rejects the retired name-based gate', () => {
     )`;
   assert.equal(hasCanonicalPrivacyPredicate(legacyGate), false);
   assert.doesNotMatch(legacyGate, /visibility_ok IS TRUE/);
-  assert.doesNotMatch(legacyGate, /packet_visibility_materialization_state/);
+  assert.doesNotMatch(legacyGate, /ops.packet_visibility_materialization_state/);
 
   const unguarded = 'SELECT p.packet_hash FROM packets p WHERE p.packet_type = 5';
   assert.equal(hasCanonicalPrivacyPredicate(unguarded), false);

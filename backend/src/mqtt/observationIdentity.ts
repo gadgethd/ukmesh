@@ -59,7 +59,7 @@ export async function packetAlreadyPersisted(
 ): Promise<boolean> {
   const result = await query(
     `SELECT EXISTS (
-       SELECT 1 FROM packets
+       SELECT 1 FROM mesh.packets
         WHERE packet_hash = $1
           AND rx_node_id IS NOT DISTINCT FROM $2::text
           AND topic = $3

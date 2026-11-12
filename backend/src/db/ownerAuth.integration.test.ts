@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 
 const testOwnerDatabaseUrl = String(process.env['TEST_OWNER_DATABASE_URL'] ?? '').trim();
 
@@ -11,14 +12,51 @@ function adminUrlFor(ownerUrl: string): string {
   return url.toString();
 }
 
+// The consolidated database keeps owner-auth structure in core (073/075); the
+// owner queries are unqualified and rely on the role's search_path, which a
+// plain test connection does not carry.
+function withOwnerSearchPath(url: string): string {
+  const parsed = new URL(url);
+  parsed.searchParams.set('options', '-c search_path=mesh,core,analytics,ops,public');
+  return parsed.toString();
+}
+
 if (testOwnerDatabaseUrl) {
   // ownerAuth.ts reads its pool configuration at import time. Point it at the
   // explicit isolated test database and derive the admin connection from the
   // same URL so ambient OWNER_DATABASE_URL/DATABASE_URL can never leak in.
-  process.env['OWNER_DATABASE_URL'] = testOwnerDatabaseUrl;
+  process.env['OWNER_DATABASE_URL'] = withOwnerSearchPath(testOwnerDatabaseUrl);
   process.env['DATABASE_URL'] = adminUrlFor(testOwnerDatabaseUrl);
   process.env['OWNER_SESSION_MAX_PER_USER'] = '2';
 }
+
+// P1-9 removed runtime schema DDL, so this suite owns its fixture the same way
+// the other integration suites do: create the database if the service did not,
+// seed the shipped base schema, and replay the migration band (073/075 create
+// core.owner_*).
+async function provisionOwnerFixture(): Promise<void> {
+  const admin = new pg.Pool({ connectionString: adminUrlFor(testOwnerDatabaseUrl), max: 1 });
+  const name = new URL(testOwnerDatabaseUrl).pathname.replace(/^\//, '');
+  try {
+    const found = await admin.query('SELECT 1 FROM pg_database WHERE datname = $1', [name]);
+    if (!found.rowCount) {
+      await admin.query(`CREATE DATABASE "${name}"`);
+    }
+  } finally {
+    await admin.end();
+  }
+  const pool = new pg.Pool({ connectionString: testOwnerDatabaseUrl, options: POST_MOVE_SEARCH_PATH });
+  try {
+    await bootstrapBaseSchemaFixture(pool);
+  } finally {
+    await pool.end();
+  }
+}
+
+test.before(async () => {
+  if (!testOwnerDatabaseUrl) return;
+  await provisionOwnerFixture();
+});
 
 const skip = testOwnerDatabaseUrl ? false : 'TEST_OWNER_DATABASE_URL required';
 
@@ -38,7 +76,7 @@ async function ownerAuth(): Promise<OwnerAuthModule> {
 }
 
 async function withTestClient<T>(run: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: testOwnerDatabaseUrl });
+  const client = new pg.Client({ connectionString: withOwnerSearchPath(testOwnerDatabaseUrl) });
   await client.connect();
   try {
     return await run(client);
@@ -124,7 +162,7 @@ test('a login delayed on the per-user lock cannot be pruned by its own creation'
   const user = uniqueName('integration-lock');
   const oldest = await createOwnerSession(user, 60_000);
 
-  const holder = new pg.Client({ connectionString: testOwnerDatabaseUrl });
+  const holder = new pg.Client({ connectionString: withOwnerSearchPath(testOwnerDatabaseUrl) });
   await holder.connect();
   try {
     await holder.query('SELECT pg_advisory_lock(hashtext($1))', [`owner-session:${user}`]);

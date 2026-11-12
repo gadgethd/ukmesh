@@ -71,17 +71,17 @@ async function cleanupNodeRecords(
       : `GREATEST(last_seen, last_mqtt_observer_seen_at, last_path_evidence_at,
                   last_predicted_online_at, created_at) < NOW() - ($1 * INTERVAL '1 day')
          AND NOT EXISTS (
-           SELECT 1 FROM node_network_sightings s
+           SELECT 1 FROM core.node_network_sightings s
             WHERE s.node_id = n.node_id
               AND s.last_seen_at >= NOW() - ($1 * INTERVAL '1 day')
          )
          AND NOT EXISTS (
-           SELECT 1 FROM observer_region_observer_sightings s
+           SELECT 1 FROM core.observer_region_observer_sightings s
             WHERE s.rx_node_id = n.node_id
               AND s.last_seen >= NOW() - ($1 * INTERVAL '1 day')
          )`;
     const candidateSelection = `SELECT node_id
-         FROM nodes n
+         FROM core.nodes n
         WHERE ${staleCondition}
           AND network IS DISTINCT FROM 'test'
           -- Node deletion cascades its privacy prefixes and the existing
@@ -90,7 +90,7 @@ async function cleanupNodeRecords(
           -- until a separate privacy-preserving tombstone policy is available.
           AND COALESCE(n.name, '') NOT LIKE '%🚫%'
           AND NOT EXISTS (
-            SELECT 1 FROM private_node_prefixes p WHERE p.node_id = n.node_id
+            SELECT 1 FROM core.private_node_prefixes p WHERE p.node_id = n.node_id
           )`;
     const candidates = await client.query<{ node_id: string }>(
       `${candidateSelection} ORDER BY node_id`,
@@ -108,8 +108,8 @@ async function cleanupNodeRecords(
     // change, and preserve only a fence that was already current.
     const visibilityState = await client.query<{ materialization_current: boolean }>(
       `SELECT visibility.generation = materialized.visibility_generation AS materialization_current
-         FROM public_visibility_state visibility
-         LEFT JOIN packet_visibility_materialization_state materialized
+         FROM ops.public_visibility_state visibility
+         LEFT JOIN ops.packet_visibility_materialization_state materialized
            ON materialized.singleton = visibility.singleton
         WHERE visibility.singleton = TRUE
         FOR UPDATE OF visibility`,
@@ -134,41 +134,41 @@ async function cleanupNodeRecords(
       : `Node has no observed activity for at least ${thresholdDays} days`;
 
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'nodes', to_jsonb(n), $2
-         FROM nodes n
+         FROM core.nodes n
         WHERE n.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
        SELECT $1, 'observer_region_observer_sightings', to_jsonb(s), $2
-         FROM observer_region_observer_sightings s
+         FROM core.observer_region_observer_sightings s
         WHERE s.rx_node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
     await client.query(
-      `INSERT INTO maintenance_removed_records (batch_id, source_table, record_data, reason)
-       SELECT $1, 'node_network_sightings', to_jsonb(s), $2
-         FROM node_network_sightings s
+      `INSERT INTO ops.maintenance_removed_records (batch_id, source_table, record_data, reason)
+       SELECT $1, 'core.node_network_sightings', to_jsonb(s), $2
+         FROM core.node_network_sightings s
         WHERE s.node_id = ANY($3::text[])`,
       [batchId, reason, nodeIds],
     );
 
     const observerSightings = await client.query(
-      `DELETE FROM observer_region_observer_sightings
+      `DELETE FROM core.observer_region_observer_sightings
         WHERE rx_node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],
     );
     const networkSightings = await client.query(
-      `DELETE FROM node_network_sightings
+      `DELETE FROM core.node_network_sightings
         WHERE node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],
     );
     const nodes = await client.query(
-      `DELETE FROM nodes
+      `DELETE FROM core.nodes
         WHERE node_id = ANY($1::text[])
         RETURNING 1`,
       [nodeIds],
@@ -176,9 +176,9 @@ async function cleanupNodeRecords(
 
     if (visibilityState.rows[0]?.materialization_current === true) {
       await client.query(
-        `UPDATE packet_visibility_materialization_state materialized
+        `UPDATE ops.packet_visibility_materialization_state materialized
             SET visibility_generation = visibility.generation, updated_at = NOW()
-           FROM public_visibility_state visibility
+           FROM ops.public_visibility_state visibility
           WHERE materialized.singleton = TRUE AND visibility.singleton = TRUE
             AND materialized.visibility_generation IS DISTINCT FROM visibility.generation`,
       );

@@ -33,7 +33,7 @@ async function main(): Promise<void> {
     // Decrypt and validate the persisted identity before installing credentials.
     await packetShareCredentials(destination);
     await pool.query(
-      `INSERT INTO owner_packet_share_destinations (
+      `INSERT INTO core.owner_packet_share_destinations (
          destination_id, display_name, description, broker_url, topic_template,
          broker_username, broker_password_ciphertext, allowed_owner_username,
          allowed_node_id, auth_mode, auth_audience, tx_mode, enabled

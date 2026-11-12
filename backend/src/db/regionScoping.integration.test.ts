@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { getNodes, getRecentMessages, getRecentPackets, getRecentPacketEvents, getMultibytePathSegments, getViableLinks } from './index.js';
-import { runMigrations } from './migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { createNodeRepository } from '../repositories/nodes.js';
 import { networkFilters } from '../api/utils/networkFilters.js';
@@ -19,7 +19,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   await admin.query(`CREATE DATABASE "${name}"`);
   const owned = new URL(url!);
   owned.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   // Capture the original method before redirecting application pools to our fixture.
   const query = pool.query.bind(pool);
   const previousMode = process.env['MQTT_INGEST_MODE'];
@@ -31,8 +31,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     if (previousMode === undefined) delete process.env['MQTT_INGEST_MODE'];
     else process.env['MQTT_INGEST_MODE'] = previousMode;
   });
-  await query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const a = 'A'.repeat(64), b = 'B'.repeat(64), c = 'C'.repeat(64), privateId = 'D'.repeat(64);
   await query(`INSERT INTO nodes (node_id, name, network, role, lat, lon, advert_count, last_rx_at)
     VALUES ($1, 'Canonical', 'ukmesh', 1, NULL, NULL, 3, NOW()),
@@ -42,12 +41,12 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   await query(`INSERT INTO nodes (node_id, name, network, role, lat, lon)
     SELECT upper(md5(i::text) || md5(i::text)), 'Fixture ' || i, 'ukmesh', 2, 54, -1
     FROM generate_series(1, 12000) i`);
-  await query(`INSERT INTO node_identity_aliases
+  await query(`INSERT INTO core.node_identity_aliases
     (source_node_id, canonical_node_id, confidence, reason) VALUES ($1, $2, 'high', 'fixture')`, [b, a]);
-  await query(`INSERT INTO region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
-  await query(`INSERT INTO region_scope_members(region, node_id, packets)
+  await query(`INSERT INTO core.region_scope_stats(region) VALUES ('Europe'), ('eng-ne')`);
+  await query(`INSERT INTO core.region_scope_members(region, node_id, packets)
     VALUES ('Europe', $1, 4), ('Europe', $2, 4), ('Europe', $3, 4)`, [b, c, privateId]);
-  await query(`INSERT INTO region_scope_members(region, node_id, packets)
+  await query(`INSERT INTO core.region_scope_members(region, node_id, packets)
     SELECT 'eng-ne', upper(md5(i::text) || md5(i::text)), 1 FROM generate_series(1, 12000) i`);
   await query(`INSERT INTO packets
     (packet_hash, rx_node_id, src_node_id, topic, network, packet_type, region_scope, path_hashes, path_hash_size_bytes, payload)
@@ -109,7 +108,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     assert.match(serialized, /Index (?:Only )?Scan|Bitmap Index Scan/);
     const visit = (node: Record<string, unknown>) => {
       if (node['Node Type'] === 'Seq Scan') {
-        assert.doesNotMatch(String(node['Relation Name']), /^(?:nodes|region_scope_members|_hyper_.*_chunk)$/,
+        assert.doesNotMatch(String(node['Relation Name']), /^(?:nodes|core.region_scope_members|_hyper_.*_chunk)$/,
           `unbounded regional read: ${serialized}`);
       }
       for (const child of (node['Plans'] ?? []) as Array<Record<string, unknown>>) visit(child);

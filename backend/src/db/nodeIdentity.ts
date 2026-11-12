@@ -101,7 +101,7 @@ export function automaticIdentityAliasSetsEqual(
   desired: Array<Pick<IdentityAlias, 'sourceNodeId' | 'canonicalNodeId'>>,
 ): boolean {
   // Public identity and privacy projections consume only the mapping. Evidence,
-  // reason, and confidence continue to refresh in node_identity_match_evidence;
+  // reason, and confidence continue to refresh in core.node_identity_match_evidence;
   // changing that audit metadata must not invalidate every public cache.
   const currentRows = current.map((row) => `${row.source_node_id}\0${row.canonical_node_id}`).sort();
   const desiredRows = desired.map((row) => `${row.sourceNodeId}\0${row.canonicalNodeId}`).sort();
@@ -647,13 +647,13 @@ export async function refreshNodeIdentityAliases(
     await client.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
     transactionOpen = true;
     const generation = (await client.query<{ generation: string }>(
-      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE',
+      'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE',
     )).rows[0]?.generation;
     if (!generation) throw new Error('Identity refresh requires a visibility generation');
     const maxAgeMs = options.maxAgeMs ?? 0;
     if (maxAgeMs > 0) {
       const cached = (await client.query<{ result: IdentityRefreshResult }>(
-        `SELECT result FROM node_identity_refresh_state
+        `SELECT result FROM core.node_identity_refresh_state
           WHERE singleton = TRUE AND algorithm_version = 1
             AND visibility_generation = $1::bigint
             AND completed_at > NOW() - ($2::double precision * INTERVAL '1 millisecond')`,
@@ -669,7 +669,7 @@ export async function refreshNodeIdentityAliases(
     const nodesResult = await client.query<IdentityNode>(
       `SELECT node_id, name, lat, lon, role, advert_count, last_seen,
               network, hardware_model, firmware_version
-         FROM nodes
+         FROM core.nodes
         WHERE network IS DISTINCT FROM 'test'`,
     );
     const nodes = nodesResult.rows.map((row) => ({
@@ -714,7 +714,7 @@ export async function refreshNodeIdentityAliases(
       }>(
         `SELECT node_id, COUNT(*)::text AS count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM node_status_samples
+           FROM core.node_status_samples
           WHERE node_id = ANY($1::text[])
           GROUP BY node_id`,
         [ids],
@@ -735,7 +735,7 @@ export async function refreshNodeIdentityAliases(
       }>(
         `SELECT rx_node_id AS node_id, COUNT(*)::text AS count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM packets
+           FROM mesh.packets
           WHERE rx_node_id = src_node_id
             AND packet_type = 4
             AND rx_node_id = ANY($1::text[])
@@ -763,7 +763,7 @@ export async function refreshNodeIdentityAliases(
                 COUNT(*)::text AS packet_count,
                 COUNT(*) FILTER (WHERE packet_type = 4)::text AS advert_count,
                 MIN(time) AS first_at, MAX(time) AS last_at
-           FROM packets
+           FROM mesh.packets
           WHERE rx_node_id = ANY($1::text[])
             AND src_node_id = ANY($1::text[])
             AND rx_node_id <> src_node_id
@@ -805,9 +805,9 @@ export async function refreshNodeIdentityAliases(
     await client.query("SET LOCAL statement_timeout = '30s'");
     // Manual writers take this relation lock before their visibility trigger;
     // use the same order so their decisions cannot be overwritten or deadlock.
-    await client.query('LOCK TABLE node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
+    await client.query('LOCK TABLE core.node_identity_aliases IN SHARE ROW EXCLUSIVE MODE');
     const currentGeneration = (await client.query<{ generation: string }>(
-      'SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE FOR UPDATE',
+      'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE FOR UPDATE',
     )).rows[0]?.generation;
     if (currentGeneration !== generation) {
       throw new Error('Identity refresh visibility changed; discard stale evidence and retry');
@@ -815,7 +815,7 @@ export async function refreshNodeIdentityAliases(
 
     const storedAliases = await client.query<StoredIdentityAlias>(
       `SELECT source_node_id, canonical_node_id, confidence, reason, evidence, source_kind
-         FROM node_identity_aliases
+         FROM core.node_identity_aliases
         ORDER BY source_node_id`,
     );
     const manualSourceIds = new Set(
@@ -828,7 +828,7 @@ export async function refreshNodeIdentityAliases(
     const aliasRewriteSkipped = automaticIdentityAliasSetsEqual(automaticAliases, effectiveAliases);
 
     if (!aliasRewriteSkipped) {
-      await client.query(`DELETE FROM node_identity_aliases WHERE source_kind = 'automatic'`);
+      await client.query(`DELETE FROM core.node_identity_aliases WHERE source_kind = 'automatic'`);
     }
     if (!aliasRewriteSkipped && effectiveAliases.length > 0) {
       const params: unknown[] = [];
@@ -845,7 +845,7 @@ export async function refreshNodeIdentityAliases(
         return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}::jsonb, 'automatic', $${offset + 6})`;
       }).join(', ');
       await client.query(
-        `INSERT INTO node_identity_aliases
+        `INSERT INTO core.node_identity_aliases
            (source_node_id, canonical_node_id, confidence, reason, evidence, source_kind, updated_at)
          VALUES ${values}
          ON CONFLICT (source_node_id) DO UPDATE SET
@@ -854,13 +854,13 @@ export async function refreshNodeIdentityAliases(
            reason = EXCLUDED.reason,
            evidence = EXCLUDED.evidence,
            updated_at = EXCLUDED.updated_at
-         WHERE node_identity_aliases.source_kind = 'automatic'`,
+         WHERE core.node_identity_aliases.source_kind = 'automatic'`,
         params,
       );
     }
 
     await client.query(
-      `DELETE FROM node_identity_match_evidence
+      `DELETE FROM core.node_identity_match_evidence
         WHERE source_kind = 'automatic' AND updated_at < $1`,
       [refreshStartedAt],
     );
@@ -891,7 +891,7 @@ export async function refreshNodeIdentityAliases(
           return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}::jsonb, $${offset + 7}, $${offset + 8}, $${offset + 9})`;
         }).join(', ');
         await client.query(
-          `INSERT INTO node_identity_match_evidence
+          `INSERT INTO core.node_identity_match_evidence
              (node_a_id, node_b_id, decision, confidence, reason, evidence, source_kind, updated_at, score)
            VALUES ${values}
            ON CONFLICT (node_a_id, node_b_id) DO UPDATE SET
@@ -901,7 +901,7 @@ export async function refreshNodeIdentityAliases(
              evidence = EXCLUDED.evidence,
              updated_at = EXCLUDED.updated_at,
              score = EXCLUDED.score
-           WHERE node_identity_match_evidence.source_kind = 'automatic'`,
+           WHERE core.node_identity_match_evidence.source_kind = 'automatic'`,
           params,
         );
       }
@@ -917,10 +917,10 @@ export async function refreshNodeIdentityAliases(
       aliasRewriteSkipped,
     };
     await client.query(
-      `INSERT INTO node_identity_refresh_state
+      `INSERT INTO core.node_identity_refresh_state
          (singleton, algorithm_version, visibility_generation, completed_at, result)
        SELECT TRUE, 1, generation, clock_timestamp(), $1::jsonb
-         FROM public_visibility_state WHERE singleton = TRUE
+         FROM ops.public_visibility_state WHERE singleton = TRUE
        ON CONFLICT (singleton) DO UPDATE SET
          algorithm_version = EXCLUDED.algorithm_version,
          visibility_generation = EXCLUDED.visibility_generation,

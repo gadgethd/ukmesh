@@ -33,20 +33,20 @@ scalar() { "${PSQL[@]}" -qAt -c "$1" | tr -d '[:space:]'; }
 audit() {
   log 'network-label counts'
   "${PSQL[@]}" <<'SQL'
-SELECT 'nodes' AS relation, network, COUNT(*) FROM nodes GROUP BY network
-UNION ALL SELECT 'node_status_samples', network, COUNT(*) FROM node_status_samples GROUP BY network
-UNION ALL SELECT 'packets', network, COUNT(*) FROM packets GROUP BY network
-UNION ALL SELECT 'node_network_sightings', network, COUNT(*) FROM node_network_sightings GROUP BY network
-UNION ALL SELECT 'path_prefix_priors', network, COUNT(*) FROM path_prefix_priors GROUP BY network
+SELECT 'nodes' AS relation, network, COUNT(*) FROM core.nodes GROUP BY network
+UNION ALL SELECT 'core.node_status_samples', network, COUNT(*) FROM core.node_status_samples GROUP BY network
+UNION ALL SELECT 'mesh.packets', network, COUNT(*) FROM mesh.packets GROUP BY network
+UNION ALL SELECT 'core.node_network_sightings', network, COUNT(*) FROM core.node_network_sightings GROUP BY network
+UNION ALL SELECT 'path_prefix_priors', network, COUNT(*) FROM analytics.path_prefix_priors GROUP BY network
 ORDER BY 1, 2;
 SQL
   log 'recent legacy-writer activity'
-  "${PSQL[@]}" -c "SELECT network, MAX(time) AS latest, COUNT(*) AS packets_15m FROM packets WHERE network IN (${LEGACY_SQL}) AND time > NOW() - INTERVAL '15 minutes' GROUP BY network ORDER BY network;"
+  "${PSQL[@]}" -c "SELECT network, MAX(time) AS latest, COUNT(*) AS packets_15m FROM mesh.packets WHERE network IN (${LEGACY_SQL}) AND time > NOW() - INTERVAL '15 minutes' GROUP BY network ORDER BY network;"
 }
 
 verify() {
   local remaining
-  remaining="$(scalar "SELECT (SELECT COUNT(*) FROM nodes WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_status_samples WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM packets WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM node_network_sightings WHERE network IN (${LEGACY_SQL}));")"
+  remaining="$(scalar "SELECT (SELECT COUNT(*) FROM core.nodes WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM core.node_status_samples WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM mesh.packets WHERE network IN (${LEGACY_SQL})) + (SELECT COUNT(*) FROM core.node_network_sightings WHERE network IN (${LEGACY_SQL}));")"
   audit
   if [[ "$remaining" != '0' ]]; then
     log "ERROR: ${remaining} authoritative rows still use legacy production labels"
@@ -59,16 +59,16 @@ relabel_status_batches() {
   local batch_size="${NETWORK_UNIFICATION_STATUS_BATCH_SIZE:-50000}"
   local changed=1 total=0
   while [[ "$changed" -gt 0 ]]; do
-    changed="$(scalar "WITH batch AS MATERIALIZED (SELECT ctid FROM node_status_samples WHERE network IN (${LEGACY_SQL}) LIMIT ${batch_size}), changed AS (UPDATE node_status_samples target SET network = 'ukmesh' FROM batch WHERE target.ctid = batch.ctid RETURNING 1) SELECT COUNT(*) FROM changed;")"
+    changed="$(scalar "WITH batch AS MATERIALIZED (SELECT ctid FROM core.node_status_samples WHERE network IN (${LEGACY_SQL}) LIMIT ${batch_size}), changed AS (UPDATE core.node_status_samples target SET network = 'ukmesh' FROM batch WHERE target.ctid = batch.ctid RETURNING 1) SELECT COUNT(*) FROM changed;")"
     total=$((total + changed))
-    log "node_status_samples relabelled=${total} last_batch=${changed}"
+    log "core.node_status_samples relabelled=${total} last_batch=${changed}"
   done
 }
 
 mark_failed() {
   local status=$?
   trap - ERR
-  "${PSQL[@]}" -qAt -c "UPDATE network_unification_runs SET status='failed', detail=jsonb_build_object('exit_status', ${status}) WHERE run_id='${RUN_ID//\'/\'\'}';" >/dev/null || true
+  "${PSQL[@]}" -qAt -c "UPDATE ops.network_unification_runs SET status='failed', detail=jsonb_build_object('exit_status', ${status}) WHERE run_id='${RUN_ID//\'/\'\'}';" >/dev/null || true
   exit "$status"
 }
 
@@ -82,23 +82,23 @@ apply() {
     return 2
   fi
   local active_legacy
-  active_legacy="$(scalar "SELECT COUNT(*) FROM packets WHERE network IN (${LEGACY_SQL}) AND time > NOW() - INTERVAL '15 minutes';")"
+  active_legacy="$(scalar "SELECT COUNT(*) FROM mesh.packets WHERE network IN (${LEGACY_SQL}) AND time > NOW() - INTERVAL '15 minutes';")"
   if [[ "$active_legacy" != '0' ]]; then
-    log "ERROR: ${active_legacy} legacy-labelled packets arrived in the last 15 minutes; update/stop legacy writers first"
+    log "ERROR: ${active_legacy} legacy-labelled mesh.packets arrived in the last 15 minutes; update/stop legacy writers first"
     return 3
   fi
 
   trap mark_failed ERR
-  "${PSQL[@]}" -qAt -c "INSERT INTO network_unification_runs (run_id,status,backup_reference) VALUES ('${RUN_ID//\'/\'\'}','running','${BACKUP_REFERENCE//\'/\'\'}') ON CONFLICT (run_id) DO UPDATE SET status='running';"
+  "${PSQL[@]}" -qAt -c "INSERT INTO ops.network_unification_runs (run_id,status,backup_reference) VALUES ('${RUN_ID//\'/\'\'}','running','${BACKUP_REFERENCE//\'/\'\'}') ON CONFLICT (run_id) DO UPDATE SET status='running';"
   audit
   log 'applying small-table and derived-table cutover'
   "${PSQL[@]}" -f scripts/unify-networks-migration.sql
   log 'relabeling node status history in bounded commits'
   relabel_status_batches
   log 'relabeling packet chunks with compression-state preservation'
-  scripts/relabel-packets-per-chunk.sh
+  scripts/relabel-mesh.packets-per-chunk.sh
   verify
-  "${PSQL[@]}" -qAt -c "UPDATE network_unification_runs SET status='completed', completed_at=NOW(), detail=jsonb_build_object('verified_at', NOW()) WHERE run_id='${RUN_ID//\'/\'\'}';"
+  "${PSQL[@]}" -qAt -c "UPDATE ops.network_unification_runs SET status='completed', completed_at=NOW(), detail=jsonb_build_object('verified_at', NOW()) WHERE run_id='${RUN_ID//\'/\'\'}';"
   trap - ERR
   log "cutover complete run_id=${RUN_ID}"
 }

@@ -91,7 +91,7 @@ export async function loadStoredChartSnapshot(
   }
   const result = await query<StoredChartSnapshotRow>(
     `SELECT scope_key, schema_version, visibility_generation, generated_at, payload
-      FROM stats_chart_snapshots
+      FROM analytics.stats_chart_snapshots
       WHERE scope_key = $1
         AND schema_version = $2
       LIMIT 1`,
@@ -122,10 +122,10 @@ export async function saveStoredChartSnapshot(
   if (!validated) throw new Error('chart snapshot payload is invalid');
   const encoded = JSON.stringify(validated.payload);
   const result = await query<{ scope_key: string }>(
-    `INSERT INTO stats_chart_snapshots
+    `INSERT INTO analytics.stats_chart_snapshots
        (scope_key, schema_version, visibility_generation, generated_at, payload, updated_at)
      SELECT $1, $2, $3, $4::timestamptz, $5::jsonb, NOW()
-       FROM public_visibility_state
+       FROM ops.public_visibility_state
       WHERE singleton = TRUE
         AND generation = $3
      ON CONFLICT (scope_key) DO UPDATE SET
@@ -134,10 +134,10 @@ export async function saveStoredChartSnapshot(
        generated_at = EXCLUDED.generated_at,
        payload = EXCLUDED.payload,
        updated_at = NOW()
-     WHERE stats_chart_snapshots.visibility_generation < EXCLUDED.visibility_generation
+     WHERE analytics.stats_chart_snapshots.visibility_generation < EXCLUDED.visibility_generation
         OR (
-          stats_chart_snapshots.visibility_generation = EXCLUDED.visibility_generation
-          AND stats_chart_snapshots.generated_at <= EXCLUDED.generated_at
+          analytics.stats_chart_snapshots.visibility_generation = EXCLUDED.visibility_generation
+          AND analytics.stats_chart_snapshots.generated_at <= EXCLUDED.generated_at
         )
      RETURNING scope_key`,
     [

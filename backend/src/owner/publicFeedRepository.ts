@@ -42,13 +42,13 @@ export async function getActivePublicFeedReaderUsernames(
 ): Promise<Set<string>> {
   const result = await query<{ owner_username: string }>(
     `SELECT DISTINCT feed_node.owner_username
-       FROM owner_public_feed_nodes feed_node
-       JOIN owner_public_feed_settings settings
+       FROM core.owner_public_feed_nodes feed_node
+       JOIN core.owner_public_feed_settings settings
          ON settings.owner_username = feed_node.owner_username
         AND settings.enabled = TRUE
       WHERE EXISTS (
         SELECT 1
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = feed_node.node_id
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'
@@ -69,13 +69,13 @@ export async function getActivePublicFeedNodeIds(
 ): Promise<string[]> {
   const result = await query<{ node_id: string }>(
     `SELECT DISTINCT feed_node.node_id
-       FROM owner_public_feed_nodes feed_node
-       JOIN owner_public_feed_settings settings
+       FROM core.owner_public_feed_nodes feed_node
+       JOIN core.owner_public_feed_settings settings
          ON settings.owner_username = feed_node.owner_username
         AND settings.enabled = TRUE
       WHERE EXISTS (
         SELECT 1
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = feed_node.node_id
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'
@@ -106,7 +106,7 @@ export function createPublicFeedRepository(
     }>(
       `WITH recent_activity AS (
         SELECT COUNT(*)::int AS recent_packet_count
-          FROM packets packet
+          FROM mesh.packets packet
          WHERE packet.rx_node_id = ANY($2::text[])
            AND packet.time > NOW() - INTERVAL '24 hours'
            AND packet.network IS DISTINCT FROM 'test'
@@ -118,11 +118,11 @@ export function createPublicFeedRepository(
              MAX(delivery.delivered_at) AS last_forwarded_at
          FROM (SELECT $1::text AS owner_username) requested
          CROSS JOIN recent_activity
-         LEFT JOIN owner_public_feed_settings settings
+         LEFT JOIN core.owner_public_feed_settings settings
            ON settings.owner_username = requested.owner_username
-         LEFT JOIN owner_public_feed_nodes feed_node
+         LEFT JOIN core.owner_public_feed_nodes feed_node
            ON feed_node.owner_username = requested.owner_username
-         LEFT JOIN public_feed_deliveries delivery
+         LEFT JOIN ops.public_feed_deliveries delivery
            ON delivery.node_id = feed_node.node_id
           AND delivery.status = 'succeeded'
           AND delivery.delivered_at IS NOT NULL
@@ -153,7 +153,7 @@ export function createPublicFeedRepository(
   ): Promise<void> {
     const update = async (runQuery: PublicFeedQueryFn): Promise<void> => {
       await runQuery(
-        `INSERT INTO owner_public_feed_settings (owner_username, enabled, updated_at)
+        `INSERT INTO core.owner_public_feed_settings (owner_username, enabled, updated_at)
          VALUES ($1, $2, NOW())
          ON CONFLICT (owner_username) DO UPDATE SET
            enabled = EXCLUDED.enabled,
@@ -161,13 +161,13 @@ export function createPublicFeedRepository(
         [ownerUsername, enabled],
       );
       await runQuery(
-        `DELETE FROM owner_public_feed_nodes
+        `DELETE FROM core.owner_public_feed_nodes
           WHERE owner_username = $1`,
         [ownerUsername],
       );
       if (enabled && nodeIds.length > 0) {
         await runQuery(
-          `INSERT INTO owner_public_feed_nodes (owner_username, node_id)
+          `INSERT INTO core.owner_public_feed_nodes (owner_username, node_id)
            SELECT $1, node_id
              FROM unnest($2::text[]) AS selected(node_id)
            ON CONFLICT (owner_username, node_id) DO NOTHING`,
@@ -176,7 +176,7 @@ export function createPublicFeedRepository(
       }
       if (!enabled) {
         await runQuery(
-          `UPDATE public_feed_deliveries delivery
+          `UPDATE ops.public_feed_deliveries delivery
               SET status = 'dead_lettered',
                   last_error = 'public feed disabled',
                   claim_token = NULL,
@@ -185,7 +185,7 @@ export function createPublicFeedRepository(
             WHERE delivery.status IN ('pending', 'failed')
               AND NOT EXISTS (
                 SELECT 1
-                  FROM owner_public_feed_nodes active_node
+                  FROM core.owner_public_feed_nodes active_node
                  WHERE active_node.node_id = delivery.node_id
               )`,
         );
@@ -223,7 +223,7 @@ export function createPublicFeedRepository(
 
     const update = async (runQuery: PublicFeedQueryFn): Promise<void> => {
       await runQuery(
-        `DELETE FROM owner_public_feed_nodes feed_node
+        `DELETE FROM core.owner_public_feed_nodes feed_node
           WHERE NOT EXISTS (
             SELECT 1
               FROM unnest($1::text[], $2::text[]) AS requested(owner_username, node_id)
@@ -232,7 +232,7 @@ export function createPublicFeedRepository(
           )
              OR NOT EXISTS (
             SELECT 1
-              FROM owner_public_feed_settings settings
+              FROM core.owner_public_feed_settings settings
              WHERE settings.owner_username = feed_node.owner_username
                AND settings.enabled = TRUE
           )`,
@@ -240,10 +240,10 @@ export function createPublicFeedRepository(
       );
       if (usernames.length > 0) {
         await runQuery(
-          `INSERT INTO owner_public_feed_nodes (owner_username, node_id)
+          `INSERT INTO core.owner_public_feed_nodes (owner_username, node_id)
            SELECT requested.owner_username, requested.node_id
              FROM unnest($1::text[], $2::text[]) AS requested(owner_username, node_id)
-             JOIN owner_public_feed_settings settings
+             JOIN core.owner_public_feed_settings settings
                ON settings.owner_username = requested.owner_username
               AND settings.enabled = TRUE
            ON CONFLICT (owner_username, node_id) DO NOTHING`,
@@ -251,7 +251,7 @@ export function createPublicFeedRepository(
         );
       }
       await runQuery(
-        `UPDATE public_feed_deliveries delivery
+        `UPDATE ops.public_feed_deliveries delivery
             SET status = 'dead_lettered',
                 last_error = 'public feed ownership changed',
                 claim_token = NULL,
@@ -260,7 +260,7 @@ export function createPublicFeedRepository(
           WHERE delivery.status IN ('pending', 'failed')
             AND NOT EXISTS (
               SELECT 1
-                FROM owner_public_feed_nodes active_node
+                FROM core.owner_public_feed_nodes active_node
                WHERE active_node.node_id = delivery.node_id
             )`,
       );
@@ -275,8 +275,8 @@ export function createPublicFeedRepository(
   async function hasActiveNode(nodeId: string): Promise<boolean> {
     const result = await query(
       `SELECT 1
-         FROM owner_public_feed_nodes feed_node
-         JOIN owner_public_feed_settings settings
+         FROM core.owner_public_feed_nodes feed_node
+         JOIN core.owner_public_feed_settings settings
            ON settings.owner_username = feed_node.owner_username
         WHERE feed_node.node_id = $1
           AND settings.enabled = TRUE
@@ -294,14 +294,14 @@ export function createPublicFeedRepository(
     payload: Record<string, unknown>;
   }): Promise<boolean> {
     const result = await query(
-      `INSERT INTO public_feed_deliveries (
+      `INSERT INTO ops.public_feed_deliveries (
          node_id, event_key, packet_hash, source_topic, destination_topic, payload
        )
        SELECT $1, $2, $3, $4, $5, $6::jsonb
         WHERE EXISTS (
           SELECT 1
-            FROM owner_public_feed_nodes feed_node
-            JOIN owner_public_feed_settings settings
+            FROM core.owner_public_feed_nodes feed_node
+            JOIN core.owner_public_feed_settings settings
               ON settings.owner_username = feed_node.owner_username
            WHERE feed_node.node_id = $1
              AND settings.enabled = TRUE
@@ -323,7 +323,7 @@ export function createPublicFeedRepository(
   async function reclaimExpiredClaims(now = new Date()): Promise<number> {
     const result = await query<{ count: string }>(
       `WITH reclaimed AS (
-         UPDATE public_feed_deliveries
+         UPDATE ops.public_feed_deliveries
             SET status = CASE WHEN attempts >= 5 THEN 'dead_lettered' ELSE 'failed' END,
                 next_attempt_at = NOW(),
                 claim_token = NULL,
@@ -340,7 +340,7 @@ export function createPublicFeedRepository(
 
   async function discardInactiveDeliveries(): Promise<number> {
     const result = await query<{ id: string }>(
-      `UPDATE public_feed_deliveries delivery
+      `UPDATE ops.public_feed_deliveries delivery
           SET status = 'dead_lettered',
               last_error = 'public feed is no longer enabled for this node',
               claim_token = NULL,
@@ -349,8 +349,8 @@ export function createPublicFeedRepository(
         WHERE delivery.status IN ('pending', 'failed')
           AND NOT EXISTS (
             SELECT 1
-              FROM owner_public_feed_nodes feed_node
-              JOIN owner_public_feed_settings settings
+              FROM core.owner_public_feed_nodes feed_node
+              JOIN core.owner_public_feed_settings settings
                 ON settings.owner_username = feed_node.owner_username
              WHERE feed_node.node_id = delivery.node_id
                AND settings.enabled = TRUE
@@ -364,14 +364,14 @@ export function createPublicFeedRepository(
     const result = await query<PublicFeedDeliveryRow>(
       `WITH due AS (
          SELECT delivery.id
-           FROM public_feed_deliveries delivery
+           FROM ops.public_feed_deliveries delivery
           WHERE delivery.status IN ('pending', 'failed')
             AND delivery.attempts < 5
             AND delivery.next_attempt_at <= NOW()
             AND EXISTS (
               SELECT 1
-                FROM owner_public_feed_nodes feed_node
-                JOIN owner_public_feed_settings settings
+                FROM core.owner_public_feed_nodes feed_node
+                JOIN core.owner_public_feed_settings settings
                   ON settings.owner_username = feed_node.owner_username
                WHERE feed_node.node_id = delivery.node_id
                  AND settings.enabled = TRUE
@@ -380,7 +380,7 @@ export function createPublicFeedRepository(
           FOR UPDATE SKIP LOCKED
           LIMIT $1
        )
-       UPDATE public_feed_deliveries delivery
+       UPDATE ops.public_feed_deliveries delivery
           SET status = 'delivering',
               attempts = delivery.attempts + 1,
               last_attempt_at = NOW(),
@@ -399,7 +399,7 @@ export function createPublicFeedRepository(
 
   async function markSucceeded(id: string, claimToken: string): Promise<void> {
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = 'succeeded', delivered_at = NOW(), last_error = NULL,
               claim_token = NULL, claim_expires_at = NULL, updated_at = NOW()
         WHERE id = $1 AND claim_token = $2`,
@@ -411,7 +411,7 @@ export function createPublicFeedRepository(
     const terminal = attempts >= 5;
     const delaySeconds = Math.min(300, 2 ** Math.max(0, attempts - 1));
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = $3,
               next_attempt_at = NOW() + ($4::text || ' seconds')::interval,
               last_error = $5, claim_token = NULL, claim_expires_at = NULL,
@@ -423,7 +423,7 @@ export function createPublicFeedRepository(
 
   async function markDiscarded(id: string, claimToken: string, error: string): Promise<void> {
     await query(
-      `UPDATE public_feed_deliveries
+      `UPDATE ops.public_feed_deliveries
           SET status = 'dead_lettered', last_error = $3,
               claim_token = NULL, claim_expires_at = NULL, updated_at = NOW()
         WHERE id = $1 AND claim_token = $2`,
@@ -433,7 +433,7 @@ export function createPublicFeedRepository(
 
   async function queueStats(): Promise<{ count: number; oldestAgeSeconds: number }> {
     const result = await query<{ count: string; age: string | null }>(`SELECT COUNT(*)::text AS count,
-      EXTRACT(EPOCH FROM NOW() - MIN(created_at))::text AS age FROM public_feed_deliveries
+      EXTRACT(EPOCH FROM NOW() - MIN(created_at))::text AS age FROM ops.public_feed_deliveries
       WHERE status IN ('pending', 'failed', 'delivering')`);
     return { count: Number(result.rows[0]?.count ?? 0), oldestAgeSeconds: Math.max(0, Number(result.rows[0]?.age ?? 0)) };
   }

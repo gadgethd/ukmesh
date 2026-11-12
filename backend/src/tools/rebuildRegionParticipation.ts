@@ -7,8 +7,8 @@
  *   - resolve elements to nodes (unique prefix match only; drop ambiguous)
  * Then tally node -> region -> distinct packets, plus unscoped relay evidence
  * (route 1, multibyte, 7d) for the green/red classification, and refresh:
- *   region_scope_stats, region_scope_members, repeater_scope_status,
- *   region_scope_run
+ *   core.region_scope_stats, core.region_scope_members, core.repeater_scope_status,
+ *   core.region_scope_run
  *
  * Membership floor: a node counts as a region member only when it relayed at
  * least MEMBER_MIN_SHARE_PCT (regions/memberShare.ts, currently 10%) of that
@@ -122,7 +122,7 @@ async function main(): Promise<void> {
                  FILTER (WHERE p.route_type IN (0, 3) AND p.raw_hex <> ''))[1] AS raw,
               (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems,
               (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
-         FROM packets p
+         FROM mesh.packets p
          LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
         WHERE p.route_type IN (0, 3)
           AND p.time > now() - make_interval(days => $1)
@@ -169,7 +169,7 @@ async function main(): Promise<void> {
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
-         FROM nodes
+         FROM core.nodes
         ORDER BY node_id, last_seen DESC NULLS LAST`,
     );
     const nodeRoles = new Map<string, number | null>();
@@ -276,7 +276,7 @@ async function main(): Promise<void> {
 
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(
       `SELECT e, count(DISTINCT p.packet_hash) AS c
-         FROM packets p, unnest(p.path_hashes) AS e
+         FROM mesh.packets p, unnest(p.path_hashes) AS e
         WHERE p.route_type = 1
           AND p.path_hash_size_bytes >= 2
           AND p.time > now() - interval '7 days'
@@ -376,15 +376,15 @@ async function main(): Promise<void> {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('DELETE FROM region_scope_members');
-      await client.query('DELETE FROM region_scope_stats');
-      await client.query('DELETE FROM repeater_scope_status');
-      await client.query('DELETE FROM region_scope_unattributed');
-      await client.query('DELETE FROM region_scope_run');
+      await client.query('DELETE FROM core.region_scope_members');
+      await client.query('DELETE FROM core.region_scope_stats');
+      await client.query('DELETE FROM core.repeater_scope_status');
+      await client.query('DELETE FROM core.region_scope_unattributed');
+      await client.query('DELETE FROM core.region_scope_run');
 
       const regionNames = [...regionTotals.keys()];
       await client.query(
-        `INSERT INTO region_scope_stats
+        `INSERT INTO core.region_scope_stats
            (region, packets_total, member_count, repeater_member_count, first_seen, last_seen)
          SELECT region, packets_total, member_count, repeater_member_count, first_seen, last_seen
            FROM unnest($1::text[], $2::int[], $3::int[], $4::int[], $5::timestamptz[], $6::timestamptz[])
@@ -403,7 +403,7 @@ async function main(): Promise<void> {
       for (let offset = 0; offset < members.length; offset += MEMBER_BATCH) {
         const batch = members.slice(offset, offset + MEMBER_BATCH);
         await client.query(
-          `INSERT INTO region_scope_members (region, node_id, packets)
+          `INSERT INTO core.region_scope_members (region, node_id, packets)
            SELECT region, node_id, packets
              FROM unnest($1::text[], $2::text[], $3::int[]) AS t(region, node_id, packets)`,
           [
@@ -418,7 +418,7 @@ async function main(): Promise<void> {
       for (let offset = 0; offset < classification.length; offset += STATUS_BATCH) {
         const batch = classification.slice(offset, offset + STATUS_BATCH);
         await client.query(
-          `INSERT INTO repeater_scope_status
+          `INSERT INTO core.repeater_scope_status
              (node_id, status, evidence, scoped_packets, unscoped_packets_7d, regions)
            SELECT node_id, status, evidence, scoped_packets, unscoped_packets_7d, regions::jsonb
              FROM unnest($1::text[], $2::text[], $3::text[], $4::int[], $5::int[], $6::text[])
@@ -437,7 +437,7 @@ async function main(): Promise<void> {
       const clusters = unattributedClusters.clusters;
       if (clusters.length > 0) {
         await client.query(
-          `INSERT INTO region_scope_unattributed
+          `INSERT INTO core.region_scope_unattributed
              (cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes)
            SELECT cluster_id, lat, lon, packets, observers, first_seen, last_seen, top_nodes::jsonb
              FROM unnest($1::text[], $2::float8[], $3::float8[], $4::int[], $5::int[],
@@ -457,7 +457,7 @@ async function main(): Promise<void> {
       }
 
       await client.query(
-        `INSERT INTO region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
+        `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets)
          VALUES (TRUE, now(), $1, $2, $3)`,
         [windowDays, scopedRows.length, decodedCount],
       );

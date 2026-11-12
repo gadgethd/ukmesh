@@ -53,23 +53,23 @@ function fixtureQuery(fixture: Fixture) {
           age double precision, packet_hash text, rx_node_id text, src_node_id text,
           network text, topic text, topic_prefix text, visibility_ok boolean, is_private boolean,
           packet_type integer, hop_count integer, rssi double precision, snr double precision, payload jsonb)
-      ), node_identity_aliases AS (
+      ), core.node_identity_aliases AS (
         SELECT * FROM (VALUES (${literal(F)},${literal(A)})) a(source_node_id,canonical_node_id)
       ), node_identity_nodes AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.nodes ?? [node(A), node(B), node(C), node(D)]))}::jsonb)
         AS n(node_id text,name text,role integer,network text,lat double precision,lon double precision,
           iata text,last_seen timestamptz,hardware_model text)
-      ), node_identity_sightings AS (
+      ), core.node_identity_sightings AS (
         SELECT ${literal(B)} AS node_id,'ukmesh'::text AS network,NOW() AS last_seen_at
         WHERE ${fixture.sighted ? 'TRUE' : 'FALSE'}
-      ), node_links AS (
+      ), core.node_links AS (
         SELECT l.*, NOW() - age * INTERVAL '1 second' AS last_observed
         FROM jsonb_to_recordset(${literal(JSON.stringify(fixture.links ?? []))}::jsonb) AS l(
           node_a_id text,node_b_id text,age double precision,observed_count integer,
           multibyte_observed_count integer,itm_path_loss_db double precision,itm_viable boolean,force_viable boolean)
-      ), packet_visibility_materialization_state AS (
+      ), ops.packet_visibility_materialization_state AS (
         SELECT TRUE AS singleton,1 AS visibility_generation
-      ), public_visibility_state AS (
+      ), ops.public_visibility_state AS (
         SELECT TRUE AS singleton,${fixture.stalePrivacy ? 2 : 1} AS generation
       ) SELECT COALESCE(jsonb_agg(to_jsonb(result)),'[]'::jsonb) FROM (${bound}) result;`;
     const child = execFileAsync('docker', ['exec', '-i', '-e',

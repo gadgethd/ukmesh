@@ -36,7 +36,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
        b.window_start::text,
        b.window_end::text,
        (SELECT COUNT(*)::text
-          FROM packets p
+          FROM mesh.packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
            AND (
@@ -44,7 +44,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
            )) AS source_rows,
        (SELECT COUNT(DISTINCT date_trunc('hour', p.time))::text
-          FROM packets p
+          FROM mesh.packets p
          WHERE p.time >= b.window_start
            AND p.time < b.window_end
            AND (
@@ -52,7 +52,7 @@ async function describeHourlyBackfill(days: number): Promise<void> {
              OR COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
            )) AS source_hours,
        (SELECT COUNT(*)::text
-          FROM packet_hourly_stats s
+          FROM mesh.packet_hourly_stats s
          WHERE s.hour >= b.window_start
            AND s.hour < b.window_end) AS existing_rollup_rows
      FROM bounds b`,
@@ -70,7 +70,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
     completed_at: string | null;
   }>(
     `SELECT cursor_value, window_end::text, rows_processed::text, completed_at::text
-       FROM maintenance_backfill_checkpoints
+       FROM ops.maintenance_backfill_checkpoints
       WHERE job_name = $1`,
     [jobName],
   );
@@ -113,7 +113,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
       await client.query(`SET LOCAL lock_timeout = '5s'`);
       await client.query(`SET LOCAL statement_timeout = '2min'`);
       await client.query(
-        `DELETE FROM packet_hourly_stats
+        `DELETE FROM mesh.packet_hourly_stats
           WHERE hour >= $1::timestamptz AND hour < $2::timestamptz`,
         [cursor.toISOString(), sliceEnd.toISOString()],
       );
@@ -132,7 +132,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
              COUNT(p.rssi)::bigint AS rssi_count,
              COALESCE(SUM(p.snr), 0)::double precision AS snr_sum,
              COUNT(p.snr)::bigint AS snr_count
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
              AND (
@@ -141,7 +141,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
              )
            GROUP BY 1, 2, 3, 4, 5, 6, 7
          ), inserted AS (
-           INSERT INTO packet_hourly_stats (
+           INSERT INTO mesh.packet_hourly_stats (
              network, hour, packet_type, hop_count, route_type,
              transport_code, region_scope, packet_count,
              rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -159,7 +159,7 @@ async function backfillHourlyStats(days: number, pauseMs: number): Promise<void>
       processed += Number(inserted.rows[0]?.count ?? 0);
       const complete = sliceEnd >= bounds.windowEnd;
       await client.query(
-        `INSERT INTO maintenance_backfill_checkpoints (
+        `INSERT INTO ops.maintenance_backfill_checkpoints (
            job_name, cursor_value, window_end, rows_processed, updated_at, completed_at
          )
          VALUES ($1, $2, $3, $4, NOW(), CASE WHEN $5 THEN NOW() ELSE NULL END)
@@ -204,7 +204,7 @@ async function catchUpCurrentHour(): Promise<void> {
   }>(
     `SELECT (
        SELECT window_end::text
-         FROM maintenance_backfill_checkpoints
+         FROM ops.maintenance_backfill_checkpoints
         WHERE job_name = 'packet-hourly-stats-v1'
           AND completed_at IS NOT NULL
      ) AS checkpoint_end,
@@ -245,9 +245,9 @@ async function catchUpCurrentHour(): Promise<void> {
       await client.query('BEGIN');
       await client.query(`SET LOCAL lock_timeout = '5s'`);
       await client.query(`SET LOCAL statement_timeout = '30s'`);
-      await client.query('LOCK TABLE packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE');
+      await client.query('LOCK TABLE mesh.packet_hourly_stats IN SHARE ROW EXCLUSIVE MODE');
       await client.query(
-        `DELETE FROM packet_hourly_stats
+        `DELETE FROM mesh.packet_hourly_stats
           WHERE hour >= $1::timestamptz AND hour < $2::timestamptz`,
         [cursor.toISOString(), sliceEnd.toISOString()],
       );
@@ -266,7 +266,7 @@ async function catchUpCurrentHour(): Promise<void> {
              COUNT(p.rssi)::bigint AS rssi_count,
              COALESCE(SUM(p.snr), 0)::double precision AS snr_sum,
              COUNT(p.snr)::bigint AS snr_count
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.time >= $1::timestamptz
              AND p.time < $2::timestamptz
              AND (
@@ -275,7 +275,7 @@ async function catchUpCurrentHour(): Promise<void> {
              )
            GROUP BY 1, 2, 3, 4, 5, 6, 7
          ), inserted AS (
-           INSERT INTO packet_hourly_stats (
+           INSERT INTO mesh.packet_hourly_stats (
              network, hour, packet_type, hop_count, route_type,
              transport_code, region_scope, packet_count,
              rssi_sum, rssi_count, snr_sum, snr_count, updated_at
@@ -330,14 +330,14 @@ async function backfillDailyStats(days: number): Promise<void> {
                 p.hop_count AS max_hop_count,
                 p.packet_hash AS max_hop_hash,
                 p.time AS max_hop_seen_at
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time >= $1::date - $2::integer
            AND p.time < $1::date - ($2::integer - 1)
            AND p.hop_count IS NOT NULL
            AND ${PUBLIC_PACKET_PRIVACY_SQL}
          ORDER BY p.network, p.time::date, p.hop_count DESC, p.time DESC, p.packet_hash DESC
        ), inserted AS (
-         INSERT INTO packet_daily_stats
+         INSERT INTO mesh.packet_daily_stats
            (network, day, max_hop_count, max_hop_hash, max_hop_seen_at, updated_at)
          SELECT network, day, max_hop_count, max_hop_hash, max_hop_seen_at, NOW()
          FROM daily_max
@@ -349,15 +349,15 @@ async function backfillDailyStats(days: number): Promise<void> {
          -- A live ingest write can race this maintenance pass. Only replace a
          -- rollup with an objectively better daily candidate, never with an
          -- older/lower historical value selected before that live write.
-         WHERE packet_daily_stats.max_hop_count IS NULL
-            OR EXCLUDED.max_hop_count > packet_daily_stats.max_hop_count
+         WHERE mesh.packet_daily_stats.max_hop_count IS NULL
+            OR EXCLUDED.max_hop_count > mesh.packet_daily_stats.max_hop_count
             OR (
-              EXCLUDED.max_hop_count = packet_daily_stats.max_hop_count
+              EXCLUDED.max_hop_count = mesh.packet_daily_stats.max_hop_count
               AND (
-                EXCLUDED.max_hop_seen_at > COALESCE(packet_daily_stats.max_hop_seen_at, '-infinity'::timestamptz)
+                EXCLUDED.max_hop_seen_at > COALESCE(mesh.packet_daily_stats.max_hop_seen_at, '-infinity'::timestamptz)
                 OR (
-                  EXCLUDED.max_hop_seen_at = packet_daily_stats.max_hop_seen_at
-                  AND EXCLUDED.max_hop_hash > COALESCE(packet_daily_stats.max_hop_hash, '')
+                  EXCLUDED.max_hop_seen_at = mesh.packet_daily_stats.max_hop_seen_at
+                  AND EXCLUDED.max_hop_hash > COALESCE(mesh.packet_daily_stats.max_hop_hash, '')
                 )
               )
             )
@@ -392,7 +392,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            UPPER(p.packet_hash) AS packet_hash,
            MIN(p.time) AS first_seen,
            MAX(p.time) AS last_seen
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time > $1::timestamptz
            AND p.time <= $2::timestamptz
            AND p.packet_hash IS NOT NULL
@@ -402,7 +402,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
          GROUP BY p.network, COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK'), UPPER(p.packet_hash)
        ), inserted AS (
-         INSERT INTO observer_region_packet_sightings
+         INSERT INTO core.observer_region_packet_sightings
            (network, iata, packet_hash, first_seen, last_seen)
          SELECT network, iata, packet_hash, first_seen, last_seen
          FROM sightings
@@ -424,7 +424,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            UPPER(p.rx_node_id) AS rx_node_id,
            MIN(p.time) AS first_seen,
            MAX(p.time) AS last_seen
-         FROM packets p
+         FROM mesh.packets p
          WHERE p.time > $1::timestamptz
            AND p.time <= $2::timestamptz
            AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
@@ -433,7 +433,7 @@ async function backfillObserverRegionRollups(days: number): Promise<void> {
            AND COALESCE(NULLIF(p.topic_prefix, ''), split_part(p.topic, '/', 1)) <> 'meshcore-test'
          GROUP BY p.network, COALESCE(NULLIF(TRIM(UPPER(split_part(p.topic, '/', 2))), ''), 'UNK'), UPPER(p.rx_node_id)
        ), inserted AS (
-         INSERT INTO observer_region_observer_sightings
+         INSERT INTO core.observer_region_observer_sightings
            (network, iata, rx_node_id, first_seen, last_seen)
          SELECT network, iata, rx_node_id, first_seen, last_seen
          FROM sightings

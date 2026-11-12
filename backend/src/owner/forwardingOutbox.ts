@@ -22,11 +22,11 @@ export function createForwardingOutbox(enqueue: Enqueue, deps: {
     running = (async () => {
       const token = randomUUID();
       const result = await execute<Intent>(`WITH due AS (
-        SELECT observation_id FROM packet_forwarding_outbox
+        SELECT observation_id FROM mesh.packet_forwarding_outbox
         WHERE next_attempt_at <= NOW()
           AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
         ORDER BY created_at LIMIT 100 FOR UPDATE SKIP LOCKED
-      ) UPDATE packet_forwarding_outbox o SET claim_token = $1,
+      ) UPDATE mesh.packet_forwarding_outbox o SET claim_token = $1,
         claim_expires_at = NOW() + INTERVAL '2 minutes', attempts = attempts + 1
         FROM due WHERE o.observation_id = due.observation_id
         RETURNING o.observation_id::text, o.payload`, [token]);
@@ -42,10 +42,10 @@ export function createForwardingOutbox(enqueue: Enqueue, deps: {
           if (visibility.visibilityOk) {
             await enqueue({ ...packet, isPrivate: false, visibilityOk: true }, upstreamEnvelope);
           }
-          await execute('DELETE FROM packet_forwarding_outbox WHERE observation_id = $1 AND claim_token = $2', [row.observation_id, token]);
+          await execute('DELETE FROM mesh.packet_forwarding_outbox WHERE observation_id = $1 AND claim_token = $2', [row.observation_id, token]);
           observeWorkerOutcome('forwarding_outbox', 'handoff', 'success');
         } catch (error) {
-          await execute(`UPDATE packet_forwarding_outbox SET claim_token = NULL, claim_expires_at = NULL,
+          await execute(`UPDATE mesh.packet_forwarding_outbox SET claim_token = NULL, claim_expires_at = NULL,
             next_attempt_at = NOW() + INTERVAL '30 seconds', last_error = $3
             WHERE observation_id = $1 AND claim_token = $2`, [row.observation_id, token,
             (error instanceof Error ? error.message : String(error)).slice(0, 500)]);

@@ -120,7 +120,7 @@ export async function beginAnalysisRun(
   try {
     await client.query('BEGIN');
     await client.query(
-      `INSERT INTO analysis_workload_state (workload, scope)
+      `INSERT INTO analytics.analysis_workload_state (workload, scope)
        VALUES ($1, $2)
        ON CONFLICT (workload, scope) DO NOTHING`,
       [input.workload, input.scope],
@@ -136,7 +136,7 @@ export async function beginAnalysisRun(
                 active_lease_expires_at > clock_timestamp()
                 AND active_run_deadline_at > clock_timestamp()
               ) AS active_valid
-         FROM analysis_workload_state
+         FROM analytics.analysis_workload_state
         WHERE workload = $1 AND scope = $2
         FOR UPDATE`,
       [input.workload, input.scope],
@@ -150,7 +150,7 @@ export async function beginAnalysisRun(
     }
     if (active?.active_run_id) {
       await client.query(
-        `UPDATE analysis_runs
+        `UPDATE analytics.analysis_runs
             SET status = 'failed',
                 completed_at = clock_timestamp(),
                 heartbeat_at = clock_timestamp(),
@@ -162,7 +162,7 @@ export async function beginAnalysisRun(
     }
     const attempt = Math.max(1, Number(active?.active_attempt ?? 0) + 1);
     const inserted = await client.query<{ run_deadline_at: Date }>(
-      `INSERT INTO analysis_runs (
+      `INSERT INTO analytics.analysis_runs (
          run_id, workload, scope, status, window_start, window_end, total_items,
          lease_owner, lease_token, lease_expires_at, run_deadline_at, attempt,
          privacy_generation, model_generation
@@ -191,7 +191,7 @@ export async function beginAnalysisRun(
       ],
     );
     await client.query(
-      `UPDATE analysis_workload_state SET
+      `UPDATE analytics.analysis_workload_state SET
          active_run_id = $3,
          active_lease_expires_at = NOW() + ($4::text || ' milliseconds')::interval,
          active_lease_owner = $5,
@@ -266,7 +266,7 @@ export function analysisGeneration(value: unknown): string {
 export async function heartbeatAnalysisRun(handle: AnalysisRunHandle): Promise<void> {
   const result = await query(
     `WITH owned AS (
-       UPDATE analysis_workload_state
+       UPDATE analytics.analysis_workload_state
           SET active_lease_expires_at = NOW() + ($4::text || ' milliseconds')::interval,
               updated_at = NOW()
         WHERE workload = $1
@@ -277,7 +277,7 @@ export async function heartbeatAnalysisRun(handle: AnalysisRunHandle): Promise<v
           AND active_run_deadline_at > clock_timestamp()
         RETURNING active_run_id
      )
-     UPDATE analysis_runs
+     UPDATE analytics.analysis_runs
         SET heartbeat_at = clock_timestamp(),
             lease_expires_at = clock_timestamp() + ($4::text || ' milliseconds')::interval
       WHERE run_id = $3
@@ -313,9 +313,9 @@ export async function updateAnalysisRunTotalItems(
   signal?: AbortSignal,
 ): Promise<void> {
   const result = await query(
-    `UPDATE analysis_runs run
+    `UPDATE analytics.analysis_runs run
         SET total_items = $4
-       FROM analysis_workload_state state
+       FROM analytics.analysis_workload_state state
       WHERE state.workload = $1
         AND state.scope = $2
         AND state.active_run_id = run.run_id
@@ -345,11 +345,11 @@ export async function checkpointAnalysisRun(
   signal?: AbortSignal,
 ): Promise<void> {
   const result = await query(
-    `UPDATE analysis_runs run
+    `UPDATE analytics.analysis_runs run
         SET checkpoint = $4,
             metadata = $5::jsonb,
             heartbeat_at = clock_timestamp()
-       FROM analysis_workload_state state
+       FROM analytics.analysis_workload_state state
       WHERE state.workload = $1
         AND state.scope = $2
         AND state.active_run_id = run.run_id
@@ -396,7 +396,7 @@ export async function getLatestTimedOutAnalysisCheckpoint(
     `SELECT status, checkpoint::text, metadata,
             window_start::text, window_end::text,
             privacy_generation::text, model_generation
-       FROM analysis_runs
+       FROM analytics.analysis_runs
       WHERE workload = $1
         AND scope = $2
       ORDER BY started_at DESC
@@ -482,7 +482,7 @@ export async function finishAnalysisRun(
     await client.query('BEGIN');
     const state = await client.query(
       `SELECT active_run_id, active_lease_token
-         FROM analysis_workload_state
+         FROM analytics.analysis_workload_state
         WHERE workload = $1 AND scope = $2
         FOR UPDATE`,
       [handle.workload, handle.scope],
@@ -497,7 +497,7 @@ export async function finishAnalysisRun(
       await assertAnalysisPublicationLease(client, handle);
     }
     const run = await client.query(
-      `UPDATE analysis_runs SET
+      `UPDATE analytics.analysis_runs SET
          status = $2,
          checkpoint = $3,
          generation = $4,
@@ -521,7 +521,7 @@ export async function finishAnalysisRun(
     );
     if (run.rows.length !== 1) throw new AnalysisRunLeaseLostError(handle.runId);
     const cleared = await client.query(
-      `UPDATE analysis_workload_state SET
+      `UPDATE analytics.analysis_workload_state SET
          active_run_id = NULL,
          active_lease_expires_at = NULL,
          active_lease_owner = NULL,
@@ -601,7 +601,7 @@ export async function getAnalysisWorkloadStates(): Promise<Array<{
             active_lease_owner, active_lease_expires_at::text,
             active_run_deadline_at::text, active_attempt,
             last_terminal_reason, last_error
-       FROM analysis_workload_state
+       FROM analytics.analysis_workload_state
       ORDER BY workload, scope`,
   );
   return result.rows.map((row) => {

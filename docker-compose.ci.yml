@@ -80,6 +80,16 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
     volumes:
       - ./backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      # A fresh CI volume has no operator-provisioned roles, and
+      # 072_backend_grants.sql fails closed without them. Run the same shipped
+      # operator scripts a real deployment runs, rather than skipping the check.
+      - ./scripts/bootstrap-backend-roles.sql:/docker-entrypoint-initdb.d/002_backend_roles.sql:ro
+      - ./scripts/bootstrap-reader-roles.sql:/docker-entrypoint-initdb.d/003_reader_roles.sql:ro
+      # The backend connects to a second database for owner auth; a fresh volume
+      # never creates it. owner-auth.sql is mounted outside initdb so it is not
+      # applied to the main database.
+      - ./backend/src/db/owner-auth.sql:/opt/bootstrap/owner-auth.sql:ro
+      - ./scripts/bootstrap-owner-db.sh:/docker-entrypoint-initdb.d/004_owner_db.sh:ro
     healthcheck:
       # The entrypoint's temporary init server accepts Unix-socket connections
       # before base.sql finishes, but db-migrate connects over TCP. Probe TCP
@@ -174,3 +184,12 @@ services:
     environment:
       OWNER_AUTHORIZATION_MODE: shadow
       OWNER_ACL_MODE: shadow
+
+  db-migrate:
+    # A fresh volume is seeded from `schema/base.sql` by the init hook, so the
+    # runner legitimately starts against a non-empty database with no ledger.
+    # This exact approval lets it verify that database against the shipped base
+    # schema and initialise the ledger; it never applies to a real deployment,
+    # and a database that has drifted from base.sql stays refused.
+    environment:
+      MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL: bootstrap-ledger-from-base-schema

@@ -1,16 +1,17 @@
 import pg from 'pg';
-import { databaseConfig } from '../platform/config/database.js';
+import { databaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { runMigrations } from '../db/migrations.js';
 
 const { Pool } = pg;
 
 async function main(): Promise<void> {
-  if (!process.env['DATABASE_URL']) {
-    throw new Error('DATABASE_URL is required');
+  const databaseUrl = databaseUrlForRole('migrate', process.env, process.env['DATABASE_URL']);
+  if (!databaseUrl) {
+    throw new Error('MESHCORE_MIGRATE_DATABASE_URL or DATABASE_URL is required');
   }
 
   const pool = new Pool({
-    connectionString: process.env['DATABASE_URL'],
+    connectionString: databaseUrl,
     application_name: `${databaseConfig.applicationName}-migrate`,
     options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
     max: 1,

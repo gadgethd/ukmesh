@@ -13,7 +13,7 @@ import {
 
 test('multibyte fact backfill keys every observation row instead of packet hashes', () => {
   const sql = multibyteFactBackfillSql();
-  assert.match(sql, /FROM packet_paths p/);
+  assert.match(sql, /FROM (?:mesh\.)?packet_paths p/);
   assert.doesNotMatch(sql, /FROM packets p/);
   assert.match(sql, /p\.observation_id/);
   assert.match(sql, /p\.observation_id IS NOT NULL/);
@@ -60,8 +60,8 @@ test('off-peak fact writes split one selected chunk into bounded statement windo
 
 test('historical observation ids are populated oldest-first in bounded physical-row batches', async () => {
   const sql = multibyteObservationIdBatchSql();
-  assert.match(sql, /FROM packet_paths p/);
-  assert.match(sql, /UPDATE packet_paths p/);
+  assert.match(sql, /FROM (?:mesh\.)?packet_paths p/);
+  assert.match(sql, /UPDATE (?:mesh\.)?packet_paths p/);
   assert.match(sql, /p\.observation_id IS NULL/);
   assert.match(sql, /ORDER BY p\.time ASC/);
   assert.doesNotMatch(sql, /ORDER BY p\.time ASC, p\.tableoid/);
@@ -101,8 +101,8 @@ test('bounded backfill pins cutoff and privacy generation', async () => {
   });
   assert.equal(result.affectedRows, 42);
   assert.deepEqual(calls[0]?.params, [windowStart.toISOString(), cutoff.toISOString(), 7]);
-  assert.match(calls[0]?.sql ?? '', /LEAST\(multibyte_path_fact_state\.covered_from/);
-  assert.match(calls[0]?.sql ?? '', /GREATEST\(multibyte_path_fact_state\.covered_through/);
+  assert.match(calls[0]?.sql ?? '', /LEAST\((?:mesh\.)?multibyte_path_fact_state\.covered_from/);
+  assert.match(calls[0]?.sql ?? '', /GREATEST\((?:mesh\.)?multibyte_path_fact_state\.covered_through/);
   assert.match(calls[0]?.sql ?? '', /FROM written/);
 });
 

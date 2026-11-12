@@ -116,7 +116,7 @@ export async function setMultibyteFactChunkCompression(
 export function multibyteObservationIdBatchSql(): string {
   return `WITH candidates AS MATERIALIZED (
     SELECT p.tableoid AS source_tableoid, p.ctid AS source_ctid
-    FROM packet_paths p
+    FROM mesh.packet_paths p
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
       AND p.observation_id IS NULL
@@ -125,7 +125,7 @@ export function multibyteObservationIdBatchSql(): string {
     ORDER BY p.time ASC
     LIMIT $3::integer
   ), updated AS (
-    UPDATE packet_paths p
+    UPDATE mesh.packet_paths p
        SET observation_id = gen_random_uuid()
       FROM candidates
      WHERE p.tableoid = candidates.source_tableoid
@@ -175,10 +175,10 @@ export function multibyteFactBackfillSql(): string {
       p.path_hash_size_bytes,
       rx.role AS rx_role,
       ${publicVisibility} AS current_visibility_ok
-    FROM packet_paths p
-    LEFT JOIN node_identity_aliases rx_alias
+    FROM mesh.packet_paths p
+    LEFT JOIN core.node_identity_aliases rx_alias
       ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-    LEFT JOIN node_identity_nodes rx
+    LEFT JOIN core.node_identity_nodes rx
       ON rx.node_id = COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))
     WHERE p.time >= $1::timestamptz
       AND p.time <= $2::timestamptz
@@ -220,7 +220,7 @@ export function multibyteFactBackfillSql(): string {
     SELECT UPPER(LEFT(node.node_id, 4)) AS hash,
            COUNT(*)::integer AS match_count,
            MIN(node.node_id) AS node_id
-    FROM node_identity_nodes node
+    FROM core.node_identity_nodes node
     JOIN distinct_hashes hashes
       ON LENGTH(hashes.hash) = 4
      AND hashes.hash = UPPER(LEFT(node.node_id, 4))
@@ -232,7 +232,7 @@ export function multibyteFactBackfillSql(): string {
     SELECT UPPER(LEFT(node.node_id, 6)) AS hash,
            COUNT(*)::integer AS match_count,
            MIN(node.node_id) AS node_id
-    FROM node_identity_nodes node
+    FROM core.node_identity_nodes node
     JOIN distinct_hashes hashes
       ON LENGTH(hashes.hash) = 6
      AND hashes.hash = UPPER(LEFT(node.node_id, 6))
@@ -278,7 +278,7 @@ export function multibyteFactBackfillSql(): string {
     FROM source_rows
     JOIN decoded_rollup USING (observation_id)
   ), written AS (
-    INSERT INTO multibyte_path_facts (
+    INSERT INTO mesh.multibyte_path_facts (
       observation_id, observed_at, packet_hash, network, rx_node_id, src_node_id,
       topic, topic_prefix, path_hashes, path_hash_size_bytes,
       visibility_ok, is_private, visibility_generation,
@@ -310,7 +310,7 @@ export function multibyteFactBackfillSql(): string {
       updated_at = NOW()
     RETURNING 1
   ), state AS (
-    INSERT INTO multibyte_path_fact_state (
+    INSERT INTO mesh.multibyte_path_fact_state (
       singleton, visibility_generation, covered_from, covered_through, row_count, updated_at
     )
     SELECT TRUE, $3::bigint, $1::timestamptz, $2::timestamptz, COUNT(*)::bigint, NOW()
@@ -318,13 +318,13 @@ export function multibyteFactBackfillSql(): string {
     ON CONFLICT (singleton) DO UPDATE SET
       visibility_generation = EXCLUDED.visibility_generation,
       covered_from = CASE
-        WHEN multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
-          THEN LEAST(multibyte_path_fact_state.covered_from, EXCLUDED.covered_from)
+        WHEN mesh.multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
+          THEN LEAST(mesh.multibyte_path_fact_state.covered_from, EXCLUDED.covered_from)
         ELSE EXCLUDED.covered_from
       END,
       covered_through = CASE
-        WHEN multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
-          THEN GREATEST(multibyte_path_fact_state.covered_through, EXCLUDED.covered_through)
+        WHEN mesh.multibyte_path_fact_state.visibility_generation = EXCLUDED.visibility_generation
+          THEN GREATEST(mesh.multibyte_path_fact_state.covered_through, EXCLUDED.covered_through)
         ELSE EXCLUDED.covered_through
       END,
       row_count = EXCLUDED.row_count,
@@ -369,7 +369,7 @@ export async function multibyteFactsCoverWindow(
   const result = await query<{ ready: boolean }>(
     `SELECT EXISTS (
        SELECT 1
-       FROM multibyte_path_fact_state
+       FROM mesh.multibyte_path_fact_state
        WHERE singleton = TRUE
          AND visibility_generation = $1::bigint
          AND covered_from <= $2::timestamptz

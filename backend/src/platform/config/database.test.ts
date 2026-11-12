@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { boundedIntegerSetting } from './boundedNumber.js';
-import { analyticsStatementTimeoutMs, loadDatabaseConfig } from './database.js';
+import { analyticsStatementTimeoutMs, databaseUrlForRole, loadDatabaseConfig } from './database.js';
 
 test('database numeric settings use bounded deployment-safe defaults', () => {
   assert.deepEqual(loadDatabaseConfig({}), {
@@ -53,4 +53,34 @@ test('analytics queries honor a longer configured timeout while retaining a safe
   assert.equal(analyticsStatementTimeoutMs(30_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(900_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(0), 0);
+});
+
+test('role DSNs prefer role-specific URLs and allow a legacy fallback only before enforcement', () => {
+  assert.equal(
+    databaseUrlForRole('ingest', {
+      MESHCORE_INGEST_DATABASE_URL: 'postgres://ingest@db/meshcore',
+      DATABASE_URL: 'postgres://legacy@db/meshcore',
+    }),
+    'postgres://ingest@db/meshcore',
+  );
+  assert.equal(
+    databaseUrlForRole('worker', {
+      DATABASE_URL: 'postgres://legacy@db/meshcore',
+    }),
+    'postgres://legacy@db/meshcore',
+  );
+  assert.equal(
+    databaseUrlForRole('http', {}),
+    undefined,
+  );
+});
+
+test('role DSN enforcement makes a missing role URL fatal', () => {
+  assert.throws(
+    () => databaseUrlForRole('http', {
+      DATABASE_ROLE_ENFORCEMENT: 'true',
+      DATABASE_URL: 'postgres://legacy@db/meshcore',
+    }),
+    /MESHCORE_HTTP_DATABASE_URL is required/,
+  );
 });

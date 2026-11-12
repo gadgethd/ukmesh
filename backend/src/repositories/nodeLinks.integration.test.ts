@@ -69,24 +69,24 @@ async function links(packets: ReturnType<typeof packet>[], options: {
             is_private boolean, packet_hash text, hop_count integer,
             snr double precision, rssi double precision, payload jsonb
           )
-      ), node_identity_aliases AS (
+      ), core.node_identity_aliases AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(aliases))}::jsonb)
           AS a(source_node_id text, canonical_node_id text)
       ), node_identity_nodes AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(nodes))}::jsonb)
           AS n(node_id text, name text, network text)
       ), nodes AS (SELECT * FROM node_identity_nodes),
-      node_identity_links AS (
+      core.node_identity_links AS (
         SELECT * FROM jsonb_to_recordset(${literal(JSON.stringify(identityLinks))}::jsonb)
           AS l(node_a_id text, node_b_id text, observed_count integer,
             itm_viable boolean, force_viable boolean, itm_path_loss_db double precision,
             count_a_to_b integer, count_b_to_a integer, last_observed timestamptz)
-      ), node_identity_sightings AS (
+      ), core.node_identity_sightings AS (
         SELECT ${literal(peer)}::text AS node_id, 'ukmesh'::text AS network, NOW() AS last_seen_at
         WHERE ${options.sighted ? 'TRUE' : 'FALSE'}
-      ), packet_visibility_materialization_state AS (
+      ), ops.packet_visibility_materialization_state AS (
         SELECT TRUE AS singleton, 1 AS visibility_generation
-      ), public_visibility_state AS (
+      ), ops.public_visibility_state AS (
         SELECT TRUE AS singleton, ${options.stalePrivacy ? 2 : 1} AS generation
       )
       SELECT COALESCE(jsonb_agg(to_jsonb(result)), '[]'::jsonb) FROM (${bound}) result;`;

@@ -9,14 +9,14 @@ async function main() {
   startWorkerMetrics();
   await initDb();
 
-  const { rows } = await query<{ count: string }>('SELECT COUNT(*) AS count FROM node_links');
+  const { rows } = await query<{ count: string }>('SELECT COUNT(*) AS count FROM core.node_links');
   if (Number(rows[0]?.count ?? 0) > 0) {
     observeWorkerOutcome('link_backfill', 'backfill', 'skipped');
-    console.log('[backfill] node_links already populated, skipping historical backfill');
+    console.log('[backfill] core.node_links already populated, skipping historical backfill');
     return;
   }
 
-  console.log('[backfill] node_links empty, starting historical link backfill');
+  console.log('[backfill] core.node_links empty, starting historical link backfill');
   await backfillHistoricalLinks(async (packetHash, rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes) => {
     const admission = await queueLinkJob(packetHash, rxNodeId, srcNodeId, path, hopCount, pathHashSizeBytes);
     if (admission && !['accepted', 'coalesced', 'duplicate'].includes(admission.status)) {

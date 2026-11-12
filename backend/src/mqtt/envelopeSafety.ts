@@ -35,10 +35,10 @@ export const ENVELOPE_INTEGER_COLUMNS = {
   hop_count: INT4, // packets.hop_count / packet_paths.hop_count INTEGER
   path_hash_size_bytes: INT4, // packets.path_hash_size_bytes INTEGER
   advert_count: INT4, // packets.advert_count INTEGER
-  battery_mv: INT4, // node_status_samples.battery_mv INTEGER
-  uptime_secs: INT8_SAFE, // node_status_samples.uptime_secs BIGINT
-  tx_air_secs: INT8_SAFE, // node_status_samples.tx_air_secs BIGINT
-  rx_air_secs: INT8_SAFE, // node_status_samples.rx_air_secs BIGINT
+  battery_mv: INT4, // core.node_status_samples.battery_mv INTEGER
+  uptime_secs: INT8_SAFE, // core.node_status_samples.uptime_secs BIGINT
+  tx_air_secs: INT8_SAFE, // core.node_status_samples.tx_air_secs BIGINT
+  rx_air_secs: INT8_SAFE, // core.node_status_samples.rx_air_secs BIGINT
 } as const;
 
 export type EnvelopeIntegerField = keyof typeof ENVELOPE_INTEGER_COLUMNS;

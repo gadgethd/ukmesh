@@ -27,7 +27,7 @@ test('path-model training selects only packets that pass the public privacy pred
     assert.ok(sql.includes(publicPacketPrivacySql()));
     assert.match(sql, /visibility_ok IS TRUE/);
     assert.match(sql, /is_private IS NOT TRUE/);
-    assert.match(sql, /packet_visibility_materialization_state|privacy_rematerialization_queue/);
+    assert.match(sql, /ops.packet_visibility_materialization_state|ops.privacy_rematerialization_queue/);
   }
 });
 
@@ -82,10 +82,10 @@ test('public path reads exclude prefixes and prev prefixes that resolve onto a p
   await repository.fetchPathLearning('ukmesh', 10);
 
   const prefixQuery = statements[0]!;
-  assert.equal((prefixQuery.match(/FROM private_node_prefixes private_prefix/g) ?? []).length, 2);
+  assert.equal((prefixQuery.match(/FROM (?:core\.)?private_node_prefixes private_prefix/g) ?? []).length, 2);
   assert.match(
     prefixQuery,
-    /NOT EXISTS \(\s*SELECT 1\s*FROM private_node_prefixes private_prefix\s*WHERE LENGTH\(pp\.prefix\) > 0/,
+    /NOT EXISTS \(\s*SELECT 1\s*FROM (?:core\.)?private_node_prefixes private_prefix\s*WHERE LENGTH\(pp\.prefix\) > 0/,
   );
   assert.match(
     prefixQuery,
@@ -93,7 +93,7 @@ test('public path reads exclude prefixes and prev prefixes that resolve onto a p
   );
   assert.match(
     prefixQuery,
-    /NOT EXISTS \(\s*SELECT 1\s*FROM private_node_prefixes private_prefix\s*WHERE LENGTH\(pp\.prev_prefix\) > 0/,
+    /NOT EXISTS \(\s*SELECT 1\s*FROM (?:core\.)?private_node_prefixes private_prefix\s*WHERE LENGTH\(pp\.prev_prefix\) > 0/,
   );
   // The head of every path has an empty prev_prefix: it must never be filtered.
   assert.match(privatePrefixPathFilterSql('pp.prev_prefix'), /LENGTH\(pp\.prev_prefix\) > 0/);

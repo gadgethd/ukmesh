@@ -19,6 +19,7 @@ jobs:
     if: github.event_name != 'schedule'
     name: Backend
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     services:
       postgres:
         image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
@@ -82,17 +83,32 @@ jobs:
           JS
       - run: npm test
       - run: npm run test:owner-integration
-      - run: npm run test:analysis-integration
+      - name: Analysis integration (fails fast when PostgreSQL is absent)
+        timeout-minutes: 5
+        run: npm run test:analysis-integration
       - run: npm run test:owner-acl-integration
       - run: npm run test:vacuum-integration
       - name: Configure bounded RAM Redis fixture
         run: |
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory 96mb
           docker exec '${{ job.services.redis.id }}' redis-cli CONFIG SET maxmemory-policy noeviction
+      - name: Replay the migration band on a fresh base-schema database
+        # Its own gate, ahead of the ingest group: a fresh volume that cannot
+        # reach head is a release blocker, and it must not stay hidden behind an
+        # unrelated suite.
+        run: timeout 300s npm run test:migration-integration
       - run: npm run test:ingest-integration
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration
+      - name: Run the isolated initial-map visibility integration
+        run: |
+          TEST_MAP_DATABASE_URL="$(node --input-type=module -e 'const url = new URL(process.env.TEST_INGEST_DATABASE_URL); url.pathname = "/map_stale_dedup_scratch"; process.stdout.write(url.href)')"
+          export TEST_MAP_DATABASE_URL
+          node --input-type=module -e 'import pg from "pg"; const url = new URL(process.env.TEST_MAP_DATABASE_URL); url.pathname = "/postgres"; const admin = new pg.Pool({ connectionString: url.href, max: 1 }); try { const found = await admin.query("SELECT 1 FROM pg_database WHERE datname = $1", ["map_stale_dedup_scratch"]); if (!found.rowCount) await admin.query("CREATE DATABASE map_stale_dedup_scratch"); } finally { await admin.end(); }'
+          node --import tsx --test src/ws/initialStateNodes.integration.test.ts
+      - name: Prove 074 is superseded only on post-move databases
+        run: timeout 240s npm run test:migration-supersession
       - name: Qualify broker framing and bounded offline replay
         run: |
           fixture_dir="$(mktemp -d)"
@@ -117,6 +133,100 @@ jobs:
           TEST_MQTT_BROKER_URL=mqtt://127.0.0.1:18885 node --import tsx --test src/mqtt/brokerLimits.integration.test.ts
       - run: npm run build
       - run: npm run test:ram-operational
+
+  db-audit:
+    # The three `*.audit.test.ts` files added in #195 are real PostgreSQL
+    # regressions that skip themselves when no fixture database is supplied, so
+    # they need a job that fails when they skip instead of passing quietly.
+    # Plain PostgreSQL 16 is deliberate: the audit-high fixture refuses any
+    # database where the timescaledb extension is installed, because the
+    # extension's own `timescaledb_experimental.policies` view trips its
+    # stray-table guard.
+    name: Database Audit Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres@sha256:5db6dac2ef5dcff512f4f00a009c3c332b9f2f28f24277175bf3e4a3d02ef83a
+        env:
+          POSTGRES_PASSWORD: audit-fixture-password
+        ports:
+          - 55434:5432
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_INGEST_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
+      TEST_BACKFILL_DATABASE_URL: postgresql://postgres:audit-fixture-password@127.0.0.1:55434/postgres
+      AUDIT_TEST_FILES: >-
+        src/db/identity-decryptions.audit.test.ts
+        src/tools/backfillIdentity.audit.test.ts
+        src/tools/backfillIdentity.audit-high.test.ts
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Verify the audit fixture database is reachable
+        run: |
+          node --input-type=module <<'JS'
+          import pg from 'pg';
+          for (const name of ['TEST_INGEST_DATABASE_URL', 'TEST_BACKFILL_DATABASE_URL']) {
+            const value = process.env[name];
+            if (!value) throw new Error(`${name} is not set for the audit job`);
+            const url = new URL(value);
+            if (!['127.0.0.1', 'localhost', '::1', '[::1]'].includes(url.hostname)) {
+              throw new Error(`${name} must point at the loopback fixture database`);
+            }
+            const pool = new pg.Pool({ connectionString: value, max: 1 });
+            try {
+              const { rows } = await pool.query('SHOW server_version');
+              // Host, port and database only: the fixture password is never printed.
+              console.log(`${name} -> ${url.hostname}:${url.port}${url.pathname} PostgreSQL ${rows[0].server_version}`);
+            } finally {
+              await pool.end();
+            }
+          }
+          JS
+      - name: Run the database-backed audit tests
+        run: |
+          missing=0
+          for file in $AUDIT_TEST_FILES; do
+            if [ ! -f "$file" ]; then
+              echo "::error file=$file::audit test is missing — it lands with PR #195"
+              missing=1
+            fi
+          done
+          [ "$missing" -eq 0 ] || exit 1
+
+          failed=0
+          for file in $AUDIT_TEST_FILES; do
+            label="$(basename "$file" .ts)"
+            if ! node --import tsx --test --test-reporter=tap "$file" | tee "audit-${label}.tap"; then
+              failed=1
+            fi
+            # A skipped audit test means the fixture database was not usable;
+            # treat that as a failure rather than a green run.
+            node scripts/assert-audit-tests-ran.mjs "audit-${label}.tap" "$file" || failed=1
+          done
+          exit "$failed"
+      - name: Preserve audit test output
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: db-audit-tap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/audit-*.tap
+          if-no-files-found: ignore
+          retention-days: 7
 
   frontend:
     if: github.event_name != 'schedule'
@@ -463,12 +573,14 @@ jobs:
               -u "$publisher_user" -P "$publisher_password" \
               -t "meshcore-test/CI/${observer}/packets" \
               -m '{"packet_type":1,"RSSI":-75,"SNR":8,"direction":"rx","raw":"0D42AABBCCDDDEADBEEF"}'
+          # Post-move canonical names (116/123/124/125): the old public names
+          # are compatibility views at best, and some no longer exist at all.
           readback=""
           for _ in $(seq 1 30); do
             readback="$(
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" exec -T timescaledb \
                 psql -U meshcore -d meshcore -Atc \
-                "SELECT EXISTS(SELECT 1 FROM nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM packet_hourly_stats WHERE network = 'test')"
+                "SELECT EXISTS(SELECT 1 FROM core.nodes WHERE node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packets WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_paths WHERE rx_node_id = '${observer}' AND network = 'test'), EXISTS(SELECT 1 FROM mesh.packet_hourly_stats WHERE network = 'test')"
             )"
             if [ "$readback" = "t|t|t|t" ]; then
               break

@@ -3,7 +3,11 @@ import test from 'node:test';
 import pg from 'pg';
 
 const databaseUrl = String(process.env['TEST_ANALYSIS_DATABASE_URL'] ?? '').trim();
-const schema = 'analysis_lease_integration';
+// runState.ts and publicationFence.ts qualify `analytics.*` and `ops.*`
+// explicitly, so the fixture must provision those namespaces; a private schema
+// name leaves the code under test pointing at tables that do not exist.
+const schema = 'analytics';
+const localHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
 
 if (databaseUrl) {
   process.env['DATABASE_URL'] = databaseUrl;
@@ -14,20 +18,45 @@ if (databaseUrl) {
 }
 
 test('analysis leases fence publication, reclaim once, and recover transaction faults', {
-  skip: databaseUrl ? false : 'TEST_ANALYSIS_DATABASE_URL is not configured',
   timeout: 30_000,
-}, async () => {
-  const admin = new pg.Client({ connectionString: databaseUrl });
+}, async (t) => {
+  assert.ok(
+    databaseUrl,
+    'TEST_ANALYSIS_DATABASE_URL is not configured: this test needs the CI PostgreSQL service',
+  );
+  const hostname = new URL(databaseUrl).hostname;
+  assert.ok(localHosts.has(hostname), `refusing to reset analytics fixtures on non-local host ${hostname}`);
+
+  // Handles are registered for teardown before the first statement runs, so a
+  // setup failure can never leave an open socket holding the event loop: that
+  // is what turned a 25 ms DDL error into a multi-hour CI hang.
+  const admin = new pg.Client({
+    connectionString: databaseUrl,
+    application_name: 'ukmesh-analysis-integration-admin',
+    connectionTimeoutMillis: 5_000,
+    statement_timeout: 15_000,
+    query_timeout: 15_000,
+  });
+  let pool: pg.Pool | undefined;
+  t.after(async () => {
+    if (pool) await pool.end().catch(() => {});
+    await admin.query('DROP TABLE IF EXISTS ops.public_visibility_state').catch(() => {});
+    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`).catch(() => {});
+    await admin.end().catch(() => {});
+  });
+
   await admin.connect();
   await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+  await admin.query(`DROP TABLE IF EXISTS ops.public_visibility_state`);
   await admin.query(`CREATE SCHEMA ${schema}`);
+  await admin.query('CREATE SCHEMA IF NOT EXISTS ops');
   await admin.query(`SET search_path TO ${schema}, public`);
   await admin.query(`
-    CREATE TABLE public_visibility_state (
+    CREATE TABLE ops.public_visibility_state (
       singleton BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (singleton),
       generation BIGINT NOT NULL
     );
-    INSERT INTO public_visibility_state (singleton, generation) VALUES (TRUE, 1);
+    INSERT INTO ops.public_visibility_state (singleton, generation) VALUES (TRUE, 1);
   `);
   const { readFile } = await import('node:fs/promises');
   const { fileURLToPath } = await import('node:url');
@@ -47,7 +76,9 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
 
   const runState = await import('./runState.js');
   const { assertAnalysisPublicationLease } = await import('./publicationFence.js');
-  const { pool, query } = await import('../db/index.js');
+  const db = await import('../db/index.js');
+  pool = db.pool;
+  const { query } = db;
 
   const input = (scope: string) => ({
     workload: 'integration-analysis',
@@ -222,8 +253,8 @@ test('analysis leases fence publication, reclaim once, and recover transaction f
     assert.ok(Date.now() - startedAt < 2_000);
     assert.equal((await query<{ value: number }>('SELECT 1 AS value')).rows[0]?.value, 1);
   } finally {
-    await pool.end();
-    await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
-    await admin.end();
+    // Release pooled connections here; schema/table/admin teardown is owned by
+    // the `t.after` hook so it still runs when setup fails before the import.
+    if (pool) await pool.end().catch(() => {});
   }
 });

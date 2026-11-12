@@ -17,7 +17,7 @@ async function withHistoryApi(
 ) {
   const historyParams: unknown[][] = [];
   const query: QueryFn = async <T extends QueryResultRow>(sql: string, params?: unknown[]) => {
-    if (sql.includes('FROM node_identity_nodes')) {
+    if (sql.includes('FROM core.node_identity_nodes')) {
       return { rows: visibleIds.map((node_id) => ({ node_id })) as unknown as T[] };
     }
     historyParams.push(params ?? []);

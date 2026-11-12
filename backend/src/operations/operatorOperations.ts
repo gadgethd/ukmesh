@@ -201,7 +201,7 @@ export async function actOnObserverRegistration(
   }>(
     `WITH existing AS (
        SELECT id
-         FROM operator_audit_events
+         FROM ops.operator_audit_events
         WHERE idempotency_key = $4
      ),
      changed AS (
@@ -250,7 +250,7 @@ export async function actOnObserverRegistration(
         RETURNING request.*
      ),
      provision AS (
-       INSERT INTO observers (public_key, name, location, is_active)
+       INSERT INTO core.observers (public_key, name, location, is_active)
        SELECT public_key, COALESCE(NULLIF(display_name, ''), iata), iata, TRUE
          FROM changed
         WHERE $2 = 'provision'
@@ -261,7 +261,7 @@ export async function actOnObserverRegistration(
        RETURNING public_key
      ),
      audit_upsert AS (
-       INSERT INTO operator_audit_events (
+       INSERT INTO ops.operator_audit_events (
          actor, action, target_type, target_id, idempotency_key, request,
          result, status, completed_at
        ) VALUES (
@@ -348,13 +348,13 @@ export async function actOnPlannedNodePublication(
     was_created: boolean;
   }>(
     `WITH existing AS (
-       SELECT id FROM operator_audit_events WHERE idempotency_key = $4
+       SELECT id FROM ops.operator_audit_events WHERE idempotency_key = $4
      ),
      source AS (
-       SELECT id FROM planned_nodes WHERE id = $3::uuid
+       SELECT id FROM ops.planned_nodes WHERE id = $3::uuid
      ),
      published AS (
-       INSERT INTO planned_node_publications (
+       INSERT INTO core.planned_node_publications (
          planned_node_id, public_name, public_lat, public_lon, public_height_m,
          region, expires_at, published_by
        )
@@ -374,14 +374,14 @@ export async function actOnPlannedNodePublication(
        RETURNING planned_node_id
      ),
      unpublished AS (
-       DELETE FROM planned_node_publications publication_row
+       DELETE FROM core.planned_node_publications publication_row
         WHERE publication_row.planned_node_id = $3::uuid
           AND $2 = 'unpublish'
           AND NOT EXISTS (SELECT 1 FROM existing)
         RETURNING publication_row.planned_node_id
      ),
      audit_upsert AS (
-       INSERT INTO operator_audit_events (
+       INSERT INTO ops.operator_audit_events (
          actor, action, target_type, target_id, idempotency_key, request,
          result, status, completed_at
        ) VALUES (
@@ -542,13 +542,13 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
       `SELECT run_id, workload, scope, status, checkpoint, total_items,
               lease_owner, lease_expires_at, run_deadline_at, attempt,
               heartbeat_at, started_at, completed_at, terminal_reason
-         FROM analysis_runs
+         FROM analytics.analysis_runs
         ORDER BY started_at DESC
         LIMIT 50`,
     ),
     query(
       `SELECT job_id, status, heartbeat_at, expires_at, error, created_at, updated_at
-         FROM planned_coverage_jobs
+         FROM ops.planned_coverage_jobs
         ORDER BY created_at DESC
         LIMIT 50`,
     ),
@@ -571,8 +571,8 @@ export async function loadOperationsDashboard(query: QueryFn): Promise<Record<st
               calibration.confidence_bias,
               calibration.recommended_threshold,
               calibration.updated_at AS calibration_updated_at
-         FROM ml_model_versions versions
-         LEFT JOIN path_model_calibration calibration
+         FROM analytics.ml_model_versions versions
+         LEFT JOIN analytics.path_model_calibration calibration
            ON calibration.network = versions.network
         ORDER BY versions.trained_at DESC
         LIMIT 40`,
@@ -697,7 +697,7 @@ async function beginAudit(
     existing: boolean;
   }>(
     `WITH inserted AS (
-       INSERT INTO operator_audit_events (
+       INSERT INTO ops.operator_audit_events (
          actor, action, target_type, target_id, idempotency_key, request
        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb)
        ON CONFLICT (idempotency_key) DO NOTHING
@@ -706,7 +706,7 @@ async function beginAudit(
      SELECT id::text, action, target_id, status, result, FALSE AS existing FROM inserted
      UNION ALL
      SELECT id::text, action, target_id, status, result, TRUE
-       FROM operator_audit_events
+       FROM ops.operator_audit_events
       WHERE idempotency_key = $5 AND NOT EXISTS (SELECT 1 FROM inserted)
      LIMIT 1`,
     [
@@ -737,7 +737,7 @@ async function finishAudit(
   result: Record<string, unknown>,
 ): Promise<void> {
   await query(
-    `UPDATE operator_audit_events
+    `UPDATE ops.operator_audit_events
         SET status = $2, result = $3::jsonb, completed_at = NOW()
       WHERE id = $1::bigint AND status = 'started'`,
     [auditId, status, JSON.stringify(result)],
@@ -881,7 +881,7 @@ export async function listRecentOperatorAudit(
   const result = await query(
     `SELECT id::text, actor, action, target_type, target_id, request,
             result, status, created_at, completed_at
-       FROM operator_audit_events
+       FROM ops.operator_audit_events
       ORDER BY created_at DESC
       LIMIT $1`,
     [Math.min(100, Math.max(1, Math.floor(limit) || 50))],

@@ -59,14 +59,14 @@ async function fixture() {
       );
       CREATE TABLE observer_region_observer_sightings (rx_node_id TEXT, last_seen TIMESTAMPTZ);
       CREATE TABLE node_network_sightings (node_id TEXT, last_seen_at TIMESTAMPTZ);
-      CREATE TABLE maintenance_removed_records (batch_id TEXT, source_table TEXT, record_data JSONB, reason TEXT);
+      CREATE TABLE ops.maintenance_removed_records (batch_id TEXT, source_table TEXT, record_data JSONB, reason TEXT);
       CREATE TABLE private_node_prefixes (node_id TEXT REFERENCES nodes(node_id) ON DELETE CASCADE);
-      CREATE TABLE public_visibility_state (singleton BOOLEAN PRIMARY KEY, generation BIGINT);
-      CREATE TABLE packet_visibility_materialization_state (
+      CREATE TABLE ops.public_visibility_state (singleton BOOLEAN PRIMARY KEY, generation BIGINT);
+      CREATE TABLE ops.packet_visibility_materialization_state (
         singleton BOOLEAN PRIMARY KEY, visibility_generation BIGINT, updated_at TIMESTAMPTZ
       );
-      INSERT INTO public_visibility_state VALUES (TRUE, 1);
-      INSERT INTO packet_visibility_materialization_state VALUES (TRUE, 1, NOW());
+      INSERT INTO ops.public_visibility_state VALUES (TRUE, 1);
+      INSERT INTO ops.packet_visibility_materialization_state VALUES (TRUE, 1, NOW());
       INSERT INTO nodes (node_id, role, network, last_seen, last_mqtt_observer_seen_at, created_at)
         VALUES ('dormant', 2, 'ukmesh', NOW() - INTERVAL '31 days', NOW() - INTERVAL '31 days', NOW() - INTERVAL '90 days');
     `);
@@ -136,7 +136,7 @@ for (const { cleanup, evidence, statement, visibilityLock } of [
     await f.writer.query('BEGIN');
     // Packet classification pins KEY SHARE; consent changes require UPDATE.
     // The fixture uses these lock protocols without installing privacy triggers.
-    await f.writer.query(`SELECT generation FROM public_visibility_state WHERE singleton = TRUE FOR ${visibilityLock}`);
+    await f.writer.query(`SELECT generation FROM ops.public_visibility_state WHERE singleton = TRUE FOR ${visibilityLock}`);
     resume.resolve();
     await waitForLock(f.observer, f.pid);
     await f.writer.query(statement);
@@ -147,7 +147,7 @@ for (const { cleanup, evidence, statement, visibilityLock } of [
     assert.equal(result.value.nodes, 0);
     assert.equal(result.value.candidates, 0);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 1);
-    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
   });
 }
 
@@ -160,7 +160,7 @@ test('native cleanup skips a busy node row and can archive it on the next pass',
   await f.cleanupClient.query(`SET lock_timeout = '1s'`);
   const skipped = await cleanupInactiveNodes({ cleanupPool: f.pool });
   assert.equal(skipped.nodes, 0);
-  assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+  assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
   await f.writer.query('COMMIT');
   const retried = await cleanupInactiveNodes({ cleanupPool: f.pool });
   assert.equal(retried.nodes, 1);
@@ -217,7 +217,7 @@ for (const cleanup of [cleanupInactiveNodes, cleanupStaleMqttObservers]) {
     assert.equal(consent.value.rowCount, 1);
     await f.writer.query('COMMIT');
     assert.deepEqual((await f.observer.query('SELECT name FROM nodes')).rows, [{ name: 'Private 🚫' }]);
-    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM maintenance_removed_records')).rows[0].count, 0);
+    assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records')).rows[0].count, 0);
     assert.equal((await cleanup({ cleanupPool: f.pool })).nodes, 0, 'the next pass must retain the committed privacy marker');
   });
 }
@@ -227,7 +227,7 @@ for (const fence of ['current', 'gap', 'missing'] as const) {
     const f = await fixture();
     t.after(() => f.close());
     await f.observer.query(`
-      ALTER TABLE public_visibility_state ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
+      ALTER TABLE ops.public_visibility_state ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW();
       ALTER TABLE private_node_prefixes
         ADD COLUMN network TEXT, ADD COLUMN prefix_size_bytes INTEGER,
         ADD COLUMN prefix TEXT, ADD COLUMN updated_at TIMESTAMPTZ DEFAULT NOW(),
@@ -242,15 +242,15 @@ for (const fence of ['current', 'gap', 'missing'] as const) {
         VALUES ('public-source', 'public-receiver', ARRAY['AB'], 1);
     `);
     if (fence === 'gap') {
-      await f.observer.query('UPDATE public_visibility_state SET generation = 5');
-      await f.observer.query('UPDATE packet_visibility_materialization_state SET visibility_generation = 3');
+      await f.observer.query('UPDATE ops.public_visibility_state SET generation = 5');
+      await f.observer.query('UPDATE ops.packet_visibility_materialization_state SET visibility_generation = 3');
     } else if (fence === 'missing') {
-      await f.observer.query('DELETE FROM packet_visibility_materialization_state');
+      await f.observer.query('DELETE FROM ops.packet_visibility_materialization_state');
     }
     const generations = `SELECT visibility.generation::int AS generation,
       materialized.visibility_generation::int AS materialized_generation
-      FROM public_visibility_state visibility
-      LEFT JOIN packet_visibility_materialization_state materialized USING (singleton)`;
+      FROM ops.public_visibility_state visibility
+      LEFT JOIN ops.packet_visibility_materialization_state materialized USING (singleton)`;
     const flags = `SELECT 'packet' AS kind, is_private, visibility_ok FROM packets
       UNION ALL SELECT 'path', is_private, visibility_ok FROM packet_paths ORDER BY kind`;
     const before = (await f.observer.query(generations)).rows[0];
@@ -265,7 +265,7 @@ for (const fence of ['current', 'gap', 'missing'] as const) {
     assert.equal(after.materialized_generation, fence === 'current' ? after.generation : before.materialized_generation,
       'only an already-current fence may advance with the public deletion');
     assert.deepEqual((await f.observer.query(flags)).rows, beforeFlags, 'public deletion must retain stored packet and path visibility');
-    assert.equal((await f.observer.query("SELECT COUNT(*)::int AS count FROM maintenance_removed_records WHERE source_table = 'nodes'")).rows[0].count, 1);
+    assert.equal((await f.observer.query("SELECT COUNT(*)::int AS count FROM ops.maintenance_removed_records WHERE source_table = 'nodes'")).rows[0].count, 1);
     assert.equal((await f.observer.query('SELECT COUNT(*)::int AS count FROM nodes')).rows[0].count, 0);
   });
 }

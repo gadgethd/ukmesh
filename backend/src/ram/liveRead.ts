@@ -89,11 +89,11 @@ async function resolveCanonicalAliases(nodeIds: string[]): Promise<Map<string, s
   if (nodeIds.length === 0) return new Map();
   const result = await query<{ source_node_id: string; canonical_node_id: string }>(`
     SELECT source_node_id, canonical_node_id
-    FROM node_identity_aliases
+    FROM core.node_identity_aliases
     WHERE source_node_id = ANY($1::text[])
        OR canonical_node_id = ANY($1::text[])
        OR canonical_node_id IN (
-         SELECT canonical_node_id FROM node_identity_aliases
+         SELECT canonical_node_id FROM core.node_identity_aliases
          WHERE source_node_id = ANY($1::text[])
        )`, [nodeIds]);
   return new Map(result.rows.map((row) => [row.source_node_id, row.canonical_node_id]));
@@ -103,7 +103,7 @@ export async function resolvePendingSummaries(entries: PendingSummary[], readQue
   const result = await readQuery(`
     SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
     FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
-    LEFT JOIN packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
+    LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
   return new Map(result.rows.map(row => [String(row.packet_hash), row.summary === null ? null : String(row.summary)]));
 }
 

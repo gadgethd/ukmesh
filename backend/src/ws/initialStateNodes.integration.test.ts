@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
 import { refreshNodeMapSuppressions } from '../nodes/mapSuppressions.js';
 import { mapSuppressedNodes } from '../metrics.js';
 import { createNodeRepository } from '../repositories/nodes.js';
@@ -23,16 +23,15 @@ test('map visibility, initial payload union, and migration on an isolated scratc
   await admin.query(`CREATE DATABASE "${name}"`);
   const url = new URL(databaseURL!);
   url.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
+  const pool = new pg.Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
   const oldDatabaseURL = process.env['DATABASE_URL'];
   let closeDb: (() => Promise<void>) | undefined;
   try {
-    await pool.query(readFileSync(new URL('../db/schema/base.sql', import.meta.url), 'utf8'));
-    await runMigrations(pool);
+    await bootstrapBaseSchemaFixture(pool);
     const migration = readFileSync(new URL('../db/migrations/067_node_map_suppressions.sql', import.meta.url), 'utf8');
     const count = async (label: string) => {
-      const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM node_map_suppressions');
-      console.log(`[scratch ${name}] ${label}: SELECT count(*) FROM node_map_suppressions; => ${result.rows[0]!.count}`);
+      const result = await pool.query<{ count: number }>('SELECT count(*)::integer AS count FROM core.node_map_suppressions');
+      console.log(`[scratch ${name}] ${label}: SELECT count(*) FROM core.node_map_suppressions; => ${result.rows[0]!.count}`);
       return result.rows[0]!.count;
     };
     await t.test('migration is idempotent and starts empty', async () => {
@@ -77,7 +76,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       assert.equal(await count('migration reapplied with evidence'), 2);
       await refreshNodeMapSuppressions(pool);
       assert.equal(await count('repeat refresh'), 2);
-      const evidence = await pool.query('SELECT * FROM node_map_suppressions WHERE node_id = $1', [suppressed]);
+      const evidence = await pool.query('SELECT * FROM core.node_map_suppressions WHERE node_id = $1', [suppressed]);
       assert.equal(evidence.rows[0].suppressed_by_node_id, fresh);
       assert.equal(evidence.rows[0].reason, 'stale-colocated');
       assert.equal(evidence.rows[0].distance_m, 0);
@@ -89,7 +88,7 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       const rows = await repository.listPublicMapRows(['node_id'], networkFilters('ukmesh'),
         new Date().toISOString(), null, 100);
       assert.deepEqual(rows.map((row) => row['node_id']).sort(), expectedMap);
-      assert.deepEqual(ids(await db.getNodes('ukmesh', undefined, 'slim', undefined, { mapVisible: true })), expectedMap);
+      assert.deepEqual(ids(await db.getNodes('ukmesh', undefined, 'slim', undefined, undefined, { mapVisible: true })), expectedMap);
     });
 
     await t.test('privacy index and inferred-path callers retain suppressed and expired nodes', async () => {
@@ -99,31 +98,32 @@ test('map visibility, initial payload union, and migration on an isolated scratc
       for (const retained of [suppressed, otherSuppressed, expired]) assert.ok(inferred.includes(retained));
     });
 
-    await t.test('WS payload excludes suppressed nodes and restores packet/link endpoints outside the window', async () => {
+    await t.test('WS payload restores public packet endpoints outside the map window, not link-only endpoints', async () => {
       const nodes = await loadInitialMapNodes(db.getNodes, 'ukmesh', undefined, [
         { src_node_id: packetEndpoint.toLowerCase(), rx_node_id: fresh.toLowerCase() },
         { src_node_id: privateNode }, { src_node_id: crossNetwork }, { src_node_id: nullIsland },
-      ], [{ node_a_id: linkEndpoint, node_b_id: fresh }]);
-      assert.deepEqual(ids(nodes), [...expectedMap, packetEndpoint, linkEndpoint].sort());
+      ]);
+      assert.deepEqual(ids(nodes), [...expectedMap, packetEndpoint].sort());
       assert.ok(!ids(nodes).includes(suppressed));
       assert.ok(!ids(nodes).includes(otherSuppressed));
+      assert.ok(!ids(nodes).includes(linkEndpoint), 'a viable link alone is not current map visibility evidence');
     });
 
     await t.test('explicit initial references take precedence over suppression without bypassing privacy or scope', async () => {
       assert.deepEqual(ids(await loadInitialMapNodes(db.getNodes, 'ukmesh', undefined,
-        [{ src_node_id: suppressed }, { src_node_id: privateNode }, { src_node_id: crossNetwork }], [])),
+        [{ src_node_id: suppressed }, { src_node_id: privateNode }, { src_node_id: crossNetwork }])),
       [...expectedMap, suppressed].sort());
     });
 
     await t.test('failed replacement rolls back deletion and preserves the last successful gauge', async () => {
       await pool.query(`CREATE FUNCTION fail_map_suppression() RETURNS trigger LANGUAGE plpgsql AS $$
         BEGIN RAISE EXCEPTION 'injected suppression write failure'; END $$;
-        CREATE TRIGGER fail_map_suppression BEFORE INSERT ON node_map_suppressions
+        CREATE TRIGGER fail_map_suppression BEFORE INSERT ON core.node_map_suppressions
           FOR EACH ROW EXECUTE FUNCTION fail_map_suppression()`);
       await assert.rejects(refreshNodeMapSuppressions(pool), /injected suppression write failure/);
       assert.equal(await count('failed refresh rolled back'), 2);
       assert.equal((await mapSuppressedNodes.get()).values[0]!.value, 2);
-      await pool.query('DROP TRIGGER fail_map_suppression ON node_map_suppressions');
+      await pool.query('DROP TRIGGER fail_map_suppression ON core.node_map_suppressions');
     });
 
     await t.test('recent path evidence and aging fresh neighbours remove obsolete suppressions', async () => {

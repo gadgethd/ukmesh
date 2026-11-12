@@ -72,7 +72,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
       const result = await deps.query<{ node_id: string; name: string | null; lat: number; lon: number; ord: number }>(
         `WITH target AS (
            SELECT p.path_hashes
-           FROM packets p
+           FROM mesh.packets p
            WHERE p.packet_hash = $${filters.params.length + 1}
              ${filters.packetsAlias('p')}
            ORDER BY p.time DESC
@@ -84,7 +84,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
          )
          SELECT DISTINCT ON (h.ord) n.node_id, n.name, n.lat, n.lon, h.ord
          FROM hops h
-         JOIN node_identity_nodes n ON upper(n.node_id) LIKE h.hash || '%'
+         JOIN core.node_identity_nodes n ON upper(n.node_id) LIKE h.hash || '%'
          WHERE n.lat IS NOT NULL AND n.lon IS NOT NULL
            AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
            ${filters.nodesAlias('n')}
@@ -166,7 +166,7 @@ export function registerExportRoutes(router: Router, deps: Deps): void {
         role: number | null; iata: string | null; last_seen: string | null; hardware_model: string | null;
       }>(
         `SELECT node_id, name, lat, lon, role, iata, last_seen::text, hardware_model
-         FROM node_identity_nodes AS nodes
+         FROM core.node_identity_nodes AS nodes
          WHERE lat IS NOT NULL AND lon IS NOT NULL
            AND (name IS NULL OR name NOT LIKE '%🚫%')
            ${filters.nodes}

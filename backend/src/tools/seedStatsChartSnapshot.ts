@@ -43,7 +43,7 @@ async function main(): Promise<void> {
   }
   const visibilityResult = await query<{ generation: string; updated_at: string }>(
     `SELECT generation::text, updated_at::text
-       FROM public_visibility_state
+       FROM ops.public_visibility_state
       WHERE singleton = TRUE`,
   );
   const visibilityGeneration = Number(visibilityResult.rows[0]?.generation);

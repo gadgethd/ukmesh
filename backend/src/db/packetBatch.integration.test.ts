@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
@@ -23,6 +22,13 @@ import {
   type PacketBatchInput,
   type QueryFn,
 } from './packetBatch.js';
+import {
+  applyBaseSchema,
+  approveBaseSchemaBootstrap,
+  bootstrapBaseSchemaFixture,
+  POST_MOVE_SEARCH_PATH,
+  provisionOperatorRoles,
+} from './fixtures/baseSchema.js';
 import { processNextPrivacyRematerialization } from '../workers/privacy-rematerialization.js';
 import { packetAlreadyPersisted } from '../mqtt/observationIdentity.js';
 import { admitPacketToRam, configureRamStore } from '../ram/liveStore.js';
@@ -79,10 +85,16 @@ test('base schema and every migration apply to a brand-new database', {
   freshPool = new Pool({
     connectionString: freshUrl.toString(),
     application_name: 'meshcore-fresh-migrations-test',
+    options: POST_MOVE_SEARCH_PATH,
     max: 1,
   });
-  const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
-  await freshPool.query(baseSql);
+  // A fresh deployment is seeded from `base.sql` by the init hook with the
+  // operator roles already provisioned; the runner only accepts that bootstrap
+  // when the shape matches, which is what this test then replays over.
+  await applyBaseSchema(freshPool);
+  await provisionOperatorRoles(freshPool);
+  const restoreApproval = approveBaseSchemaBootstrap();
+  t.after(() => restoreApproval());
 
   // 050 used to COMMIT inside the runner transaction. Inject a failure at its
   // ledger insert and prove the table plus policies are now rolled back.
@@ -94,7 +106,7 @@ test('base schema and every migration apply to a brand-new database', {
         query: async (text: string, params?: unknown[]) => {
           if (
             !injectedLedgerFailure
-            && text.includes('INSERT INTO schema_migrations')
+            && text.includes('INSERT INTO public.schema_migrations')
             && params?.[0] === '050_packet_paths_and_retention.sql'
           ) {
             injectedLedgerFailure = true;
@@ -120,7 +132,7 @@ test('base schema and every migration apply to a brand-new database', {
               FROM timescaledb_information.jobs
              WHERE proc_name = 'policy_retention') AS retention_jobs,
            (SELECT COUNT(*)::text
-              FROM schema_migrations
+              FROM public.schema_migrations
              WHERE name = '050_packet_paths_and_retention.sql') AS ledger_rows
   `);
   assert.deepEqual(rolledBack050.rows[0], {
@@ -169,7 +181,7 @@ test('base schema and every migration apply to a brand-new database', {
   }>(`
     SELECT COUNT(*)::text AS migration_count,
            COUNT(*) FILTER (WHERE checksum_sha256 IS NULL)::text AS missing_checksums
-      FROM schema_migrations
+      FROM public.schema_migrations
   `);
   assert.deepEqual(ledger.rows[0], {
     migration_count: String(loadMigrationFiles().length),
@@ -177,50 +189,56 @@ test('base schema and every migration apply to a brand-new database', {
   });
 
   const hypertables = await freshPool.query<{
+    hypertable_schema: string;
     hypertable_name: string;
     time_interval: string;
     compression_enabled: boolean;
   }>(`
-    SELECT hypertable.hypertable_name,
+    SELECT hypertable.hypertable_schema,
+           hypertable.hypertable_name,
            dimension.time_interval::text,
            hypertable.compression_enabled
       FROM timescaledb_information.hypertables hypertable
       JOIN timescaledb_information.dimensions dimension
         USING (hypertable_schema, hypertable_name)
-     WHERE hypertable.hypertable_schema = 'public'
+     WHERE hypertable.hypertable_schema IN ('core', 'mesh')
        AND dimension.dimension_number = 1
-     ORDER BY hypertable.hypertable_name
+     ORDER BY hypertable.hypertable_schema, hypertable.hypertable_name
   `);
+  // The P1 band moves every hypertable out of public; the band must land them
+  // in their domain namespace with the reviewed chunk interval intact.
   assert.deepEqual(hypertables.rows, [
-    { hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
-    { hypertable_name: 'packets', time_interval: '1 day', compression_enabled: true },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'ingest_observation_archive', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'packet_paths', time_interval: '7 days', compression_enabled: true },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', time_interval: '1 day', compression_enabled: true },
   ]);
 
   const jobs = await freshPool.query<{
+    hypertable_schema: string;
     hypertable_name: string;
     proc_name: string;
     interval_value: string;
   }>(`
-    SELECT hypertable_name,
+    SELECT hypertable_schema,
+           hypertable_name,
            proc_name,
            COALESCE(config->>'compress_after', config->>'drop_after') AS interval_value
       FROM timescaledb_information.jobs
-     WHERE hypertable_schema = 'public'
+     WHERE hypertable_schema IN ('core', 'mesh')
        AND proc_name IN ('policy_compression', 'policy_retention')
-     ORDER BY hypertable_name, proc_name
+     ORDER BY hypertable_schema, hypertable_name, proc_name
   `);
   assert.deepEqual(jobs.rows, [
-    { hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
-    { hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
-    { hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'node_status_samples', proc_name: 'policy_retention', interval_value: '180 days' },
-    { hypertable_name: 'packet_paths', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'packets', proc_name: 'policy_compression', interval_value: '14 days' },
-    { hypertable_name: 'packets', proc_name: 'policy_retention', interval_value: '30 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', proc_name: 'policy_compression', interval_value: '1 day' },
+    { hypertable_schema: 'core', hypertable_name: 'node_neighbor_samples', proc_name: 'policy_retention', interval_value: '7 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'core', hypertable_name: 'node_status_samples', proc_name: 'policy_retention', interval_value: '180 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'ingest_observation_archive', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packet_paths', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', proc_name: 'policy_compression', interval_value: '14 days' },
+    { hypertable_schema: 'mesh', hypertable_name: 'packets', proc_name: 'policy_retention', interval_value: '30 days' },
   ]);
   assert.equal(jobs.rows.some(
     (job) => job.hypertable_name === 'packet_paths' && job.proc_name === 'policy_retention',
@@ -229,7 +247,7 @@ test('base schema and every migration apply to a brand-new database', {
   const matviews = await freshPool.query<{ matviewname: string; ispopulated: boolean }>(`
     SELECT matviewname, ispopulated
       FROM pg_matviews
-     WHERE schemaname = 'public'
+     WHERE schemaname = 'core'
        AND matviewname IN ('node_identity_links', 'node_identity_sightings')
      ORDER BY matviewname
   `);
@@ -240,7 +258,7 @@ test('base schema and every migration apply to a brand-new database', {
   const identityIndexes = await freshPool.query<{ indexname: string }>(`
     SELECT indexname
       FROM pg_indexes
-     WHERE schemaname = 'public'
+     WHERE schemaname = 'core'
        AND tablename IN ('node_identity_links', 'node_identity_sightings')
      ORDER BY indexname
   `);
@@ -251,8 +269,8 @@ test('base schema and every migration apply to a brand-new database', {
     'node_identity_sightings_network_node_idx',
     'node_identity_sightings_node_network_uidx',
   ]);
-  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY node_identity_links');
-  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY node_identity_sightings');
+  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+  await freshPool.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_sightings');
 
   const packetPathSchema = await freshPool.query<{
     nullable_observer: boolean;
@@ -263,17 +281,17 @@ test('base schema and every migration apply to a brand-new database', {
     SELECT
       (SELECT is_nullable = 'YES'
          FROM information_schema.columns
-        WHERE table_schema = 'public' AND table_name = 'packet_paths'
+        WHERE table_schema = 'mesh' AND table_name = 'packet_paths'
           AND column_name = 'rx_node_id') AS nullable_observer,
-      to_regclass('public.packet_paths_observation_key_uidx') IS NOT NULL AS unique_key,
+      to_regclass('mesh.packet_paths_observation_key_uidx') IS NOT NULL AS unique_key,
       (SELECT COUNT(*)::text FROM pg_indexes
-        WHERE schemaname = 'public' AND tablename = 'packet_paths'
+        WHERE schemaname = 'mesh' AND tablename = 'packet_paths'
           AND indexname IN (
             'packet_paths_rx_privacy_idx',
             'packet_paths_src_privacy_idx',
             'packet_paths_path_prefix_privacy_idx'
           )) AS privacy_indexes,
-      to_regclass('public.packet_decryptions_created_at_idx')::text AS decryption_index
+      to_regclass('mesh.packet_decryptions_created_at_idx')::text AS decryption_index
   `);
   assert.deepEqual(packetPathSchema.rows[0], {
     nullable_observer: true,
@@ -288,7 +306,7 @@ test('base schema and every migration apply to a brand-new database', {
     replacement_name: string | null;
   }>(`
     SELECT migration_name, disposition, replacement_name
-    FROM schema_migration_compatibility
+    FROM public.schema_migration_compatibility
     WHERE migration_name IN (
       '011_invalidate_pre_visibility_path_cache.sql',
       '015_public_visibility_generation.sql'
@@ -317,7 +335,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   const redis = new Redis(redisUrl!, { lazyConnect: true, enableOfflineQueue: false });
   const previousMode = process.env['MQTT_INGEST_MODE'];
   const previousKey = process.env['MQTT_RAM_STREAM_KEY'];
@@ -340,8 +358,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   });
   await redis.connect();
   configureRamStore(redis);
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   configurePacketBatch((sql, params) => pool.query(sql, params), testTransaction(pool));
   const input = { packetHash: '60'.repeat(32), rxNodeId: null,
     topic: 'meshcore/ZZZ/handoff/packets', rawHex: '00', network: 'ukmesh', packetType: 5 };
@@ -383,7 +400,7 @@ test('F06 real PG snapshot and Redis expiry preserve the captured handoff', {
   assert.deepEqual(merged.map((row) => row.packet_hash), [input.packetHash]);
   const later = await readRecentWithPending(async () => (await pool.query(`
     SELECT packet_hash, time, network, ARRAY[observation_id::text] AS _observation_ids,
-           (SELECT generation::text FROM public_visibility_state WHERE singleton) AS _policy_generation,
+           (SELECT generation::text FROM ops.public_visibility_state WHERE singleton) AS _policy_generation,
            0 AS _representative_rank,
            1::int AS rx_count, 0::int AS tx_count FROM packets`)).rows,
   { limit: 10, network: 'ukmesh', resolveAliases: async () => new Map(),
@@ -403,13 +420,16 @@ test('F07 historical and compressed observations enter the complete ledger atomi
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
+  await applyBaseSchema(pool);
+  await provisionOperatorRoles(pool);
+  const restoreF07Approval = approveBaseSchemaBootstrap();
+  t.after(() => restoreF07Approval());
   const oldTime = new Date(Date.now() - 20 * 86_400_000);
   let seeded = false;
   const interrupted = {
@@ -417,7 +437,7 @@ test('F07 historical and compressed observations enter the complete ledger atomi
       const client = await pool.connect();
       return {
         query: async (sql: string, params?: unknown[]) => {
-          if (sql.includes('INSERT INTO schema_migrations')
+          if (sql.includes('INSERT INTO public.schema_migrations')
             && params?.[0] === '060_ingest_ledger_historical_coverage.sql') {
             throw new Error('F07_BACKFILL_INTERRUPTED');
           }
@@ -502,14 +522,13 @@ test('F02 contended lock and replay never change historical tables', {
   const url = new URL(databaseUrl as string);
   url.pathname = `/${name}`;
   await admin.query(`CREATE DATABASE "${name}"`);
-  const pool = new Pool({ connectionString: url.toString(), max: 3 });
+  const pool = new Pool({ connectionString: url.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
   t.after(async () => {
     await pool.end();
     await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
     await admin.end();
   });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  await bootstrapBaseSchemaFixture(pool);
   const network = `f02_${process.pid}`;
   const observer = 'A'.repeat(64);
   const source = 'B'.repeat(64);
@@ -602,9 +621,8 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
   });
 
   await adminPool.query(`CREATE DATABASE ${databaseIdentifier}`);
-  pool = new Pool({ connectionString: url.toString(), max: 2 });
-  await pool.query(fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8'));
-  await runMigrations(pool);
+  pool = new Pool({ connectionString: url.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
+  await bootstrapBaseSchemaFixture(pool);
 
   const nodeId = 'F'.repeat(64);
   await pool.query(`INSERT INTO nodes (node_id, name, network) VALUES ($1, 'incident public', 'ukmesh')
@@ -670,8 +688,8 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
     const result = await pool!.query<{ public_generation: string; materialized_generation: string }>(`
       SELECT p.generation::text AS public_generation,
              m.visibility_generation::text AS materialized_generation
-        FROM public_visibility_state p
-        JOIN packet_visibility_materialization_state m ON p.singleton = m.singleton
+        FROM ops.public_visibility_state p
+        JOIN ops.packet_visibility_materialization_state m ON p.singleton = m.singleton
     `);
     assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
     return Number(result.rows[0]?.public_generation);
@@ -681,7 +699,7 @@ test('privacy rename commits and rematerializes a compressed chunk above the old
   assert.equal((await pool.query<{ name: string }>('SELECT name FROM nodes WHERE node_id = $1', [nodeId])).rows[0]?.name, 'incident private 🚫');
   assert.equal(await pair(), initialGeneration);
   const queued = await pool.query<{ target: string; status: string }>(`
-    SELECT target, status FROM privacy_rematerialization_queue WHERE node_id = $1 ORDER BY target
+    SELECT target, status FROM ops.privacy_rematerialization_queue WHERE node_id = $1 ORDER BY target
   `, [nodeId]);
   assert.deepEqual(queued.rows, [
     { target: 'packet_paths', status: 'pending' },
@@ -760,6 +778,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   const pool = new Pool({
     connectionString: ownedUrl.toString(),
     application_name: 'meshcore-ingest-integration-test',
+    options: POST_MOVE_SEARCH_PATH,
     max: 2,
   });
   t.after(async () => {
@@ -768,17 +787,30 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await admin.end();
   });
 
-  const baseSql = fs.readFileSync(new URL('./schema/base.sql', import.meta.url), 'utf8');
-  await pool.query(baseSql);
+  // This fixture owns its ledger, so the base-schema bootstrap approval stays
+  // out of it, but 072_backend_grants.sql still requires the operator roles.
+  await applyBaseSchema(pool);
+  await provisionOperatorRoles(pool);
   await pool.query(`
     CREATE TABLE path_history_cache (
       packet_hash TEXT PRIMARY KEY
     );
-    CREATE TABLE schema_migrations (
+    CREATE TABLE public.schema_migrations (
       name TEXT PRIMARY KEY,
       applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-    INSERT INTO schema_migrations (name)
+    -- The ledger below records 016_stale_mqtt_observer_cleanup.sql as already
+    -- applied, so the table that migration creates has to exist for
+    -- 089_move_ops_maintenance_tables.sql to move it.
+    CREATE TABLE public.maintenance_removed_records (
+      archive_id   BIGSERIAL PRIMARY KEY,
+      batch_id     TEXT NOT NULL,
+      source_table TEXT NOT NULL,
+      record_data  JSONB NOT NULL,
+      reason       TEXT NOT NULL,
+      archived_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO public.schema_migrations (name)
     VALUES ('011_invalidate_pre_visibility_path_cache.sql'),
            ('015_public_visibility_generation.sql'),
            ('016_stale_mqtt_observer_cleanup.sql')
@@ -822,7 +854,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   // succeeded but before its non-transactional ledger insert committed. The
   // next runner must safely repeat the SQL and restore the ledger.
   await pool.query(
-    `DELETE FROM schema_migrations
+    `DELETE FROM public.schema_migrations
       WHERE name = '028_ml_cursor_index.sql'`,
   );
   assert.deepEqual(await runMigrations(pool), ['028_ml_cursor_index.sql']);
@@ -838,7 +870,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
         AS non_transactional_count,
       COUNT(*) FILTER (WHERE execution_mode = 'superseded-existing')::text
         AS superseded_existing_count
-      FROM schema_migrations
+      FROM public.schema_migrations
   `);
   assert.deepEqual(migrationLedger.rows[0], {
     missing_checksums: '0',
@@ -891,14 +923,14 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   );
   // Leave these isolated test identities in the scratch database. Their
   // deletion would independently invalidate the legacy identity fence.
-  await pool.query('DELETE FROM privacy_rematerialization_queue');
+  await pool.query('DELETE FROM ops.privacy_rematerialization_queue');
 
   const visibilityPair = async () => {
     const result = await pool.query<{ public_generation: string; materialized_generation: string }>(`
       SELECT public.generation::text AS public_generation,
              materialized.visibility_generation::text AS materialized_generation
-        FROM public_visibility_state public
-        JOIN packet_visibility_materialization_state materialized ON materialized.singleton = public.singleton
+        FROM ops.public_visibility_state public
+        JOIN ops.packet_visibility_materialization_state materialized ON materialized.singleton = public.singleton
        WHERE public.singleton = TRUE
     `);
     assert.equal(result.rows[0]?.public_generation, result.rows[0]?.materialized_generation);
@@ -906,7 +938,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
   };
   const runQueuedRemat = async (nodeId: string) => {
     const queue = await pool.query<{ target: string; status: string }>(`
-      SELECT target, status FROM privacy_rematerialization_queue
+      SELECT target, status FROM ops.privacy_rematerialization_queue
        WHERE node_id = $1 ORDER BY target
     `, [nodeId]);
     assert.deepEqual(queue.rows, [
@@ -917,7 +949,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await visibilityPair();
     assert.equal(await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 }), true);
     const completed = await pool.query<{ status: string }>(
-      'SELECT status FROM privacy_rematerialization_queue WHERE node_id = $1', [nodeId],
+      'SELECT status FROM ops.privacy_rematerialization_queue WHERE node_id = $1', [nodeId],
     );
     assert.deepEqual(completed.rows.map((row) => row.status), ['done', 'done']);
   };
@@ -1216,7 +1248,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     await runQueuedRemat(observerId);
 
     const visibility = await pool.query<{ generation: string }>(
-      `SELECT generation::text FROM public_visibility_state WHERE singleton = TRUE`,
+      `SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE`,
     );
     const factResult = await backfillMultibytePathFacts(
       (text, params) => pool.query(text, params),
@@ -1299,7 +1331,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
 
     const registrationPrefix = suffix.padStart(64, 'E').slice(0, 64);
     await pool.query(
-      `INSERT INTO observer_registration_requests
+      `INSERT INTO core.observer_registration_requests
          (public_key, iata, contact, status, created_at, updated_at)
        VALUES
          ($1, 'ZZZ', 'terminal@example.invalid', 'rejected',
@@ -1310,14 +1342,14 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     );
     await executeRetention(retentionTarget('observer_registration_requests'));
     const registrationRetention = await pool.query<{ status: string }>(
-      `SELECT status FROM observer_registration_requests
+      `SELECT status FROM core.observer_registration_requests
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')
         ORDER BY status`,
     );
     assert.deepEqual(registrationRetention.rows, [{ status: 'pending' }]);
 
     await pool.query(
-      `INSERT INTO operator_audit_events
+      `INSERT INTO ops.operator_audit_events
          (actor, action, target_type, target_id, idempotency_key, status, created_at)
        VALUES
          ('integration', 'test', 'reset', $1, $2, 'succeeded', NOW() - INTERVAL '731 days'),
@@ -1326,7 +1358,7 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
     );
     await executeRetention(retentionTarget('operator_audit_events'));
     const auditRetention = await pool.query<{ idempotency_key: string }>(
-      `SELECT idempotency_key FROM operator_audit_events
+      `SELECT idempotency_key FROM ops.operator_audit_events
         WHERE idempotency_key = ANY($1::text[]) ORDER BY idempotency_key`,
       [[`expired-audit-${suffix}`, `retained-audit-${suffix}`]],
     );
@@ -1366,11 +1398,11 @@ test('packet batch atomically coalesces observer, sighting, and stats writes', {
       [`%-${suffix}`],
     );
     await pool.query(
-      `DELETE FROM observer_registration_requests
+      `DELETE FROM core.observer_registration_requests
         WHERE contact IN ('terminal@example.invalid', 'pending@example.invalid')`,
     );
     await pool.query(
-      `DELETE FROM operator_audit_events WHERE idempotency_key LIKE $1`,
+      `DELETE FROM ops.operator_audit_events WHERE idempotency_key LIKE $1`,
       [`%-${suffix}`],
     );
     await pool.query('DELETE FROM nodes WHERE node_id = $1', [observerId]);

@@ -70,10 +70,10 @@ WITH recent_links AS MATERIALIZED (
     nl.last_observed,
     nl.itm_path_loss_db,
     nl.multibyte_observed_count
-  FROM node_links nl
-  LEFT JOIN node_identity_aliases la
+  FROM core.node_links nl
+  LEFT JOIN core.node_identity_aliases la
     ON la.source_node_id = upper(btrim(nl.node_a_id))
-  LEFT JOIN node_identity_aliases lb
+  LEFT JOIN core.node_identity_aliases lb
     ON lb.source_node_id = upper(btrim(nl.node_b_id))
   WHERE (nl.itm_viable = true OR nl.force_viable = true)
     AND nl.last_observed > NOW() - INTERVAL '30 days'
@@ -111,7 +111,7 @@ export async function combinedTopologyRows(
      ),
      eligible_nodes AS MATERIALIZED (
        SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ${filters.nodesAlias('n')}
@@ -154,7 +154,7 @@ export async function combinedTopologyRows(
          n.lon,
          n.iata,
          row_number() OVER (ORDER BY n.last_seen DESC) AS row_order
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE n.last_seen > NOW() - INTERVAL '30 days'
          AND (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -278,7 +278,7 @@ export async function topologyRows(
      ),
      eligible_nodes AS MATERIALIZED (
        SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-       FROM node_identity_nodes n
+       FROM core.node_identity_nodes n
        WHERE (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ${filters.nodesAlias('n')}
@@ -316,7 +316,7 @@ export async function standaloneTopologyRows(query: QueryFn, filters: NetworkFil
        SELECT node_b_id AS node_id FROM canonical_links
      )
      SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-     FROM node_identity_nodes n
+     FROM core.node_identity_nodes n
      WHERE n.last_seen > NOW() - INTERVAL '30 days'
        AND (n.role IS NULL OR n.role = 2)
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
@@ -407,7 +407,7 @@ export async function rfValidationRows(
   // link query so its hash joins have accurate input cardinality.
   const nodes = await query<{ node_id: string; name: string | null }>(
     `SELECT n.node_id, n.name
-     FROM node_identity_nodes n
+     FROM core.node_identity_nodes n
      WHERE (n.role IS NULL OR n.role = 2)
        AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
        ${filters.nodesAlias('n')}`,
@@ -426,10 +426,10 @@ export async function rfValidationRows(
          COALESCE(lb.canonical_node_id, UPPER(BTRIM(nl.node_b_id))) AS raw_b,
          nl.observed_count, nl.multibyte_observed_count, nl.itm_path_loss_db,
          nl.itm_viable, nl.force_viable, nl.last_observed
-       FROM node_links nl
-       LEFT JOIN node_identity_aliases la
+       FROM core.node_links nl
+       LEFT JOIN core.node_identity_aliases la
          ON la.source_node_id = UPPER(BTRIM(nl.node_a_id))
-       LEFT JOIN node_identity_aliases lb
+       LEFT JOIN core.node_identity_aliases lb
          ON lb.source_node_id = UPPER(BTRIM(nl.node_b_id))
        WHERE nl.last_observed > NOW() - INTERVAL '30 days'
      ), aggregated_links AS (

@@ -44,14 +44,14 @@ restore_compression_schedule() {
     return 0
   fi
 
-  log "restoring packets compression policy (scheduled=${compression_schedule_before})"
+  log "restoring mesh.packets compression policy (scheduled=${compression_schedule_before})"
   if ! "${PSQL[@]}" -qAt <<SQL
 SELECT alter_job(j.job_id, scheduled => ${compression_schedule_before})
 FROM timescaledb_information.jobs j
 WHERE j.proc_name = 'policy_compression' AND j.hypertable_name = 'packets';
 SQL
   then
-    log "ERROR: could not restore the packets compression policy; restore it manually"
+    log "ERROR: could not restore the mesh.packets compression policy; restore it manually"
     return 1
   fi
   compression_schedule_restore=0
@@ -66,7 +66,7 @@ on_exit() {
   exit "$status"
 }
 
-log "packets per-chunk relabel starting"
+log "mesh.packets per-chunk relabel starting"
 log "disk before: $(disk_free)"
 
 compression_schedule_before="$(scalar "SELECT CASE WHEN scheduled THEN 'true' ELSE 'false' END FROM timescaledb_information.jobs WHERE proc_name = 'policy_compression' AND hypertable_name = 'packets' LIMIT 1;")"
@@ -74,7 +74,7 @@ case "$compression_schedule_before" in
   true)
     compression_schedule_restore=1
     trap on_exit EXIT
-    log "pausing packets compression policy"
+    log "pausing mesh.packets compression policy"
     "${PSQL[@]}" -qAt <<'SQL'
 SELECT alter_job(j.job_id, scheduled => false)
 FROM timescaledb_information.jobs j
@@ -82,18 +82,18 @@ WHERE j.proc_name = 'policy_compression' AND j.hypertable_name = 'packets';
 SQL
     ;;
   false)
-    log "packets compression policy is already disabled; leaving it disabled"
+    log "mesh.packets compression policy is already disabled; leaving it disabled"
     ;;
   '')
-    log "no packets compression policy found; continuing without changing scheduling"
+    log "no mesh.packets compression policy found; continuing without changing scheduling"
     ;;
   *)
-    log "unexpected packets compression schedule state: ${compression_schedule_before}"
+    log "unexpected mesh.packets compression schedule state: ${compression_schedule_before}"
     exit 1
     ;;
 esac
 
-remaining="$(scalar "SELECT count(*) FROM packets WHERE network IN (${LEGACY_SQL});")"
+remaining="$(scalar "SELECT count(*) FROM mesh.packets WHERE network IN (${LEGACY_SQL});")"
 log "initial remaining legacy rows=${remaining}"
 
 mapfile -t chunks < <("${PSQL[@]}" -qAt -F $'\t' <<'SQL'
@@ -160,7 +160,7 @@ restore_compression_schedule
 
 log "exact packet network counts follow"
 "${PSQL[@]}" <<'SQL'
-SELECT network, count(*) FROM packets GROUP BY network ORDER BY network;
+SELECT network, count(*) FROM mesh.packets GROUP BY network ORDER BY network;
 SELECT is_compressed, count(*) AS chunks
 FROM timescaledb_information.chunks
 WHERE hypertable_name='packets'

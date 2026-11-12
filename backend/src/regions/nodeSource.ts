@@ -1,6 +1,6 @@
 import { regionMemberIdsSql } from './filter.js';
 
-/** Match node_identity_nodes' representative/aggregate semantics on just the
+/** Match core.node_identity_nodes' representative/aggregate semantics on just the
  * region's identities. The global view materializes every node before filtering;
  * this region-first path instead probes nodes_pkey and the alias indexes. */
 export function regionNodeSourceSql(regionParam: string): string {
@@ -21,11 +21,11 @@ export function regionNodeSourceSql(regionParam: string): string {
         max(n.last_rx_at) OVER () AS last_rx_at,
         max(n.last_status_at) OVER () AS last_status_at,
         n.observer_iata
-      FROM nodes n
+      FROM core.nodes n
       WHERE n.node_id = ANY(ARRAY(
         SELECT members.node_id
         UNION
-        SELECT a.source_node_id FROM node_identity_aliases a
+        SELECT a.source_node_id FROM core.node_identity_aliases a
         WHERE a.canonical_node_id = members.node_id
       ))
       ORDER BY CASE

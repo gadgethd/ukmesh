@@ -8,7 +8,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 import pg from 'pg';
 import { Redis } from 'ioredis';
-import { runMigrations } from '../db/migrations.js';
+import { bootstrapBaseSchemaFixture } from '../db/fixtures/baseSchema.js';
 import { configurePacketBatch } from '../db/packetBatch.js';
 import { admitPacketToRam, configureRamStore } from './liveStore.js';
 import { accountedRamEntryBytes } from './protocol.js';
@@ -54,11 +54,13 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     for(const [name,value] of Object.entries(old)){if(value===undefined)delete process.env[name];else process.env[name]=value;}
   });
   await redis.connect();
-  await pool.query(fs.readFileSync(new URL('../db/schema/base.sql',import.meta.url),'utf8'));
-  await runMigrations(pool);
+  // Same bootstrap the CI init hook performs: base schema, operator roles,
+  // approved ledger origin. Seeding base.sql and calling runMigrations directly
+  // now trips the ledger precondition.
+  await bootstrapBaseSchemaFixture(pool);
   await pool.query(`CREATE FUNCTION hold_owned_packet() RETURNS trigger LANGUAGE plpgsql AS $$
     BEGIN PERFORM pg_advisory_xact_lock(918204,17); RETURN NEW; END $$;
-    CREATE TRIGGER hold_owned_packet BEFORE INSERT ON packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);
+    CREATE TRIGGER hold_owned_packet BEFORE INSERT ON mesh.packets FOR EACH ROW EXECUTE FUNCTION hold_owned_packet()`);
   holder=await pool.connect();await holder.query('BEGIN');await holder.query('SELECT pg_advisory_xact_lock(918204,17)');
   process.env['MQTT_INGEST_MODE']='ram';process.env['MQTT_RAM_STREAM_KEY']=key;
   process.env['MQTT_RAM_QUEUE_MAX_BYTES']=String(1048576);
@@ -97,12 +99,12 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
     return {child,done,output:()=>output,httpPort,metricsPort,applicationName};
   };
   const counts=async()=>(await pool.query(`SELECT
-    (SELECT COUNT(*)::int FROM packets WHERE network=$1) packets,
-    (SELECT COUNT(*)::int FROM ingest_observation_ledger WHERE network=$1) ledger,
-    (SELECT COUNT(*)::int FROM packet_paths WHERE network=$1) paths,
-    (SELECT COALESCE(SUM(packet_count),0)::int FROM packet_hourly_stats WHERE network=$1) hourly,
-    (SELECT COUNT(*)::int FROM packet_daily_stats WHERE network=$1) daily,
-    (SELECT COUNT(*)::int FROM observer_region_packet_sightings WHERE network=$1) regions`,[name])).rows[0];
+    (SELECT COUNT(*)::int FROM mesh.packets WHERE network=$1) packets,
+    (SELECT COUNT(*)::int FROM mesh.ingest_observation_ledger WHERE network=$1) ledger,
+    (SELECT COUNT(*)::int FROM mesh.packet_paths WHERE network=$1) paths,
+    (SELECT COALESCE(SUM(packet_count),0)::int FROM mesh.packet_hourly_stats WHERE network=$1) hourly,
+    (SELECT COUNT(*)::int FROM mesh.packet_daily_stats WHERE network=$1) daily,
+    (SELECT COUNT(*)::int FROM core.observer_region_packet_sightings WHERE network=$1) regions`,[name])).rows[0];
   // Packet persistence runs on the dedicated ingest pool, not the general pool.
   const blocked=async(applicationName:string)=>Number((await pool.query(`SELECT COUNT(*) n FROM pg_stat_activity
     WHERE datname=$1 AND application_name=$2 AND wait_event='advisory'`,[name,`${applicationName}-ingest`])).rows[0].n)>0;
@@ -135,7 +137,7 @@ test('F15/F16 actual SIGTERM joins held PostgreSQL persistence, recovers identit
   assert.equal(success.code,0,recovered.output());assert.match(recovered.output(),/graceful shutdown complete/);
   const expected={packets:1,ledger:1,paths:1,hourly:1,daily:1,regions:1};
   assert.deepEqual(await counts(),expected);
-  assert.equal((await pool.query('SELECT observation_id::text FROM packets WHERE network=$1',[name])).rows[0].observation_id,accepted.observationId);
+  assert.equal((await pool.query('SELECT observation_id::text FROM mesh.packets WHERE network=$1',[name])).rows[0].observation_id,accepted.observationId);
   assert.equal((await redis.xpending(key,group))[0],0);
   assert.equal(await redis.xlen(key),1,'committed overlap remains reserved until expiry');
   assert.equal(Number(await redis.get(key+':bytes')),bytes);

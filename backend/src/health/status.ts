@@ -66,22 +66,25 @@ type WorkerSnapshot = {
 };
 
 export type RetentionTarget = {
-  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
+  table: 'packets' | 'worker_health_snapshots' | 'frontend_error_events' | 'owner_alert_deliveries' | 'owner_packet_share_deliveries' | 'public_feed_deliveries' | 'operational_check_results' | 'observer_region_packet_sightings' | 'observer_region_observer_sightings' | 'link_job_commits' | 'analytics.ml_model_variant_packet_results' | 'packet_decryptions' | 'observer_registration_requests' | 'operator_audit_events' | 'node_status_samples';
   timestampColumn: 'ts' | 'time' | 'created_at' | 'updated_at' | 'completed_at' | 'last_seen';
   retention: string;
   batchSize: number;
   extraPredicate?: string;
+  /** Physical relation when the logical table was moved to a schema. */
+  qualifiedTable?: string;
 };
 
 export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   // Timescale drops complete chunks; this bounded boundary cleanup makes the
   // listed 30-day privacy limits exact for the partial oldest chunk.
-  { table: 'packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
-  { table: 'node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
-  { table: 'worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
-  { table: 'frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
+  { table: 'packets', qualifiedTable: 'mesh.packets', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
+  { table: 'node_status_samples', qualifiedTable: 'core.node_status_samples', timestampColumn: 'time', retention: '30 days', batchSize: 25_000 },
+  { table: 'worker_health_snapshots', qualifiedTable: 'ops.worker_health_snapshots', timestampColumn: 'ts', retention: '7 days', batchSize: 10_000 },
+  { table: 'frontend_error_events', qualifiedTable: 'ops.frontend_error_events', timestampColumn: 'time', retention: '30 days', batchSize: 2_000 },
   {
     table: 'owner_alert_deliveries',
+    qualifiedTable: 'core.owner_alert_deliveries',
     timestampColumn: 'created_at',
     retention: '90 days',
     batchSize: 1_000,
@@ -89,6 +92,7 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   },
   {
     table: 'owner_packet_share_deliveries',
+    qualifiedTable: 'core.owner_packet_share_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     batchSize: 2_000,
@@ -96,25 +100,27 @@ export const RETENTION_TARGETS: readonly RetentionTarget[] = [
   },
   {
     table: 'public_feed_deliveries',
+    qualifiedTable: 'ops.public_feed_deliveries',
     timestampColumn: 'created_at',
     retention: '30 days',
     batchSize: 2_000,
     extraPredicate: `status IN ('succeeded', 'dead_lettered')`,
   },
-  { table: 'operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
-  { table: 'observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
-  { table: 'observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
-  { table: 'link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
-  { table: 'ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
-  { table: 'packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
+  { table: 'operational_check_results', qualifiedTable: 'ops.operational_check_results', timestampColumn: 'ts', retention: '14 days', batchSize: 2_000 },
+  { table: 'observer_region_packet_sightings', qualifiedTable: 'core.observer_region_packet_sightings', timestampColumn: 'last_seen', retention: '8 days', batchSize: 25_000 },
+  { table: 'observer_region_observer_sightings', qualifiedTable: 'core.observer_region_observer_sightings', timestampColumn: 'last_seen', retention: '31 days', batchSize: 5_000 },
+  { table: 'link_job_commits', qualifiedTable: 'ops.link_job_commits', timestampColumn: 'completed_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'analytics.ml_model_variant_packet_results', timestampColumn: 'created_at', retention: '180 days', batchSize: 5_000 },
+  { table: 'packet_decryptions', qualifiedTable: 'mesh.packet_decryptions', timestampColumn: 'created_at', retention: '30 days', batchSize: 2_000 },
   {
     table: 'observer_registration_requests',
+    qualifiedTable: 'core.observer_registration_requests',
     timestampColumn: 'updated_at',
     retention: '365 days',
     batchSize: 1_000,
     extraPredicate: `status IN ('rejected', 'expired', 'provisioned')`,
   },
-  { table: 'operator_audit_events', timestampColumn: 'created_at', retention: '730 days', batchSize: 2_000 },
+  { table: 'operator_audit_events', qualifiedTable: 'ops.operator_audit_events', timestampColumn: 'created_at', retention: '730 days', batchSize: 2_000 },
 ];
 
 function refreshBackupAgeMetrics(now = new Date()): void {
@@ -146,13 +152,13 @@ async function refreshPacketPathCapacityMetrics(): Promise<void> {
     overdue_uncompressed_chunks: string;
   }>(`
     SELECT
-      (SELECT COUNT(*)::text FROM packet_paths
+      (SELECT COUNT(*)::text FROM mesh.packet_paths
         WHERE time >= NOW() - INTERVAL '30 days') AS rows_30d,
-      approximate_row_count('packet_paths'::regclass)::text AS approximate_rows,
-      pg_total_relation_size('packet_paths'::regclass)::text AS total_bytes,
+      approximate_row_count('mesh.packet_paths'::regclass)::text AS approximate_rows,
+      pg_total_relation_size('mesh.packet_paths'::regclass)::text AS total_bytes,
       (SELECT COUNT(*)::text
          FROM timescaledb_information.chunks
-        WHERE hypertable_schema = 'public'
+        WHERE hypertable_schema = 'mesh'
           AND hypertable_name = 'packet_paths'
           AND range_end < NOW() - INTERVAL '15 days'
           AND NOT is_compressed) AS overdue_uncompressed_chunks
@@ -185,11 +191,11 @@ async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
     expired_chunks: string;
     overdue_uncompressed_chunks: string;
   }>(`
-    WITH lifecycle_targets (table_name, retention, compress_after) AS (
+    WITH lifecycle_targets (schema_name, table_name, retention, compress_after) AS (
       VALUES
-        ('packets', INTERVAL '30 days', INTERVAL '15 days'),
-        ('node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
-        ('node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
+        ('mesh', 'packets', INTERVAL '30 days', INTERVAL '15 days'),
+        ('core', 'node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
+        ('core', 'node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
     )
     SELECT target.table_name,
            COUNT(chunk.chunk_name)::text AS chunk_count,
@@ -208,7 +214,7 @@ async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
            )::text AS overdue_uncompressed_chunks
       FROM lifecycle_targets target
       LEFT JOIN timescaledb_information.chunks chunk
-        ON chunk.hypertable_schema = 'public'
+        ON chunk.hypertable_schema = target.schema_name
        AND chunk.hypertable_name = target.table_name
      GROUP BY target.table_name
   `);
@@ -271,14 +277,14 @@ export function retentionDeleteSql(target: RetentionTarget): string {
        SELECT MAX(${target.timestampColumn}) AS boundary
        FROM (
          SELECT ${target.timestampColumn}
-         FROM ${target.table}
+         FROM ${target.qualifiedTable ?? target.table}
          WHERE ${target.timestampColumn} < NOW() - $1::interval
            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}
          ORDER BY ${target.timestampColumn} ASC
          LIMIT $2
        ) AS oldest
      )
-     DELETE FROM ${target.table} AS target
+     DELETE FROM ${target.qualifiedTable ?? target.table} AS target
      WHERE target.${target.timestampColumn} <= (SELECT boundary FROM expired)
        ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }
@@ -302,11 +308,15 @@ export async function deleteExpiredRows(
   // kept until it is fully expired, so retention can overshoot by one chunk.
   if (lifecyclePolicy(target.table).kind === 'hypertable') {
     try {
+      const qualifiedTable = target.qualifiedTable ?? target.table;
+      const [schemaName, tableName] = qualifiedTable.includes('.')
+        ? qualifiedTable.split('.', 2) as [string, string]
+        : ['public', qualifiedTable] as [string, string];
       // Remove every chunk that is entirely past the retention horizon without
       // decompressing anything.
       await execute(
         'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
-        [target.table, target.retention],
+        [qualifiedTable, target.retention],
       );
       // The boundary chunk can still hold a few expired rows next to retained
       // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
@@ -315,11 +325,12 @@ export async function deleteExpiredRows(
         execute,
         `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
            FROM timescaledb_information.chunks
-          WHERE hypertable_name = $1
-            AND range_end > now() - $2::interval
+          WHERE hypertable_schema = $1
+            AND hypertable_name = $2
+            AND range_end > now() - $3::interval
           ORDER BY range_end ASC
           LIMIT 1`,
-        [target.table, target.retention],
+        [schemaName, tableName, target.retention],
       );
       const chunk = chunks[0];
       if (!chunk) return;
@@ -555,19 +566,19 @@ async function currentWorkers(precomputedStats?: ReturnType<typeof systemStats>)
         retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
       };
     }),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
-    query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM node_links`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM core.node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`),
+    query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM core.node_links`),
     readLinkWorkerHeartbeatAge(r),
-    query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM path_model_calibration`),
+    query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM analytics.path_model_calibration`),
     query<{ count: string; ts: string | null }>(
       `SELECT COUNT(*) FILTER (WHERE ts > NOW() - INTERVAL '1 hour') AS count,
               MAX(ts)::text AS ts
-       FROM worker_health_snapshots
+       FROM ops.worker_health_snapshots
        WHERE worker_name = 'health-worker'`,
     ),
     query<{ links: string; last_observed: string | null }>(
       `SELECT COUNT(*)::text AS links, MAX(last_observed)::text AS last_observed
-       FROM node_links`,
+       FROM core.node_links`,
     ),
   ]);
 
@@ -659,7 +670,7 @@ async function currentWorkerStatuses(precomputedStats: ReturnType<typeof systemS
             last_activity_at::text, cpu_load_1m, cpu_usage_pct,
             mem_used_pct, disk_used_pct, queue_bytes, dead_jobs,
             retries, active_leases, oldest_age_s, captured_at::text
-       FROM worker_health_current
+       FROM ops.worker_health_current
       ORDER BY worker_name`,
   );
   if (result.rows.length === 0) return currentWorkers(precomputedStats);
@@ -733,7 +744,7 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
            oldest_age_s double precision
          )
      ), history_write AS (
-       INSERT INTO worker_health_snapshots
+       INSERT INTO ops.worker_health_snapshots
          (ts, worker_name, status, queue_depth, processed_5m, processed_1h,
           last_activity_at, cpu_load_1m, mem_used_pct, disk_used_pct)
        SELECT $1::timestamptz, worker_name, status, queue_depth, 0, processed_1h,
@@ -741,13 +752,13 @@ export async function captureWorkerHealthSnapshot(): Promise<void> {
          FROM snapshot
        RETURNING worker_name
      ), current_cleanup AS (
-       DELETE FROM worker_health_current current
+       DELETE FROM ops.worker_health_current current
         WHERE NOT EXISTS (
           SELECT 1 FROM snapshot WHERE snapshot.worker_name = current.worker_name
         )
        RETURNING worker_name
      )
-     INSERT INTO worker_health_current
+     INSERT INTO ops.worker_health_current
        (worker_name, captured_at, status, queue_depth, processed_1h,
         last_activity_at, cpu_load_1m, cpu_usage_pct, mem_used_pct,
         disk_used_pct, queue_bytes, dead_jobs, retries, active_leases, oldest_age_s)
@@ -803,7 +814,7 @@ async function getOperationalChecksCached(): Promise<{ rows: OperationalCheckRow
     const tracked = query<OperationalCheckRow>(
       `SELECT DISTINCT ON (check_name)
          check_name, status, latency_ms, detail, ts::text
-       FROM operational_check_results
+       FROM ops.operational_check_results
        ORDER BY check_name, ts DESC`,
     )
       .then((result) => {
@@ -838,11 +849,11 @@ export async function getWorkerHealthOverview() {
       disk_used_pct: number | null;
     }>(
       `SELECT ts::text, worker_name, status, queue_depth, processed_1h, cpu_load_1m, mem_used_pct, disk_used_pct
-       FROM worker_health_snapshots
+       FROM ops.worker_health_snapshots
        ORDER BY ts DESC
        LIMIT 720`,
     ),
-    query<{ count: string }>(`SELECT COUNT(*) AS count FROM frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
+    query<{ count: string }>(`SELECT COUNT(*) AS count FROM ops.frontend_error_events WHERE time > NOW() - INTERVAL '1 hour'`),
     query<{
       stale_nodes: string;
       active_nodes: string;
@@ -899,7 +910,7 @@ export async function getWorkerHealthOverview() {
              COUNT(*) FILTER (WHERE status = 'failed' AND attempts >= $1)::text AS failed_exhausted,
              MAX(EXTRACT(EPOCH FROM (NOW() - requested_at)))
                FILTER (WHERE status = 'pending')::text AS oldest_pending_age_seconds
-        FROM privacy_rematerialization_queue
+        FROM ops.privacy_rematerialization_queue
     `, [Math.min(100, Math.max(1, Number(process.env['PRIVACY_REMAT_MAX_ATTEMPTS'] ?? 8) || 8))]),
     reconcilePrivacyGenerations(),
   ]);
