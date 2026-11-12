@@ -26,7 +26,7 @@
     "path:accuracy": "tsx src/tools/pathAccuracy.ts",
     "load:realtime": "tsx src/tools/loadRealtime.ts",
     "test": "node --import tsx --test $(find src -name '*.test.ts' ! -name '*.integration.test.ts' -print) && bash ../scripts/test-alert-receiver.sh",
-    "test:owner-integration": "timeout 120s node --import tsx --test src/db/ownerAuth.integration.test.ts",
+    "test:owner-integration": "timeout 120s node --import tsx --test src/owner/ownerAuth.integration.test.ts",
     "test:analysis-integration": "node scripts/run-analysis-integration.mjs",
     "test:schema-fixtures": "timeout 400s node --import tsx --test src/owner/packetShareRepository.integration.test.ts src/spam/repository.integration.test.ts src/db/nodeNameHistory.integration.test.ts",
     "test:owner-last-hop-integration": "timeout 120s node --import tsx --test src/owner/ownerService.integration.test.ts",

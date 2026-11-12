@@ -32,7 +32,7 @@ import { selectInitialViableLinks } from './initialStateLinks.js';
 import { loadInitialMapNodes } from './initialStateNodes.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
-import { ApiInputError } from '../api/errors.js';
+import { ApiInputError } from '../platform/apiInputError.js';
 
 const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';

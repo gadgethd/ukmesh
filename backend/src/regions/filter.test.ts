@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ApiInputError } from '../api/errors.js';
+import { ApiInputError } from '../platform/apiInputError.js';
 import { parseRegionFilter } from './filter.js';
 
 test('region validation preserves Phase A case and accepts optional hashtag', () => {
