@@ -194,7 +194,7 @@ async function refreshCoreTelemetryCapacityMetrics(): Promise<void> {
     WITH lifecycle_targets (schema_name, table_name, retention, compress_after) AS (
       VALUES
         ('mesh', 'packets', INTERVAL '30 days', INTERVAL '15 days'),
-        ('core', 'node_status_samples', INTERVAL '180 days', INTERVAL '15 days'),
+        ('core', 'node_status_samples', INTERVAL '30 days', INTERVAL '15 days'),
         ('core', 'node_neighbor_samples', INTERVAL '7 days', INTERVAL '2 days')
     )
     SELECT target.table_name,

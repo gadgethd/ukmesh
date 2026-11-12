@@ -55,6 +55,7 @@
     "check": "npm run typecheck && npm test && npm run contract:check",
     "bench:api": "tsx src/tools/benchmarkApi.ts",
     "bench:ingest": "tsx src/tools/benchmarkIngest.ts",
+    "bench:db": "tsx src/tools/benchmarkDatabase.ts",
     "sample:refresh-recent": "tsx src/tools/refreshSampleRecent.ts"
   },
   "dependencies": {

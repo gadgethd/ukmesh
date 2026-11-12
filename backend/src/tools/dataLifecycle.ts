@@ -22,6 +22,21 @@ function argValue(name: string): string | undefined {
   return process.argv.find((arg) => arg.startsWith(prefix))?.slice(prefix.length);
 }
 
+async function timescaleJobs(policy: { table: string; qualifiedTable?: string }, retention: string | null) {
+  return (await query(
+    `SELECT job_id, proc_name, scheduled,
+            config->>'drop_after' AS drop_after,
+            config->>'compress_after' AS compress_after,
+            CASE WHEN proc_name = 'policy_retention'
+                 THEN (config->>'drop_after')::interval = $3::interval
+                 ELSE NULL END AS matches_current_retention
+       FROM timescaledb_information.jobs
+      WHERE hypertable_schema = $1 AND hypertable_name = $2
+      ORDER BY job_id`,
+    [relationParts(policy).schema, relationParts(policy).name, retention],
+  )).rows;
+}
+
 async function inventory(): Promise<void> {
   const version = await query<{ extversion: string }>(
     `SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'`,
@@ -64,6 +79,8 @@ async function inventory(): Promise<void> {
     console.log('[data-lifecycle] inventory', {
       table: policy.table,
       retention: policy.retention,
+      compressAfter: DATA_COMPRESSION_POLICIES.find(candidate => candidate.table === policy.table)?.compressAfter ?? null,
+      timescaleJobs: policy.kind === 'hypertable' ? await timescaleJobs(policy, policy.retention) : [],
       exactExpiredRows: Number(result.rows[0]?.expired_rows ?? 0),
       expiredChunks: Number(chunks?.expired_chunks ?? 0),
       compressedChunks: Number(chunks?.compressed_chunks ?? 0),
@@ -96,6 +113,7 @@ async function inventory(): Promise<void> {
       table: policy.table,
       retention: null,
       compressAfter: policy.compressAfter,
+      timescaleJobs: await timescaleJobs(policy, null),
       compressedChunks: Number(result.rows[0]?.compressed_chunks ?? 0),
       oldestAt: result.rows[0]?.oldest_at ?? null,
       newestAt: result.rows[0]?.newest_at ?? null,

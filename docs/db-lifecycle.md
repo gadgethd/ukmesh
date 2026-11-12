@@ -72,6 +72,18 @@ docker compose exec backend npm run db:lifecycle
 It reports exact expired rows, expired/compressed Timescale chunks, relation
 bytes, oldest/newest timestamps, and the affected features for every target.
 The inventory can be expensive by design; run it away from peak ingest.
+It also reports the actual Timescale job configuration, `scheduled` state and
+whether each retention job matches the current policy. A declared compression
+capability does not show that a compression job is scheduled or any chunk is
+compressed.
+
+Migration 050 declared 180 days for status samples; the current application
+policy and bounded cleanup specify 30 days. Retained databases can therefore
+report that mismatch. The apply command uses `if_not_exists`: it creates a
+missing job and preserves an existing job's interval and scheduling state.
+Changing an existing interval or enabling a disabled job requires a separately
+reviewed per-table lifecycle operation with the receipt and allowlist gates
+below. Record the actual state during upgrade/rollback rehearsal.
 
 Compression and retention are separate, table-at-a-time changes. Migration
 050 declares Timescale retention policies for packets, status samples, and
@@ -107,9 +119,9 @@ docker compose exec backend npm run db:lifecycle
 ```
 
 After approval, enable the reviewed core retention windows with one explicit
-command per table. The packet content window is 30 days in the current
-repository policy; status telemetry is 180 days and neighbour telemetry is
-seven days. `packet_paths` is never a retention target:
+command per table. The packet content and status telemetry windows are 30 days
+in the current repository policy; neighbour telemetry is seven days.
+`packet_paths` is never a retention target:
 
 ```bash
 docker compose exec -e DATA_LIFECYCLE_RETENTION_ENABLED=true backend npm run db:lifecycle -- \

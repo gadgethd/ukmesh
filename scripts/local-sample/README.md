@@ -155,6 +155,9 @@ This explicitly recreates the owned sample stack twice, generates one invented
 2,000-packet source, and runs saturation then 100 packets/second sequentially.
 It retains source checksums, image/resource limits, DB CPU and WAL deltas,
 steady-state SQL rankings, RSS/heap/event-loop samples and the decode benchmark.
+It also records actual read-only public query plans and the lifecycle inventory
+after replay. See [backend qualification notes](../../docs/backend-performance.md)
+for the initial query budget and measured limits.
 Use `--data-dir plans/measurements/ingest-baseline/dataset --flush-ms 0` with a
 new label to compare a flush setting against exactly the same source. The default
 comparison setting is explicitly 0 ms, matching the backend default; it does

@@ -512,8 +512,10 @@ MeshCore Devices
 
 ## Data Retention
 
-- The reviewed core telemetry windows are 30 days for raw packets, 180 days
-  for status samples, and seven days for neighbour samples. Content-stripped
+- The current core telemetry policy specifies 30 days for raw packets and
+  status samples, and seven days for neighbour samples. The historical
+  migration declared 180 days for status samples; inspect actual Timescale
+  jobs and their enabled state before an approved lifecycle change. Content-stripped
   `packet_paths` remain available for path reconstruction and are never
   retention-deleted. Privacy-safe aggregates and current node/link/model state
   remain longer lived.

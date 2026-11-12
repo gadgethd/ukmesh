@@ -63,5 +63,7 @@ for mode in saturation controlled; do
   docker exec ukmesh-sample-db cat /sys/fs/cgroup/cpu.stat > "$output/$mode/db-cpu-after.txt"
   docker logs ukmesh-sample-mqtt > "$output/$mode/mqtt.log" 2>&1
 done
+npm --prefix backend run bench:db -- --output "$output/database" > "$output/database.log" 2>&1
+DATABASE_SKIP_SCHEMA_INIT=1 npm --prefix backend run db:lifecycle > "$output/lifecycle.log" 2>&1
 npm --prefix backend run bench:decode > "$output/decode.log" 2>&1
 echo "Persisted ingest, query/WAL deltas, process samples and decode evidence: $output"
