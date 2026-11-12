@@ -110,3 +110,7 @@ b92314af87becee3f61823c1e15caaad9a9ff89e:backend/src/mqtt/channelRegistry.ts:gen
 5f905be1bea224f9b84b40dfb13dcb116082c377:website-live-manifest.staging.json:generic-api-key:40
 7ce8fd040331ba2794eaa72f3c20bec216fe8541:backend/src/spam/sanitize.test.ts:generic-api-key:50
 ebd704d7777a87448ad7fc8f787a2b23cd0e16a8:website-live-manifest.staging.json:generic-api-key:38
+# Historical copies of the same invented incident key in sanitizeIncident's test.
+# Identical to the reviewed 2c7ea435 fixture above; these are not credentials.
+f62b9356dddbf9775383b21d5c06f0dc5d0c6b2b:backend/src/spam/sanitize.test.ts:generic-api-key:50
+00588268598a88f0f3544314efe193bd048e2da5:backend/src/spam/sanitize.test.ts:generic-api-key:50
