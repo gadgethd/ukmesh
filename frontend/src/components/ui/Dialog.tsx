@@ -64,4 +64,3 @@ export function DialogTitle({
 }) {
   return <Heading slot="title" className={className}>{children}</Heading>;
 }
-

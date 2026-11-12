@@ -202,6 +202,3 @@ export function validPacketIntegers(values: Record<string, number | undefined>):
   return Object.entries(values).every(([key, value]) => value == null
     || (Number.isSafeInteger(value) && value >= 0 && value <= (bounds[key] ?? 2_147_483_647)));
 }
-
-
-

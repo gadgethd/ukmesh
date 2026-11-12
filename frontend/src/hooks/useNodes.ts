@@ -506,4 +506,3 @@ export function useMessages(): AggregatedPacket[] {
 export function useArcs(): PacketArc[] {
   return useSyncExternalStore(subscribe, () => state.arcs);
 }
-
