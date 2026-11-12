@@ -4,6 +4,14 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 
 ---
 
+## Local development
+
+With Node (see `.nvmrc`), npm, Docker Engine and Compose available, run
+`scripts/dev-stack.sh up` from the repository root. It creates synthetic data,
+migrates owned local databases and checks MQTT persistence and live delivery.
+Open `http://127.0.0.1:5173`. See the [local stack runbook](scripts/local-sample/README.md)
+for profiles, explicit reset/cleanup, benchmarks and the optional private archive.
+
 ## Features
 
 - Real-time node map with animated packet arcs and live WebSocket updates

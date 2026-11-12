@@ -39,7 +39,7 @@ If in doubt, keep it out of Git and add it to `.gitignore`.
 ## Testing expectations
 
 Before finishing a refactor or behavior change:
-- use Node 20 and run `cd backend && npm ci && npm run typecheck && npm test && npm run build`
+- use Node 26 (see `.nvmrc`, matching the container runtime) and run `cd backend && npm ci && npm run typecheck && npm test && npm run build`
 - run `cd frontend && npm ci && npm test && npm run build && npm run test:e2e`
 - if worker code changed, build its image and run its tests there so GDAL and
   `osgeo` exactly match production

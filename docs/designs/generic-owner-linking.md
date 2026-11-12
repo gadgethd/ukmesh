@@ -19,10 +19,10 @@ helpers; those do not establish generic unattended coverage:
 | `scripts/newuser.sh: main`, `discover_node_key`, `extract_node_key_from_logs` | Initial provisioning accepts explicit keys or waits for fresh user-correlated broker logs. `--watch` resumes a credential-only account; `--link` adds a device to an existing mapped owner, optionally discovering its key. All are bounded, operator-invoked runs. |
 | `backend/src/mqtt/brokerLog.ts: parseMosquittoConnection`, `parseOwnerNodeTopic` | Parse authenticated username/client association and claimed exact topic keys. Client IDs and topics are publisher-controlled. |
 | `backend/src/mqtt/connectionMonitor.ts: observeBrokerLogLine`, `scanRange` | A continuous, bounded, audit-only monitor; exact-key denials go to `recordUntrustedMqttNodeObservation`, not owner grants. Bare default-root denials have no full key. |
-| `backend/src/db/ownerAuth.ts: recordUntrustedMqttNodeObservation` | Retains bounded claims in `mqtt_node_logins`. It cannot turn them into ownership. |
+| `backend/src/owner/ownerAuth.ts: recordUntrustedMqttNodeObservation` | Retains bounded claims in `mqtt_node_logins`. It cannot turn them into ownership. |
 | `backend/src/owner/ownerAccess.ts: autoLinkOwnerNodeIds` | Despite its name, reconciles existing operator-authorized grants, invalidates the owner cache, then resolves verified node IDs. It does not discover or approve new devices. |
 | `backend/src/owner/ownerService.ts: authenticateOwner`, `getSessionDashboard` | Authentication requires broker credentials; the normal owner session additionally requires a linked node present in the dashboard. A credential-only user has no normal session. |
-| `backend/src/db/ownerAuth.ts: getOwnerNodeIdsForUsername`, `getOwnerAuthorizationSnapshot` | Only active, verified, unrevoked `operator-config` or `operator-database` grants authorize access. |
+| `backend/src/owner/ownerAuth.ts: getOwnerNodeIdsForUsername`, `getOwnerAuthorizationSnapshot` | Only active, verified, unrevoked `operator-config` or `operator-database` grants authorize access. |
 | `backend/src/owner/ownerAclReconciler.ts: reconcileOwnerAuthorization` | Synchronizes configured grants, renders exact per-key ACLs, validates and applies them, reloads the broker, and records readback state. |
 
 For today's operator workflow, take the full public key directly from the user
@@ -64,7 +64,7 @@ and recreates the backend as part of each successful run.
    across retries. Request approval and grant publication need a transaction or
    an outbox/recovery step, not an untracked two-write sequence.
 5. Reuse `upsertVerifiedOwnerGrant` and `owner_grant_audit` in
-   `backend/src/db/ownerAuth.ts`, followed by `reconcileOwnerAuthorization`.
+   `backend/src/owner/ownerAuth.ts`, followed by `reconcileOwnerAuthorization`.
    Report **grant recorded, ACL pending** until the reconciler's applied and
    readback generations match the desired artifact. Failure must retain the
    request and last verified ACL for retry. Never report success just because

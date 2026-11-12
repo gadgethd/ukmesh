@@ -1,166 +1,158 @@
-# Local sample database and MQTT replay
+# Reproducible local stack and sample replay
 
-This directory contains **local-only test tooling** for the UKMesh sample
-dataset. The dataset itself is not committed and must stay out of Git.
-
-The tools live in `backend/src/tools/`:
-
-- `loadSampleDataset.ts` — loads the sample CSVs into a migrated database.
-- `replaySampleMqtt.ts` — publishes the sample to MQTT so the whole ingest path
-  (broker → backend → database → WebSocket → API → website) can be exercised.
-
-Both tools read the dataset from `--data-dir` and never write it anywhere or
-log payload contents.
-
-## 1. Start a disposable database
+Run all examples from the repository root. Node 26 (see `.nvmrc`), npm,
+Docker Engine and Docker Compose are required. Docker must be accessible to
+the current user; after joining its group, start a new login session.
 
 ```bash
-docker run --rm --name ukmesh-sample-db \
-  -e POSTGRES_USER=meshcore \
-  -e POSTGRES_PASSWORD=meshcore \
-  -e POSTGRES_DB=meshcore \
-  -p 127.0.0.1:5433:5432 \
-  timescale/timescaledb:latest-pg16
+scripts/dev-stack.sh up
+scripts/dev-stack.sh status
 ```
+
+The default **ingest** profile creates invented data, loads only its nodes and
+link evidence, then replays 20 previously absent packets and one status sample.
+Readiness includes persisted row counts, WebSocket delivery and a nonempty
+recent-packets API. The website is at `http://127.0.0.1:5173`; its `/api` and
+`/ws` proxy targets `http://127.0.0.1:3100` using `UKMESH_DEV_API_TARGET`.
+No private dataset is needed for onboarding.
+
+The script starts digest-pinned TimescaleDB (5433), Redis (6380), Mosquitto
+(MQTT 1884 and WebSocket 9002), backend (3100) and Vite (5173). Container
+ports bind to loopback. It uses an allowlisted environment, never reads a
+project `.env`, and sets every active role DSN to the owned local database.
+The separate `meshcore_owner_auth` database contains structure only, without
+owner grants or external forwarding destinations. Application startup does
+not create or migrate schema: the script loads `base.sql`, bootstraps roles,
+runs the explicit migration tool, then provisions owner-auth.
+
+Logs, PIDs and synthetic fixtures are retained under ignored
+`plans/dev-stack/`. A partial startup leaves evidence for investigation.
+Existing fixtures are never silently reused or deleted:
+
+```bash
+scripts/dev-stack.sh stop       # stop processes and containers; retain data
+scripts/dev-stack.sh start      # restart processes against the prepared fixture
+scripts/dev-stack.sh reset      # explicitly discard this stack and rebuild
+scripts/dev-stack.sh cleanup    # stop and delete only this stack and its DB volume
+```
+
+## Snapshot/API fixture
+
+A snapshot loads all rows before deriving read models. It must be kept
+separate from nonduplicate-ingest benchmarks:
+
+```bash
+scripts/dev-stack.sh reset --profile snapshot
+```
+
+The optional private archive is local-only and must remain ignored. Choose an
+explicit timestamp for a shifted local copy so recent/day queries contain
+data, and use the same timestamp for comparable runs:
+
+```bash
+scripts/dev-stack.sh reset --profile snapshot \
+  --data-dir data/ukmesh-sample-2026-11-10 \
+  --shift-to 2026-11-12T03:15:00Z --redact-content
+```
+
+`--shift-to` moves the latest packet to the supplied ISO timestamp and shifts
+packet/status/node/link timestamps by the same offset. It never modifies the
+archive. Omit it to retain original times; record the archive checksum,
+original/effective window and any age-related gaps with each benchmark.
+Do not publish packet contents or private-archive screenshots.
+`--redact-content` replaces imported summaries with invented text of the same
+character length; use it before browser captures. Record that transformation
+with the fixture. The source CSVs remain unchanged.
+
+Loading uses explicit `core`/`mesh` base tables, not the `public` compatibility
+views. Node privacy triggers remain enabled in `--fast` mode. A bulk import
+invalidates visibility certification; `sample:prepare` explicitly converges
+privacy using the actual generation, rebuilds retained paths and multibyte
+facts, and refreshes identity/sighting models. The stack then runs the existing
+stats rollup backfill. Chart snapshots are populated by backend warm-up/API
+reads; verify meaningful data before timing them. Preparation disables the
+owned fixture's scheduled Timescale jobs and enables `pg_stat_statements` so
+retention/background work does not change comparisons. This is not a runbook
+for activating production lifecycle policies.
+
+`node_links` is derived path evidence. It cannot reconstruct original
+neighbour MQTT reports; neighbour-path tests need explicitly invented reports.
+
+## Individual tools
+
+These commands run package scripts in `backend`, with an explicit owned
+loopback database. Never point integration suites at the snapshot database.
 
 ```bash
 export DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore
-cd backend
-npm run db:migrate
+npm --prefix backend run sample:load -- --data-dir ../data/ukmesh-sample-2026-11-10 --dry-run
+npm --prefix backend run sample:replay -- --data-dir ../data/ukmesh-sample-2026-11-10 --dry-run --limit 10
 ```
 
-## 2. Load the sample
+For an intentional reload, use `sample:load -- --data-dir DIR --reset --fast`,
+then `sample:prepare` and the explicit stats backfill before exposing public
+reads. `--reset` truncates base packets, retained paths/facts, observation
+ledger/dedupe tables, nodes, links and status samples with their FK dependants.
+It does not clear a running backend's memory or Redis: stop/recreate the owned
+stack for a clean ingest run.
+
+Replay defaults to `ws://127.0.0.1:9002`. Options include `--limit`, `--from`,
+`--to`, `--speed` (0 saturation, 1 original timing), `--concurrency` (1–256,
+default 16), `--qos` (0 or 1), and `--status`. Prefixes are limited to
+`meshcore`, `ukmesh` and `meshcore-test`; the latter is one fixed test scope,
+not a fresh identity namespace for every run. Repeated receptions deduplicate.
+Use the ingest profile's `--omit-packets` loader mode and reset Redis/backend
+state between repeat ingest benchmarks. Broker acknowledgements alone do not
+prove persistence; `sample:smoke` checks the complete path.
+
+The replay tool requires `--allow-remote` for a non-loopback broker. The current
+local verification workflow never uses that option.
+
+## Regression check
+
+The test creates and drops its own database, bootstraps the complete migrated
+schema, generates invented CSVs, and verifies fast/normal import, derived facts,
+privacy changes and reset/reload. The supplied DSN is an owned local admin DB:
 
 ```bash
-cd backend
-DATABASE_URL="$DATABASE_URL" npm run sample:load -- \
-  --data-dir ../data/ukmesh-sample-2026-11-10 \
-  --reset --fast
+TEST_SAMPLE_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/postgres \
+  npm --prefix backend run test:sample-integration
 ```
 
-Use `--dry-run` first to validate the files without touching the database.
-`--reset` truncates `packets`, `nodes`, `node_links` and
-`node_status_samples` before loading. `--fast` disables user triggers and FK
-checks for the load transaction (requires a superuser) and cuts a full load
-from minutes to seconds; omit it if you need trigger-maintained derived tables.
+`data/` and `plans/` must never be committed. Keep private rows, node identities,
+topics and chat out of tracked tests, fixtures, reports and telemetry.
 
-What is loaded:
+## Measurements
 
-- `packets` — one row per reception; `path` becomes `path_hashes` and
-  `summary` becomes `payload._summary`.
-- The `packets` load uses PostgreSQL `COPY` through temporary staging tables,
-  so 157k rows load in seconds.
-- `nodes`, `node_links`, `node_status_samples` — column-for-column.
-
-Not loaded yet: `multibyte_paths` (the app's `multibyte_path_facts` needs the
-privacy generation/topic columns, which the sample does not carry). Stats that
-depend on that table will be empty until it is derived from `packets`.
-
-## 3. Start a local broker
+Run API/build/Lighthouse measurements sequentially on a prepared snapshot:
 
 ```bash
-docker run --rm --name ukmesh-sample-mqtt \
-  -p 127.0.0.1:1883:1883 \
-  -p 127.0.0.1:9001:9001 \
-  -v "$PWD/scripts/local-sample/mosquitto-test.conf:/mosquitto/config/mosquitto.conf:ro" \
-  eclipse-mosquitto:2
+scripts/benchmark-local.sh baseline
 ```
 
-This broker has anonymous access and is only for localhost. Never expose it.
+This refuses an existing evidence directory and holds a local benchmark lock.
+Results, dataset checksums, image/resource settings, query deltas and route
+reports are stored under ignored `plans/measurements/baseline/`. It never
+resets a database. Optional `PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH` selects an
+installed Chrome executable; otherwise install Playwright Chromium and its
+system libraries with the documented Playwright setup for your OS. Lighthouse
+navigation records LCP/CLS/TBT, resources and request counts; INP requires
+separate interaction/field measurement.
 
-## 4. Start the backend
-
-Point the backend at the local database, Redis and broker. A minimal example:
+For a nonduplicate ingest measurement, explicitly create an empty ingest
+fixture and run the package benchmark. The generator supports a larger
+`--synthetic-count`; `--replay-limit 0` leaves all receptions absent:
 
 ```bash
-docker run --rm --name ukmesh-sample-redis -p 127.0.0.1:6379:6379 redis:7
-
-docker exec ukmesh-sample-db createdb -U meshcore meshcore_owner_auth
-
-cd backend
-DATABASE_URL="$DATABASE_URL" \
-REDIS_URL=redis://127.0.0.1:6379 \
-MQTT_BROKER_URL=ws://127.0.0.1:9001 \
-JWT_SECRET=local-development-secret-32-characters-minimum \
-OPERATOR_SITE_TOKEN=local-development-token \
-OWNER_COOKIE_SECRET=local-development-cookie-secret \
-OWNER_DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore_owner_auth \
-OWNER_ACL_MODE=shadow \
-MOSQUITTO_ACL_PATH="$PWD/../scripts/local-sample/mosquitto-acl" \
-OWNER_ACL_SHADOW_PATH=/tmp/ukmesh-owner-acl.shadow \
-npm run dev
+scripts/dev-stack.sh reset --profile ingest --synthetic-count 2000 --replay-limit 0
+export DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore
+npm --prefix backend run bench:ingest -- \
+  --data-dir "$(cat plans/dev-stack/data-dir)" --limit 2000 --speed 0
 ```
 
-`MOSQUITTO_ACL_PATH` and a separate owner-auth database are required because
-the owner-ACL reconciler reads the broker ACL at startup even in shadow mode.
-The local ACL is intentionally permissive; it is never used outside localhost.
-
-## 5. Replay
-
-Dry-run first:
-
-```bash
-cd backend
-npm run sample:replay -- \
-  --data-dir ../data/ukmesh-sample-2026-11-10 \
-  --dry-run --limit 10
-```
-
-Replay the whole day as fast as the broker accepts it:
-
-```bash
-npm run sample:replay -- \
-  --data-dir ../data/ukmesh-sample-2026-11-10 \
-  --broker ws://127.0.0.1:9001 \
-  --speed 0
-```
-
-Replay at real time (speed 1), or 10×:
-
-```bash
-npm run sample:replay -- --data-dir ../data/ukmesh-sample-2026-11-10 --speed 1
-npm run sample:replay -- --data-dir ../data/ukmesh-sample-2026-11-10 --speed 10
-```
-
-Other options:
-
-- `--from` / `--to` — ISO timestamps to bound the replay.
-- `--limit N` — stop after N messages.
-- `--qos 0|1` — default 1.
-- `--prefix meshcore-test` — replay as isolated test traffic.
-- `--status` — replay node status envelopes instead of packet bytes.
-- `--allow-remote` — required for any non-loopback broker.
-
-Status replay resolves each node's IATA from `nodes.csv.gz` and publishes to
-`<prefix>/<IATA>/<node_id>/status`.
-
-## Repeat runs and deduplication
-
-The backend's observation identity does not include the packet timestamp, so
-replaying the same rows twice into the same database is deduplicated.
-
-For repeatable runs either:
-
-- use `--reset` on the loader, or
-- replay with `--prefix meshcore-test` so the test network has its own
-  identities.
-
-`meshcore-test` is isolated test traffic and will not appear in public scopes.
-
-## Verify
-
-```sql
-SELECT count(*) AS receptions, count(DISTINCT packet_hash) AS packets FROM packets;
-SELECT count(*) FROM nodes;
-SELECT count(*) FROM node_links;
-SELECT count(*) FROM node_status_samples;
-```
-
-Then check `/api/packets/recent`, `/api/stats/charts`, `/api/nodes/map` and the
-WebSocket feed.
-
-## Keep it out of Git
-
-`data/ukmesh-sample-*` is ignored through the local Git exclude file, not a
-committed `.gitignore`. Do not add the dataset to any commit, fixture or test.
-The sample contains real user chat; do not print or republish message text.
+Reset between saturation and paced runs. `bench:ingest` verifies SQL row counts
+and drained queues, records throughput, before/after process/cache metrics and
+the enqueue-to-commit histogram's p95 upper bound. It does not label the broker
+acknowledgement latency as persistence latency. `--speed 1` reproduces the
+synthetic fixture's one-packet-per-second timing. Package `check` commands run
+normal correctness checks; benchmarks stay out of the unit suite.

@@ -11,6 +11,7 @@ const productionTarget = process.env.VITE_BUILD_TARGET || (
   process.env.VITE_SITE === 'ukmesh' && process.env.VITE_NETWORK === 'ukmesh' ? 'app'
     : process.env.VITE_SITE === 'dev' || process.env.VITE_NETWORK === 'test' ? 'dev-website' : 'public-website'
 );
+const localApiTarget = process.env.UKMESH_DEV_API_TARGET || 'http://localhost:3000';
 export default defineConfig(({ command }) => ({
   define: command === 'build' ? { 'import.meta.env.VITE_BUILD_TARGET': JSON.stringify(productionTarget) } : {},
   plugins: [{
@@ -66,11 +67,12 @@ export default defineConfig(({ command }) => ({
   },
   server: {
     proxy: {
-      '/api': 'http://localhost:3000',
-      '/ws': { target: 'ws://localhost:3000', ws: true },
+      '/api': localApiTarget,
+      '/ws': { target: localApiTarget.replace(/^http/, 'ws'), ws: true },
     },
   },
   build: {
+    manifest: true,
 
     rollupOptions: {
       output: {

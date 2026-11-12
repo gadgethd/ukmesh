@@ -3,7 +3,7 @@ import { metricsRegistry } from './metrics.js';
 
 let server: Server | null = null;
 
-export function startMetricsServer(port: number): Server {
+export function startMetricsServer(port: number, host = '0.0.0.0'): Server {
   if (server) return server;
   server = http.createServer(async (req, res) => {
     if (req.method !== 'GET' || req.url !== '/metrics') {
@@ -20,7 +20,7 @@ export function startMetricsServer(port: number): Server {
       res.end('{"error":"metrics unavailable"}');
     }
   });
-  server.listen(port, '0.0.0.0', () => {
+  server.listen(port, host, () => {
     console.log(`[metrics] listening on internal port ${port}`);
   });
   return server;

@@ -50,6 +50,7 @@ jobs:
       TEST_INGEST_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
       TEST_OWNER_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/meshcore_owner_auth_ci
       TEST_STATUS_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
+      TEST_SAMPLE_DATABASE_URL: postgresql://postgres:analysis-test-password@127.0.0.1:55433/postgres
     defaults:
       run:
         working-directory: backend
@@ -57,10 +58,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci
+      - name: Check living documentation without executing runbooks
+        run: node --test ../scripts/check-docs.test.mjs && node ../scripts/check-docs.mjs
       - name: Audit backend dependencies
         run: npm audit --audit-level=high
       - run: npm run typecheck
@@ -109,6 +112,8 @@ jobs:
           node --import tsx --test src/ws/initialStateNodes.integration.test.ts
       - name: Prove 074 is superseded only on post-move databases
         run: timeout 240s npm run test:migration-supersession
+      - name: Qualify synthetic sample loading against the complete migrated schema
+        run: timeout 240s npm run test:sample-integration
       - name: Qualify broker framing and bounded offline replay
         run: |
           fixture_dir="$(mktemp -d)"
@@ -172,7 +177,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 20
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: backend/package-lock.json
       - run: npm ci --no-audit --no-fund
@@ -239,7 +244,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
@@ -279,7 +284,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: 22
+          node-version-file: .nvmrc
       - name: Validate release security waivers
         run: node scripts/check-trivy-waivers.mjs
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7

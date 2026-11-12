@@ -17,6 +17,7 @@ const ALLOWED_LABEL_NAMES = new Set([
   'outcome',
   'phase',
   'pool',
+  'route',
   'state',
   'status',
   'status_class',

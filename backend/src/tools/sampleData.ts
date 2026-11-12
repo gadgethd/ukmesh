@@ -4,8 +4,9 @@
  * supplied on the command line (or the local `data/` path) and never log row
  * payloads.
  */
-import { readFile } from 'node:fs/promises';
-import { gunzipSync } from 'node:zlib';
+import { createGunzip } from 'node:zlib';
+import { createReadStream } from 'node:fs';
+import { StringDecoder } from 'node:string_decoder';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -13,6 +14,18 @@ export type CsvTable = {
   headers: string[];
   rows: string[][];
 };
+
+/** Sample writes are limited to owned loopback fixtures. Reject host overrides
+ * in connection parameters as well as remote authorities. */
+export function assertLocalDatabaseUrl(value: string): void {
+  const url = new URL(value);
+  if (!['postgres:', 'postgresql:'].includes(url.protocol)
+    || !['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)
+    || url.searchParams.has('host') || url.searchParams.has('hostaddr')
+    || !url.pathname || url.pathname === '/') {
+    throw new Error('sample tools require an explicit loopback PostgreSQL database');
+  }
+}
 
 /** RFC4180 parser for the sample files (quoted commas, quotes and newlines). */
 export function parseCsv(text: string): CsvTable {
@@ -62,8 +75,79 @@ export function parseCsv(text: string): CsvTable {
 }
 
 export async function readGzipCsv(file: string): Promise<CsvTable> {
-  const compressed = await readFile(file);
-  return parseCsv(gunzipSync(compressed).toString('utf8'));
+  let headers: string[] | undefined;
+  const rows: string[][] = [];
+  for await (const record of gzipCsvRecords(file)) {
+    if (!headers) headers = record;
+    else rows.push(record);
+  }
+  return { headers: headers ?? [], rows };
+}
+
+/** Stream complete RFC4180 records; quoted newlines and escaped quotes may
+ * cross gzip/UTF-8 chunk boundaries. Retains at most one record. */
+export async function* gzipCsvRecords(file: string): AsyncGenerator<string[]> {
+  const source = createReadStream(file);
+  const stream = source.pipe(createGunzip());
+  source.on('error', (error) => stream.destroy(error));
+  const decoder = new StringDecoder('utf8');
+  let row: string[] = [];
+  let field: string[] = [];
+  let quoted = false;
+  let closingQuote = false;
+  function* consume(text: string): Generator<string[]> {
+    for (const char of text) {
+      if (quoted) {
+        if (closingQuote) {
+          closingQuote = false;
+          if (char === '"') { field.push('"'); continue; }
+          quoted = false;
+        } else {
+          if (char === '"') closingQuote = true;
+          else field.push(char);
+          continue;
+        }
+      }
+      if (char === '"' && field.length === 0) quoted = true;
+      else if (char === ',') { row.push(field.join('')); field = []; }
+      else if (char === '\n') {
+        row.push(field.join('')); field = [];
+        yield row; row = [];
+      } else if (char !== '\r') field.push(char);
+    }
+  }
+  try {
+    for await (const chunk of stream) yield* consume(decoder.write(chunk as Buffer));
+    yield* consume(decoder.end());
+    if (quoted && !closingQuote) throw new Error(`${path.basename(file)}: unterminated quoted CSV field`);
+    if (field.length > 0 || row.length > 0) { row.push(field.join('')); yield row; }
+  } finally { source.destroy(); stream.destroy(); }
+}
+
+export async function inspectGzipCsv(file: string, headersOnly = false): Promise<{
+  headers: string[]; count: number; firstTime: number | null; lastTime: number | null;
+}> {
+  let headers: string[] | undefined;
+  let count = 0;
+  let firstTime: number | null = null;
+  let lastTime: number | null = null;
+  let timeIndex = -1;
+  for await (const record of gzipCsvRecords(file)) {
+    if (!headers) {
+      headers = record;
+      if (headersOnly) break;
+      timeIndex = headers.indexOf('time');
+    } else {
+      if (record.length !== headers.length) throw new Error(`${path.basename(file)}: CSV width mismatch at row ${count + 2}`);
+      count += 1;
+      const time = Date.parse(record[timeIndex] ?? '');
+      if (Number.isFinite(time)) {
+        firstTime = Math.min(firstTime ?? time, time);
+        lastTime = Math.max(lastTime ?? time, time);
+      }
+    }
+  }
+  return { headers: headers ?? [], count, firstTime, lastTime };
 }
 
 export function rowObject(headers: readonly string[], row: readonly string[]): Record<string, string> {

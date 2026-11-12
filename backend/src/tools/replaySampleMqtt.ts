@@ -13,6 +13,7 @@
  */
 import mqtt, { type MqttClient } from 'mqtt';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   csvJson,
   defaultDataDir,
@@ -27,7 +28,7 @@ import {
 type Row = Record<string, string>;
 type Publish = { atMs: number; topic: string; payload: Buffer; label: string };
 
-const DEFAULT_BROKER = 'ws://127.0.0.1:9001';
+const DEFAULT_BROKER = 'ws://127.0.0.1:9002';
 
 function rowsOf(table: { headers: string[]; rows: string[][] }): Row[] {
   return table.rows.map((row) => rowObject(table.headers, row));
@@ -203,16 +204,13 @@ async function statusPublishes(directory: string, prefix: string | undefined, fr
       missingIata += 1;
       continue;
     }
-    const payload = {
-      status: row['status'] || 'online',
-      battery_mv: Number(row['battery_mv']) || undefined,
-      uptime_secs: Number(row['uptime_secs']) || undefined,
-      tx_air_secs: Number(row['tx_air_secs']) || undefined,
-      rx_air_secs: Number(row['rx_air_secs']) || undefined,
-      channel_utilization: row['channel_utilization'] ? Number(row['channel_utilization']) : undefined,
-      air_util_tx: row['air_util_tx'] ? Number(row['air_util_tx']) : undefined,
-      stats: csvJson(row['stats'] ?? '') ?? undefined,
-    };
+    const storedStats = csvJson(row['stats'] ?? '');
+    const stats: Record<string, unknown> = storedStats && typeof storedStats === 'object' && !Array.isArray(storedStats)
+      ? { ...storedStats } : {};
+    for (const field of ['battery_mv', 'uptime_secs', 'tx_air_secs', 'rx_air_secs', 'channel_utilization', 'air_util_tx']) {
+      if (row[field] !== undefined && row[field] !== '') stats[field] = Number(row[field]);
+    }
+    const payload = { status: row['status'] || 'online', stats };
     const base = prefix ?? (row['network'] === 'test' ? 'meshcore-test' : 'meshcore');
     publishes.push({
       atMs,
@@ -226,8 +224,7 @@ async function statusPublishes(directory: string, prefix: string | undefined, fr
   return publishes.sort((a, b) => a.atMs - b.atMs);
 }
 
-async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+export async function replaySampleMqtt(args: string[]): Promise<void> {
   const directory = path.resolve(option(args, 'data-dir') ?? defaultDataDir());
   const brokerText = option(args, 'broker') ?? DEFAULT_BROKER;
   const broker = new URL(brokerText);
@@ -242,6 +239,16 @@ async function main(): Promise<void> {
   const fromMs = parseTimeMs(option(args, 'from'), 'from');
   const toMs = parseTimeMs(option(args, 'to'), 'to');
   const prefix = option(args, 'prefix');
+  if (speed < 0) throw new Error('--speed must be nonnegative');
+  if (!Number.isSafeInteger(concurrency) || concurrency < 1 || concurrency > 256) {
+    throw new Error('--concurrency must be an integer between 1 and 256');
+  }
+  if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+    throw new Error('--limit must be a positive integer');
+  }
+  if (prefix && !['meshcore', 'ukmesh', 'meshcore-test'].includes(prefix)) {
+    throw new Error('--prefix must be meshcore, ukmesh or meshcore-test');
+  }
   const statusMode = flag(args, 'status');
   const dryRun = flag(args, 'dry-run');
 
@@ -264,12 +271,15 @@ async function main(): Promise<void> {
   try {
     const result = await publishAll(client, publishes, speed, qos as 0 | 1, concurrency);
     console.log(`[sample:replay] done: sent=${result.sent} failed=${result.failed}`);
+    if (result.failed > 0) throw new Error(`${result.failed} MQTT publications failed`);
   } finally {
     await client.endAsync();
   }
 }
 
-main().catch((error: unknown) => {
-  console.error('[sample:replay] failed:', error instanceof Error ? error.message : error);
-  process.exit(1);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  replaySampleMqtt(process.argv.slice(2)).catch((error: unknown) => {
+    console.error('[sample:replay] failed:', error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

@@ -157,6 +157,19 @@ export const httpRequestDuration = new Histogram({
   registers: [metricsRegistry],
 });
 
+const measuredPublicRoutes = new Set([
+  '/api/stats/charts', '/api/nodes/map', '/api/regions/summary', '/api/regions/repeaters',
+  '/api/topology', '/api/spam/messages/status', '/api/runtime-config', '/api/packets/recent',
+  '/api/observer-activity', '/api/stats',
+]);
+export const publicRouteDuration = new Histogram({
+  name: 'meshcore_public_route_duration_seconds',
+  help: 'Public response latency for a fixed allowlist of website routes; excludes user-supplied path/query values.',
+  labelNames: ['route', 'status_class'] as const,
+  buckets: [0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30],
+  registers: [metricsRegistry],
+});
+
 export const mqttIngestOutcomesTotal = new Counter({
   name: 'meshcore_mqtt_ingest_outcomes_total',
   help: 'MQTT ingest messages by durable handler outcome.',
@@ -617,6 +630,10 @@ export function observeHttpRequest(req: Request, res: Response, next: NextFuncti
     const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
     httpRequestsTotal.inc(labels);
     httpRequestDuration.observe(labels, durationSeconds);
+    const route = req.originalUrl.split('?', 1)[0];
+    if (req.method === 'GET' && measuredPublicRoutes.has(route)) {
+      publicRouteDuration.observe({ route, status_class: labels.status_class }, durationSeconds);
+    }
   };
   res.once('finish', observe);
   res.once('close', observe);

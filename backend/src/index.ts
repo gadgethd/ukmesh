@@ -511,10 +511,10 @@ async function main() {
   // 5. Serve the API before long-running ingest warmup. Spam detector caches
   // may scan historical packets, and coupling that work to the listener made
   // otherwise healthy deploys fail their HTTP checks for minutes.
-  httpServer.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, process.env['HTTP_HOST'] ?? '0.0.0.0', () => {
     console.log(`[app] listening on http://0.0.0.0:${PORT}`);
   });
-  startMetricsServer(METRICS_PORT);
+  startMetricsServer(METRICS_PORT, process.env['METRICS_HOST'] ?? '0.0.0.0');
 
   forwardingOutbox.start();
   packetShareForwarder.start();
