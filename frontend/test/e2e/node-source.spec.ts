@@ -7,6 +7,12 @@ test.use({ serviceWorkers: 'block' });
 test('native node sources skip visual no-ops but retain privacy, geometry, expiry and style invalidation', async ({ page }) => {
   await installMapRoutes(page);
   await installTerrainRoutes(page);
+  // This source-counter fixture needs a stable style while it observes no-ops.
+  // An unused vector source otherwise triggers the real basemap watchdog and
+  // replaces the instrumented source; provider recovery has its own suite.
+  await page.route('https://tiles.openfreemap.org/styles/**', route => route.fulfill({ json: {
+    version: 8, sources: {}, layers: [{ id: 'bg', type: 'background' }],
+  } }));
   const now = Date.now();
   const nodes = ['A', 'B', 'C'].map((letter, index) => ({
     node_id: letter.repeat(64), public_key: letter.repeat(64), name: index === 1 ? 'Invented 🚫' : `Invented ${letter}`,

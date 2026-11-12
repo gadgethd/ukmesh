@@ -278,6 +278,7 @@ test('stats request only the active section and cancel a stale refresh on tab ch
   for (const tab of ['Traffic', 'Observers', 'Signal']) {
     await page.getByRole('tab', { name: tab, exact: true }).click();
     await expect(page.getByRole('tab', { name: tab, exact: true })).toHaveAttribute('aria-selected', 'true');
+    await expect.poll(() => requested.at(-1)).toBe(tab.toLowerCase());
   }
   expect(requested).toEqual(['overview', 'overview', 'paths', 'traffic', 'observers', 'signal']);
   malformed = true;
