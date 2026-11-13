@@ -2,7 +2,7 @@ import React, { useState, useMemo, useEffect, useRef } from 'react';
 import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../types/domain.js';
-import { useNodeMap } from '../../hooks/useNodes.js';
+import { useNodeMetadata } from '../../hooks/useNodes.js';
 import { PROHIBITED_NODE_MARKER, isProhibitedMapNode } from '../../utils/pathing.js';
 import type { PublicScope } from '../../utils/scope.js';
 import { FOCUS_SEARCH_EVENT } from '../../utils/appEvents.js';
@@ -18,7 +18,7 @@ interface NodeSearchProps {
 }
 
 export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect }) => {
-  const nodes = useNodeMap();
+  const nodes = useNodeMetadata();
   const restoredQuery = new URLSearchParams(window.location.search).get('search')?.trim() ?? '';
   const [query, setQuery] = useState(restoredQuery);
   const nameMatches = useNodeNameSearch(query, scope);

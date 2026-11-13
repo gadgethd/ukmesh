@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
-import { useArcs, useNodeMap } from '../../hooks/useNodes.js';
+import { useArcs, useNodeMetadata } from '../../hooks/useNodes.js';
 import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import { packetObserverIds } from '../../features/pathing/model.js';
@@ -78,7 +78,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [losProfilesKey],
   );
-  const nodes = useNodeMap();
+  const nodes = useNodeMetadata();
   const arcs = useArcs();
   const nodeCoordinateKey = useMemo(() => Array.from(nodes.values())
     .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.name?.includes(PROHIBITED_NODE_MARKER) ? 1 : 0}`)
