@@ -3,6 +3,7 @@ import test from 'node:test';
 import type pg from 'pg';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import { dbQueriesTotal } from '../metrics/database.js';
+import type { FixedPreparedStatementName } from './contracts.js';
 
 test('ingest has a nonzero timeout independent of the general/analytics pool', () => {
   const defaults = ingestPoolOptions({ DATABASE_STATEMENT_TIMEOUT_MS: '900000' });
@@ -68,5 +69,31 @@ test('successful work commits and returns the client to the pool', async () => {
   const db = fixture(new Error('unused'));
   assert.equal(await db.withTransaction(async (query) => { await query('fast'); return 42; }), 42);
   assert.deepEqual(db.calls, ['BEGIN', 'fast', 'COMMIT']);
+  assert.deepEqual(db.releases, [false]);
+});
+
+test('singleton preparation uses fixed names and fresh values on the same transaction client', async () => {
+  const calls: unknown[] = [];
+  const client = { query: async (...args: unknown[]) => { calls.push(args); return { rows: [] }; }, release() {} };
+  const pool = { options: {}, totalCount: 1, idleCount: 0, waitingCount: 0,
+    connect: async () => client } as unknown as pg.Pool;
+  const db = createIngestDatabase(pool);
+  await db.withTransaction(async query => {
+    await query('SELECT $1::int', [1], undefined, 'packet_batch_single_v1');
+    await query('SELECT $1::int', [2], undefined, 'packet_batch_single_v1');
+    await query('SELECT $1::text', ['new'], undefined, 'packet_batch_single_idempotent_v1');
+  });
+  assert.deepEqual(calls, [['BEGIN', undefined],
+    [{ name: 'packet_batch_single_v1', text: 'SELECT $1::int', values: [1] }],
+    [{ name: 'packet_batch_single_v1', text: 'SELECT $1::int', values: [2] }],
+    [{ name: 'packet_batch_single_idempotent_v1', text: 'SELECT $1::text', values: ['new'] }],
+    ['COMMIT', undefined]]);
+});
+
+test('unregistered statement names roll back without allocating a prepared statement', async () => {
+  const db = fixture(new Error('unused'));
+  await assert.rejects(db.withTransaction(query => query('SELECT 1', [], undefined,
+    'unbounded-node-identity' as FixedPreparedStatementName)), /INVALID_FIXED_PREPARED_STATEMENT/);
+  assert.deepEqual(db.calls, ['BEGIN', 'ROLLBACK']);
   assert.deepEqual(db.releases, [false]);
 });

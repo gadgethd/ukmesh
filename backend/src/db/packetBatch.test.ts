@@ -7,9 +7,27 @@ import type { PacketBatchInput } from './packetBatch.js';
 // supported mode explicitly; the serial MQTT default is immediate flush.
 const originalFlushMs = process.env['MQTT_INGEST_FLUSH_MS'];
 process.env['MQTT_INGEST_FLUSH_MS'] = '10';
-const { configurePacketBatch, enqueuePacket, flush } = await import('./packetBatch.js');
+const { configurePacketBatch, enqueuePacket, flush, persistEntriesCore } = await import('./packetBatch.js');
 if (originalFlushMs === undefined) delete process.env['MQTT_INGEST_FLUSH_MS'];
 else process.env['MQTT_INGEST_FLUSH_MS'] = originalFlushMs;
+
+test('only the two stable singleton forms request prepared statements', async () => {
+  const hints: (string | undefined)[] = [];
+  const query = async (text: string, params: unknown[] = [], _signal?: AbortSignal, hint?: string) => {
+    if (text.includes('jsonb_agg(jsonb_build_object')) return { rows: [{ generation: '7', prefixes: [] }] };
+    if (text.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
+    hints.push(hint);
+    return { rows: Array.from({ length: params.length / 30 }, (_, row_id) => ({ row_id,
+      is_private: false, visibility_ok: true, prefix_cache_fresh: true })) };
+  };
+  const entry = { input: buildPacketBatchInput({ packetHash: 'prepared-fixture', packetType: 3, topic: 'meshcore/LHR/fixture/packets', rawHex: '00' }) };
+  const transaction = async <T>(work: (execute: typeof query) => Promise<T>) => work(query);
+  await persistEntriesCore([entry], query, false, transaction);
+  await persistEntriesCore([entry], query, true, transaction);
+  await persistEntriesCore([entry, entry], query, false, transaction);
+  await persistEntriesCore([entry, entry], query, true, transaction);
+  assert.deepEqual(hints, ['packet_batch_single_v1', 'packet_batch_single_idempotent_v1', undefined, undefined]);
+});
 
 test('a poison row cannot reject the valid packet sharing its transaction', async () => {
   const query = async (sql: string, params: unknown[] = []) => {

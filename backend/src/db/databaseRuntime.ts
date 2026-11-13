@@ -2,7 +2,8 @@ import pg from 'pg';
 import { analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { databaseOperation, dbExecutionDuration, dbPoolWaitDuration, dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
-import type { DatabaseQueryFn } from './contracts.js';
+import type { DatabaseQueryFn, FixedPreparedStatementName } from './contracts.js';
+import { fixedPreparedStatement } from './preparedStatements.js';
 
 /** Independent HTTP, analytics and ingest execution. Importing this definition reads no process configuration. */
 export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
@@ -117,16 +118,23 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
     text: string,
     params?: unknown[],
     signal?: AbortSignal,
+    statement?: FixedPreparedStatementName,
   ): Promise<pg.QueryResult<T>> {
-    return queryPool<T>(pool, 'oltp', text, params, signal);
+    return statement
+      ? queryPool<T>(pool, 'oltp', fixedPreparedStatement(statement, text, params), undefined, signal)
+      : queryPool<T>(pool, 'oltp', text, params, signal);
   }
 
   async function withTransaction<T>(work: (transactionQuery: DatabaseQueryFn) => Promise<T>): Promise<T> {
     const client = await checkout(pool, 'oltp');
-    const execute = async <R extends pg.QueryResultRow>(text: string, params?: unknown[]) => {
+    const execute = async <R extends pg.QueryResultRow>(text: string, params?: unknown[], statement?: FixedPreparedStatementName) => {
       const started = process.hrtime.bigint();
       let outcome = 'success';
-      try { return await client.query<R>(text, params); }
+      try {
+        return statement
+          ? await client.query<R>(fixedPreparedStatement(statement, text, params))
+          : await client.query<R>(text, params);
+      }
       catch (error) { outcome = 'failure'; throw error; }
       finally { dbExecutionDuration.observe({ pool: 'oltp', operation: databaseOperation(text), outcome },
         Number(process.hrtime.bigint() - started) / 1e9); }
@@ -134,8 +142,10 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
     const transactionQuery: DatabaseQueryFn = async <R extends pg.QueryResultRow = pg.QueryResultRow>(
       text: string,
       params?: unknown[],
+      _signal?: AbortSignal,
+      statement?: FixedPreparedStatementName,
     ) => {
-      const result = await execute<R>(text, params);
+      const result = await execute<R>(text, params, statement);
       return { rows: result.rows };
     };
     try {

@@ -693,6 +693,8 @@ export async function persistEntriesCore(
        FROM classified
        ORDER BY row_id`,
       params,
+      undefined,
+      entries.length === 1 ? (idempotent ? 'packet_batch_single_idempotent_v1' : 'packet_batch_single_v1') : undefined,
     );
     if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
     return result.rows;

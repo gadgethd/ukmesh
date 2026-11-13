@@ -47,6 +47,13 @@ generation checks are unchanged. The recent feed selects its final page after
 identity grouping, then collects complete observation metadata for those
 identities, including RAM overlap identities.
 
+Singleton packet writes reuse two fixed prepared-statement names on their
+existing transaction connection, one for normal writes and one for idempotent
+replay. Larger batches keep their current execution path. Bind values,
+visibility checks and advisory locks are evaluated for every execution; only
+the statement structure is reused. The two-name allowlist bounds session plan
+storage without changing pool sizes, commit acknowledgement or durability.
+
 ## Isolated fixtures
 
 Run from a source checkout with Node/npm and Docker. The normal DEV services

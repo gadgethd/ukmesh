@@ -36,7 +36,8 @@ topology comparison checked every eligible link on the retained fixture.
 Native fixtures cover legacy keys, normalization collisions, aliases, literal
 searches, private-only observations, network/observer/region scope and paging.
 
-Three fresh three-node fixtures per revision each ingested 2,000 invented ACKs
+The initial index-only comparison used three fresh three-node fixtures per
+revision, each ingesting 2,000 invented ACKs
 and drained completely. Median persisted throughput was 76.7 / 78.1 packets/s.
 Application CPU per packet was 2.03 / 2.00 ms and database CPU 11.33 / 11.20 ms.
 WAL was 9,488 / 10,335 bytes per packet, an 8.9% increase within the 10% budget.
@@ -57,6 +58,14 @@ ingest window, median SQL time was 137 / 63 ms. The mixed-load rerun must pass
 the original memory and latency gates; these SQL timings do not substitute for
 that qualification. Cache metrics now give every registered cache its own
 bounded label so the soak can check each policy independently.
+
+Repeating ingest in both run orders after the graph changes showed a small
+throughput deficit, despite passing CPU/WAL budgets. The batch writer now
+reuses its two fixed singleton statement forms on the existing connection.
+A 2,000-packet probe reached 104 packets/s with the same commit-latency bucket;
+the final matched ingest comparison and mixed soak remain separate gates.
+Native tests reuse both forms across privacy-generation changes, historical
+chunks and idempotent replay. Statement names never contain packet values.
 
 Diagnostic SQL trials compared the repositories on the same migrated fixtures.
 Unchanged aggregate queries taking over one millisecond stayed within 2% of
