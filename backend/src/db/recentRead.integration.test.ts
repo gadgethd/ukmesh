@@ -125,6 +125,16 @@ test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, sta
   }
   assert.deepEqual(json(await readRecentWithPending(() => getRecentMessages(5, 'ukmesh', undefined, undefined, query),
     { limit: 5, network: 'ukmesh', rowKind: 'messages', packetTypes: [5], loadPolicy, resolveAliases: aliases, nowMs: observed })), messages);
+  await t.test('bounded page and RAM overlap keep complete observation metadata', async () => {
+    const complete = await getRecentPackets(50, 'ukmesh', undefined, 'full', undefined, query);
+    assert.ok(complete.length > 2, 'fixture spans more than one page');
+    assert.deepEqual(json(await getRecentPackets(2, 'ukmesh', undefined, 'full', undefined, query)), json(complete.slice(0, 2)));
+    const oldest = complete.at(-1)!;
+    const overlap = await getRecentPackets(1, 'ukmesh', undefined, 'full', undefined, query, [oldest.packet_hash]);
+    assert.deepEqual(json(overlap), json([complete[0], oldest]));
+    assert.equal(complete.find(row => row.packet_hash === '80'.repeat(32))?.rx_count, 3,
+      'choosing a page must not truncate older observations of its identities');
+  });
   const snapshot = await pool.connect();
   try {
     await snapshot.query('BEGIN ISOLATION LEVEL REPEATABLE READ');

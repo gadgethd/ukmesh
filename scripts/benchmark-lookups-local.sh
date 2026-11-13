@@ -55,6 +55,9 @@ case "$action" in
     ;;
   measure)
     [[ $kind == baseline || $kind == candidate ]] || { echo 'Use measure baseline|candidate [label]' >&2; exit 2; }
+    [[ ${4:-} == '' || ${4:-} == --regions ]] || { echo 'Optional fourth argument: --regions' >&2; exit 2; }
+    export PUBLIC_FEATURE_REGION_SCOPING_ENABLED=false
+    [[ ${4:-} != --regions ]] || export PUBLIC_FEATURE_REGION_SCOPING_ENABLED=true
     label=${3:-$(date -u +%Y%m%dT%H%M%S)}
     [[ $label =~ ^[a-zA-Z0-9_-]+$ ]] || exit 2
     directory="$state/$kind-$label"
@@ -80,5 +83,5 @@ case "$action" in
     done
     echo "Lookup qualification evidence: $directory"
     ;;
-  *) echo 'Usage: scripts/benchmark-lookups-local.sh prepare | measure baseline|candidate [label]' ;;
+  *) echo 'Usage: scripts/benchmark-lookups-local.sh prepare | measure baseline|candidate [label] [--regions]' ;;
 esac

@@ -39,6 +39,14 @@ duplicate included IDs and separate search/map trees to control WAL per packet.
 never contain SQL, bind values, node identities or actor identifiers. Existing
 total-duration metrics remain available.
 
+Path workers retain the complete eligible link graph in an interned numeric
+index. It preserves directional counts, nulls and legacy string keys while
+fitting the existing 128 MiB context budget. Cache accounting includes the
+numeric buffers and index entries. Worker count, context expiry and visibility
+generation checks are unchanged. The recent feed selects its final page after
+identity grouping, then collects complete observation metadata for those
+identities, including RAM overlap identities.
+
 ## Isolated fixtures
 
 Run from a source checkout with Node/npm and Docker. The normal DEV services
@@ -50,6 +58,8 @@ Docker must be available to the invoking shell.
 scripts/benchmark-lookups-local.sh prepare
 scripts/benchmark-lookups-local.sh measure baseline before
 scripts/benchmark-lookups-local.sh measure candidate after
+# Include the published-member region case when the fixture contains one:
+scripts/benchmark-lookups-local.sh measure candidate after-regions --regions
 ```
 
 Preparation refuses an existing lookup database container. It archives the
@@ -115,6 +125,18 @@ packet/path/fact/ledger counts, live delivery, cache bounds, memory and latency.
 Generate a fresh synthetic directory; `--sequence-start` selects a disjoint ACK
 range without changing normal generator behaviour. Run a short smoke before
 the full qualification.
+
+The complete graph can also be compared with the former Map representation
+before replay. This read-only tool refuses databases outside the owned lookup
+fixtures. Path accuracy replay accepts `PATH_ACCURACY_GRAPH=compact` to use the
+same storage as the workers.
+
+```bash
+DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5434/lookup_10x \
+  node --import ./backend/node_modules/tsx/dist/loader.mjs \
+  backend/src/tools/checkPathContext.ts \
+  --output plans/database-lookups/path-context.json
+```
 
 ```bash
 scripts/lookup-stack-local.sh services

@@ -16,13 +16,13 @@ the three trial p95 values in milliseconds.
 
 | Lookup | Retained baseline | Retained candidate | 10× baseline | 10× candidate |
 | --- | ---: | ---: | ---: | ---: |
-| First map page | 297.8 | 73.3 | 3,665.8 | 89.3 |
-| Name search | 320.4 | 71.2 | 4,396.3 | 89.1 |
-| Observer map | 459.0 | 84.6 | 3,903.9 | 96.4 |
-| Node links | 61.2 | 14.5 | 609.2 | 14.2 |
+| First map page | 297.8 | 86.0 | 3,665.8 | 90.3 |
+| Name search | 320.4 | 73.3 | 4,396.3 | 90.5 |
+| Observer map | 459.0 | 88.5 | 3,903.9 | 97.8 |
+| Node links | 61.2 | 17.0 | 609.2 | 13.0 |
 
 All twelve candidate cases passed their per-trial budgets: 100 ms p95 on the
-retained fixture and 250 ms at 10×. The worst trial was 86.9 / 211.0 ms,
+retained fixture and 250 ms at 10×. The worst trial was 95.1 / 211.9 ms,
 including the large invented region scope. Cases also covered ID, short and
 missing searches, populated history, packet details/misses and the next map
 page. Separate single-request and warm-cache trials remain in the evidence.
@@ -41,6 +41,22 @@ and drained completely. Median persisted throughput was 76.7 / 78.1 packets/s.
 Application CPU per packet was 2.03 / 2.00 ms and database CPU 11.33 / 11.20 ms.
 WAL was 9,488 / 10,335 bytes per packet, an 8.9% increase within the 10% budget.
 The enqueue-to-commit p95 stayed within the same 25 ms histogram bucket.
+
+The first 40-minute mixed-load run stored and delivered all 72,000 packets,
+but exceeded the existing 1 GiB process memory bound and the feed latency
+budget. The resolver's full graph could not fit its 128 MiB context cache and
+was repeatedly rebuilt. Interned IDs and numeric edge storage reduce the
+complete large-fixture context estimate to 92.1 MiB, including the learning
+model. All 323,487 eligible edges and 1,602 frozen path-decoding cases match
+the former representation. No graph evidence or resolver workers are removed.
+
+The recent feed now chooses its page before collecting complete observation
+metadata. Twelve same-snapshot full-response comparisons, including RAM
+overlap and observer scopes, match the previous query. On the saved five-minute
+ingest window, median SQL time was 137 / 63 ms. The mixed-load rerun must pass
+the original memory and latency gates; these SQL timings do not substitute for
+that qualification. Cache metrics now give every registered cache its own
+bounded label so the soak can check each policy independently.
 
 Diagnostic SQL trials compared the repositories on the same migrated fixtures.
 Unchanged aggregate queries taking over one millisecond stayed within 2% of

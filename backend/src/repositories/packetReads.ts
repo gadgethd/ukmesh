@@ -70,7 +70,7 @@ export async function getRecentPackets(
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await readQuery(
-    `WITH recent_packets AS (
+    `WITH packet_candidates AS (
       SELECT DISTINCT ON (${packetIdentityKeySql('p')})
              ${includeObservationIds ? `(CASE WHEN p.payload ? 'appData' THEN 16 ELSE 0 END
                + CASE WHEN p.src_node_id IS NOT NULL THEN 8 ELSE 0 END
@@ -97,6 +97,15 @@ export async function getRecentPackets(
                CASE WHEN p.advert_count IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.packet_type = 4 THEN 1 ELSE 0 END DESC,
                p.time DESC, p.observation_id DESC NULLS LAST
+    ),
+    recent_packets AS MATERIALIZED (
+      -- Choose the same representatives and final page before collecting
+      -- observation metadata. Keep every observation of each chosen identity.
+      SELECT * FROM packet_candidates
+      ${overlapParam ? `WHERE packet_hash = ANY(${overlapParam}::text[])
+        OR packet_hash IN (SELECT packet_hash FROM packet_candidates ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+      ORDER BY time DESC, packet_hash
+      LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}
     ),
     packet_stats AS (
       SELECT
@@ -145,8 +154,6 @@ export async function getRecentPackets(
     LEFT JOIN packet_stats ps ON ps.identity_key = rp.identity_key
     LEFT JOIN packet_tags mt ON mt.identity_key = rp.identity_key
     LEFT JOIN identity_decryptions ids ON ids.identity_key = rp.identity_key
-    ${overlapParam ? `WHERE rp.packet_hash = ANY(${overlapParam}::text[])
-      OR rp.packet_hash IN (SELECT packet_hash FROM recent_packets ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
     ORDER BY rp.time DESC, rp.packet_hash
     LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
     [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],

@@ -1,4 +1,5 @@
 import type { BetaResolveContext } from './types.js';
+import { LinkMetricsIndex } from './linkMetricsIndex.js';
 
 export const PATH_CONTEXT_MAX_WEIGHT = 128 * 1024 * 1024;
 
@@ -15,7 +16,14 @@ export function pathContextWeight(network: string, context: BetaResolveContext):
     if (value === null || typeof value !== 'object') { add(8); return; }
     if (seen.has(value)) return;
     seen.add(value);
-    if (value instanceof Map) {
+    if (value instanceof LinkMetricsIndex) {
+      add(512);
+      for (const reference of value.retainedReferences()) visit(reference);
+    } else if (ArrayBuffer.isView(value)) {
+      add(64); visit(value.buffer);
+    } else if (value instanceof ArrayBuffer || value instanceof SharedArrayBuffer) {
+      add(32 + value.byteLength);
+    } else if (value instanceof Map) {
       add(64 + value.size * 48);
       for (const [key, entry] of value) {
         visit(key); visit(entry);

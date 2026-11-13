@@ -5,11 +5,12 @@ import { readCurrentVisibilityGeneration as getPublicVisibilityGeneration } from
 import { namedQuery, query } from '../db/runtime.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import { PATH_CONTEXT_MAX_WEIGHT, pathContextWeight } from './contextWeight.js';
+import { LinkMetricsIndex, type LinkMetricRow } from './linkMetricsIndex.js';
 import { packetExcludesPrivateNodesSql, privateNodePacketNetworkMatchSql } from '../privacy/networkScope.js';
 import { normalizePathHash, nodePathHash } from '../path-hash/utils.js';
 import type { DecodedHop } from '../path-core/decoder.js';
 import { pathingConfig } from '../platform/config/pathing.js';
-import { hasCoords, linkKey } from './geometry.js';
+import { hasCoords } from './geometry.js';
 import {
   decodeBetaCanonicalGroup,
   decodeBetaCanonicalGroupWithHeldPath,
@@ -22,7 +23,6 @@ import {
 } from './sharedDecoder.js';
 import type {
   BetaResolveContext,
-  LinkMetrics,
   MeshNode,
   PathLearningModel,
   PathPacket,
@@ -223,7 +223,7 @@ export function canReusePathContext(input: {
     && (input.pinForBatch || input.ageMs < pathingConfig.contextTtlMs);
 }
 
-async function loadContext(
+export async function loadContext(
   network: string,
   visibilityRetry = 0,
   options?: {
@@ -258,16 +258,7 @@ async function loadContext(
       [resolverScope(network)],
       options?.signal,
     ),
-    query<{
-      node_a_id: string;
-      node_b_id: string;
-      observed_count: number;
-      multibyte_observed_count: number;
-      itm_path_loss_db: number | null;
-      itm_viable: boolean | null;
-      count_a_to_b: number | null;
-      count_b_to_a: number | null;
-    }>(
+    query<LinkMetricRow>(
       `SELECT nl.node_a_id, nl.node_b_id, nl.observed_count, nl.multibyte_observed_count,
               nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
        FROM core.node_links nl
@@ -287,19 +278,7 @@ async function loadContext(
   const nodesById = new Map<string, MeshNode>();
   for (const row of nodeRows.rows) nodesById.set(row.node_id, row);
 
-  const linkMetrics = new Map<string, LinkMetrics>();
-  for (const row of linkRows.rows) {
-    linkMetrics.set(linkKey(row.node_a_id, row.node_b_id), {
-      observed_count: Number(row.observed_count ?? 0),
-      multibyte_observed_count: Number(row.multibyte_observed_count ?? 0),
-      itm_path_loss_db: row.itm_path_loss_db == null ? null : Number(row.itm_path_loss_db),
-      itm_viable: row.itm_viable ?? null,
-      count_a_to_b: row.count_a_to_b == null ? null : Number(row.count_a_to_b),
-      count_b_to_a: row.count_b_to_a == null ? null : Number(row.count_b_to_a),
-    });
-  }
-
-
+  const linkMetrics = new LinkMetricsIndex(linkRows.rows);
   const context: BetaResolveContext = {
     loadedAt: now,
     visibilityGeneration,

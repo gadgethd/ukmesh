@@ -57,6 +57,7 @@ export const API_CACHE_POLICIES = Object.freeze({
     id: 'nodes:topAdvertsCache',
     source: 'src/api/routes/nodes.ts',
     disposition: 'bounded-cache',
+    name: 'api_top_adverts',
     maxEntries: 32,
     maxWeight: 262_144,
     ttlMs: 3_600_000,

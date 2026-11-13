@@ -58,7 +58,7 @@ export type BetaResolveContext = {
   nodesById: Map<string, MeshNode>;
   /** Shared-decoder candidates with valid coordinates, prefiltered once per context refresh. */
   repeaterNodes: MeshNode[];
-  linkMetrics: Map<string, LinkMetrics>;
+  linkMetrics: Pick<ReadonlyMap<string, LinkMetrics>, 'get' | 'size'>;
   /** ML mapping from 1-byte path hash prefix to likely node IDs. */
   learningModel: PathLearningModel;
 };

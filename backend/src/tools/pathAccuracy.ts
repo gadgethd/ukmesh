@@ -15,6 +15,7 @@ import type { BetaResolveContext, MeshNode, PathPacket, LinkMetrics } from '../p
 import type { BetaObserverEntry } from '../path-beta/sharedDecoder.js';
 import { linkKey } from '../path-beta/geometry.js';
 import { expandResolverScope } from '../networks.js';
+import { LinkMetricsIndex } from '../path-beta/linkMetricsIndex.js';
 
 type Observation = PathPacket & { time: string; split: number; network: string };
 type Snapshot = {
@@ -122,7 +123,9 @@ function makeContext(snapshot: Snapshot): BetaResolveContext {
     loadedAt: Date.parse(snapshot.capturedAt), visibilityGeneration: 0,
     nodesById: new Map(snapshot.nodes.map((node) => [node.node_id, node])),
     repeaterNodes: snapshot.nodes.filter((n) => n.lat != null && n.lon != null && n.lat !== 0 && n.lon !== 0 && (n.role == null || n.role === 2)),
-    linkMetrics: new Map(snapshot.links.map((link) => [linkKey(link.node_a_id, link.node_b_id), link])),
+    linkMetrics: process.env['PATH_ACCURACY_GRAPH'] === 'compact'
+      ? new LinkMetricsIndex(snapshot.links)
+      : new Map(snapshot.links.map((link) => [linkKey(link.node_a_id, link.node_b_id), link])),
     learningModel: {
       champion: buildChampionPriors(snapshot.priors), prefixProbabilities,
       transitionProbabilities: new Map(snapshot.transitions.slice(0, 6000).map((r) => [`${r.receiver_region}|${r.from_node_id}|${r.to_node_id}`, Number(r.probability)])),
@@ -262,7 +265,8 @@ async function replay(file: string, output: string, decoderFile?: string, split 
   const correctHops = cases.reduce((n, c) => n + c.truth.filter((id, i) => c.prediction[i] === id).length, 0);
   const times = cases.map((c) => c.ms).sort((a, b) => a - b);
   const summary = { snapshotSha256: createHash('sha256').update(raw).digest('hex'), capturedAt: snapshot.capturedAt,
-    decoder: decoderFile ?? 'current', split, mode, routes: cases.length, excluded, routeCorrect, totalHops, correctHops,
+    decoder: decoderFile ?? 'current', graph: process.env['PATH_ACCURACY_GRAPH'] === 'compact' ? 'compact' : 'map',
+    split, mode, routes: cases.length, excluded, routeCorrect, totalHops, correctHops,
     routeAccuracy: routeCorrect / cases.length, hopAccuracy: correctHops / totalHops,
     rawThreeByteCorrect: cases.filter((c) => c.rawCorrect).length,
     uniqueRoutes: new Set(cases.map((c) => c.truth.join('|'))).size,
@@ -273,6 +277,10 @@ async function replay(file: string, output: string, decoderFile?: string, split 
     createHash('sha256').update(await readFile(new URL(name, sourceRoot))).digest('hex')])));
   for (const name of ['path-shared/priorKeys.ts', 'path-shared/priors.ts']) {
     sourceHashes[`evidence/${name}`] = createHash('sha256').update(await readFile(new URL(`../${name}`, import.meta.url))).digest('hex');
+  }
+  if (process.env['PATH_ACCURACY_GRAPH'] === 'compact') {
+    sourceHashes['evidence/path-beta/linkMetricsIndex.ts'] = createHash('sha256')
+      .update(await readFile(new URL('../path-beta/linkMetricsIndex.ts', import.meta.url))).digest('hex');
   }
   await writeFile(output, JSON.stringify({ summary, sourceHashes, cases }, null, 2));
   console.log(JSON.stringify(summary, null, 2));
