@@ -114,3 +114,5 @@ ebd704d7777a87448ad7fc8f787a2b23cd0e16a8:website-live-manifest.staging.json:gene
 # Identical to the reviewed 2c7ea435 fixture above; these are not credentials.
 f62b9356dddbf9775383b21d5c06f0dc5d0c6b2b:backend/src/spam/sanitize.test.ts:generic-api-key:50
 00588268598a88f0f3544314efe193bd048e2da5:backend/src/spam/sanitize.test.ts:generic-api-key:50
+# Identical reviewed public2 channel material in the MeshOS decoder test on feat/meshos-signed-badge.
+b0a04fb6eded5a7af917ed7d4a9ccff497637178:backend/src/mqtt/channelRegistry.meshos.test.ts:generic-api-key:14
