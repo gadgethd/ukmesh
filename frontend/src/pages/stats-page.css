@@ -61,6 +61,7 @@
 
 .stats-page__request-state button,
 .stats-page__refresh-state button {
+  min-height: 44px;
   border: 1px solid rgba(0, 196, 255, 0.45);
   border-radius: var(--radius-md);
   padding: 8px 12px;
@@ -352,7 +353,7 @@
   }
   .stats-page__tab {
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     display: inline-flex;
     align-items: center;
   }

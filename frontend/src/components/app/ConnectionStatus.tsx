@@ -9,11 +9,12 @@ export function ConnectionStatus({ connection, hasData, refreshedAt, refreshing,
   const now = useVisibleClock();
   const status = feedConnectionStatus(connection.readyState, connection.lastMessageAt, hasData, now);
   const label = feedConnectionLabel(status);
-  return <div className="conn-indicator" title={label}>
+  const age = refreshedAt === null ? 'None' : timeAgo(refreshedAt, { now });
+  return <div className="conn-indicator" title={`${label}. ${failed ? 'Refresh failed. ' : ''}Last successful data refresh: ${age}`}>
     <span className={`conn-dot${status === 'live' ? ' conn-dot--connected' : ''}`} aria-hidden="true" />
     <span className="conn-indicator__labels">
       <span role="status" aria-label={`Live connection: ${connection.readyState}`}>{label}</span>
-      <span className="conn-indicator__refresh">{failed ? 'Refresh failed' : refreshing ? 'Refreshing...' : refreshedAt === null ? 'Awaiting refresh' : `Refreshed ${timeAgo(refreshedAt, { now })}`}</span>
+      <span className="conn-indicator__refresh">{refreshing ? 'Refreshing...' : refreshedAt === null ? 'No refresh' : `Data ${age}`}</span>
     </span>
   </div>;
 }

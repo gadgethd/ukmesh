@@ -25,6 +25,7 @@ type MobileControlsProps = {
   onShare: () => void;
   shareLabel: string;
   onNodeSelect: (nodeId: string) => void;
+  onShowShortcuts: () => void;
   fullScreenMap: boolean;
   onToggleFullScreenMap: () => void;
   feedOpen: boolean;
@@ -44,6 +45,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   onShare,
   shareLabel,
   onNodeSelect,
+  onShowShortcuts,
   fullScreenMap,
   onToggleFullScreenMap,
   feedOpen,
@@ -143,6 +145,11 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             <section className="mobile-menu__section" aria-label="Map planning tools">
               <h3 className="mobile-menu__heading">Tools</h3>
               <div className="mobile-map-tools">
+                <button type="button" className="mobile-map-tools__button" onClick={() => {
+                  setMenuOpen(false);
+                  // Restore the Layers trigger before opening the next dialog.
+                  requestAnimationFrame(() => requestAnimationFrame(onShowShortcuts));
+                }}>Keyboard shortcuts</button>
                 <button
                   type="button"
                   className={customLosMode ? 'mobile-map-tools__button mobile-map-tools__button--active' : 'mobile-map-tools__button'}

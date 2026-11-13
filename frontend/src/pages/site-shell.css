@@ -32,7 +32,7 @@
   align-items: center;
   gap: 24px;
   min-height: 60px;
-  padding: 10px 24px;
+  padding: 8px 24px;
   background: #09111a;
   border-bottom: 1px solid var(--border);
   position: sticky;
@@ -42,6 +42,7 @@
 .site-nav__brand {
   display: flex;
   align-items: center;
+  min-height: 44px;
   gap: 8px;
   text-decoration: none;
   color: var(--text-primary);
@@ -90,6 +91,10 @@
   background: rgba(0, 196, 255, 0.08);
 }
 .site-nav__link--map {
+  display: inline-flex;
+  align-items: center;
+  min-height: 44px;
+  flex-shrink: 0;
   color: var(--accent);
   font-weight: 500;
 }
@@ -131,8 +136,8 @@
   display: none;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 44px;
+  height: 44px;
   margin-left: auto;
   background: transparent;
   border: 1px solid var(--border);
@@ -232,7 +237,7 @@
   html .site-footer a {
     display: flex;
     align-items: center;
-    min-height: 36px;
+    min-height: 44px;
   }
 }
 

@@ -203,19 +203,32 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           <span className="site-nav__name">{brandName}</span>
         </Link>
 
-        <div
-          id="site-navigation"
-          className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
-        >
-          {showLiveMap && (
+        {showLiveMap && (
             <a
               href={appUrl}
               className="site-nav__link site-nav__link--map site-nav__link--external"
               aria-label="Live Map (external app)"
+              onClick={closeMenu}
             >
               Live Map <span className="site-nav__external-icon" aria-hidden="true">↗</span>
             </a>
-          )}
+        )}
+
+        <button
+          ref={menuTrigger}
+          type="button"
+          className="site-nav__hamburger"
+          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
+          aria-controls="site-navigation"
+          aria-expanded={menuOpen}
+          onClick={() => { if (menuOpen) closeMenu(); else setMenuOpen(true); }}
+        >
+          {menuOpen ? '✕' : '☰'}
+        </button>
+        <div
+          id="site-navigation"
+          className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
+        >
           {primary.map(renderLink)}
           {[{ label: 'Tools', items: tools }, { label: 'Help', items: help }].filter(group => group.label === 'Tools' || group.items.length).map(group => (
             <details className="site-nav__group" key={group.label} onToggle={event => {
@@ -238,18 +251,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
             {ownerLabel ?? 'Login'}
           </NavLink>
         </div>
-
-        <button
-          ref={menuTrigger}
-          type="button"
-          className="site-nav__hamburger"
-          aria-label={menuOpen ? 'Close menu' : 'Open menu'}
-          aria-controls="site-navigation"
-          aria-expanded={menuOpen}
-          onClick={() => { if (menuOpen) closeMenu(); else setMenuOpen(true); }}
-        >
-          {menuOpen ? '✕' : '☰'}
-        </button>
       </nav>
 
       <main className="site-main" id="site-main" tabIndex={-1}>

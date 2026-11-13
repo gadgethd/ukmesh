@@ -1302,13 +1302,15 @@
   z-index: 2000;
   background: rgba(0, 0, 0, 0.45);
 }
-.conn-indicator__labels { display: grid; max-width: 140px; }
+.conn-indicator__labels { display: grid; min-width: 0; max-width: 140px; letter-spacing: normal; }
 .conn-indicator__labels > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conn-indicator__refresh { font-size: 10px; color: var(--text-secondary); }
+/* Keep refresh errors above the retained feed and coverage controls. */
+.app-shell:has(.packet-feed-frame) { --map-bottom-reserve: 284px; }
 .app-data-status {
   position: absolute;
   right: 16px;
-  bottom: 48px;
+  bottom: calc(var(--map-bottom-reserve, 32px) + 16px);
   z-index: 810;
   display: flex;
   align-items: center;
@@ -1319,6 +1321,16 @@
   border-radius: var(--radius-md);
   background: var(--bg-panel);
   color: var(--text-primary);
+}
+.app-data-status button {
+  min-height: 44px;
+  padding: 6px 10px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
 }
 @media (pointer: coarse) {
   .packet-item__watch { min-width: 44px; min-height: 44px; }
@@ -1521,6 +1533,7 @@
 /* ─── Connectivity status bar ────────────────────────────────────────────── */
 .conn-indicator {
   display: flex;
+  min-width: 0;
   align-items: center;
   gap: 6px;
   font-family: var(--font-mono);
@@ -1529,6 +1542,7 @@
 }
 
 .conn-dot {
+  flex-shrink: 0;
   width: 6px;
   height: 6px;
   border-radius: 50%;
@@ -1569,6 +1583,25 @@
 /* App-specific responsive rules live after the app base rules so lazy-loaded
    CSS cannot reverse the mobile cascade. */
 @media (max-width: 640px) {
+  .app-shell:has(.packet-feed-frame) { --map-bottom-reserve: 32px; }
+  .app-shell[data-feed-open='true']:has(.packet-feed-frame) { --map-bottom-reserve: 188px; }
+  .app-shell:has(.rf-coverage-status),
+  .app-shell[data-feed-open='true']:has(.rf-coverage-status) {
+    --map-bottom-reserve: max(188px, calc(min(30dvh, 220px) + 8px));
+  }
+  .app-shell:has(.app-data-status) .map-area .node-legend {
+    max-height: max(44px, min(34dvh, calc(100dvh - var(--map-bottom-reserve, 32px) - 272px)));
+  }
+  .app-shell:has(.app-data-status) .timeline-control {
+    max-height: max(44px, min(34dvh, calc(100dvh - var(--map-bottom-reserve, 32px) - 228px)));
+  }
+  .app-shell .topbar { gap: 3px; padding: 0 6px; }
+  .app-shell .topbar__brand { min-height: 44px; }
+  .app-shell .topbar__shortcut-btn { display: none; }
+  .app-shell .topbar__info-btn { width: 44px; height: 44px; }
+  .app-shell .topbar :is(button, select, a):focus-visible { outline-offset: -2px; }
+  .app-shell .conn-indicator { flex: 1; min-width: 0; gap: 4px; }
+  .app-shell .conn-dot { flex-shrink: 0; }
   .mobile-fullscreen-toggle {
     position: static;
     border: 1px solid var(--accent);
@@ -1579,7 +1612,7 @@
     font: 11px var(--font-mono);
     width: 100%;
     min-width: 0;
-    min-height: 40px;
+    min-height: 44px;
   }
   .app-shell[data-mobile-fullscreen='true'] .mobile-fullscreen-toggle {
     position: fixed;
@@ -1588,7 +1621,7 @@
     right: 8px;
     width: auto;
     min-width: auto;
-    min-height: 0;
+    min-height: 44px;
   }
   .app-shell[data-mobile-fullscreen='true'] .topbar,
   .app-shell[data-mobile-fullscreen='true'] .node-dock,
@@ -1965,6 +1998,7 @@
 /* Agent B app chrome */
 .app-shell .topbar__tool-btn,
 .app-shell .topbar__info-btn {
+  flex-shrink: 0;
   border-color: rgba(214, 232, 255, 0.48);
   background: rgba(17, 28, 43, 0.94);
   color: var(--text-primary);
@@ -2031,7 +2065,7 @@
     overscroll-behavior: contain;
   }
   .node-legend__toggle {
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 9px;
   }
   .node-legend__body {
@@ -2051,7 +2085,7 @@
     overscroll-behavior: contain;
   }
   .timeline-control__toggle {
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 9px;
   }
   .timeline-control__name {
@@ -2105,6 +2139,10 @@
 
 .rf-coverage-details-toggle {
   display: none;
+}
+
+@media (min-width: 641px) and (max-width: 900px) {
+  .app-shell .topbar { gap: 6px; }
 }
 
 @media (max-width: 640px) {
@@ -2255,15 +2293,16 @@
   }
   .mobile-menu .map-modes__buttons {
     display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(54px, 1fr));
     gap: 6px;
   }
   .mobile-menu .map-modes__button {
-    min-height: 40px;
+    min-height: 44px;
     margin: 0;
   }
   .mobile-menu .map-modes__share {
     width: 100%;
+    min-height: 44px;
     margin: 8px 0 0;
   }
   .mobile-menu .mobile-fullscreen-toggle {

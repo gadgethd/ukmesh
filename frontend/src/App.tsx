@@ -573,6 +573,7 @@ export const App: React.FC = () => {
         onShare={handleShare}
         shareLabel={shareLabel}
         onNodeSelect={setSelectedNodeId}
+        onShowShortcuts={() => setShowShortcutGuide(true)}
         fullScreenMap={fullScreenMap}
         onToggleFullScreenMap={() => setFullScreenMap((value) => !value)}
         feedOpen={mobileFeedOpen}

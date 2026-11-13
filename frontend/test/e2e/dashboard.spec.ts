@@ -471,6 +471,11 @@ test('mobile Layers restores focus and a privacy change clears unread messages',
     await page.keyboard.press('Escape');
     await expect(page.getByRole('dialog', { name: 'Map settings' })).toHaveCount(0);
     await expect(layers).toBeFocused();
+    await layers.click();
+    await page.getByRole('button', { name: 'Keyboard shortcuts', exact: true }).click();
+    await expect(page.getByRole('dialog', { name: 'Keyboard shortcuts', exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(layers).toBeFocused();
     await page.getByRole('button', { name: 'Live', exact: true }).click();
   }
   await page.evaluate(() => {
@@ -487,4 +492,75 @@ test('mobile Layers restores focus and a privacy change clears unread messages',
   generation = 2;
   await expect(page.locator('.packet-feed__jump')).toHaveCount(0, { timeout: 12_000 });
   await expect(feed.locator('.packet-item')).toHaveCount(0);
+});
+
+test('map header keeps region, freshness and actions separate at every target width', async ({ page }) => {
+  await page.route('**/api/runtime-config*', route => route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, regionScoping: true, privacyGeneration: 1, refreshAfterSeconds: 300,
+  } }));
+  await page.route('**/api/regions/summary*', route => route.fulfill({ json: { regions: [{ name: 'synthetic-region' }] } }));
+  await page.goto('/');
+  await expect(page.locator('.region-selector select')).toBeVisible();
+  for (const width of [320, 390, 768, 820, 1024, 1440]) {
+    await page.setViewportSize({ width, height: 844 });
+    const controls = await page.locator('.topbar').evaluate(header => [...header.querySelectorAll<HTMLElement>(
+      ':scope > a, :scope > button, :scope > .topbar__logo, :scope > .conn-indicator, :scope > .region-selector',
+    )].map(element => ({ name: element.className, rect: element.getBoundingClientRect().toJSON() }))
+      .filter(item => item.rect.width && item.rect.height));
+    for (let index = 0; index < controls.length; index++) {
+      const current = controls[index]!;
+      expect(current.rect.left, `${width}: ${current.name}`).toBeGreaterThanOrEqual(0);
+      expect(current.rect.right, `${width}: ${current.name}`).toBeLessThanOrEqual(width);
+      if (index) expect(current.rect.left, `${width}: ${current.name} follows ${controls[index - 1]!.name}`)
+        .toBeGreaterThanOrEqual(controls[index - 1]!.rect.right);
+    }
+    if (width <= 640) {
+      await expect(page.locator('.topbar__shortcut-btn')).toBeHidden();
+      const info = await page.getByRole('button', { name: 'Data disclaimer', exact: true }).boundingBox();
+      expect(info!.width).toBeGreaterThanOrEqual(44);
+      expect(info!.height).toBeGreaterThanOrEqual(44);
+    }
+  }
+});
+
+test('a failed refresh keeps cached messages readable and offers a confirmed retry', async ({ page }, info) => {
+  let release!: () => void;
+  let failed = true;
+  let requests = 0;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  await page.route('**/api/stats?**', async route => {
+    requests++;
+    await gate;
+    await route.fulfill(failed ? { status: 503, json: { error: 'Fixture refresh unavailable' } }
+      : { json: { mqttNodes: 0, mapNodes: 0, totalNodes: 0, staleNodes: 0, packetsDay: 0 } });
+  });
+  try {
+    if (info.project.name === 'dashboard-mobile') await page.setViewportSize({ width: 320, height: 568 });
+    await page.goto('/?layers=feed');
+    await page.waitForFunction(() => typeof (window as unknown as { dashboardFixturePublish?: unknown }).dashboardFixturePublish === 'function');
+    if (info.project.name === 'dashboard-mobile') await page.getByRole('button', { name: 'Live', exact: true }).click();
+    await page.evaluate(() => {
+      const packet = { packet_hash: 'A'.repeat(64), time: new Date().toISOString(), packet_type: 5, summary: '[Public] Cached message fixture' };
+      (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('initial_state', { packets: [packet], messages: [packet] });
+    });
+    const cached = page.locator('.packet-feed').getByText('[Public] Cached message fixture', { exact: true });
+    await expect(cached).toBeVisible();
+    await expect.poll(() => requests).toBeGreaterThan(0);
+    await page.getByRole('button', { name: /^Legend/ }).click();
+    release();
+    const error = page.locator('.app-data-status');
+    await expect(error).toContainText('Showing the last received data.');
+    await expect(cached).toBeVisible();
+    const errorBox = (await error.boundingBox())!;
+    const feedBox = (await page.locator('.packet-feed-frame').boundingBox())!;
+    expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(feedBox.y - 8);
+    if (info.project.name === 'dashboard-mobile') {
+      const legend = (await page.locator('.node-legend').boundingBox())!;
+      expect(legend.y + legend.height).toBeLessThanOrEqual(errorBox.y - 8);
+    }
+    failed = false;
+    await error.getByRole('button', { name: 'Retry', exact: true }).click();
+    await expect(error).toHaveCount(0);
+    await expect(cached).toBeVisible();
+  } finally { release(); }
 });

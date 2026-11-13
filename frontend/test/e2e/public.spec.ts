@@ -351,10 +351,13 @@ test('navigation groups support keyboard opening, Escape and mobile focus restor
   await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeHidden();
   await expect(tools).toBeFocused();
   await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.getByRole('link', { name: 'Live Map (external app)', exact: true })).toBeVisible();
   const menu = page.locator('.site-nav__hamburger');
   await menu.focus();
   await page.keyboard.press('Enter');
   await expect(page.locator('.site-nav__links').getByRole('link', { name: 'Regions', exact: true })).toBeVisible();
+  await page.keyboard.press('Tab');
+  await expect(page.locator('.site-nav__links').getByRole('link', { name: 'Feed', exact: true })).toBeFocused();
   await tools.focus();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeVisible();

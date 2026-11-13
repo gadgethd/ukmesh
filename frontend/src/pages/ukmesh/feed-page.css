@@ -997,7 +997,7 @@
   html .uk-feed-channel-item {
     flex: 0 0 auto;
     width: auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 14px;
     border: 1px solid var(--border);
     border-radius: 999px;
@@ -1006,7 +1006,7 @@
 
   html .uk-feed-channel-toggle {
     flex: 0 0 auto;
-    min-height: 40px;
+    min-height: 44px;
     padding: 8px 10px;
     font-size: 14px;
     white-space: nowrap;
@@ -1027,7 +1027,7 @@
   html .uk-feed-search {
     width: 100%;
     min-width: 0;
-    min-height: 42px;
+    min-height: 44px;
     font-size: 16px;
   }
 
