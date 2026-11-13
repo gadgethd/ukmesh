@@ -8,10 +8,9 @@
  * only decrypted observation is an alias (same wire content, different observation
  * hash). These tests pin the identity-keyed join.
  *
- * The fixture builds only the forward-schema columns the reader touches: this
- * branch has no migration path that can bootstrap a fresh database (base.sql plus
- * the full ledger fails on the P1 schema moves), so a disposable database with a
- * narrow, reader-shaped schema is the smallest honest harness for the predicate.
+ * A disposable database with only the columns the readers touch keeps this audit
+ * focused on the identity predicate. Separate integration suites exercise the
+ * complete migration path.
  */
 import assert from 'node:assert/strict';
 import test from 'node:test';
@@ -125,14 +124,20 @@ test('getRecentPackets resolves decryptions from a sibling observation of the sa
   await admin.query(`CREATE DATABASE "${name}"`);
   const owned = new URL(databaseUrl!);
   owned.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2 });
+  const client = new pg.Client({ connectionString: owned.toString() });
   t.after(async () => {
-    await pool.end();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+    try {
+      // Pool.end() can resolve before its clients finish disconnecting. Await the
+      // fixture connection's socket close before dropping its owned database.
+      await client.end();
+      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
+    } finally {
+      await admin.end();
+    }
   });
+  await client.connect();
 
-  await pool.query(FIXTURE_SCHEMA);
+  await client.query(FIXTURE_SCHEMA);
 
   const uid = uidBytes('a1');           // one wire content, two observations
   const representative = hashes('c1');  // newest, no decryption of its own
@@ -147,25 +152,25 @@ test('getRecentPackets resolves decryptions from a sibling observation of the sa
      path_hash_size_bytes, network, transport_codes, region_scope, visibility_ok, is_private)
     VALUES ($1,$2,$3,$4,NULL,$5,$6,'ZZZ',5,'flood',1,-90.5,6.25,$7::jsonb,NULL,'{}',1,
             'ukmesh','{}','#uk',TRUE,FALSE)`;
-  await pool.query(insert, [new Date(now - 60_000), representative, uid, 'AB'.repeat(32),
+  await client.query(insert, [new Date(now - 60_000), representative, uid, 'AB'.repeat(32),
     'meshcore/ukmesh/AB/packets', 'ukmesh', '{"direction":"rx"}']);
-  await pool.query(insert, [new Date(now - 120_000), alias, uid, 'AB'.repeat(32),
+  await client.query(insert, [new Date(now - 120_000), alias, uid, 'AB'.repeat(32),
     'meshcore/ukmesh/AB/packets', 'ukmesh', '{"direction":"rx"}']);
-  await pool.query(insert, [new Date(now - 180_000), own, uidBytes('b2'), 'AB'.repeat(32),
+  await client.query(insert, [new Date(now - 180_000), own, uidBytes('b2'), 'AB'.repeat(32),
     'meshcore/ukmesh/AB/packets', 'ukmesh', '{"direction":"rx"}']);
-  await pool.query(insert, [new Date(now - 240_000), payloadWins, uidBytes('b3'), 'AB'.repeat(32),
+  await client.query(insert, [new Date(now - 240_000), payloadWins, uidBytes('b3'), 'AB'.repeat(32),
     'meshcore/ukmesh/AB/packets', 'ukmesh', '{"direction":"rx","_summary":"payload summary"}']);
-  await pool.query(insert, [new Date(now - 270_000), other, uidBytes('b4'), 'AB'.repeat(32),
+  await client.query(insert, [new Date(now - 270_000), other, uidBytes('b4'), 'AB'.repeat(32),
     'meshcore/ukmesh/AB/packets', 'ukmesh', '{"direction":"rx"}']);
 
   // Only the alias observation of the shared UID was ever decrypted.
   const decrypt = `INSERT INTO mesh.packet_decryptions (packet_hash, decrypted, summary)
     VALUES ($1, '{}'::jsonb, $2)`;
-  await pool.query(decrypt, [alias, 'sibling plaintext']);
-  await pool.query(decrypt, [own, 'own plaintext']);
-  await pool.query(decrypt, [payloadWins, 'decrypted but lower precedence']);
+  await client.query(decrypt, [alias, 'sibling plaintext']);
+  await client.query(decrypt, [own, 'own plaintext']);
+  await client.query(decrypt, [payloadWins, 'decrypted but lower precedence']);
 
-  const readQuery: QueryFn = (sql, params) => pool.query(sql, params);
+  const readQuery: QueryFn = (sql, params) => client.query(sql, params);
   const rows = await getRecentPackets(50, 'ukmesh', undefined, 'full', undefined, readQuery);
   const byHash = new Map(rows.map((row) => [String(row.packet_hash), row]));
 
