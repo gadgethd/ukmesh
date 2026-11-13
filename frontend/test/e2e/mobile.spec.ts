@@ -193,6 +193,13 @@ test('tablet home and feed avoid squeezed desktop columns', async ({ page }) => 
   expect((await page.locator('.uk-feed-chat').boundingBox())?.width ?? 0).toBeGreaterThan(740);
   await expect(page.locator('.uk-feed-map')).toBeHidden();
   await expect(page.locator('.uk-feed-stats__row')).toBeVisible();
+  for (const width of [1024, 1440]) {
+    await page.setViewportSize({ width, height: 900 });
+    const map = (await page.locator('.uk-feed-map').boundingBox())!;
+    expect(map.width).toBeGreaterThan(250);
+    expect(map.x + map.width).toBeLessThanOrEqual(width);
+    await expectNoViewportOverflow(page);
+  }
 });
 
 test('map controls and disclaimer leave the map usable on a phone', async ({ page }) => {

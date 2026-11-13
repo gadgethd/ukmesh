@@ -1,7 +1,7 @@
 /* ── Feed: main layout ─────────────────────────────────────────────────── */
 .uk-feed-layout {
   display: grid;
-  grid-template-columns: 180px minmax(0, 840px) 1fr;
+  grid-template-columns: 180px minmax(0, 840px) minmax(280px, 1fr);
   grid-template-rows: 1fr;
   height: calc(100vh - 140px);
   min-width: 0;
