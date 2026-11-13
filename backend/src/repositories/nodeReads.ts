@@ -1,9 +1,9 @@
-import { pool } from '../db/runtime.js';
 import { query } from '../db/runtime.js';
 import { nodeAliasArraySql } from '../platform/query/networkFilters.js';
 import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
 import { nodeEffectiveOnlineSql } from '../nodes/presence.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
+import { publicIdentityNodeSourceSql } from '../nodes/identitySource.js';
 import { mapVisiblePredicate } from '../nodes/publicMap.js';
 import { publicMapBasePredicate } from '../nodes/publicMap.js';
 import { buildScopePlaceholders } from '../db/readScope.js';
@@ -77,9 +77,9 @@ export async function getNodes(
        ${nodeEffectiveOnlineSql('n')} AS is_online,
        n.advert_count
        ${optionalFields}
-     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : 'core.node_identity_nodes'} n
+     FROM ${scope.regionParam ? regionNodeSourceSql(scope.regionParam) : publicIdentityNodeSourceSql()} n
      ${whereClause}
-     ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC`,
+     ORDER BY ${nodeEffectiveLastSeenSql('n')} DESC, n.node_id`,
     params,
     signal,
   );
@@ -109,8 +109,8 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
       ${buildPacketScopeClause(scope, 'p', network)}
       ${buildPublicPacketPrivacyClause('p')}
     ORDER BY time DESC LIMIT 500`;
-  const res = await pool.query(
-    `SELECT recent.*
+  const res = await query(
+    `/* ukmesh:node-history */ SELECT recent.*
      FROM unnest(${aliases}) requested(node_id)
      CROSS JOIN LATERAL (
        (${packetsFor('rx_node_id')})
@@ -127,7 +127,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
   const scope = buildScopePlaceholders(4, network);
   // Get location packets (packet_type = 4) where payload->>'publicKey' = this public key
   // Location packets are sent as part of the advert broadcast
-  const res = await pool.query(
+  const res = await query(
     `SELECT time, packet_hash
      FROM mesh.packets p
      WHERE p.packet_type = 4
@@ -151,7 +151,7 @@ export async function getNodeAdverts(nodePublicKey: string, hours = 24, limit = 
  */
 export async function getTopAdvertingRepeaters(hours = 24, limit = 10, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
-  const res = await pool.query(
+  const res = await query(
     `SELECT
        nca.node_id,
        n.name,

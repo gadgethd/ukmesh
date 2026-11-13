@@ -1,13 +1,13 @@
+import { mockRuntimeQuery } from './fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import pg from 'pg';
 import { getNodeHistory } from '../repositories/nodeReads.js';
 
 test('history retains its DTO, indexed alias predicates, time cap and fail-closed privacy in both directions', async (t) => {
   const rows = [{ time: '2026-09-07T12:00:00Z', packet_hash: '1234', src_node_id: 'B'.repeat(64),
     topic: 'ukmesh/LHR/observer/packets', packet_type: 4, hop_count: 1, rssi: -99, snr: 3, payload: {} }];
   let calls = 0;
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string, params: unknown[]) => {
+  mockRuntimeQuery(t, async (sql: string, params: unknown[]) => {
     calls += 1;
     assert.match(sql, /WHERE p.rx_node_id = requested.node_id/);
     assert.match(sql, /WHERE p.src_node_id = requested.node_id/);
@@ -32,6 +32,6 @@ test('history retains its DTO, indexed alias predicates, time cap and fail-close
 });
 
 test('history returns an empty array unchanged', async (t) => {
-  t.mock.method(pg.Pool.prototype, 'query', async () => ({ rows: [] }));
+  mockRuntimeQuery(t, async () => ({ rows: [] }));
   assert.deepEqual(await getNodeHistory('0'.repeat(64)), []);
 });

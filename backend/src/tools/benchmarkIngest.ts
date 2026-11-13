@@ -17,11 +17,16 @@ if (!Number.isSafeInteger(count) || count < 1 || count > 1_000_000) throw new Er
 const output = path.resolve(option(args, 'output') ?? `../plans/measurements/ingest-${Date.now()}`);
 const speed = option(args, 'speed') ?? '0';
 const concurrency = option(args, 'concurrency') ?? '16';
+const metricsUrl = option(args, 'metrics-url') ?? 'http://127.0.0.1:9091/metrics';
+const broker = option(args, 'broker') ?? 'ws://127.0.0.1:9002';
+for (const endpoint of [metricsUrl, broker]) {
+  if (!['127.0.0.1', 'localhost', '[::1]'].includes(new URL(endpoint).hostname)) throw new Error('benchmark requires loopback endpoints');
+}
 const pool = new pg.Pool({ connectionString: endpoint, max: 1 });
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function metrics(): Promise<Map<string, number>> {
-  const response = await fetch('http://127.0.0.1:9091/metrics', { signal: AbortSignal.timeout(15_000) });
+  const response = await fetch(metricsUrl, { signal: AbortSignal.timeout(15_000) });
   if (!response.ok) throw new Error('local metrics endpoint unavailable');
   const text = await response.text();
   if (text.length > 1024 * 1024) throw new Error('metrics body exceeds local benchmark cap');
@@ -60,7 +65,7 @@ try {
   let after = before;
   let drained = false;
   try {
-  await replaySampleMqtt(['--data-dir', directory, '--limit', String(count), '--speed', speed, '--qos', '1', '--concurrency', concurrency]);
+  await replaySampleMqtt(['--data-dir', directory, '--limit', String(count), '--speed', speed, '--qos', '1', '--concurrency', concurrency, '--broker', broker]);
   acknowledgedMs = performance.now() - started;
   const deadline = Date.now() + 120_000;
   while (Date.now() < deadline) {
@@ -94,6 +99,7 @@ try {
   await mkdir(output, { recursive: true });
   await writeFile(path.join(output, 'ingest.json'), JSON.stringify({
     version: 2, at: new Date().toISOString(), commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
+    serverSourceRef: option(args, 'server-source-ref') ?? null,
     diffSha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'], { maxBuffer: 16 * 1024 * 1024 })).digest('hex'),
     hardware: { cpus: os.cpus().length, model: os.cpus()[0]?.model, memory: os.totalmem() },
     node: process.version, count, persisted, acknowledgedMs, drainedMs, persistedPerSecond: count / (drainedMs / 1000),

@@ -57,6 +57,11 @@
     "bench:api": "tsx src/tools/benchmarkApi.ts",
     "bench:ingest": "tsx src/tools/benchmarkIngest.ts",
     "bench:db": "tsx src/tools/benchmarkDatabase.ts",
+    "bench:lookups": "tsx src/tools/benchmarkLookups.ts",
+    "bench:lookup-parity": "tsx src/tools/checkLookupParity.ts",
+    "bench:lookup-soak": "tsx src/tools/soakDatabaseLookups.ts",
+    "sample:scale-lookups": "tsx src/tools/scaleLookupFixture.ts",
+    "sample:lookup-scope": "tsx src/tools/prepareLookupScope.ts",
     "sample:refresh-recent": "tsx src/tools/refreshSampleRecent.ts"
   },
   "dependencies": {

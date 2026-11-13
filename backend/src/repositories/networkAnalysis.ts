@@ -1,6 +1,7 @@
 import pg, { type QueryResultRow } from 'pg';
 import { databaseConfig } from '../platform/config/processDatabase.js';
 import type { NetworkFilters } from '../platform/query/networkFilters.js';
+import { publicIdentityNodeSourceSql } from '../nodes/identitySource.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
@@ -111,7 +112,7 @@ export async function combinedTopologyRows(
      ),
      eligible_nodes AS MATERIALIZED (
        SELECT n.node_id, n.name, n.lat, n.lon, n.iata
-       FROM core.node_identity_nodes n
+       FROM ${publicIdentityNodeSourceSql()} n
        WHERE (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
          ${filters.nodesAlias('n')}
@@ -154,7 +155,7 @@ export async function combinedTopologyRows(
          n.lon,
          n.iata,
          row_number() OVER (ORDER BY n.last_seen DESC) AS row_order
-       FROM core.node_identity_nodes n
+       FROM ${publicIdentityNodeSourceSql()} n
        WHERE n.last_seen > NOW() - INTERVAL '30 days'
          AND (n.role IS NULL OR n.role = 2)
          AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')

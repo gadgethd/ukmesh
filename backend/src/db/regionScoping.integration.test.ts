@@ -1,3 +1,4 @@
+import { mockRuntimeQuery } from './fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
@@ -65,7 +66,7 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* fixture only */ }
   await query('ANALYZE');
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
-  t.mock.method(pg.Pool.prototype, 'query', (sql: string, params?: unknown[]) => {
+  mockRuntimeQuery(t, (sql: string, params?: unknown[]) => {
     calls.push({ sql, params });
     return query(sql, params);
   });
@@ -109,6 +110,9 @@ test('region reads preserve identity/privacy semantics and use indexes in real P
     const serialized = JSON.stringify(plan);
     assert.match(serialized, /Index (?:Only )?Scan|Bitmap Index Scan/);
     const visit = (node: Record<string, unknown>) => {
+      // Adaptive lookup plans include an inactive bulk branch. Check the
+      // scans PostgreSQL actually executes for this small regional scope.
+      if (node['Actual Loops'] === 0) return;
       if (node['Node Type'] === 'Seq Scan') {
         assert.doesNotMatch(String(node['Relation Name']), /^(?:nodes|core.region_scope_members|_hyper_.*_chunk)$/,
           `unbounded regional read: ${serialized}`);

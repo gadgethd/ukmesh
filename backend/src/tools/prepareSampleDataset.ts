@@ -36,6 +36,11 @@ export async function prepareSampleDataset(databaseUrl: string): Promise<void> {
     await refreshNodeIdentityAliases(pool);
     await pool.query('REFRESH MATERIALIZED VIEW core.node_identity_links');
     await pool.query('REFRESH MATERIALIZED VIEW core.node_identity_sightings');
+    // Bulk-created paths and refreshed identities have no useful planner
+    // statistics yet. Analyse before the facts backfill, whose joins otherwise
+    // plan for empty relations and can repeatedly rescan spilled CTEs.
+    await pool.query(`ANALYZE mesh.packet_paths; ANALYZE core.node_identity_aliases;
+      ANALYZE core.node_identity_links; ANALYZE core.node_identity_sightings`);
     const generation = (await pool.query<{ generation: string }>(
       'SELECT generation::text FROM ops.public_visibility_state WHERE singleton = TRUE',
     )).rows[0]?.generation;

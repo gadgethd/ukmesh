@@ -84,6 +84,12 @@ test('name retention and search execute the production write paths, migration, i
   ));
   const migration = await readFile(new URL('./migrations/064_node_name_history.sql', import.meta.url), 'utf8');
   await db.exec(`BEGIN; ${migration} COMMIT;`);
+  for (const name of ['137_node_lookup_index.sql', '138_indexed_identity_lookup.sql',
+    '140_legacy_prefix_lookup.sql', '141_inline_identity_lookup.sql', '142_cover_normalized_node_lookup.sql',
+    '146_public_map_order_lookup.sql', '149_legacy_normalized_lookup.sql',
+    '150_share_normalized_lookup_order.sql']) {
+    await db.exec(`BEGIN; ${await readFile(new URL(`./migrations/${name}`, import.meta.url), 'utf8')} COMMIT;`);
+  }
   assert.equal((await db.query('SELECT * FROM core.node_name_history')).rows.length, 0, 'migration must not backfill nodes');
 
   const query = (sql: string, params?: unknown[]) => db.query(sql, params?.map(value => value ?? null));

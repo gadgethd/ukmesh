@@ -24,7 +24,7 @@ const roleBootstrap = [
   readFileSync(new URL('../../../scripts/bootstrap-reader-roles.sql', import.meta.url), 'utf8'),
 ];
 const allMigrations = loadMigrationFiles();
-const HEAD = '136_public_snapshot_visibility.sql';
+const HEAD = '150_share_normalized_lookup_order.sql';
 // Everything before 078 is unaffected by this change; splitting the band there
 // lets the second test insert the legacy relations at the point they would have
 // existed on a live database.

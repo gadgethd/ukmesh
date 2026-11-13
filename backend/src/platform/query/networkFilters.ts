@@ -9,10 +9,15 @@ export type NetworkFilterScope = { network?: string; observer?: string };
 export type NetworkFilters = {
   params: unknown[];
   nodeSource?: string;
+  /** Candidate identities only; callers must still apply nodesAlias to the
+   * complete canonical projection and retain the current privacy authority. */
+  nodeIds?: string;
+  nodeIdsAreSparse?: boolean;
   packets: string;
   packetsAlias: (alias: string) => string;
   nodes: string;
   nodesAlias: (alias: string) => string;
+  nodesAfterCandidatesAlias?: (alias: string) => string;
 };
 
 /** Resolve one requested identity into its canonical id and every stored alias.
@@ -129,6 +134,35 @@ export function networkFilters(
   const regionParam = opts?.region ? `$${params.length + 1}` : null;
   if (regionParam) params.push(opts!.region);
 
+  const observerPacketWindow = `p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL
+    ${networkParam ? `AND p.network ${networkIsMulti ? `= ANY(${networkParam})` : `= ${networkParam}`}` : ''}`;
+  // Discover raw sources cheaply, then prove one CURRENT public observation
+  // per source. Repeated receptions cannot require repeated privacy proofs;
+  // private-only sources still fail the identical public predicate below.
+  const observerIds = observerParam ? `WITH observer_aliases AS MATERIALIZED (
+    SELECT UNNEST(${nodeAliasArraySql(observerParam)}) AS node_id
+  ), observer_sources AS MATERIALIZED (
+    SELECT p.src_node_id FROM observer_aliases observed
+    CROSS JOIN LATERAL (
+      SELECT DISTINCT p.src_node_id FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
+        AND ${observerPacketWindow} ORDER BY p.src_node_id OFFSET 0
+    ) p
+  ) SELECT node_id FROM observer_aliases
+    UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(source.src_node_id))) AS node_id
+    FROM (SELECT DISTINCT src_node_id FROM observer_sources) source
+    JOIN LATERAL (
+      SELECT 1 FROM observer_aliases observed CROSS JOIN LATERAL (
+        SELECT 1 FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
+          AND ${observerPacketWindow} AND p.src_node_id=source.src_node_id
+          AND ${publicPacketPrivacySql('p')} LIMIT 1
+      ) eligible LIMIT 1
+    ) public_proof ON TRUE
+    LEFT JOIN core.node_identity_aliases a ON a.source_node_id=UPPER(BTRIM(source.src_node_id))` : undefined;
+  const nodeIds = regionParam
+    ? `SELECT member.node_id FROM (${regionMemberIdsSql(regionParam)}) AS member(node_id)
+       ${observerIds ? `WHERE member.node_id IN (${observerIds})` : ''}`
+    : observerIds;
+
   const netEq = networkParam
     ? (networkIsMulti ? `network = ANY(${networkParam})` : `network = ${networkParam}`)
     : null;
@@ -154,7 +188,7 @@ export function networkFilters(
   }
   if (regionParam) packetConditions.push(`region_scope = '#' || ${regionParam}::text`);
 
-  const nodeConditions = (alias?: string) => {
+  const nodeConditions = (alias?: string, candidatesApplied = false) => {
     const prefix = alias ? `${alias}.` : '';
     // The outer node_id reference inside EXISTS must be qualified: an unqualified
     // node_id there resolves to the inner table's column. Callers without an
@@ -183,36 +217,18 @@ export function networkFilters(
         )`,
       );
     } else conditions.push(`${prefix}network IS DISTINCT FROM 'test'`);
-    if (regionParam) conditions.push(`${nodeRef} IN (${regionMemberIdsSql(regionParam)})`);
-    if (observerParam) {
-      const pNetCond = networkParam
-        ? (networkIsMulti ? `AND p.network = ANY(${networkParam})` : `AND p.network = ${networkParam}`)
-        : '';
-      // IN (uncorrelated subquery) so the planner hashes the observer's
-      // heard-node set once; a correlated EXISTS here runs per node row.
-      // 7-day window keeps the packet scan inside recent chunks.
-      conditions.push(
-        `(
-          ${nodeRef} = ANY(${nodeAliasArraySql(observerParam)})
-          OR ${nodeRef} IN (
-            SELECT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))
-            FROM mesh.packets p
-            LEFT JOIN core.node_identity_aliases src_alias
-              ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-            WHERE p.rx_node_id = ANY(${nodeAliasArraySql(observerParam)})
-              AND p.time > NOW() - INTERVAL '7 days'
-              AND p.src_node_id IS NOT NULL
-              ${pNetCond}
-              AND ${publicPacketPrivacySql('p')}
-          )
-        )`,
-      );
+    if (regionParam && !candidatesApplied) conditions.push(`${nodeRef} IN (${regionMemberIdsSql(regionParam)})`);
+    if (observerParam && !candidatesApplied) {
+      conditions.push(`${nodeRef} IN (${observerIds})`);
     }
     return conditions;
   };
 
   return {
     params,
+    ...(nodeIds ? { nodeIds } : {}),
+    ...(observerParam ? { nodeIdsAreSparse: true } : {}),
+    nodesAfterCandidatesAlias: (alias: string) => `AND ${nodeConditions(alias, Boolean(nodeIds)).join(' AND ')}`,
     ...(regionParam ? { nodeSource: regionNodeSourceSql(regionParam) } : {}),
     packets: packetConditions.length > 0 ? `AND ${packetConditions.join(' AND ')}` : '',
     packetsAlias: (alias: string) => {

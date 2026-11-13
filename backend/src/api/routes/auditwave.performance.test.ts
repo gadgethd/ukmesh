@@ -1,3 +1,4 @@
+import { mockRuntimeQuery } from '../../db/fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -63,7 +64,7 @@ perfTest('EXPLAIN actual history queries for Lyneham, Gadget and an empty id, in
     ['empty', '0'.repeat(64), 24],
     ['lyneham-max-window', 'C42E3FE2D99234E0E41967C1B70E49FA6F955AD5B8448A06EC2978AB0FF9E79E', 672],
   ] as const) {
-    const mocked = t.mock.method(pg.Pool.prototype, 'query', measuredQuery(`history-${name}`));
+    const mocked = mockRuntimeQuery(t, measuredQuery(`history-${name}`));
     try {
       const rows = await getNodeHistory(id, hours, 'ukmesh');
       assert.ok(rows.length <= 500);

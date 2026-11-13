@@ -1,6 +1,6 @@
+import { mockRuntimeQuery } from './fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import pg from 'pg';
 import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import { packetIdentityKeySql, packetIdentityReadAuthority } from './packetIdentityRead.js';
 
@@ -21,7 +21,7 @@ test('packet identity read helper validates authority and aliases', () => {
 
 test('recent readers switch identity authority without changing the public hash field', async (t) => {
   const calls: string[] = [];
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string) => {
+  mockRuntimeQuery(t, async (sql: string) => {
     calls.push(String(sql));
     return { rows: [] };
   });

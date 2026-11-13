@@ -31,6 +31,8 @@ if [[ -f plans/dev-stack/regions.log ]]; then
 fi
 git status --porcelain > "$output/git-status.txt"
 git rev-parse HEAD > "$output/commit.txt"
+# Fixture preparation is explicit and completes before counters/timing start.
+npm --prefix backend run sample:refresh-recent > "$output/recent-prepare.log" 2>&1
 curl --fail --silent --max-time 20 http://127.0.0.1:9091/metrics > "$output/metrics-before.txt"
 npm --prefix backend run bench:api -- --output "$output/api" > "$output/api.log" 2>&1
 (

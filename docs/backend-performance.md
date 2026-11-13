@@ -5,6 +5,55 @@ measurements. Keep CPU/memory limits, source checksums, replay timing and
 background jobs fixed. Measure ingest, HTTP and browser loads sequentially.
 The harness stores raw results under ignored `plans/measurements/`.
 
+## Database lookups: retained sample and 10× volume
+
+The 2026-11-13 lookup comparison used the backend at `5c780e6` as its
+baseline, the same two-CPU / 2 GiB PostgreSQL container, and separate retained
+fixtures with 6,176 / 61,760 raw nodes and 157,751 / 1,577,510 observations.
+Each public HTTP case ran three trials of 200 requests at concurrency eight,
+with production rate limits and cache misses. The table shows the median of
+the three trial p95 values in milliseconds.
+
+| Lookup | Retained baseline | Retained candidate | 10× baseline | 10× candidate |
+| --- | ---: | ---: | ---: | ---: |
+| First map page | 297.8 | 73.3 | 3,665.8 | 89.3 |
+| Name search | 320.4 | 71.2 | 4,396.3 | 89.1 |
+| Observer map | 459.0 | 84.6 | 3,903.9 | 96.4 |
+| Node links | 61.2 | 14.5 | 609.2 | 14.2 |
+
+All twelve candidate cases passed their per-trial budgets: 100 ms p95 on the
+retained fixture and 250 ms at 10×. The worst trial was 86.9 / 211.0 ms,
+including the large invented region scope. Cases also covered ID, short and
+missing searches, populated history, packet details/misses and the next map
+page. Separate single-request and warm-cache trials remain in the evidence.
+Full fields, public page/history limits, cache lifetimes and pool sizes stayed
+unchanged. These are local qualification results, not a production latency SLA.
+
+Retained-data checks compared all canonical columns with the existing view and
+old/new repositories in shared read-only snapshots: 6,154 / 61,738 canonical
+identities, zero differences, and 140 map/link cases per scale. A further
+topology comparison checked every eligible link on the retained fixture.
+Native fixtures cover legacy keys, normalization collisions, aliases, literal
+searches, private-only observations, network/observer/region scope and paging.
+
+Three fresh three-node fixtures per revision each ingested 2,000 invented ACKs
+and drained completely. Median persisted throughput was 76.7 / 78.1 packets/s.
+Application CPU per packet was 2.03 / 2.00 ms and database CPU 11.33 / 11.20 ms.
+WAL was 9,488 / 10,335 bytes per packet, an 8.9% increase within the 10% budget.
+The enqueue-to-commit p95 stayed within the same 25 ms histogram bucket.
+
+Diagnostic SQL trials compared the repositories on the same migrated fixtures.
+Unchanged aggregate queries taking over one millisecond stayed within 2% of
+their previous median execution times. Topology fell from 2,475 to 61 ms on
+the retained fixture; at 10× the previous query exceeded its 30-second timeout
+and the candidate took 894 ms. These timings exclude HTTP and are separate
+from the original-schema HTTP baseline.
+
+See [database lookup qualification](database-lookups.md) for isolated ingestion,
+mixed-load soak, additive migration and reproduction instructions. Raw results,
+source fingerprints and failed intermediate attempts are retained under ignored
+`plans/database-lookups/`; private fixture contents must stay out of Git.
+
 ## Persisted ingest baseline
 
 The 2026-11-12 comparison used Node 26.13.1, a four-CPU local host, the pinned

@@ -18,8 +18,12 @@ function csv(rows: unknown[][]): string {
 export async function generateSampleDataset(args: string[]): Promise<void> {
   const directory = path.resolve(requiredOption(args, 'data-dir'));
   const count = Number(option(args, 'count') ?? 200);
+  const sequenceStart = Number(option(args, 'sequence-start') ?? 0);
   if (!Number.isSafeInteger(count) || count < 1 || count > 1_000_000) {
     throw new Error('--count must be an integer between 1 and 1000000');
+  }
+  if (!Number.isSafeInteger(sequenceStart) || sequenceStart < 0 || sequenceStart + count > 0x1_0000_0000) {
+    throw new Error('--sequence-start and count must fit an unsigned 32-bit ACK sequence');
   }
   const end = Date.parse(option(args, 'as-of') ?? new Date().toISOString());
   if (!Number.isFinite(end)) throw new Error('--as-of must be an ISO timestamp');
@@ -35,7 +39,7 @@ export async function generateSampleDataset(args: string[]): Promise<void> {
   ]];
   const raw: unknown[][] = [['time', 'packet_hash', 'rx_node_id', 'raw_hex']];
   for (let index = 0; index < count; index += 1) {
-    const payload = index.toString(16).padStart(8, '0').toUpperCase();
+    const payload = (index + sequenceStart).toString(16).padStart(8, '0').toUpperCase();
     const scoped = index % 2 === 0;
     const codes = Buffer.alloc(4);
     codes.writeUInt16LE(calcTransportCodeForRegion('gb', 3, Buffer.from(payload, 'hex')));
@@ -75,7 +79,7 @@ export async function generateSampleDataset(args: string[]): Promise<void> {
     checksums[`${name}.csv.gz`] = createHash('sha256').update(compressed).digest('hex');
   }
   await writeFile(path.join(directory, 'fixture.json'), JSON.stringify({
-    version: 1, synthetic: true, count, seed: 'sequential-ack-v1',
+    version: 1, synthetic: true, count, seed: 'sequential-ack-v1', sequenceStart,
     from: at(0), to: at(count), checksums,
     gaps: ['Invented link evidence is not an original neighbour MQTT report.'],
   }, null, 2) + '\n', { flag: 'wx' });

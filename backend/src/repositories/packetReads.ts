@@ -1,4 +1,3 @@
-import { pool } from '../db/runtime.js';
 import { query } from '../db/runtime.js';
 import { analyticsQuery } from '../db/runtime.js';
 import type { DatabaseQueryFn as QueryFn } from '../db/contracts.js';
@@ -418,7 +417,7 @@ export async function getChannelMessageHistory(
 export async function getRecentPacketEvents(limit = 200, network?: string, observer?: string, region?: string) {
   const scope = buildScopePlaceholders(2, network, observer, region);
   const params: unknown[] = [limit, ...scope.params];
-  const res = await pool.query(
+  const res = await query(
     `SELECT
         p.time, p.packet_hash,
         COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
@@ -446,8 +445,8 @@ export async function getRecentPacketEvents(limit = 200, network?: string, obser
 export async function getPacketDetail(hash: string, network = 'ukmesh') {
   const scope = buildScopePlaceholders(2, network);
   const [primary, observations] = await Promise.all([
-    pool.query(
-      `SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
+    query(
+      `/* ukmesh:packet-detail */ SELECT p.time, p.packet_hash, p.rx_node_id, p.src_node_id, p.topic, p.iata,
               p.packet_type, p.route_type, p.hop_count, p.rssi, p.snr,
               p.payload, p.path_hashes, p.path_hash_size_bytes, p.raw_hex,
               mt.tags, mt.confidence AS tag_confidence
@@ -463,8 +462,8 @@ export async function getPacketDetail(hash: string, network = 'ukmesh') {
        LIMIT 1`,
       [hash, ...scope.params],
     ),
-    pool.query(
-      `SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
+    query(
+      `/* ukmesh:packet-detail */ SELECT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
               p.iata, p.time, p.rssi, p.snr, p.hop_count
        FROM mesh.packets p
        LEFT JOIN core.node_identity_aliases rx_alias

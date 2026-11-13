@@ -1,3 +1,4 @@
+import { mockRuntimeQuery } from '../../db/fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { once } from 'node:events';
@@ -81,7 +82,7 @@ function fixtureQuery(fixture: Fixture) {
   };
 }
 async function history(t: TestContext, fixture: Fixture, id = A, network = 'ukmesh') {
-  const mocked = t.mock.method(pg.Pool.prototype, 'query', fixtureQuery(fixture));
+  const mocked = mockRuntimeQuery(t, fixtureQuery(fixture));
   try { return await getNodeHistory(id, 24, network); }
   finally { mocked.mock.restore(); }
 }

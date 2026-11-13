@@ -1,6 +1,7 @@
 import type { QueryResultRow } from 'pg';
 import { nodeAliasArraySql, type NetworkFilters } from '../platform/query/networkFilters.js';
 import { mapVisiblePredicate } from '../nodes/publicMap.js';
+import { identityNodeSourceSql, pagedIdentityNodeSourceSql } from '../nodes/identitySource.js';
 import {
   nodeEffectiveLastSeenSql,
   nodeEffectiveOnlineSql,
@@ -189,6 +190,32 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       const cursorParameter = snapshotParameter + 1;
       const limitParameter = cursorParameter + 1;
       const searchParameter = `$${limitParameter + 1}`;
+      const patternParameter = `$${limitParameter + 2}`;
+      const narrowSearch = search && search.length >= 3;
+      const literalPattern = search ? `%${search.replace(/[\\%_]/g, '\\$&')}%` : undefined;
+      const candidateMatch = (expression: string) => `LOWER(${expression}) LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)`;
+      // Candidate matches may include a non-representative alias. Reapply the
+      // original substring/history predicate below after hydrating the entire
+      // identity, so this optimisation cannot change search results.
+      const candidates = search ? `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
+        FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
+          ON a.source_node_id = UPPER(BTRIM(raw.node_id))
+        WHERE ${candidateMatch("COALESCE(raw.name, '')")}
+          OR ${candidateMatch('UPPER(BTRIM(raw.node_id))')}
+          OR ${candidateMatch("COALESCE(raw.iata, '')")}
+        UNION SELECT canonical_node_id FROM core.node_identity_aliases
+          WHERE STRPOS(LOWER(canonical_node_id), LOWER(${searchParameter})) > 0
+        UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(h.node_id)))
+          FROM core.node_name_history h JOIN core.nodes raw ON raw.node_id = h.node_id
+          LEFT JOIN core.node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(raw.node_id))
+          WHERE ${candidateMatch('h.name')}`
+        : `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
+          FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
+            ON a.source_node_id = UPPER(BTRIM(raw.node_id))`;
+      const candidateIds = filters.nodeIds
+        ? (narrowSearch ? `SELECT node_id FROM (${filters.nodeIds}) scope_ids
+            WHERE node_id IN (${candidates})` : filters.nodeIds)
+        : narrowSearch ? candidates : undefined;
       const searchCondition = search ? `AND (
         STRPOS(LOWER(COALESCE(n.name, '')), LOWER(${searchParameter})) > 0
         OR STRPOS(LOWER(n.node_id), LOWER(${searchParameter})) > 0
@@ -203,6 +230,13 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
             AND STRPOS(LOWER(history.name), LOWER(${searchParameter})) > 0
         )
       )` : '';
+      const where = `${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
+        AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
+        ${filters.nodesAfterCandidatesAlias?.('n') ?? filters.nodesAlias('n')}
+        ${searchCondition}
+        AND ($${cursorParameter}::text IS NULL OR n.node_id>$${cursorParameter})`;
+      const source = pagedIdentityNodeSourceSql(where, `$${limitParameter}`, candidateIds,
+        Boolean(narrowSearch), filters.nodeIdsAreSparse);
       const selectedFields = fields
         .map((field) => {
           if (field === 'last_seen') {
@@ -215,16 +249,11 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         })
         .join(', ');
       const result = await query<Record<string, unknown>>(
-        `SELECT ${selectedFields}
-           FROM ${filters.nodeSource ?? 'core.node_identity_nodes'} n
-          WHERE ${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
-            AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
-            ${filters.nodesAlias('n')}
-            ${searchCondition}
-            AND ($${cursorParameter}::text IS NULL OR n.node_id > $${cursorParameter})
+        `/* ukmesh:node-map */ SELECT ${selectedFields}
+           FROM ${source} n
           ORDER BY n.node_id
           LIMIT $${limitParameter}`,
-        [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : [])],
+        [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : []), ...(narrowSearch ? [literalPattern] : [])],
       );
       return result.rows;
     },
@@ -251,20 +280,12 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
     async listNodeLinks(nodeId, filters) {
       const idParam = `$${filters.params.length + 1}`;
       const links = (await query<Omit<NodeLinkRow, 'recent_count_72h'>>(
-        `WITH requested_identity AS MATERIALIZED (
+        `/* ukmesh:node-links */ WITH requested_identity AS MATERIALIZED (
            SELECT COALESCE(
              (SELECT canonical_node_id FROM core.node_identity_aliases
                WHERE source_node_id = UPPER(BTRIM(${idParam}))),
              UPPER(BTRIM(${idParam}))
            ) AS node_id
-         ), link_nodes AS MATERIALIZED (
-           SELECT node_id, name, network FROM ${filters.nodeSource ?? 'core.node_identity_nodes'}
-         ), source_node AS MATERIALIZED (
-           SELECT node_id
-             FROM link_nodes sn
-            WHERE node_id = (SELECT node_id FROM requested_identity)
-              AND (name IS NULL OR name NOT LIKE '%🚫%')
-              ${filters.nodesAlias('sn')}
          ),
          relevant_links AS MATERIALIZED (
            SELECT
@@ -281,7 +302,16 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
             WHERE (nl.node_a_id = (SELECT node_id FROM requested_identity)
                    OR nl.node_b_id = (SELECT node_id FROM requested_identity))
               AND (nl.itm_viable = TRUE OR nl.force_viable = TRUE)
-              AND EXISTS (SELECT 1 FROM source_node)
+         ), link_nodes AS MATERIALIZED (
+           SELECT node_id, name, network FROM ${identityNodeSourceSql(`
+             SELECT node_id FROM requested_identity
+             UNION SELECT peer_id AS node_id FROM relevant_links
+           `)} AS identity
+         ), source_node AS MATERIALIZED (
+           SELECT node_id FROM link_nodes sn
+           WHERE node_id = (SELECT node_id FROM requested_identity)
+             AND (name IS NULL OR name NOT LIKE '%🚫%')
+             ${filters.nodesAlias('sn')}
          )
          SELECT
            rl.peer_id, peer.name AS peer_name, rl.observed_count,
@@ -290,6 +320,7 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
            FROM relevant_links rl
            JOIN link_nodes peer ON peer.node_id = rl.peer_id
           WHERE (peer.name IS NULL OR peer.name NOT LIKE '%🚫%')
+            AND EXISTS (SELECT 1 FROM source_node)
             ${filters.nodesAlias('peer')}
           ORDER BY rl.observed_count DESC`,
         [...filters.params, nodeId],

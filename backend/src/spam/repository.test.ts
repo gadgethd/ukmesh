@@ -1,3 +1,4 @@
+import { mockRuntimeQuery } from '../db/fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
@@ -64,7 +65,7 @@ test('a busy 2,907-message day retains the seven-ID burst beyond the former 2,00
   const rows = Array.from({ length: 2_900 }, (_, index) => row(index, '[test] synthetic connectivity traffic'));
   const ids = ['R7K2X9PM', '5BQ8T3NW', 'Z6D4V1CK', '8JF2G9SL', 'N1X8R4BT', '6WK3P9DZ', 'T9L5B2CQ'];
   rows.push(...ids.map((sender, index) => ({ ...row(2_900 + index), sender })));
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string, params: unknown[]) => {
+  mockRuntimeQuery(t, async (sql: string, params: unknown[]) => {
     if (sql.includes('WITH logical_messages')) {
       assert.equal(params.at(-1), CFG.maxCandidatePacketRows + 1, 'candidate query needs a truncation lookahead');
       return { rows };
@@ -85,7 +86,7 @@ test('candidate lookahead and message caps report actual truncation without leak
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (message: string) => warnings.push(message));
   spamAnalysisTruncationsTotal.reset();
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string, params: unknown[]) => {
+  mockRuntimeQuery(t, async (sql: string, params: unknown[]) => {
     if (sql.includes('WITH logical_messages')) {
       assert.equal(params.at(-1), 4);
       return { rows: Array.from({ length: 4 }, (_, index) => row(index)) };
@@ -106,7 +107,7 @@ test('candidate lookahead and message caps report actual truncation without leak
 test('a full candidate page without the lookahead row is not reported as truncated', async (t) => {
   const warnings: string[] = [];
   t.mock.method(console, 'warn', (message: string) => warnings.push(message));
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string) => ({
+  mockRuntimeQuery(t, async (sql: string) => ({
     rows: sql.includes('WITH logical_messages') ? [row(0), row(1), row(2)] : [],
   }));
   assert.equal((await loadRecentMessages({ ...CFG, maxCandidatePacketRows: 3, maxMessagesPerRun: 3 })).length, 3);

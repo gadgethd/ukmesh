@@ -1,6 +1,6 @@
 import pg from 'pg';
 import { analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
-import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
+import { databaseOperation, dbExecutionDuration, dbPoolWaitDuration, dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import type { DatabaseQueryFn } from './contracts.js';
 
@@ -40,6 +40,17 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
     console.error('[db] unexpected analytics pool error', err.message);
   });
 
+  async function checkout(targetPool: pg.Pool, poolName: 'oltp' | 'analytics') {
+    const started = process.hrtime.bigint();
+    let outcome = 'success';
+    try { return await targetPool.connect(); }
+    catch (error) { outcome = 'failure'; throw error; }
+    finally {
+      dbPoolWaitDuration.observe({ pool: poolName, outcome }, Number(process.hrtime.bigint() - started) / 1e9);
+      updateDbPoolMetrics(poolName, targetPool);
+    }
+  }
+
   async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
     targetPool: pg.Pool,
     poolName: 'oltp' | 'analytics',
@@ -49,19 +60,19 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   ): Promise<pg.QueryResult<T>> {
     const startedAt = process.hrtime.bigint();
     let outcome = 'success';
+    let executionStarted: bigint | undefined;
     try {
       updateDbPoolMetrics(poolName, targetPool);
-      const execute = (target: pg.Pool | pg.PoolClient) => (
+      const execute = (target: pg.PoolClient) => (
         typeof querySpec === 'string'
           ? target.query<T>(querySpec, params)
           : target.query<T>(querySpec)
       );
-      if (!signal) return await execute(targetPool);
-      signal.throwIfAborted();
-      const client = await targetPool.connect();
+      signal?.throwIfAborted();
+      const client = await checkout(targetPool, poolName);
       let destroyed = false;
       let abortedCleanup: (() => void) | undefined;
-      const aborted = new Promise<never>((_resolve, reject) => {
+      const aborted = signal && new Promise<never>((_resolve, reject) => {
         const onAbort = () => {
           if (destroyed) return;
           destroyed = true;
@@ -79,12 +90,10 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
         abortedCleanup = () => signal.removeEventListener('abort', onAbort);
       });
       try {
-        signal.throwIfAborted();
-        const result = await Promise.race([
-          execute(client),
-          aborted,
-        ]);
-        signal.throwIfAborted();
+        signal?.throwIfAborted();
+        executionStarted = process.hrtime.bigint();
+        const result = aborted ? await Promise.race([execute(client), aborted]) : await execute(client);
+        signal?.throwIfAborted();
         return result;
       } finally {
         abortedCleanup?.();
@@ -97,6 +106,9 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
       const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
       dbQueriesTotal.inc({ pool: poolName, outcome });
       dbQueryDuration.observe({ pool: poolName, outcome }, durationSeconds);
+      if (executionStarted !== undefined) dbExecutionDuration.observe({ pool: poolName, outcome,
+        operation: databaseOperation(typeof querySpec === 'string' ? querySpec : querySpec.text) },
+      Number(process.hrtime.bigint() - executionStarted) / 1e9);
       updateDbPoolMetrics(poolName, targetPool);
     }
   }
@@ -110,21 +122,29 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   }
 
   async function withTransaction<T>(work: (transactionQuery: DatabaseQueryFn) => Promise<T>): Promise<T> {
-    const client = await pool.connect();
+    const client = await checkout(pool, 'oltp');
+    const execute = async <R extends pg.QueryResultRow>(text: string, params?: unknown[]) => {
+      const started = process.hrtime.bigint();
+      let outcome = 'success';
+      try { return await client.query<R>(text, params); }
+      catch (error) { outcome = 'failure'; throw error; }
+      finally { dbExecutionDuration.observe({ pool: 'oltp', operation: databaseOperation(text), outcome },
+        Number(process.hrtime.bigint() - started) / 1e9); }
+    };
     const transactionQuery: DatabaseQueryFn = async <R extends pg.QueryResultRow = pg.QueryResultRow>(
       text: string,
       params?: unknown[],
     ) => {
-      const result = await client.query<R>(text, params);
+      const result = await execute<R>(text, params);
       return { rows: result.rows };
     };
     try {
-      await client.query('BEGIN');
+      await execute('/* ukmesh:transaction */ BEGIN');
       const result = await work(transactionQuery);
-      await client.query('COMMIT');
+      await execute('/* ukmesh:transaction */ COMMIT');
       return result;
     } catch (error) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      await execute('/* ukmesh:transaction */ ROLLBACK').catch(() => undefined);
       throw error;
     } finally {
       client.release();

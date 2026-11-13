@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 import { createDatabaseRuntime, type DatabaseRuntime } from './databaseRuntime.js';
+import { dbExecutionDuration, dbPoolWaitDuration } from '../metrics/database.js';
 
 const endpoint = process.env['TEST_INGEST_DATABASE_URL'];
 
@@ -53,4 +54,41 @@ test('two database runtimes own independent role pools, transactions and shutdow
   assert.deepEqual((await second.query('SELECT value FROM owned ORDER BY value')).rows, [{ value: 2 }, { value: 10 }]);
   await second.analyticsQuery('SELECT 1');
   await second.ingestQuery('SELECT 1');
+});
+
+test('database telemetry separates pool wait, execution, failure and cancellation without leaking connections', {
+  skip: endpoint ? false : 'owned PostgreSQL fixture required', timeout: 30_000,
+}, async t => {
+  assert.ok(['localhost', '127.0.0.1'].includes(new URL(endpoint!).hostname));
+  const runtime = createDatabaseRuntime({ DATABASE_URL: endpoint, DATABASE_POOL_MAX: '1' });
+  t.after(() => runtime.close());
+  const sum = async () => (await dbPoolWaitDuration.get()).values
+    .filter(row => row.metricName.endsWith('_sum') && row.labels['pool'] === 'oltp')
+    .reduce((total, row) => total + row.value, 0);
+  const count = async (outcome: string) => (await dbExecutionDuration.get()).values
+    .filter(row => row.metricName.endsWith('_count') && row.labels['operation'] === 'node-map'
+      && row.labels['pool'] === 'oltp' && row.labels['outcome'] === outcome)
+    .reduce((total, row) => total + row.value, 0);
+  const before = await sum(), executed = await count('success');
+  const held = await runtime.pool.connect();
+  const waiting = runtime.query('/* ukmesh:node-map */ SELECT 1');
+  await new Promise(resolve => setTimeout(resolve, 40)); held.release();
+  await waiting;
+  assert.ok(await sum() - before >= .025, 'queued checkout time is measured');
+  assert.equal(await count('success'), executed + 1, 'one SQL execution excludes queue wait');
+  const queuedHolder = await runtime.pool.connect();
+  const controller = new AbortController();
+  const queued = runtime.query('/* ukmesh:node-map */ SELECT 2', [], controller.signal);
+  controller.abort(new Error('queued cancellation')); queuedHolder.release();
+  await assert.rejects(queued, /queued cancellation/);
+  assert.equal(await count('success'), executed + 1, 'cancelled queued work executes no SQL');
+  const aborted = await count('aborted');
+  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT pg_sleep(5)', [], AbortSignal.timeout(25)));
+  assert.equal(await count('aborted'), aborted + 1);
+  const failed = await count('failure');
+  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT * FROM nonexistent_lookup_fixture'));
+  assert.equal(await count('failure'), failed + 1);
+  assert.equal((await runtime.query('SELECT 7 AS value')).rows[0].value, 7);
+  assert.equal(runtime.pool.waitingCount, 0);
+  assert.equal(runtime.pool.totalCount, runtime.pool.idleCount);
 });

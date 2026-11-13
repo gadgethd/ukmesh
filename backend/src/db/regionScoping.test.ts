@@ -1,14 +1,14 @@
+import { mockRuntimeQuery } from './fixtures/mockRuntimeQuery.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
-import pg from 'pg';
 import { getNodes } from '../repositories/nodeReads.js';
 import { getRecentPackets, getRecentMessages, getRecentPacketEvents } from '../repositories/packetReads.js';
 import { networkFilters } from '../platform/query/networkFilters.js';
 
 test('region SQL scopes representatives, counts and nodes with parameterized indexed predicates', async (t) => {
   const calls: Array<{ sql: string; params?: unknown[] }> = [];
-  t.mock.method(pg.Pool.prototype, 'query', async (sql: string, params?: unknown[]) => {
+  mockRuntimeQuery(t, async (sql: string, params?: unknown[]) => {
     calls.push({ sql, params });
     return { rows: [] };
   });
