@@ -39,6 +39,7 @@ import {
   packetObserverIatas,
   packetObserverIds,
   packetSummary,
+  splitMeshosSummary,
   timeAgo,
   type FeedPacket,
   type MessageScope,
@@ -639,10 +640,12 @@ export const UKFeedPage: React.FC = () => {
               const iatas = packetObserverIatas(packet, nodeMap);
               const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
               const isSelected = selectedPacketHash === packet.packet_hash;
+              const summary = splitMeshosSummary(packetSummary(packet, nodeMap));
               return (
                 <React.Fragment key={`${packet.packet_hash}-${packet.time}-${virtualRows.start + virtualIndex}`}>
                   <article
-                    className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
+                    className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}${summary.meshosSigned ? ' uk-feed-packet-row--meshos' : ''}`}
+                    title={summary.meshosSigned ? 'MeshOS Signing Key, waste of airtime' : undefined}
                     onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
                     role="button"
                     tabIndex={0}
@@ -668,7 +671,17 @@ export const UKFeedPage: React.FC = () => {
                         </span>
                       </div>
                     )}
-                    <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
+                    <p className="uk-feed-packet-row__summary">
+                      {summary.text}
+                      {summary.meshosSigned && (
+                        <span
+                          className="uk-feed-packet-row__meshos-badge"
+                          title="MeshOS Signing Key, waste of airtime"
+                        >
+                          MeshOS signed
+                        </span>
+                      )}
+                    </p>
                   </article>
                 </React.Fragment>
               );
@@ -710,7 +723,7 @@ export const UKFeedPage: React.FC = () => {
                     </span>
                   )}
                 </div>
-                <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
+                <p className="uk-feed-stats__selected-summary">{splitMeshosSummary(packetSummary(selectedPacket, nodeMap)).text}</p>
                 <div className="uk-feed-stats__actions">
                   <button type="button" className="uk-feed-stats__tree-toggle" onClick={openPathTree}>
                     Repeater tree
@@ -775,7 +788,7 @@ export const UKFeedPage: React.FC = () => {
                   )}
                   <button type="button" className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)} aria-label="Clear selected packet">✕</button>
                 </div>
-                <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
+                <p className="uk-feed-stats__selected-summary">{splitMeshosSummary(packetSummary(selectedPacket, nodeMap)).text}</p>
                 <div className="uk-feed-stats__actions">
                   <button
                     type="button"

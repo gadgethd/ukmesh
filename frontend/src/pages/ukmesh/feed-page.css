@@ -473,6 +473,32 @@
   background: var(--bg-hover);
 }
 
+/* MeshOS writes a non-standard 2-byte tag on Public 2: readable, unverifiable. */
+.uk-feed-packet-row--meshos {
+  background: rgba(245, 166, 35, 0.08);
+  border-left: 2px solid rgba(245, 166, 35, 0.6);
+  padding-left: 10px;
+}
+
+.uk-feed-packet-row--meshos:hover {
+  background: rgba(245, 166, 35, 0.14);
+}
+
+.uk-feed-packet-row__meshos-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid rgba(245, 166, 35, 0.55);
+  border-radius: 2px;
+  color: #f5a623;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  cursor: help;
+}
+
 .uk-feed-packet-row--selected {
   background: var(--bg-active);
   border-color: var(--accent);
