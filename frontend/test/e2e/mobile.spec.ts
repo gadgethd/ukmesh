@@ -174,7 +174,8 @@ test('phone home and feed give primary content the full available width', async 
   const chatBox = await page.locator('.uk-feed-chat').boundingBox();
   expect(channelsBox?.height ?? PHONE.height).toBeLessThan(64);
   expect(chatBox?.width ?? 0).toBeGreaterThan(360);
-  await expect(page.locator('.uk-feed-right')).toBeHidden();
+  await expect(page.locator('.uk-feed-map')).toBeHidden();
+  await expect(page.locator('.uk-feed-stats__row')).toBeVisible();
   await expectNoViewportOverflow(page);
 });
 
@@ -190,7 +191,8 @@ test('tablet home and feed avoid squeezed desktop columns', async ({ page }) => 
 
   await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
   expect((await page.locator('.uk-feed-chat').boundingBox())?.width ?? 0).toBeGreaterThan(740);
-  await expect(page.locator('.uk-feed-right')).toBeHidden();
+  await expect(page.locator('.uk-feed-map')).toBeHidden();
+  await expect(page.locator('.uk-feed-stats__row')).toBeVisible();
 });
 
 test('map controls and disclaimer leave the map usable on a phone', async ({ page }) => {
@@ -202,11 +204,13 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   const lineOfSight = page.getByRole('button', { name: 'Line of sight' });
   await expect(lineOfSight).toBeVisible();
   expect((await lineOfSight.boundingBox())?.width ?? 0).toBeGreaterThan(100);
-  await expect(page.locator('.mobile-controls .watchlist-panel')).not.toHaveAttribute('open', '');
+  await expect(page.locator('.mobile-menu .watchlist-panel')).not.toHaveAttribute('open', '');
   const controlsBox = await page.locator('.mobile-controls').boundingBox();
   expect(controlsBox?.height ?? PHONE.height).toBeLessThan(PHONE.height * 0.42);
   const mapBox = await page.locator('.map-area').boundingBox();
   expect(mapBox?.height ?? 0).toBeGreaterThan(300);
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Map settings' })).toHaveCount(0);
 
   await page.getByRole('button', { name: 'Data disclaimer' }).click();
   const dialog = page.getByRole('dialog', { name: 'Data disclaimer' });
