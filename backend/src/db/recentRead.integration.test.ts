@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import { Redis } from 'ioredis';
 import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import { closeDb } from './runtime.js';
@@ -22,31 +23,28 @@ const json = (value: unknown) => JSON.parse(JSON.stringify(value));
 test('F01/F05/F12/F13 real SQL and RAM contracts agree across scoped paging, stable IDs and privacy generations', {
   skip: local(url) && local(redisURL) ? false : 'loopback PostgreSQL and Redis fixtures required',
 }, async (t) => {
-  const admin = new pg.Pool({ connectionString: url, max: 1 });
-  const name = `meshcore_read_${process.pid}_${Date.now()}`;
-  await admin.query(`CREATE DATABASE "${name}"`);
-  const ownedURL = new URL(url!);
-  ownedURL.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: ownedURL.toString(), max: 3, options: POST_MOVE_SEARCH_PATH });
+  const fixture = await createDisposableDatabase(t, url!, 'meshcore_read');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 3, options: POST_MOVE_SEARCH_PATH });
+  fixture.addCleanup(() => pool.end());
+  fixture.addCleanup(() => closeDb());
   const redis = new Redis(redisURL!, { lazyConnect: true, enableOfflineQueue: false });
   const oldMode = process.env['MQTT_INGEST_MODE'];
   const oldKey = process.env['MQTT_RAM_STREAM_KEY'];
   process.env['MQTT_INGEST_MODE'] = 'ram';
   process.env['MQTT_RAM_STREAM_KEY'] = `meshcore:read:${process.pid}:${Date.now()}`;
   const key = getRamStreamKey();
-  t.after(async () => {
-    configureRamStore(null);
-    configurePacketBatch(null);
-    const keys = await redis.keys(`${key}*`);
-    if (keys.length) await redis.del(...keys);
-    await redis.quit();
-    await closeDb();
-    await pool.end();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
+  fixture.addCleanup(async () => {
+    try {
+      const keys = await redis.keys(`${key}*`);
+      if (keys.length) await redis.del(...keys);
+    } finally { redis.disconnect(); }
+  });
+  fixture.addCleanup(() => {
     if (oldMode === undefined) delete process.env['MQTT_INGEST_MODE']; else process.env['MQTT_INGEST_MODE'] = oldMode;
     if (oldKey === undefined) delete process.env['MQTT_RAM_STREAM_KEY']; else process.env['MQTT_RAM_STREAM_KEY'] = oldKey;
   });
+  fixture.addCleanup(() => { configurePacketBatch(null); });
+  fixture.addCleanup(() => { configureRamStore(null); });
   await redis.connect();
   await bootstrapBaseSchemaFixture(pool);
   const query: QueryFn = (sql, params) => pool.query(sql, params);

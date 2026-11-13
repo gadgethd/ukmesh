@@ -10,6 +10,9 @@ const native = { skip: endpoint ? false : 'owned PostgreSQL fixture required', t
 
 test('disposable fixtures reject remote endpoints before creating resources', async t => {
   await assert.rejects(createDisposableDatabase(t, 'postgresql://example.invalid/postgres', 'fixture'), /loopback/);
+  for (const parameter of ['host', 'hostaddr']) {
+    await assert.rejects(createDisposableDatabase(t, `postgresql://127.0.0.1/postgres?${parameter}=example.invalid`, 'fixture'), /loopback/);
+  }
   await assert.rejects(createDisposableDatabase(t, 'postgresql://127.0.0.1/postgres', 'not-an-identifier'), /prefix/);
 });
 

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import {
   BASE_SCHEMA_BOOTSTRAP_APPROVAL,
   BASE_SCHEMA_BOOTSTRAP_ENV,
@@ -74,26 +75,17 @@ GRANT SELECT ON public.last_hop_snr_daily TO ukmesh_planner_reader;
 
 interface Harness {
   pool: pg.Pool;
-  database: string;
-  admin: pg.Pool;
+  fixture: Awaited<ReturnType<typeof createDisposableDatabase>>;
 }
 
 async function withDatabase(
-  t: { after: (fn: () => Promise<void>) => void },
+  t: Pick<TestContext, 'after'>,
   label: string,
 ): Promise<Harness> {
-  const admin = new pg.Pool({ connectionString: endpoint, max: 2 });
-  const database = `${label}_${process.pid}_${Date.now()}`.toLowerCase();
-  await admin.query(`CREATE DATABASE ${database}`);
-  const url = new URL(endpoint!);
-  url.pathname = `/${database}`;
-  const pool = new pg.Pool({ connectionString: url.toString(), max: 2 });
-  t.after(async () => {
-    await pool.end();
-    await admin.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    await admin.end();
-  });
-  return { pool, database, admin };
+  const fixture = await createDisposableDatabase(t, endpoint!, label);
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 2 });
+  fixture.addCleanup(() => pool.end());
+  return { pool, fixture };
 }
 
 /** The CI init hook: shipped base schema, then the shipped operator role scripts. */
@@ -108,12 +100,11 @@ test(`a fresh base-schema database replays the whole band to head ${HEAD.slice(0
 }, async (t) => {
   assert.ok(['localhost', '127.0.0.1'].includes(new URL(endpoint!).hostname));
   const savedApproval = process.env[BASE_SCHEMA_BOOTSTRAP_ENV];
-  t.after(() => {
+  const harness = await withDatabase(t, 'fresh_replay');
+  harness.fixture.addCleanup(() => {
     if (savedApproval === undefined) delete process.env[BASE_SCHEMA_BOOTSTRAP_ENV];
     else process.env[BASE_SCHEMA_BOOTSTRAP_ENV] = savedApproval;
   });
-
-  const harness = await withDatabase(t, 'fresh_replay');
   await seedFreshVolume(harness);
 
   process.env[BASE_SCHEMA_BOOTSTRAP_ENV] = BASE_SCHEMA_BOOTSTRAP_APPROVAL;
@@ -168,12 +159,11 @@ test('the guarded moves still move the legacy relations and carry their grants',
 }, async (t) => {
   assert.ok(['localhost', '127.0.0.1'].includes(new URL(endpoint!).hostname));
   const savedApproval = process.env[BASE_SCHEMA_BOOTSTRAP_ENV];
-  t.after(() => {
+  const harness = await withDatabase(t, 'legacy_moves');
+  harness.fixture.addCleanup(() => {
     if (savedApproval === undefined) delete process.env[BASE_SCHEMA_BOOTSTRAP_ENV];
     else process.env[BASE_SCHEMA_BOOTSTRAP_ENV] = savedApproval;
   });
-
-  const harness = await withDatabase(t, 'legacy_moves');
   await seedFreshVolume(harness);
 
   process.env[BASE_SCHEMA_BOOTSTRAP_ENV] = BASE_SCHEMA_BOOTSTRAP_APPROVAL;

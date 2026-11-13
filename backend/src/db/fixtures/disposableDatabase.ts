@@ -28,7 +28,9 @@ export async function createDisposableDatabase(
 ) {
   const url = new URL(endpoint);
   if (!['postgres:', 'postgresql:'].includes(url.protocol)
-      || !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)) {
+      || !['localhost', '127.0.0.1', '[::1]', '::1'].includes(url.hostname)
+      || url.searchParams.has('host') || url.searchParams.has('hostaddr')
+      || !url.pathname || url.pathname === '/') {
     throw new Error('Disposable databases require a loopback PostgreSQL endpoint');
   }
   if (!/^[a-z][a-z0-9_]{0,35}$/.test(prefix)) throw new Error('Invalid disposable database prefix');
