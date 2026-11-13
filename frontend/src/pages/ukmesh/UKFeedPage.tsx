@@ -678,7 +678,7 @@ export const UKFeedPage: React.FC = () => {
                           className="uk-feed-packet-row__meshos-badge"
                           title="MeshOS Signing Key, waste of airtime"
                         >
-                          MeshOS signed
+                          MeshOS signing · waste of airtime
                         </span>
                       )}
                     </p>
