@@ -518,14 +518,36 @@ test('keyboard-only dashboard flow selects a node, reads details, and toggles a 
 
 test.describe('inactive stats module delivery', () => {
   test.use({ serviceWorkers: 'block' });
-test('a failed inactive stats module leaves tabs available for recovery', async ({ page }) => {
-  await installFixtures(page);
-  await page.route(/\/assets\/StatsSignal-[^/]+\.js/, route => route.abort('failed'));
-  await page.goto('/stats');
-  await page.getByRole('tab', { name: 'Signal', exact: true }).click();
-  await expect(page.getByRole('tabpanel', { name: 'Signal', exact: true }).getByRole('alert')).toContainText('The stats section could not be loaded.');
-  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
-  await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toContainText('Observed packets (24h)');
-});
+  test('a failed inactive stats module leaves tabs available for recovery', async ({ page }) => {
+    await installFixtures(page);
+    await page.route(/\/assets\/StatsSignal-[^/]+\.js/, route => route.abort('failed'));
+    await page.goto('/stats');
+    await page.getByRole('tab', { name: 'Signal', exact: true }).click();
+    await expect(page.getByRole('tabpanel', { name: 'Signal', exact: true }).getByRole('alert')).toContainText('The stats section could not be loaded.');
+    await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+    await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toContainText('Observed packets (24h)');
+  });
 
+  test('a pending stats module keeps the loading workspace reserved', async ({ page }) => {
+    await installFixtures(page);
+    await page.setViewportSize({ width: 390, height: 844 });
+    let release!: () => void;
+    let requests = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route(/\/assets\/StatsTraffic-[^/]+\.js/, async route => {
+      requests++;
+      await gate;
+      await route.continue();
+    });
+    try {
+      await page.goto('/stats?tab=traffic');
+      await expect.poll(() => requests).toBe(1);
+      const panel = page.getByRole('tabpanel', { name: 'Traffic', exact: true });
+      await expect(panel.getByLabel('Loading stats', { exact: true })).toBeVisible();
+      expect((await panel.boundingBox())!.height).toBeGreaterThan(700);
+      await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
+      release();
+      await expect(panel.getByText('Packet types', { exact: true })).toBeVisible();
+    } finally { release(); }
+  });
 });

@@ -16,6 +16,18 @@ const StatsSignal = lazy(() => import('../components/stats/StatsSignal.js').then
 const StatsPaths = lazy(() => import('../components/stats/StatsPaths.js').then(module => ({ default: module.StatsPaths })));
 const StatsObservers = lazy(() => import('../components/stats/StatsObservers.js').then(module => ({ default: module.StatsObservers })));
 const StatsTraffic = lazy(() => import('../components/stats/StatsTraffic.js').then(module => ({ default: module.StatsTraffic })));
+function StatsLoadingShell() {
+  return <div className="stats-page__loading-shell" aria-label="Loading stats">
+    <LoadingIndicator label="Loading stats..." variant="block" />
+    <div className="stats-page__summary">
+      {Array.from({ length: 6 }, (_, index) => <div key={index} className="stats-page__stat skeleton-shimmer" />)}
+    </div>
+    <div className="stats-page__row">
+      <div className="stats-page__chart skeleton-shimmer" />
+      <div className="stats-page__chart skeleton-shimmer" />
+    </div>
+  </div>;
+}
 export const StatsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
@@ -125,22 +137,9 @@ export const StatsPage: React.FC = () => {
             ))}
             <div role="tabpanel" id={`${tabGroup}-panel-${activeTab}`}
               aria-labelledby={`${tabGroup}-tab-${activeTab}`} tabIndex={0} className="stats-page__tabpanel">
-        {loading && (
-          <div className="stats-page__loading-shell" aria-label="Loading stats">
-            <LoadingIndicator label="Loading stats..." variant="block" />
-            <div className="stats-page__summary">
-              {Array.from({ length: 6 }, (_, index) => <div key={index} className="stats-page__stat skeleton-shimmer" />)}
-            </div>
-            <div className="stats-page__row">
-              <div className="stats-page__chart skeleton-shimmer" />
-              <div className="stats-page__chart skeleton-shimmer" />
-            </div>
-          </div>
-        )}
+        {loading && <StatsLoadingShell />}
 
-            {data && !dataIsEmpty && (<LazyMapBoundary key={activeTab} className="stats-page__request-state" label="Network stats" resource="stats section">
-
-            {activeTab === 'overview' && <StatsOverview data={data} />}
+            {data && !dataIsEmpty && (activeTab === 'overview' ? <StatsOverview data={data} /> : <LazyMapBoundary key={activeTab} className="stats-page__request-state" label="Network stats" resource="stats section" fallback={<StatsLoadingShell />}>
 
             {activeTab === 'traffic' && <StatsTraffic data={data} />}
 
