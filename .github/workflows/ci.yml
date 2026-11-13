@@ -519,6 +519,16 @@ jobs:
           NODE
           MQTT_E2E_OBSERVER="$observer" MQTT_E2E_PUBLISHER="$publisher_user" MQTT_E2E_PASSWORD="$publisher_password" \
             scripts/test-compose-data-plane.sh "$project"
+      # The following browser lanes use owned preview servers and API fixtures.
+      # Release the live stack's CPU/RAM after its real data-plane checks, before
+      # software-rendered maps create browser contexts on the shared runner.
+      - name: Clean up live E2E stack
+        if: always()
+        run: |
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --project-name "meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --profile dev \
+            down --volumes --remove-orphans
       - name: Install locked frontend dependencies and Playwright for E2E tests
         working-directory: frontend
         run: |
@@ -540,13 +550,6 @@ jobs:
       - name: Verify owner, region and topology browser contracts
         working-directory: frontend
         run: npm run test:browser-contracts
-      - name: Clean up live E2E stack
-        if: always()
-        run: |
-          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
-            --project-name "meshcore-ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
-            --profile dev \
-            down --volumes --remove-orphans
       - name: Test compressed-chunk maintenance safety gates
         run: scripts/test-vacuum-maintenance.sh
       - name: Test immutable release rollback and schema compatibility gates
