@@ -135,6 +135,21 @@ export function formatFeedTimestamp(ts: string): string {
   });
 }
 
+/** Suffix the backend appends to summaries it recovered from MeshOS-signed packets. */
+export const MESHOS_SIGNED_MARKER = 'MeshOS-signed (unverified)';
+
+/**
+ * Split the MeshOS marker off a feed summary so the UI can badge it separately.
+ * MeshOS writes a non-standard 2-byte tag on Public 2, so its group text is
+ * readable but unverifiable; the backend flags those summaries.
+ */
+export function splitMeshosSummary(summary: string): { text: string; meshosSigned: boolean } {
+  const index = summary.toLowerCase().lastIndexOf(MESHOS_SIGNED_MARKER.toLowerCase());
+  if (index === -1) return { text: summary, meshosSigned: false };
+  const trimmed = summary.slice(0, index).replace(/[\s·-]+$/u, '').trim();
+  return { text: trimmed || summary, meshosSigned: true };
+}
+
 export function packetSummary(packet: FeedPacket, nodeMap?: Map<string, MeshNode>): string {
   if (typeof packet.summary === 'string' && packet.summary.trim()) return packet.summary.trim();
   const payload = packet.payload ?? {};
