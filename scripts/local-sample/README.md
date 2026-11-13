@@ -32,7 +32,9 @@ not create or migrate schema: the script loads `base.sql`, bootstraps roles,
 runs the explicit migration tool, then provisions owner-auth.
 
 Logs, PIDs and synthetic fixtures are retained under ignored
-`plans/dev-stack/`. A partial startup leaves evidence for investigation.
+`plans/dev-stack/`. A failed or interrupted launch stops the processes created by
+that attempt and retains fixture data and logs for investigation. If an owned
+process fails to stop within its existing limit, its PID file is retained.
 Existing fixtures are never silently reused or deleted:
 
 ```bash
@@ -48,6 +50,11 @@ owner-auth database, and does not reload, shift or replay the fixture. A failed
 migration stops startup before the backend is launched; inspect
 `plans/dev-stack/migrate.log`. Base-schema ledger bootstrap approval is limited
 to `up` and `reset`.
+
+The startup phases keep fresh preparation separate from resuming saved data.
+Both paths migrate before building or launching the backend. Process shutdown
+checks the saved PID's exact entrypoint and treats an exited zombie as stopped;
+it never signals a process whose entrypoint does not match this checkout.
 
 ## Snapshot/API fixture
 

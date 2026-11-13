@@ -1,3 +1,25 @@
+const SPARSE_IDENTITY_CANDIDATE_LIMIT = 128;
+
+type NodeRowHydration = 'indexed-points' | 'ordered-scan';
+
+/** Candidate membership and the predicate that remains after applying it must
+ * describe the same scope. Privacy is still checked on the complete identity. */
+export type NodeCandidatePlan = {
+  idsSql: string;
+  rowHydration: NodeRowHydration;
+  afterCandidates: (alias: string) => string;
+};
+
+type PagedIdentitySourceOptions = {
+  where: string;
+  limit: string;
+  candidates?: {
+    idsSql: string;
+    projection: 'adaptive' | 'bulk';
+    rowHydration: NodeRowHydration;
+  };
+};
+
 /** The canonical view's exact representative/aggregate projection for a set of
  * candidate IDs. Filter the complete identity, never individual members, so
  * network, private-name and representative rules remain the caller's decision.
@@ -14,7 +36,8 @@ export function identityNodeSourceSql(candidateIdsSql: string): string {
  * ranking/aggregate projection only for aliases and normalisation collisions.
  * The collision branch deliberately supports legacy mixed-case/space IDs.
  */
-function identityReadParts(candidateIdsSql?: string, pointRows = false) {
+function identityReadParts(candidateIdsSql?: string, rowHydration: NodeRowHydration = 'ordered-scan') {
+  const pointRows = rowHydration === 'indexed-points';
   // With a unique stored key, a normalization collision must include a legacy
   // key. Probe that small partial index instead of grouping the entire table.
   const ctes = `WITH duplicate_ids AS MATERIALIZED (
@@ -69,10 +92,10 @@ export function candidateIdentityNodeSourceSql(candidateIdsSql: string): string 
   return `(
     WITH search_ids AS MATERIALIZED (${candidateIdsSql})
     SELECT narrow.* FROM ${identityNodeSourceSql('SELECT node_id FROM search_ids')} narrow
-      WHERE (SELECT COUNT(*) FROM search_ids) <= 128
+      WHERE (SELECT COUNT(*) FROM search_ids) <= ${SPARSE_IDENTITY_CANDIDATE_LIMIT}
     UNION ALL
     SELECT broad.* FROM ${publicIdentityNodeSourceSql('SELECT node_id FROM search_ids')} broad
-      WHERE (SELECT COUNT(*) FROM search_ids) > 128
+      WHERE (SELECT COUNT(*) FROM search_ids) > ${SPARSE_IDENTITY_CANDIDATE_LIMIT}
   )`;
 }
 
@@ -81,19 +104,19 @@ export function candidateIdentityNodeSourceSql(candidateIdsSql: string): string 
  * necessarily contained in the first k rows of each group. This also defers
  * timestamp formatting until only the requested rows remain.
  */
-export function pagedIdentityNodeSourceSql(where: string, limit: string, candidateIdsSql?: string, pointCandidates = true, pointRows = false): string {
-  const parts = identityReadParts(candidateIdsSql ? 'SELECT node_id FROM page_candidates' : undefined, pointRows);
+export function pagedIdentityNodeSourceSql({ where, limit, candidates }: PagedIdentitySourceOptions): string {
+  const parts = identityReadParts(candidates ? 'SELECT node_id FROM page_candidates' : undefined, candidates?.rowHydration);
   const page = (source: string, condition = where) => `SELECT n.* FROM (${source}) n WHERE ${condition}
     ORDER BY n.node_id LIMIT ${limit}`;
   const bulk = `${parts.ctes} (${page(parts.single)}) UNION ALL (${page(parts.multiple)})`;
-  if (!candidateIdsSql) return `(${bulk})`;
-  if (!pointCandidates) return `(WITH page_candidates AS MATERIALIZED (${candidateIdsSql})
+  if (!candidates) return `(${bulk})`;
+  if (candidates.projection === 'bulk') return `(WITH page_candidates AS MATERIALIZED (${candidates.idsSql})
     SELECT broad.* FROM (${bulk}) broad)`;
   return `(
-    WITH page_candidates AS MATERIALIZED (${candidateIdsSql})
+    WITH page_candidates AS MATERIALIZED (${candidates.idsSql})
     (${page(`SELECT * FROM ${identityNodeSourceSql('SELECT node_id FROM page_candidates')} matched`,
-      `${where} AND (SELECT COUNT(*) FROM page_candidates)<=128`)})
+      `${where} AND (SELECT COUNT(*) FROM page_candidates)<=${SPARSE_IDENTITY_CANDIDATE_LIMIT}`)})
     UNION ALL
-    SELECT broad.* FROM (${bulk}) broad WHERE (SELECT COUNT(*) FROM page_candidates)>128
+    SELECT broad.* FROM (${bulk}) broad WHERE (SELECT COUNT(*) FROM page_candidates)>${SPARSE_IDENTITY_CANDIDATE_LIMIT}
   )`;
 }

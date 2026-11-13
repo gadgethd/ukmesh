@@ -61,6 +61,15 @@ use ports 5433/6380/9002/3100; lookup qualification uses a separate database on
 5434, Redis on 6381, MQTT on 9003 and backend on 3101. Commands do not read `.env`.
 Docker must be available to the invoking shell.
 
+The isolated shell commands share their endpoint and baseline-revision settings
+in `scripts/local-sample/lookup-profile.sh`; the normal DEV configuration remains
+separate. The launcher waits for the database before querying owner-auth state,
+starts each service once per launch and removes only its own newly launched
+processes if backend or region-worker startup fails or is interrupted. Success
+requires the region worker to publish a healthy certified snapshot; its readiness
+uses the same bounded 180-attempt policy as DEV. Fixture data, startup logs and
+PID evidence for any process that fails to stop are retained.
+
 ```bash
 scripts/benchmark-lookups-local.sh prepare
 scripts/benchmark-lookups-local.sh measure baseline before
@@ -88,6 +97,13 @@ queries, configured pool sizes and production rate limits. It rotates real
 loopback client addresses while bounding active requests at one or eight.
 Fixture preparation completes before timing. The API benchmark no longer
 rewrites recent timestamps during measurement.
+
+Each trial creates and closes caches using the selected revision's production
+cache factory and freshness constants. Cache-miss runs clear those caches
+between requests; warm runs retain them. Setup failures close any allocated
+routes, loopback server, caches and database runtime. Numeric options are
+validated before loading the selected runtime. CLI options and version-1
+evidence fields are unchanged.
 
 Enabled regions need a separate run with
 `PUBLIC_FEATURE_REGION_SCOPING_ENABLED=true` for both revisions. An optional

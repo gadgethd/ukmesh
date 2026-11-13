@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import { createDatabaseRuntime, type DatabaseRuntime } from './databaseRuntime.js';
 import { dbExecutionDuration, dbPoolWaitDuration } from '../metrics/database.js';
 
@@ -9,21 +9,16 @@ const endpoint = process.env['TEST_INGEST_DATABASE_URL'];
 test('two database runtimes own independent role pools, transactions and shutdown', {
   skip: endpoint ? false : 'owned PostgreSQL fixture required', timeout: 30_000,
 }, async t => {
-  assert.ok(['localhost', '127.0.0.1'].includes(new URL(endpoint!).hostname));
-  const admin = new pg.Pool({ connectionString: endpoint, max: 1 });
-  const names = [1, 2].map(index => `runtime_factory_${process.pid}_${Date.now()}_${index}`);
+  const names: string[] = [];
   const runtimes: DatabaseRuntime[] = [];
-  t.after(async () => {
-    await Promise.all(runtimes.map(runtime => runtime.close()));
-    for (const name of names) await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
-  });
-  for (const [index, name] of names.entries()) {
-    await admin.query(`CREATE DATABASE "${name}"`);
-    const url = new URL(endpoint!); url.pathname = '/' + name;
-    runtimes.push(createDatabaseRuntime({ DATABASE_URL: url.toString(),
-      DATABASE_APPLICATION_NAME: name, DATABASE_POOL_MAX: '1', DATABASE_SCHEMA: 'public',
-      DATABASE_STATEMENT_TIMEOUT_MS: String(2_000 + index * 1_000), MQTT_INGEST_STATEMENT_TIMEOUT_MS: '200' }));
+  for (let index = 0; index < 2; index++) {
+    const fixture = await createDisposableDatabase(t, endpoint!, 'runtime_factory');
+    names.push(fixture.name);
+    const runtime = createDatabaseRuntime({ DATABASE_URL: fixture.url,
+      DATABASE_APPLICATION_NAME: fixture.name, DATABASE_POOL_MAX: '1', DATABASE_SCHEMA: 'public',
+      DATABASE_STATEMENT_TIMEOUT_MS: String(2_000 + index * 1_000), MQTT_INGEST_STATEMENT_TIMEOUT_MS: '200' });
+    fixture.addCleanup(() => runtime.close());
+    runtimes.push(runtime);
   }
   const [first, second] = runtimes as [DatabaseRuntime, DatabaseRuntime];
   const pids = new Set<number>();

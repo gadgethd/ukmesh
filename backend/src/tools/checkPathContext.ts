@@ -1,7 +1,7 @@
 /** Read-only, complete graph parity and cache-budget check on owned lookup fixtures. */
 import assert from 'node:assert/strict';
 import { writeFile } from 'node:fs/promises';
-import { loadContext } from '../path-beta/resolver.js';
+import { loadPathContext } from '../path-beta/context.js';
 import { pathContextWeight, PATH_CONTEXT_MAX_WEIGHT } from '../path-beta/contextWeight.js';
 import { undirectedLinkKey } from '../path-shared/priorKeys.js';
 import { query, closeDb } from '../db/runtime.js';
@@ -14,7 +14,7 @@ const endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
 assert.match(new URL(endpoint).pathname, /^\/lookup_(1x|10x|soak)$/);
 try {
-  const context = await loadContext('ukmesh');
+  const context = await loadPathContext('ukmesh');
   const rows = (await query<LinkMetricRow>(`SELECT nl.node_a_id, nl.node_b_id, nl.observed_count,
     nl.multibyte_observed_count, nl.itm_path_loss_db, nl.itm_viable, nl.count_a_to_b, nl.count_b_to_a
     FROM core.node_links nl JOIN core.nodes a ON a.node_id=nl.node_a_id JOIN core.nodes b ON b.node_id=nl.node_b_id

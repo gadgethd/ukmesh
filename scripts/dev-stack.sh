@@ -11,6 +11,7 @@ state="$repo/plans/dev-stack"
 mkdir -p "$state"
 chmod 700 "$state"
 compose=(docker compose -f "$repo/scripts/local-sample/compose.yml")
+source "$repo/scripts/lib/owned-processes.sh"
 action=${1:-up}
 if (($#)); then shift; fi
 data_dir= profile=ingest shift_to= redact_content=false replay_limit=20 synthetic_count=200 ingest_flush_ms=
@@ -40,42 +41,48 @@ esac
 command -v docker >/dev/null || { echo 'Docker Engine and Compose are required' >&2; exit 1; }
 docker info >/dev/null
 
+dev_entrypoint() {
+  case "$1" in
+    backend) printf '%s/backend/dist/index.js\n' "$repo" ;;
+    frontend) printf '%s/frontend/node_modules/vite/bin/vite.js\n' "$repo" ;;
+    region-snapshot) printf '%s/backend/dist/workers/region-snapshot.js\n' "$repo" ;;
+  esac
+}
+
 stop_processes() {
+  local service
   for service in region-snapshot backend frontend; do
-    if [[ -f "$state/$service.pid" ]]; then
-      pid=$(cat "$state/$service.pid")
-      # Match this service's absolute entrypoint before signalling a saved PID.
-      case "$service" in
-        backend) expected_entry="$repo/backend/dist/index.js" ;;
-        frontend) expected_entry="$repo/frontend/node_modules/vite/bin/vite.js" ;;
-        region-snapshot) expected_entry="$repo/backend/dist/workers/region-snapshot.js" ;;
-      esac
-      if [[ -r /proc/$pid/cmdline ]] && tr '\0' ' ' < "/proc/$pid/cmdline" | grep -F "$expected_entry" > /dev/null; then
-        kill "$pid" 2>/dev/null || true
-        for ((attempt=0; attempt<100; attempt++)); do
-          kill -0 "$pid" 2>/dev/null || break
-          [[ $(ps -p "$pid" -o stat= 2>/dev/null) != Z* ]] || break
-          sleep 0.1
-        done
-        if kill -0 "$pid" 2>/dev/null && [[ $(ps -p "$pid" -o stat= 2>/dev/null) != Z* ]]; then
-          echo "$service did not stop; inspect PID $pid" >&2; return 1
-        fi
-      fi
-      rm "$state/$service.pid"
-    fi
+    owned_stop_process "$state/$service.pid" "$(dev_entrypoint "$service")" 100 0.1 "$service" || return
   done
 }
+
+unwind_launch() {
+  local result=$? index service process_id
+  if (( result != 0 )); then
+    for ((index=${#launched_pids[@]}-1; index>=0; index--)); do
+      service=${launched_services[index]}; process_id=${launched_pids[index]}
+      if owned_stop_pid "$process_id" "$(dev_entrypoint "$service")" 100 0.1 "$service"; then
+        if [[ -f "$state/$service.pid" && $(cat "$state/$service.pid") == "$process_id" ]]; then rm -f -- "$state/$service.pid"; fi
+      fi
+    done
+  fi
+  return "$result"
+}
+
+resume_fixture() {
+  [[ -f "$state/fixture-ready" ]] || { echo 'No prepared fixture; use up or reset' >&2; return 1; }
+  profile=$(cat "$state/fixture-ready")
+  data_dir=$(cat "$state/data-dir")
+  if [[ -z $ingest_flush_ms && -f "$state/ingest-flush-ms" ]]; then ingest_flush_ms=$(cat "$state/ingest-flush-ms"); fi
+  stop_processes
+}
+
 case "$action" in
   status) "${compose[@]}" ps; curl --fail --silent http://127.0.0.1:3100/healthz; exit ;;
   stop) stop_processes; "${compose[@]}" stop; exit ;;
   cleanup) stop_processes; "${compose[@]}" down --volumes; rm -f "$state/fixture-ready"; exit ;;
   reset) stop_processes; "${compose[@]}" down --volumes; rm -f "$state/fixture-ready" ;;
-  start)
-    [[ -f "$state/fixture-ready" ]] || { echo 'No prepared fixture; use up or reset' >&2; exit 1; }
-    profile=$(cat "$state/fixture-ready")
-    data_dir=$(cat "$state/data-dir")
-    if [[ -z $ingest_flush_ms && -f "$state/ingest-flush-ms" ]]; then ingest_flush_ms=$(cat "$state/ingest-flush-ms"); fi
-    stop_processes ;;
+  start) resume_fixture ;;
   up)
     if [[ -f "$state/fixture-ready" ]] || [[ -n $("${compose[@]}" ps -aq) ]]; then
       echo 'An owned stack already exists; use status, or reset to explicitly discard and rebuild it.' >&2; exit 1
@@ -110,86 +117,109 @@ fi
 export UKMESH_DEV_API_TARGET=http://127.0.0.1:3100
 export VITE_BUILD_TARGET=public-website VITE_SITE=ukmesh VITE_APP_HOSTNAME=localhost
 tsx=(node --import "$repo/backend/node_modules/tsx/dist/loader.mjs")
-migration_env=()
-if [[ $action != start ]]; then
-for bootstrap in bootstrap-backend-roles.sql bootstrap-reader-roles.sql; do
+bootstrap_fixture_roles() {
+  local bootstrap
+  for bootstrap in bootstrap-backend-roles.sql bootstrap-reader-roles.sql; do
+    "${compose[@]}" exec -T db psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
+      < "$repo/scripts/$bootstrap" > "$state/$bootstrap.log"
+  done
+}
+
+migrate_fixture() {
+  local migration_env=()
+  if [[ $action != start ]]; then
+    migration_env=(MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL=bootstrap-ledger-from-base-schema)
+  fi
+  # Existing fixtures must keep their ledger; bootstrap approval is fresh-only.
+  env "${migration_env[@]}" "${tsx[@]}" "$repo/backend/src/tools/migrate.ts" \
+    > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; return 1; }
+}
+
+prepare_fresh_fixture() {
   "${compose[@]}" exec -T db psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
-    < "$repo/scripts/$bootstrap" > "$state/$bootstrap.log"
-done
-  migration_env=(MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL=bootstrap-ledger-from-base-schema)
-fi
-# An existing fixture needs the current schema too. Only new/reset fixtures may
-# bootstrap a base-schema ledger; a restart must preserve its data and ledger.
-env "${migration_env[@]}" "${tsx[@]}" "$repo/backend/src/tools/migrate.ts" \
-  > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
-if [[ $action != start ]]; then
-"${compose[@]}" exec -T db psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
-  -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
-"${compose[@]}" exec -T db createdb -U meshcore meshcore_owner_auth
-"${compose[@]}" exec -T db psql -U meshcore -d meshcore_owner_auth -v ON_ERROR_STOP=1 \
-  < "$repo/backend/src/db/owner-auth.sql" > "$state/owner-schema.log"
-: > "$state/mosquitto.log"
-if [[ -z $data_dir ]]; then
-  data_dir=$(mktemp -d "$state/synthetic.XXXXXX")
-  "${tsx[@]}" "$repo/backend/src/tools/generateSampleDataset.ts" --data-dir "$data_dir" --count "$synthetic_count"
-fi
-load_args=(--data-dir "$data_dir" --fast)
-if [[ -n $shift_to ]]; then load_args+=(--shift-to "$shift_to"); fi
-if [[ $redact_content == true ]]; then load_args+=(--redact-content); fi
-if [[ $profile == ingest ]]; then load_args+=(--omit-packets); fi
-"${tsx[@]}" "$repo/backend/src/tools/loadSampleDataset.ts" "${load_args[@]}"
-if [[ $profile == snapshot ]]; then
-  "${tsx[@]}" "$repo/backend/src/tools/refreshSampleRecent.ts"
-fi
-"${tsx[@]}" "$repo/backend/src/tools/prepareSampleDataset.ts" > "$state/prepare.log" 2>&1 || { tail -30 "$state/prepare.log" >&2; exit 1; }
-"${tsx[@]}" "$repo/backend/src/tools/backfillStatsRollups.ts" --apply --pause-ms 1 \
-  > "$state/rollups.log" 2>&1 || { tail -30 "$state/rollups.log" >&2; exit 1; }
-has_scoped=$("${compose[@]}" exec -T db psql -U meshcore -d meshcore -tAc \
-  'SELECT EXISTS (SELECT 1 FROM mesh.packets WHERE route_type IN (0, 3))')
-if [[ $has_scoped == t ]]; then
-  "${tsx[@]}" "$repo/backend/src/tools/rebuildRegionParticipation.ts" \
-    > "$state/regions.log" 2>&1 || { tail -30 "$state/regions.log" >&2; exit 1; }
-fi
-printf '%s\n' "$profile" > "$state/fixture-ready"
-printf '%s\n' "$data_dir" > "$state/data-dir"
-fi
-npm --prefix backend run build > "$state/build.log" 2>&1 || { tail -30 "$state/build.log" >&2; exit 1; }
-setsid nohup node "$repo/backend/dist/index.js" \
-  > "$state/backend.log" 2>&1 < /dev/null &
-echo $! > "$state/backend.pid"
-ready=false
-for ((attempt=0; attempt<120; attempt++)); do
-  if curl --fail --silent http://127.0.0.1:3100/healthz > /dev/null; then ready=true; break; fi
-  kill -0 "$(cat "$state/backend.pid")" 2>/dev/null || break
-  sleep 1
-done
-if [[ $ready != true ]]; then tail -40 "$state/backend.log" >&2; exit 1; fi
-if [[ $profile == ingest && $action != start && $replay_limit -gt 0 ]]; then
-  "${tsx[@]}" "$repo/backend/src/tools/smokeSampleReplay.ts" --data-dir "$data_dir" --limit "$replay_limit"
-fi
-METRICS_PORT=9092 setsid nohup node --max-old-space-size=128 "$repo/backend/dist/workers/region-snapshot.js" \
-  > "$state/region-snapshot.log" 2>&1 < /dev/null &
-echo $! > "$state/region-snapshot.pid"
-region_ready=false
-for ((attempt=0; attempt<180; attempt++)); do
-  if curl --fail --silent --max-time 2 http://127.0.0.1:9092/metrics | grep '^meshcore_region_snapshot_healthy 1$' > /dev/null; then region_ready=true; break; fi
-  kill -0 "$(cat "$state/region-snapshot.pid")" 2>/dev/null || break
-  sleep 1
-done
-if [[ $region_ready != true ]]; then tail -30 "$state/region-snapshot.log" >&2; exit 1; fi
-(
+    -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
+  "${compose[@]}" exec -T db createdb -U meshcore meshcore_owner_auth
+  "${compose[@]}" exec -T db psql -U meshcore -d meshcore_owner_auth -v ON_ERROR_STOP=1 \
+    < "$repo/backend/src/db/owner-auth.sql" > "$state/owner-schema.log"
+  : > "$state/mosquitto.log"
+  if [[ -z $data_dir ]]; then
+    data_dir=$(mktemp -d "$state/synthetic.XXXXXX")
+    "${tsx[@]}" "$repo/backend/src/tools/generateSampleDataset.ts" --data-dir "$data_dir" --count "$synthetic_count"
+  fi
+  load_args=(--data-dir "$data_dir" --fast)
+  if [[ -n $shift_to ]]; then load_args+=(--shift-to "$shift_to"); fi
+  if [[ $redact_content == true ]]; then load_args+=(--redact-content); fi
+  if [[ $profile == ingest ]]; then load_args+=(--omit-packets); fi
+  "${tsx[@]}" "$repo/backend/src/tools/loadSampleDataset.ts" "${load_args[@]}"
+  if [[ $profile == snapshot ]]; then
+    "${tsx[@]}" "$repo/backend/src/tools/refreshSampleRecent.ts"
+  fi
+  "${tsx[@]}" "$repo/backend/src/tools/prepareSampleDataset.ts" > "$state/prepare.log" 2>&1 || { tail -30 "$state/prepare.log" >&2; exit 1; }
+  "${tsx[@]}" "$repo/backend/src/tools/backfillStatsRollups.ts" --apply --pause-ms 1 \
+    > "$state/rollups.log" 2>&1 || { tail -30 "$state/rollups.log" >&2; exit 1; }
+  has_scoped=$("${compose[@]}" exec -T db psql -U meshcore -d meshcore -tAc \
+    'SELECT EXISTS (SELECT 1 FROM mesh.packets WHERE route_type IN (0, 3))')
+  if [[ $has_scoped == t ]]; then
+    "${tsx[@]}" "$repo/backend/src/tools/rebuildRegionParticipation.ts" \
+      > "$state/regions.log" 2>&1 || { tail -30 "$state/regions.log" >&2; exit 1; }
+  fi
+  printf '%s\n' "$profile" > "$state/fixture-ready"
+  printf '%s\n' "$data_dir" > "$state/data-dir"
+}
+
+launch_services() {
+  launched_pids=()
+  launched_services=()
+  trap unwind_launch EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  npm --prefix backend run build > "$state/build.log" 2>&1 || { tail -30 "$state/build.log" >&2; exit 1; }
+  setsid nohup node "$repo/backend/dist/index.js" \
+    > "$state/backend.log" 2>&1 < /dev/null &
+  launched_pids+=("$!"); launched_services+=(backend)
+  printf '%s\n' "${launched_pids[-1]}" > "$state/backend.pid"
+  ready=false
+  for ((attempt=0; attempt<120; attempt++)); do
+    owned_process_alive "${launched_pids[0]}" || break
+    if curl --fail --silent http://127.0.0.1:3100/healthz > /dev/null; then ready=true; break; fi
+    sleep 1
+  done
+  if [[ $ready != true ]]; then tail -40 "$state/backend.log" >&2; exit 1; fi
+  if [[ $profile == ingest && $action != start && $replay_limit -gt 0 ]]; then
+    "${tsx[@]}" "$repo/backend/src/tools/smokeSampleReplay.ts" --data-dir "$data_dir" --limit "$replay_limit"
+  fi
+  METRICS_PORT=9092 setsid nohup node --max-old-space-size=128 "$repo/backend/dist/workers/region-snapshot.js" \
+    > "$state/region-snapshot.log" 2>&1 < /dev/null &
+  launched_pids+=("$!"); launched_services+=(region-snapshot)
+  printf '%s\n' "${launched_pids[-1]}" > "$state/region-snapshot.pid"
+  region_ready=false
+  for ((attempt=0; attempt<180; attempt++)); do
+    owned_process_alive "${launched_pids[-1]}" || break
+    if curl --fail --silent --max-time 2 http://127.0.0.1:9092/metrics | grep '^meshcore_region_snapshot_healthy 1$' > /dev/null; then region_ready=true; break; fi
+    sleep 1
+  done
+  if [[ $region_ready != true ]]; then tail -30 "$state/region-snapshot.log" >&2; exit 1; fi
   cd "$repo/frontend"
   setsid nohup node "$repo/frontend/node_modules/vite/bin/vite.js" --host 127.0.0.1 --port 5173 --strictPort \
     > "$state/frontend.log" 2>&1 < /dev/null &
-  echo $! > "$state/frontend.pid"
-)
-for ((attempt=0; attempt<60; attempt++)); do
-  if curl --fail --silent http://127.0.0.1:5173/ > /dev/null; then
-    echo 'Local website: http://127.0.0.1:5173  API: http://127.0.0.1:3100'
-    echo "Profile: $profile. Logs and fixture evidence: $state"
-    exit 0
-  fi
-  sleep 1
-done
-tail -30 "$state/frontend.log" >&2
-exit 1
+  launched_pids+=("$!"); launched_services+=(frontend)
+  printf '%s\n' "${launched_pids[-1]}" > "$state/frontend.pid"
+  cd "$repo"
+  for ((attempt=0; attempt<60; attempt++)); do
+    owned_process_alive "${launched_pids[-1]}" || break
+    if curl --fail --silent http://127.0.0.1:5173/ > /dev/null; then
+      trap - EXIT INT TERM
+      echo 'Local website: http://127.0.0.1:5173  API: http://127.0.0.1:3100'
+      echo "Profile: $profile. Logs and fixture evidence: $state"
+      exit 0
+    fi
+    sleep 1
+  done
+  tail -30 "$state/frontend.log" >&2
+  exit 1
+}
+
+if [[ $action != start ]]; then bootstrap_fixture_roles; fi
+migrate_fixture
+if [[ $action != start ]]; then prepare_fresh_fixture; fi
+launch_services

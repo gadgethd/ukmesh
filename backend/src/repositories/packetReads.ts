@@ -11,26 +11,31 @@ import { buildScopePlaceholders } from '../db/readScope.js';
 import { buildPacketScopeClause } from '../db/readScope.js';
 import { buildPublicPacketPrivacyClause } from '../db/readScope.js';
 
-/**
- * Resolve durable decryption summaries for a bounded set of packet identities.
- *
- * `mesh.packet_decryptions` is keyed by the observation `packet_hash` that was
- * decrypted, which is not necessarily the observation the feed keeps as the
- * representative of a UID group (decryption backfill runs per stored hash, and
- * one wire content can be retained under several observation hashes). Joining
- * the decryption on the representative's exact hash therefore reports a NULL
- * summary for an identity that *is* decrypted.
- *
- * The subquery re-expands each identity to its observation hashes through
- * `mesh.packets.packet_uid` (indexed by `packets_packet_uid_idx`) and keys the
- * result with `packetIdentityKeySql`, the same expression the representative,
- * statistics and tag CTEs group by, so the summary is attributed to the identity
- * rather than to one arbitrary observation. Rows without a UID keep the hash
- * fallback identity, and `hash` read authority keeps its one-observation-per-
- * identity rollback shape untouched.
- *
- * Only identities already admitted by the caller's privacy-filtered CTE are
- * resolved, so this cannot surface a row that the representative scan excluded.
+/** Bound the representative page before aggregation without trimming any
+ * observations belonging to the selected identities. RAM reads also admit
+ * retained overlaps so their metadata can be merged without double counting.
+ */
+function recentPageSql(candidateCte: 'packet_candidates' | 'recent_msgs', overlapParam: string | null) {
+  const limit = `$1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`;
+  const overlapWhere = (alias: '' | 'm' = '') => {
+    const hash = `${alias ? `${alias}.` : ''}packet_hash`;
+    return overlapParam ? `WHERE ${hash} = ANY(${overlapParam}::text[])
+        OR ${hash} IN (SELECT packet_hash FROM ${candidateCte} ORDER BY time DESC, packet_hash LIMIT $1)` : '';
+  };
+  return {
+    selection: `SELECT * FROM ${candidateCte}
+      ${overlapWhere()}
+      ORDER BY time DESC, packet_hash
+      LIMIT ${limit}`,
+    overlapWhere,
+    limit,
+  };
+}
+
+/** Resolve sibling decryptions within the reader's time window and scope.
+ * Hash authority keeps per-observation summaries; UID authority shares them
+ * across observations of the same packet. The final join only enriches the
+ * representatives admitted by the reader's privacy-filtered candidate scan.
  */
 function identityDecryptionCteSql(cteName: string, windowSql: string, scopeClause: string): string {
   // Resolve decryptions set-based over the same bounded window the reader
@@ -68,6 +73,7 @@ export async function getRecentPackets(
   const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer, region);
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
+  const page = recentPageSql('packet_candidates', overlapParam);
   const fiveMinAgo = 'NOW() - INTERVAL \'5 minutes\'';
   const res = await readQuery(
     `WITH packet_candidates AS (
@@ -99,13 +105,7 @@ export async function getRecentPackets(
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
     recent_packets AS MATERIALIZED (
-      -- Choose the same representatives and final page before collecting
-      -- observation metadata. Keep every observation of each chosen identity.
-      SELECT * FROM packet_candidates
-      ${overlapParam ? `WHERE packet_hash = ANY(${overlapParam}::text[])
-        OR packet_hash IN (SELECT packet_hash FROM packet_candidates ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
-      ORDER BY time DESC, packet_hash
-      LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}
+      ${page.selection}
     ),
     packet_stats AS (
       SELECT
@@ -155,7 +155,7 @@ export async function getRecentPackets(
     LEFT JOIN packet_tags mt ON mt.identity_key = rp.identity_key
     LEFT JOIN identity_decryptions ids ON ids.identity_key = rp.identity_key
     ORDER BY rp.time DESC, rp.packet_hash
-    LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
+    LIMIT ${page.limit}`,
     [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],
     signal,
   );
@@ -179,6 +179,7 @@ export async function getRecentMessages(
   const includeObservationIds = getRamIngestMode() === 'ram';
   const scope = buildScopePlaceholders(2, network, observer, region);
   const overlapParam = includeObservationIds && overlapHashes.length > 0 ? `$${2 + scope.params.length}` : null;
+  const page = recentPageSql('recent_msgs', overlapParam);
   const res = await readQuery(
     `WITH recent_msgs AS (
       SELECT DISTINCT ON (${packetIdentityKeySql('p')})
@@ -205,11 +206,7 @@ export async function getRecentMessages(
                p.time DESC, p.observation_id DESC NULLS LAST
     ),
     selected_msgs AS MATERIALIZED (
-      SELECT * FROM recent_msgs
-      ${overlapParam ? `WHERE packet_hash = ANY(${overlapParam}::text[])
-        OR packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
-      ORDER BY time DESC, packet_hash
-      LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}
+      ${page.selection}
     ),
     msg_stats AS (
       SELECT
@@ -255,10 +252,9 @@ export async function getRecentMessages(
     LEFT JOIN msg_stats ms ON ms.identity_key = m.identity_key
     LEFT JOIN msg_tags mt ON mt.identity_key = m.identity_key
     LEFT JOIN message_decryptions md ON md.identity_key = m.identity_key
-    ${overlapParam ? `WHERE m.packet_hash = ANY(${overlapParam}::text[])
-      OR m.packet_hash IN (SELECT packet_hash FROM recent_msgs ORDER BY time DESC, packet_hash LIMIT $1)` : ''}
+    ${page.overlapWhere('m')}
     ORDER BY m.time DESC, m.packet_hash
-    LIMIT $1${overlapParam ? ` + CARDINALITY(${overlapParam}::text[])` : ''}`,
+    LIMIT ${page.limit}`,
     [limit, ...scope.params, ...(overlapParam ? [overlapHashes] : [])],
     signal,
   );

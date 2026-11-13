@@ -57,7 +57,7 @@ export const PATH_CACHE_POLICIES = Object.freeze({
   }),
   contextCache: defineCachePolicy({
     id: 'path_context',
-    source: 'src/path-beta/resolver.ts',
+    source: 'src/path-beta/context.ts',
     disposition: 'bounded-cache',
     name: 'path_context',
     maxEntries: 16,

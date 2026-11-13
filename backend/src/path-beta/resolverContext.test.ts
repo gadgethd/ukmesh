@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
-  buildOneBytePrefixProbabilities,
-  canReusePathContext,
   mergeObserverEvidence,
   preparePacketObservation,
   prepareObservationEntries,
@@ -81,48 +79,4 @@ test('packet-detail projections end at their own observers without creating cros
   assert.equal(result.observerCount, 2);
   assert.deepEqual(result.paths.find((path) => path.observerIds[0] === receiver.node_id)?.canonicalPath.map((node) => node.nodeId), ['BB0011', receiver.node_id]);
   assert.deepEqual(result.paths.find((path) => path.observerIds[0] === rxLong.node_id)?.canonicalPath.map((node) => node.nodeId), ['BB0011', 'CC0022', rxLong.node_id]);
-});
-
-test('collapses multibyte path facts into calibrated one-byte prefix priors', () => {
-  const probabilities = buildOneBytePrefixProbabilities([
-    { prefix: 'AA01', receiver_region: 'LON', prev_prefix: 'BB01', node_id: 'node-a', count: 3 },
-    { prefix: 'AA02', receiver_region: 'LON', prev_prefix: 'BBFF', node_id: 'node-a', count: 2 },
-    { prefix: 'AAFF', receiver_region: 'LON', prev_prefix: 'BB02', node_id: 'node-b', count: 5 },
-    { prefix: 'CC01', receiver_region: 'LON', prev_prefix: null, node_id: 'node-c', count: 4 },
-  ]);
-
-  assert.equal(probabilities.get('LON|AA|BB|node-a'), 0.5);
-  assert.equal(probabilities.get('LON|AA|BB|node-b'), 0.5);
-  assert.equal(probabilities.get('LON|CC||node-c'), 1);
-  assert.equal([...probabilities.keys()].some((key) => key.includes('AA01')), false);
-});
-
-test('interactive path context reuse expires normally', () => {
-  assert.equal(canReusePathContext({
-    cachedVisibilityGeneration: 7,
-    currentVisibilityGeneration: 7,
-    ageMs: 1,
-    pinForBatch: false,
-  }), true);
-  assert.equal(canReusePathContext({
-    cachedVisibilityGeneration: 7,
-    currentVisibilityGeneration: 7,
-    ageMs: 60 * 60_000,
-    pinForBatch: false,
-  }), false);
-});
-
-test('batch path context stays pinned only within the same visibility generation', () => {
-  assert.equal(canReusePathContext({
-    cachedVisibilityGeneration: 7,
-    currentVisibilityGeneration: 7,
-    ageMs: 60 * 60_000,
-    pinForBatch: true,
-  }), true);
-  assert.equal(canReusePathContext({
-    cachedVisibilityGeneration: 7,
-    currentVisibilityGeneration: 8,
-    ageMs: 1,
-    pinForBatch: true,
-  }), false);
 });

@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import { createDatabaseRuntime } from './databaseRuntime.js';
 import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from './fixtures/baseSchema.js';
 import { persistEntriesCore } from './packetBatch.js';
@@ -12,14 +13,13 @@ const endpoint = process.env['TEST_INGEST_DATABASE_URL'];
 test('prepared packet batches preserve fresh values, privacy generations, chunk routing and idempotent replay', {
   skip: endpoint ? false : 'owned PostgreSQL fixture required', timeout: 120_000,
 }, async t => {
-  assert.ok(['localhost', '127.0.0.1'].includes(new URL(endpoint!).hostname));
-  const admin = new pg.Pool({ connectionString: endpoint, max: 1 });
-  const name = `prepared_batch_${process.pid}_${Date.now()}`, url = new URL(endpoint!); url.pathname = '/' + name;
-  await admin.query(`CREATE DATABASE ${name}`);
-  const pool = new pg.Pool({ connectionString: url.href, max: 2, options: POST_MOVE_SEARCH_PATH });
-  const runtime = createDatabaseRuntime({ DATABASE_URL: url.href, DATABASE_POOL_MAX: '1' });
+  const fixture = await createDisposableDatabase(t, endpoint!, 'prepared_batch');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 2, options: POST_MOVE_SEARCH_PATH });
+  fixture.addCleanup(() => pool.end());
+  const runtime = createDatabaseRuntime({ DATABASE_URL: fixture.url, DATABASE_POOL_MAX: '1' });
+  fixture.addCleanup(() => runtime.close());
   let reserved: pg.PoolClient | undefined;
-  t.after(async () => { reserved?.release(); await runtime.close(); await pool.end(); await admin.query(`DROP DATABASE ${name} WITH (FORCE)`); await admin.end(); });
+  fixture.addCleanup(() => { reserved?.release(); });
   await bootstrapBaseSchemaFixture(pool);
   for (const prefix of ['AA', 'BB', 'CC']) await pool.query(`INSERT INTO core.nodes(node_id,name,lat,lon,role,network)
     VALUES($1,'Invented prepared-batch relay',52,-1,2,'ukmesh')`, [prefix.repeat(32)]);

@@ -2,13 +2,13 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
 import pg from 'pg';
+import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
 import { bootstrapBaseSchemaFixture } from '../db/fixtures/baseSchema.js';
-import { identityNodeSourceSql, publicIdentityNodeSourceSql } from '../nodes/identitySource.js';
+import { identityNodeSourceSql, publicIdentityNodeSourceSql, pagedIdentityNodeSourceSql } from '../nodes/identitySource.js';
 import { mapVisiblePredicate } from '../nodes/publicMap.js';
 import { nodeEffectiveLastSeenSql, nodeEffectiveOnlineSql } from '../nodes/presence.js';
 import { networkFilters, nodeAliasArraySql, publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
-import { assertLocalDatabaseUrl } from '../tools/sampleData.js';
 import { createNodeRepository } from './nodes.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
@@ -16,12 +16,9 @@ const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 test('indexed node projections and search retain canonical view results for aliases, collisions and scopes', {
   skip: endpoint ? false : 'owned PostgreSQL fixture required', timeout: 180_000,
 }, async t => {
-  assertLocalDatabaseUrl(endpoint!);
-  const admin = new pg.Pool({ connectionString: endpoint, max: 1 });
-  const name = `lookup_parity_${process.pid}_${Date.now()}`, url = new URL(endpoint!); url.pathname = '/' + name;
-  await admin.query(`CREATE DATABASE ${name}`);
-  const pool = new pg.Pool({ connectionString: url.href, max: 2 });
-  t.after(async () => { await pool.end(); await admin.query(`DROP DATABASE ${name} WITH (FORCE)`); await admin.end(); });
+  const fixture = await createDisposableDatabase(t, endpoint!, 'lookup_parity');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 2 });
+  fixture.addCleanup(() => pool.end());
   await bootstrapBaseSchemaFixture(pool);
   const query = <T extends pg.QueryResultRow>(sql: string, params?: unknown[]) => pool.query<T>(sql, params);
   const key = (hex: string) => hex.repeat(64);
@@ -70,6 +67,30 @@ test('indexed node projections and search retain canonical view results for alia
   const scoped = (await pool.query(`SELECT * FROM ${identityNodeSourceSql('SELECT unnest($1::text[]) AS node_id')} n
     ORDER BY node_id`, [original.map(row => row.node_id).concat(key('F'))])).rows;
   assert.deepEqual(scoped, original, 'scoped hydration includes absent canonical rows and one-hop alias chains');
+  const priorityIds = [key('1'), key('4'), key('7'), key('A')];
+  const availableIds = new Set(original.map(row => row.node_id));
+  const boundaryIds = [...new Set([...priorityIds.filter(id => availableIds.has(id)), ...availableIds])];
+  for (const count of [127, 128, 129]) {
+    const ids = boundaryIds.slice(0, count);
+    assert.equal(ids.length, count);
+    for (const projection of ['adaptive', 'bulk'] as const) {
+      for (const rowHydration of ['indexed-points', 'ordered-scan'] as const) {
+        for (const pageSize of [20, count + 1]) {
+          const parameters = [ids, key('1'), pageSize];
+          const source = pagedIdentityNodeSourceSql({
+            where: 'n.node_id > $2', limit: '$3',
+            candidates: { idsSql: 'SELECT unnest($1::text[]) AS node_id', projection, rowHydration },
+          });
+          const actual = await pool.query(`SELECT * FROM ${source} n ORDER BY node_id LIMIT $3`, parameters);
+          const expected = await pool.query(`SELECT * FROM core.node_identity_nodes
+            WHERE node_id=ANY($1::text[]) AND node_id>$2 ORDER BY node_id LIMIT $3`, parameters);
+          assert.deepEqual(actual.rows, expected.rows,
+            `complete canonical rows at ${count} candidates/${projection}/${rowHydration}/limit ${pageSize}`);
+        }
+      }
+    }
+  }
+
   await pool.query(`CREATE SCHEMA lookup_shadow;
     CREATE FUNCTION lookup_shadow.upper(text) RETURNS text LANGUAGE sql AS $$ SELECT 'wrong'::text $$`);
   const shadowClient = await pool.connect();

@@ -15,6 +15,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import type { QueryResultRow } from 'pg';
 import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import type { QueryFn } from './packetBatch.js';
@@ -119,22 +120,9 @@ const uidBytes = (seed: string) => Buffer.from(seed.repeat(64 / seed.length), 'h
 test('getRecentPackets resolves decryptions from a sibling observation of the same UID', {
   skip: isLoopback(databaseUrl) ? false : SKIP_REASON,
 }, async (t) => {
-  const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
-  const name = `meshcore_identity_audit_${process.pid}_${Date.now()}`;
-  await admin.query(`CREATE DATABASE "${name}"`);
-  const owned = new URL(databaseUrl!);
-  owned.pathname = `/${name}`;
-  const client = new pg.Client({ connectionString: owned.toString() });
-  t.after(async () => {
-    try {
-      // Pool.end() can resolve before its clients finish disconnecting. Await the
-      // fixture connection's socket close before dropping its owned database.
-      await client.end();
-      await admin.query(`DROP DATABASE IF EXISTS "${name}"`);
-    } finally {
-      await admin.end();
-    }
-  });
+  const fixture = await createDisposableDatabase(t, databaseUrl!, 'meshcore_identity_audit');
+  const client = new pg.Client({ connectionString: fixture.url });
+  fixture.addCleanup(() => client.end());
   await client.connect();
 
   await client.query(FIXTURE_SCHEMA);

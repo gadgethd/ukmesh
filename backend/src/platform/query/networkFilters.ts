@@ -1,6 +1,7 @@
 import { UKMESH_NETWORKS, UKMESH_NETWORK_SQL_LIST } from '../../networks.js';
 import { regionMemberIdsSql } from '../../regions/filter.js';
 import { regionNodeSourceSql } from '../../regions/nodeSource.js';
+import type { NodeCandidatePlan } from '../../nodes/identitySource.js';
 
 /** The caller-supplied network/observer scope, structurally satisfied by the
  * HTTP visibility scope without this query layer depending on HTTP types. */
@@ -9,15 +10,11 @@ export type NetworkFilterScope = { network?: string; observer?: string };
 export type NetworkFilters = {
   params: unknown[];
   nodeSource?: string;
-  /** Candidate identities only; callers must still apply nodesAlias to the
-   * complete canonical projection and retain the current privacy authority. */
-  nodeIds?: string;
-  nodeIdsAreSparse?: boolean;
+  nodeCandidates?: NodeCandidatePlan;
   packets: string;
   packetsAlias: (alias: string) => string;
   nodes: string;
   nodesAlias: (alias: string) => string;
-  nodesAfterCandidatesAlias?: (alias: string) => string;
 };
 
 /** Resolve one requested identity into its canonical id and every stored alias.
@@ -223,12 +220,15 @@ export function networkFilters(
     }
     return conditions;
   };
+  const nodeCandidates: NodeCandidatePlan | undefined = nodeIds ? {
+    idsSql: nodeIds,
+    rowHydration: observerParam ? 'indexed-points' : 'ordered-scan',
+    afterCandidates: (alias: string) => `AND ${nodeConditions(alias, true).join(' AND ')}`,
+  } : undefined;
 
   return {
     params,
-    ...(nodeIds ? { nodeIds } : {}),
-    ...(observerParam ? { nodeIdsAreSparse: true } : {}),
-    nodesAfterCandidatesAlias: (alias: string) => `AND ${nodeConditions(alias, Boolean(nodeIds)).join(' AND ')}`,
+    ...(nodeCandidates ? { nodeCandidates } : {}),
     ...(regionParam ? { nodeSource: regionNodeSourceSql(regionParam) } : {}),
     packets: packetConditions.length > 0 ? `AND ${packetConditions.join(' AND ')}` : '',
     packetsAlias: (alias: string) => {

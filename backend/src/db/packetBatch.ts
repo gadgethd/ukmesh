@@ -1,4 +1,5 @@
 import type { DatabaseQueryFn } from './contracts.js';
+import { FIXED_PREPARED_STATEMENTS } from './preparedStatements.js';
 import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import { packetBatchDedupeTotal, packetBatchDuration, packetBatchFlushTotal, packetBatchQueueDepth, packetBatchQueueWait, packetBatchRetryTotal, packetBatchSize, packetBatchWriterContentionTotal } from '../metrics/ingest.js';
 import { privacyFilterTotal } from '../metrics/privacy.js';
@@ -694,7 +695,9 @@ export async function persistEntriesCore(
        ORDER BY row_id`,
       params,
       undefined,
-      entries.length === 1 ? (idempotent ? 'packet_batch_single_idempotent_v1' : 'packet_batch_single_v1') : undefined,
+      entries.length === 1
+        ? (idempotent ? FIXED_PREPARED_STATEMENTS.packetBatchSingleIdempotent : FIXED_PREPARED_STATEMENTS.packetBatchSingle)
+        : undefined,
     );
     if (result.rows.length !== entries.length) throw new Error('PACKET_BATCH_RESULT_MISMATCH');
     return result.rows;

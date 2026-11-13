@@ -212,9 +212,10 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         : `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
           FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
             ON a.source_node_id = UPPER(BTRIM(raw.node_id))`;
-      const candidateIds = filters.nodeIds
-        ? (narrowSearch ? `SELECT node_id FROM (${filters.nodeIds}) scope_ids
-            WHERE node_id IN (${candidates})` : filters.nodeIds)
+      const scopedCandidates = filters.nodeCandidates;
+      const candidateIds = scopedCandidates
+        ? (narrowSearch ? `SELECT node_id FROM (${scopedCandidates.idsSql}) scope_ids
+            WHERE node_id IN (${candidates})` : scopedCandidates.idsSql)
         : narrowSearch ? candidates : undefined;
       const searchCondition = search ? `AND (
         STRPOS(LOWER(COALESCE(n.name, '')), LOWER(${searchParameter})) > 0
@@ -232,11 +233,18 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
       )` : '';
       const where = `${mapVisiblePredicate('n', `$${snapshotParameter}::timestamptz`)}
         AND NOT EXISTS (SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id)
-        ${filters.nodesAfterCandidatesAlias?.('n') ?? filters.nodesAlias('n')}
+        ${scopedCandidates?.afterCandidates('n') ?? filters.nodesAlias('n')}
         ${searchCondition}
         AND ($${cursorParameter}::text IS NULL OR n.node_id>$${cursorParameter})`;
-      const source = pagedIdentityNodeSourceSql(where, `$${limitParameter}`, candidateIds,
-        Boolean(narrowSearch), filters.nodeIdsAreSparse);
+      const source = pagedIdentityNodeSourceSql({
+        where,
+        limit: `$${limitParameter}`,
+        candidates: candidateIds ? {
+          idsSql: candidateIds,
+          projection: narrowSearch ? 'adaptive' : 'bulk',
+          rowHydration: scopedCandidates?.rowHydration ?? 'ordered-scan',
+        } : undefined,
+      });
       const selectedFields = fields
         .map((field) => {
           if (field === 'last_seen') {

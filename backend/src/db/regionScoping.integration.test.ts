@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import { getNodes } from '../repositories/nodeReads.js';
 import { getRecentMessages, getRecentPackets, getRecentPacketEvents } from '../repositories/packetReads.js';
 import { getMultibytePathSegments, getViableLinks } from '../repositories/topologyReads.js';
@@ -17,20 +18,13 @@ const local = url && ['localhost', '127.0.0.1'].includes(new URL(url).hostname);
 test('region reads preserve identity/privacy semantics and use indexes in real PostgreSQL plans', {
   skip: local ? false : 'disposable loopback PostgreSQL fixture required', timeout: 120_000,
 }, async (t) => {
-  const admin = new pg.Pool({ connectionString: url, max: 1 });
-  const name = `meshcore_regions_${process.pid}_${Date.now()}`;
-  await admin.query(`CREATE DATABASE "${name}"`);
-  const owned = new URL(url!);
-  owned.pathname = `/${name}`;
-  const pool = new pg.Pool({ connectionString: owned.toString(), max: 2, options: POST_MOVE_SEARCH_PATH });
-  // Capture the original method before redirecting application pools to our fixture.
-  const query = pool.query.bind(pool);
+  const fixture = await createDisposableDatabase(t, url!, 'meshcore_regions');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 2, options: POST_MOVE_SEARCH_PATH });
+  fixture.addCleanup(() => pool.end());
+  const query = <T extends pg.QueryResultRow = pg.QueryResultRow>(sql: string, params?: unknown[]) => pool.query<T>(sql, params);
   const previousMode = process.env['MQTT_INGEST_MODE'];
-  t.after(async () => {
+  fixture.addCleanup(() => {
     t.mock.restoreAll();
-    await pool.end();
-    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    await admin.end();
     if (previousMode === undefined) delete process.env['MQTT_INGEST_MODE'];
     else process.env['MQTT_INGEST_MODE'] = previousMode;
   });
