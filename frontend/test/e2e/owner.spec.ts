@@ -82,6 +82,8 @@ test('unlinked owner sees the broker denial fix and can open the exact setup sec
   await page.getByRole('button', { name: 'Login', exact: true }).click();
   const error = page.getByRole('alert').filter({ hasText: 'The broker denied' });
   await expect(error).toContainText('meshcore/{IATA}/{PUBLIC_KEY}/packets');
+  await expect(page.getByLabel('MQTT username', { exact: true })).toHaveValue('unlinked-owner');
+  await expect(page.getByLabel('MQTT password', { exact: true })).toHaveValue('fixture-password');
   await expect(page.getByRole('heading', { name: 'Repeater owner dashboard' })).toHaveCount(0);
   await error.getByRole('link', { name: 'MQTT setup and troubleshooting' }).click();
   await expect(page).toHaveURL(/\/install#mqtt-observer$/);

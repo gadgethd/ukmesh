@@ -39,6 +39,7 @@ export const RegionsPage: React.FC = () => {
   const [unattributedPayload, setUnattributedPayload] = useState<UnattributedPayload | null>(null);
   const [unnamedVisible, setUnnamedVisible] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [shapesVisible, setShapesVisible] = useState(true);
@@ -85,7 +86,7 @@ export const RegionsPage: React.FC = () => {
         if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
       });
     return () => controller.abort();
-  }, [network, observer, privacyGeneration]);
+  }, [network, observer, privacyGeneration, attempt]);
 
   const regions = useMemo(() => summary?.regions ?? [], [summary]);
   const displayRegions = useMemo(
@@ -235,18 +236,17 @@ export const RegionsPage: React.FC = () => {
         </div>
       </header>
 
-      {error && <div className="regions-page__error" role="alert">{error}</div>}
+      {error && <div className="regions-page__error" role="alert"><p>{error}</p><button type="button" className="site-btn site-btn--ghost" onClick={() => setAttempt(value => value + 1)}>Retry regions</button></div>}
       {!summary && !error && <div className="regions-page__pending"><LoadingIndicator label="Loading region scoping…" variant="inline" /></div>}
 
       {summary && (
         <>
           <div className="regions-page__stats">
-            <div><strong>{stats.regions}</strong><span>observed regions</span></div>
-            <div><strong>{compactNumber(stats.scopedPackets)}</strong><span>scoped packets</span></div>
-            <div><strong>{compactNumber(stats.green)}</strong><span>region-capable nodes</span></div>
-            <div><strong>{compactNumber(stats.red)}</strong><span>no scoped relay observed</span></div>
-            <div><strong>{compactNumber(stats.memberships)}</strong><span>relay memberships</span></div>
-            <div><strong>{compactNumber(stats.unnamedClusters)}</strong><span>unnamed footprints</span></div>
+            {[
+              ['observed regions', stats.regions], ['scoped packets', compactNumber(stats.scopedPackets)],
+              ['region-capable nodes', compactNumber(stats.green)], ['no scoped relay observed', compactNumber(stats.red)],
+              ['relay memberships', compactNumber(stats.memberships)], ['unnamed footprints', compactNumber(stats.unnamedClusters)],
+            ].map(([label, value]) => <div key={label}><strong>{value}</strong><span>{label}</span></div>)}
           </div>
 
           <div className="regions-page__workspace">

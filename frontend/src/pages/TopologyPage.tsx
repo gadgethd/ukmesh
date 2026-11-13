@@ -61,6 +61,7 @@ export const TopologyPage: React.FC = () => {
   const observer = site.observerId;
   const [payload, setPayload] = useState<TopologyPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
   const [strongOnly, setStrongOnly] = useState(false);
   const [rfValidation, setRfValidation] = useState<RfValidationPayload | null>(null);
@@ -84,7 +85,7 @@ export const TopologyPage: React.FC = () => {
         if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
       });
     return () => controller.abort();
-  }, [network, observer, privacyGeneration]);
+  }, [network, observer, privacyGeneration, attempt]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -149,7 +150,7 @@ export const TopologyPage: React.FC = () => {
         </label>
       </header>
 
-      {error && <div className="topology-page__error" role="alert">{error}</div>}
+      {error && <div className="topology-page__error" role="alert"><p>{error}</p><button type="button" className="site-btn site-btn--ghost" onClick={() => setAttempt(value => value + 1)}>Retry topology</button></div>}
       {!payload && !error && <div className="topology-page__pending"><LoadingIndicator label="Loading network topology…" variant="inline" /></div>}
 
       {payload && (

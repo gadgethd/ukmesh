@@ -462,6 +462,18 @@
   text-overflow: ellipsis;
 }
 
+.uk-feed-packet-activate {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
 .uk-feed-packet-row {
   padding: 8px 12px;
   border: none;
@@ -501,6 +513,7 @@
 }
 
 .uk-feed-packet-row__summary {
+  display: block;
   margin: 3px 0 0;
   font-size: 13px;
   color: var(--text-primary);
@@ -1000,6 +1013,7 @@
   }
 
   html .uk-feed-chat {
+    grid-row: 3;
     width: 100%;
     min-height: max(360px, calc(100dvh - 260px));
     max-height: none;
@@ -1043,8 +1057,11 @@
   }
 
   html .uk-feed-right {
-    display: none;
+    display: contents;
   }
+  html .uk-feed-right > .uk-feed-map { display: none; }
+  html .uk-feed-right > .uk-feed-stats { grid-row: 2; padding: 8px 12px; }
+  html .uk-feed-right > .uk-feed-stats > :is(.uk-feed-stats__selected, .uk-feed-stats__latest) { display: none; }
 
   html .uk-feed-mobile-stats {
     display: block;
@@ -1157,7 +1174,7 @@
     font-size: 0.8rem;
   }
   .uk-feed-right {
-    display: none;
+    display: contents;
   }
   .uk-feed-mobile-stats {
     display: block;

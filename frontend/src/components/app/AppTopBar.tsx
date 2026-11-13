@@ -1,11 +1,16 @@
 import React from 'react';
 import { StatsPanel } from '../StatsPanel/StatsPanel.js';
-import type { WSReadyState } from '../../features/realtime/protocol.js';
+import type { WSConnectionState } from '../../features/realtime/protocol.js';
+import { ConnectionStatus } from './ConnectionStatus.js';
 import type { DashboardStats } from '../../hooks/useDashboardStats.js';
 
 type AppTopBarProps = {
   homeUrl: string;
-  wsState: WSReadyState;
+  connection: WSConnectionState;
+  hasData: boolean;
+  refreshedAt: number | null;
+  refreshing: boolean;
+  refreshFailed: boolean;
   onShowDisclaimer: () => void;
   stats: DashboardStats;
   mapLight: boolean;
@@ -17,15 +22,6 @@ type AppTopBarProps = {
   onToggleContrast: () => void;
   regionSelector?: React.ReactNode;
 };
-
-const ConnIndicator: React.FC<{ state: WSReadyState }> = ({ state }) => (
-  <div className="conn-indicator" role="status" aria-live="polite" aria-label={`Live connection: ${state}`}>
-    <span className={`conn-dot ${state === 'connected' ? 'conn-dot--connected' : ''}`} />
-    <span style={{ color: state === 'connected' ? 'var(--online)' : 'var(--text-muted)' }}>
-      {state === 'connected' ? 'LIVE' : state === 'connecting' ? 'CONNECTING' : 'OFFLINE'}
-    </span>
-  </div>
-);
 
 const MeshIcon: React.FC = () => (
   <svg viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -41,7 +37,7 @@ const MeshIcon: React.FC = () => (
 
 export const AppTopBar: React.FC<AppTopBarProps> = ({
   homeUrl,
-  wsState,
+  connection, hasData, refreshedAt, refreshing, refreshFailed,
   onShowDisclaimer,
   stats,
   mapLight,
@@ -64,7 +60,7 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
       Live Map
     </div>
     <div className="topbar__divider" />
-    <ConnIndicator state={wsState} />
+    <ConnectionStatus connection={connection} hasData={hasData} refreshedAt={refreshedAt} refreshing={refreshing} failed={refreshFailed} />
     {regionSelector}
     <button
       type="button"

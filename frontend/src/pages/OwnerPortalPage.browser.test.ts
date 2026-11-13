@@ -258,3 +258,45 @@ browserTest('a delayed CSRF lookup cannot submit an unmounted owner action under
     assert.deepEqual(errors, []);
   } finally { await browser.close(); }
 });
+
+for (const target of ['packet-sharing', 'public-feed'] as const) {
+  browserTest(`failed ${target} saves retain the draft through polling and confirm only after retry`, { timeout: 35_000 }, async () => {
+    let writes = 0, reads = 0, confirmed = false;
+    const { browser, page, errors } = await setup(async route => { await route.fulfill({ json: live() }); }, async route => {
+      const path = new URL(route.request().url()).pathname;
+      if (path === '/api/owner/csrf') { await route.fulfill({ json: { csrfToken: 'fixture-csrf' } }); return true; }
+      if (path !== `/api/owner/${target}`) return false;
+      if (route.request().method() === 'POST') {
+        writes++;
+        if (writes === 1) { await route.fulfill({ status: 503, json: { error: 'Save unavailable' } }); return true; }
+        confirmed = true;
+        await route.fulfill({ json: target === 'packet-sharing'
+          ? { nodeId: first, enabled: true, destinationIds: ['relaylens'] }
+          : publicFeedSettings(true) });
+      } else {
+        reads++;
+        await route.fulfill({ json: target === 'packet-sharing' ? sharingSettings(first, confirmed ? ['relaylens'] : []) : publicFeedSettings(confirmed) });
+      }
+      return true;
+    });
+    try {
+      await page.goto(`${base}/login`);
+      const section = page.getByRole('region', { name: target === 'packet-sharing' ? 'Share packets' : 'Public feed', exact: true });
+      const toggle = section.getByRole('switch').first();
+      await expect(toggle).not.toBeChecked();
+      await toggle.check();
+      await expect(section.getByRole('alert')).toContainText('Your selection is kept');
+      await expect(toggle).toBeChecked();
+      await expect(section.getByText(target === 'packet-sharing' ? 'Packet sharing is off' : 'Public feed is off', { exact: true })).toBeVisible();
+      const before = reads;
+      await expect.poll(() => reads, { timeout: 12_000 }).toBeGreaterThan(before);
+      await expect(toggle).toBeChecked();
+      await expect(section.getByRole('alert')).toContainText('Your selection is kept');
+      await section.getByRole('button', { name: 'Retry saving', exact: true }).click();
+      await expect.poll(() => writes).toBe(2);
+      await expect(section.getByRole('alert')).toHaveCount(0);
+      await expect(section.getByText(target === 'packet-sharing' ? '1 site enabled' : 'Public feed is on', { exact: true })).toBeVisible();
+      assert.deepEqual(errors, []);
+    } finally { await browser.close(); }
+  });
+}

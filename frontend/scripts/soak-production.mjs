@@ -126,8 +126,9 @@ if (!Number.isFinite(maximumHeapGrowth) || maximumHeapGrowth < 0 || maximumHeapG
 }
 
 const browser = await chromium.launch({
+  executablePath: process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH,
   headless: true,
-  args: ['--enable-precise-memory-info'],
+  args: ['--enable-precise-memory-info', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
 });
 const context = await browser.newContext({
   viewport: { width: 1440, height: 900 },

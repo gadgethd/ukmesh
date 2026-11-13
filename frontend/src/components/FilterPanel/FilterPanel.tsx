@@ -21,31 +21,9 @@ interface FilterPanelProps {
   nodeOpen?: boolean;
 }
 
-type FilterRow = {
-  key: keyof Filters;
-  label: string;
-  color: string;
-  hollow?: boolean;
-  requiresRfCoverage?: boolean;
-};
-
-export const FILTER_ROWS: FilterRow[] = [
-  { key: 'livePackets',  label: 'Live Feed',        color: '#00c4ff' },
-  { key: 'terrain',      label: '3D Terrain',       color: '#60a5fa' },
-  { key: 'coverage',     label: 'RF Coverage',      color: '#22c55e', requiresRfCoverage: true },
-  { key: 'packetHistory', label: 'Paths',            color: '#00c4ff', hollow: true },
-  { key: 'heatmap',       label: 'Packet Heatmap',   color: '#ef4444' },
-  { key: 'betaPaths',    label: 'Live Path',         color: '#a855f7', hollow: true },
-  { key: 'hexClashes',   label: 'Hex Clashes',      color: '#f97316' },
-  { key: 'clientNodes',  label: 'Companion / Room', color: '#ff9800' },
-];
-
-export const visibleFilterRows = (
-  heatmapEnabled: boolean,
-  rfCoverageEnabled = false,
-): FilterRow[] =>
-  FILTER_ROWS.filter(({ key, requiresRfCoverage }) =>
-    (key !== 'heatmap' || heatmapEnabled) && (!requiresRfCoverage || rfCoverageEnabled));
+import { visibleFilterRows } from '../../features/map/layers.js';
+import { MapLayerOptions } from '../app/MapLayerOptions.js';
+export { FILTER_ROWS, visibleFilterRows } from '../../features/map/layers.js';
 
 const activeLayerCount = (filters: Filters, heatmapEnabled: boolean, rfCoverageEnabled: boolean): number =>
   visibleFilterRows(heatmapEnabled, rfCoverageEnabled).reduce(
@@ -65,9 +43,6 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
   const resolvedConfidence = liveBetaPathConfidence;
   const resolvedPermutations = liveBetaPermutationCount;
   const resolvedRemainingHops = liveBetaRemainingHops;
-  const toggle = (key: keyof Filters) => {
-    onChange({ ...filters, [key]: !filters[key] });
-  };
 
   if (collapsed) {
     const count = activeLayerCount(filters, heatmapEnabled, rfCoverageEnabled);
@@ -130,51 +105,8 @@ export const FilterPanel: React.FC<FilterPanelProps> = ({
           )}
         </div>
       )}
-      {visibleFilterRows(heatmapEnabled, rfCoverageEnabled).map(({ key, label, color, hollow }) => (
-        <React.Fragment key={key}>
-          <button
-            type="button"
-            className="filter-row"
-            onClick={() => toggle(key)}
-            aria-pressed={filters[key] as boolean}
-          >
-            <span className="filter-row__label">
-              {hollow ? (
-                <span
-                  className="filter-dot filter-dot--hollow"
-                  style={{
-                    borderColor: color,
-                    opacity:     filters[key] ? 1 : 0.4,
-                  }}
-                />
-              ) : (
-                <span className="filter-dot" style={{ background: color, opacity: filters[key] ? 1 : 0.3 }} />
-              )}
-              {label}
-            </span>
-            <span className={`filter-toggle ${filters[key] ? 'filter-toggle--on' : ''}`}
-                  style={filters[key] ? { background: `${color}22`, borderColor: color } : {}}
-            />
-          </button>
-          {key === 'hexClashes' && filters.hexClashes && (
-            <div className="filter-slider" onClick={(e) => e.stopPropagation()}>
-              <label className="filter-slider__label" htmlFor="desktop-hex-clash-hops">
-                Hex clash hops: {Math.round(filters.hexClashMaxHops)}
-              </label>
-              <input
-                id="desktop-hex-clash-hops"
-                className="filter-slider__input"
-                type="range"
-                min={0}
-                max={3}
-                step={1}
-                value={Math.round(filters.hexClashMaxHops)}
-                onChange={(e) => onChange({ ...filters, hexClashMaxHops: Number(e.target.value) })}
-              />
-            </div>
-          )}
-        </React.Fragment>
-      ))}
+      <MapLayerOptions filters={filters} onChange={onChange}
+        heatmapEnabled={heatmapEnabled} rfCoverageEnabled={rfCoverageEnabled} />
     </div>
   );
 };

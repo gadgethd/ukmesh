@@ -237,6 +237,7 @@ test('mobile map menu floats over the map; feed hides behind the Live chip', asy
   await page.getByRole('button', { name: /Layers/ }).click();
   await expect(page.locator('.mobile-menu')).toBeVisible();
   const terrain = page.getByRole('button', { name: '3D Terrain' });
+  await page.locator('.mobile-menu .map-advanced-layers > summary').click();
   await expect(terrain).toBeVisible();
   await terrain.click();
   await expect(terrain).toHaveAttribute('aria-pressed', 'true');
@@ -247,7 +248,7 @@ test('mobile map menu floats over the map; feed hides behind the Live chip', asy
   await expectNoViewportOverflow(page);
 });
 
-for (const width of [320, 375, 640, 768, 1024, 1280, 1440]) {
+for (const width of [320, 375, 390, 640, 768, 820, 1024, 1280, 1440]) {
   test(`live map stays inside the ${width}px viewport and remains UK-only`, async ({ page }) => {
     test.setTimeout(60_000);
     await installApiFixtures(page);

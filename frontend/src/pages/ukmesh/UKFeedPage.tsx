@@ -1,6 +1,6 @@
 import { POLLING } from '../../config/polling.js';
 import { parseStatsSection } from '../../features/stats/sections.js';
-import React, { useMemo, useEffect, useState, useRef } from 'react';
+import React, { useMemo, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
 import { useWebSocket } from '../../hooks/useWebSocket.js';
@@ -15,7 +15,6 @@ import {
 import { mapMessageRows, type RecentPacketRow } from '../../features/packets/liveFeed.js';
 import { useAppMessageHandler } from '../../hooks/useAppMessageHandler.js';
 import { useMessageTags } from '../../hooks/useMessageTags.js';
-import { messageTagKind, messageTagTitle } from '../../features/packets/liveFeed.js';
 import {
   fetchJson,
   uncachedEndpoint,
@@ -23,10 +22,12 @@ import {
 } from '../../utils/api.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
 import { useVisibilityPoll } from '../../hooks/useVisibilityPoll.js';
-import { useMeasuredVirtualRows } from '../../hooks/useMeasuredVirtualRows.js';
-import { FeedMapPanel } from './FeedPathViews.js';
+import { useMediaQuery } from '../../hooks/useMediaQuery.js';
+import { FeedPacketRows } from './FeedPacketRows.js';
+import { FeedLiveStatus } from './FeedLiveStatus.js';
+import { LoadingIndicator } from '../../components/LoadingIndicator.js';
+import { FeedMapPanel, SelectedPacketSummary } from './FeedPathViews.js';
 import { FeedDialogs } from './FeedDialogs.js';
-import { timeAgo } from '../../utils/time.js';
 import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
 import { useFeedPathSelection } from '../../hooks/useFeedPathSelection.js';
 import {
@@ -34,7 +35,6 @@ import {
   MAX_PACKETS,
   aggregatedPacketToFeedPacket,
   mergeFeedPacketObservations,
-  formatFeedTimestamp,
   packetMatchesMessageScope,
   packetObserverIatas,
   packetObserverIds,
@@ -43,9 +43,6 @@ import {
   type MessageScope,
 } from '../../features/packets/feedModel.js';
 import {
-  feedConnectionDot,
-  feedConnectionLabel,
-  feedConnectionStatus,
   validatedRegionSelection,
 } from '../../features/packets/feedState.js';
 
@@ -72,17 +69,21 @@ export const UKFeedPage: React.FC = () => {
     const requested = new URLSearchParams(window.location.search).get('type')?.trim().toLowerCase();
     return requested && (/^(?:[0-9]{1,3}|unknown)$/.test(requested)) ? requested : null;
   });
-  const [now, setNow] = useState(() => Date.now());
+  const compact = useMediaQuery('(max-width: 860px)');
   const [detailOpen, setDetailOpen] = useState(false);
-  const [historicalMessages, setHistoricalMessages] = useState<FeedPacket[]>([]);
-  const [historyStatus, setHistoryStatus] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
-  const [historyError, setHistoryError] = useState<string | null>(null);
-  const packetListRef = useRef<HTMLDivElement>(null);
+  const historyKey = JSON.stringify([scopeKey, scopeEpoch, selectedMessageScope]);
+  const [history, setHistory] = useState<{ key: string; rows: FeedPacket[]; status: 'loading' | 'ready' | 'error'; error: string | null } | null>(null);
+  const [historyAttempt, setHistoryAttempt] = useState(0);
+  const historicalMessages = session.ready && history?.key === historyKey ? history.rows : [];
+  const historyStatus = session.ready && history?.key === historyKey ? history.status : selectedMessageScope === 'all' ? 'idle' : 'loading';
+  const historyError = history?.key === historyKey ? history.error : null;
   const historyRequestRef = useRef<AbortController | null>(null);
 
   const nodeMap = useNodeMap();
   const packetsList = usePackets();
   const messagesList = useMessages();
+
+  useLayoutEffect(() => { setSelectedPacketHash(null); setDetailOpen(false); }, [scopeKey, scopeEpoch]);
 
   const handleWSMessage = useAppMessageHandler({
     epoch: scopeEpoch,
@@ -103,17 +104,13 @@ export const UKFeedPage: React.FC = () => {
     historyRequestRef.current?.abort();
     historyRequestRef.current = null;
     if (!session.ready || selectedMessageScope === 'all') {
-      setHistoricalMessages([]);
-      setHistoryStatus('idle');
-      setHistoryError(null);
+      setHistory(null);
       return;
     }
 
     const controller = new AbortController();
     historyRequestRef.current = controller;
-    setHistoricalMessages([]);
-    setHistoryStatus('loading');
-    setHistoryError(null);
+    setHistory(previous => ({ key: historyKey, rows: previous?.key === historyKey ? previous.rows : [], status: 'loading', error: null }));
     const endpoint = withScopeParams(
       `/api/feed/messages?channel=${encodeURIComponent(selectedMessageScope)}&limit=50`,
       scope,
@@ -124,28 +121,23 @@ export const UKFeedPage: React.FC = () => {
       { timeoutMs: 45_000, maxBytes: 4 * 1024 * 1024 },
     ).then((rows) => {
       if (controller.signal.aborted || historyRequestRef.current !== controller) return;
-      setHistoricalMessages(mapMessageRows(rows).map(aggregatedPacketToFeedPacket));
-      setHistoryStatus('ready');
+      setHistory({ key: historyKey, rows: mapMessageRows(rows).map(aggregatedPacketToFeedPacket), status: 'ready', error: null });
     }).catch((error: unknown) => {
       if (controller.signal.aborted || historyRequestRef.current !== controller) return;
-      setHistoryStatus('error');
-      setHistoryError(error instanceof Error ? error.message : 'History unavailable');
+      setHistory(previous => ({ key: historyKey, rows: previous?.key === historyKey ? previous.rows : [], status: 'error', error: error instanceof Error ? error.message : 'History unavailable' }));
     });
 
     return () => {
       controller.abort();
       if (historyRequestRef.current === controller) historyRequestRef.current = null;
     };
-  }, [scope, scopeKey, selectedMessageScope, session.ready]);
+  }, [scope, historyKey, selectedMessageScope, session.ready, historyAttempt]);
 
   useEffect(() => { localStorage.setItem('uk-feed-iata', selectedIata); }, [selectedIata]);
   useEffect(() => { localStorage.setItem('uk-feed-message-scope', selectedMessageScope); }, [selectedMessageScope]);
   useEffect(() => { localStorage.setItem('uk-feed-messages-only', messagesOnly ? '1' : '0'); }, [messagesOnly]);
 
-  useEffect(() => {
-    const timer = window.setInterval(() => setNow(Date.now()), POLLING.feedClock);
-    return () => window.clearInterval(timer);
-  }, []);
+
 
   useEffect(() => {
     setRegionOptionsStatus('loading');
@@ -281,12 +273,10 @@ export const UKFeedPage: React.FC = () => {
   }, [filteredPackets, nodeMap, selectedIata]);
 
   const latestPacket = filteredPackets[0] ?? null;
-  const globalLatestPacket = packets[0] ?? null; // unfiltered, for connection status
   const recentPackets = useMemo(() => {
     return filteredPackets.slice(0, MAX_PACKETS);
   }, [filteredPackets]);
-  const packetKeys = useMemo(() => recentPackets.map(packet => `${packet.packet_hash}-${packet.time}`), [recentPackets]);
-  const virtualRows = useMeasuredVirtualRows(packetKeys, packetListRef);
+
 
   // Always derive selectedPacket from the live list so new MQTT observers are picked up
   const selectedPacket = useMemo(
@@ -300,36 +290,6 @@ export const UKFeedPage: React.FC = () => {
   const { selectedLazyPath, pathTreeStatus, pathTreeOpen, setPathTreeOpen,
     fetchSelectedLazyPath, openPathTree } = useFeedPathSelection({ ...scope, privacyGeneration }, scopeEpoch, selectedPacket);
 
-  const connStatus = feedConnectionStatus(
-    wsConnection.readyState,
-    wsConnection.lastMessageAt,
-    globalLatestPacket !== null,
-    now,
-  );
-  const connDot = feedConnectionDot(connStatus);
-  const connLabel = feedConnectionLabel(connStatus);
-
-  // Network activity stats (rolling window over cached packets)
-  const networkStats = useMemo(() => {
-    const cutoff1min = now - 60_000;
-    const cutoff5min = now - 300_000;
-    let packetsLastMin = 0;
-    const activeSenders = new Set<string>();
-    const typeCounts: Record<number, number> = {};
-    for (const p of packets) {
-      const ts = Date.parse(p.time);
-      if (ts >= cutoff1min) {
-        packetsLastMin++;
-        if (p.packet_type != null) typeCounts[p.packet_type] = (typeCounts[p.packet_type] ?? 0) + 1;
-      }
-      if (ts >= cutoff5min && p.src_node_id) activeSenders.add(p.src_node_id);
-    }
-    const topTypes = (Object.entries(typeCounts) as [string, number][])
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 5)
-      .map(([type, count]) => ({ type: Number(type), label: PACKET_TYPE_LABELS[Number(type)] ?? `T${type}`, count }));
-    return { packetsLastMin, activeSenderCount: activeSenders.size, topTypes };
-  }, [packets, now]);
 
   return (
     <>
@@ -389,29 +349,6 @@ export const UKFeedPage: React.FC = () => {
           </label>
         </nav>
 
-        {/* ── Mobile stats bar (hidden on desktop) ──────────────────── */}
-        <div className="uk-feed-mobile-stats">
-          <div className="uk-feed-stats__row">
-            <span className={`uk-feed-live-dot uk-feed-live-dot--${connDot}`} />
-            <span className="uk-feed-stats__label">
-              {connLabel}
-            </span>
-            <span className="uk-feed-stats__sep">·</span>
-            <span className="uk-feed-stats__label">{activeObserverCount} observer{activeObserverCount !== 1 ? 's' : ''}</span>
-            <span className="uk-feed-stats__sep">·</span>
-            <span className="uk-feed-stats__label">{networkStats.packetsLastMin} pkt/min</span>
-            <span className="uk-feed-stats__sep">·</span>
-            <span className="uk-feed-stats__label">last: {timeAgo(globalLatestPacket?.time)}</span>
-          </div>
-          {networkStats.topTypes.length > 0 && (
-            <div className="uk-feed-type-tags">
-              {networkStats.topTypes.map(({ label, count, type }) => (
-                <span key={type} className="uk-feed-type-tag">{label} <strong>{count}</strong></span>
-              ))}
-            </div>
-          )}
-        </div>
-
         {/* ── Chat (packet list) ─────────────────────────────────────── */}
         <div className="uk-feed-chat">
           <div className="uk-feed-chat__header">
@@ -438,69 +375,34 @@ export const UKFeedPage: React.FC = () => {
               </button>
             )}
             {selectedMessageScope !== 'all' && (
-              <span className={`uk-feed-history-status uk-feed-history-status--${historyStatus}`} aria-live="polite">
+              <span className={`uk-feed-history-status uk-feed-history-status--${historyStatus}`} role={historyStatus === 'error' ? 'alert' : 'status'}>
                 {historyStatus === 'loading'
                   ? `Loading ${selectedMessageScope} history…`
                   : historyStatus === 'error'
-                    ? (historyError ?? 'History unavailable')
+                    ? `${historyError ?? 'History unavailable'}.${historicalMessages.length ? ' Showing the last received history.' : ''}`
                     : `${selectedMessageScope} history · ${selectedChannelMessages.length} messages`}
+                {historyStatus === 'error' && <button type="button" className="site-btn site-btn--ghost" onClick={() => setHistoryAttempt(value => value + 1)}>Retry history</button>}
               </span>
             )}
           </div>
-          <div
-            className="uk-feed-packets-list"
-            ref={packetListRef}
-            onScroll={virtualRows.onScroll}
-          >
-            {recentPackets.length > 0 ? <>
-              <div aria-hidden="true" style={{ height: virtualRows.top }} />
-              {recentPackets.slice(virtualRows.start, virtualRows.end).map((packet, virtualIndex) => {
-              const iatas = packetObserverIatas(packet, nodeMap);
-              const observerDisplay = iatas.length === 0 ? 'unknown' : iatas.join(' · ');
-              const isSelected = selectedPacketHash === packet.packet_hash;
-              return (
-                <React.Fragment key={packetKeys[virtualRows.start + virtualIndex]}>
-                  <article
-                    ref={virtualRows.measureRow(packetKeys[virtualRows.start + virtualIndex]!)}
-                    className={`uk-feed-packet-row${isSelected ? ' uk-feed-packet-row--selected' : ''}`}
-                    onClick={() => setSelectedPacketHash(isSelected ? null : packet.packet_hash)}
-                    role="button"
-                    tabIndex={0}
-                    aria-pressed={isSelected}
-                    aria-label={`${isSelected ? 'Collapse' : 'Open'} packet ${packet.packet_hash}`}
-                    onKeyDown={(event) => {
-                      if (event.key !== 'Enter' && event.key !== ' ') return;
-                      event.preventDefault();
-                      setSelectedPacketHash(isSelected ? null : packet.packet_hash);
-                    }}
-                  >
-                    <div className="uk-feed-packet-row__meta">
-                      <span>{formatFeedTimestamp(packet.time)}</span>
-                      <span>{packet.packet_type != null ? (PACKET_TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}</span>
-                      <span className="uk-feed-packet-row__hops">{packet.hop_count != null ? `${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}` : '—'}</span>
-                      <span className="uk-feed-packet-row__hash dev-status-mono">{packet.packet_hash}</span>
-                      <span className="uk-feed-packet-row__observer">{observerDisplay}</span>
-                    </div>
-                    {messageTagKind(packet) && (
-                      <div className="uk-feed-packet-row__tags">
-                        <span className="msg-tag-chip" title={messageTagTitle(packet)}>
-                          {messageTagKind(packet)}
-                        </span>
-                      </div>
-                    )}
-                    <p className="uk-feed-packet-row__summary">{packetSummary(packet, nodeMap)}</p>
-                  </article>
-                </React.Fragment>
-              );
-            })}
-              <div aria-hidden="true" style={{ height: virtualRows.bottom }} />
-            </> : (
-              <p className="dev-status-empty">No public packets have arrived yet.</p>
-            )}
-          </div>
+          <FeedPacketRows key={scopeKey} packets={recentPackets} nodes={nodeMap}
+            selectedHash={selectedPacketHash} select={setSelectedPacketHash}
+            empty={<div className="dev-status-empty" role="status">
+              {!session.ready || wsConnection.readyState === 'connecting'
+                ? <LoadingIndicator label="Connecting to live feed..." variant="inline" />
+                : wsConnection.readyState === 'disconnected' && packets.length === 0
+                  ? <><p>The feed is offline. Reconnection will retry automatically.</p><button type="button" className="site-btn site-btn--ghost" onClick={() => window.location.reload()}>Reload feed</button></>
+                  : packets.length || retainedMessagePackets.length
+                    ? <><p>No packets match the current filters{selectedIata !== 'all' ? ` in ${selectedIata}` : ''}.</p>
+                      {(searchQuery || selectedPacketType || messagesOnly || selectedMessageScope !== 'all') && <button type="button" className="site-btn site-btn--ghost" onClick={() => {
+                        setSearchQuery(''); setSelectedPacketType(null); setMessagesOnly(false); setSelectedMessageScope('all');
+                        const url = new URL(window.location.href); url.searchParams.delete('type'); window.history.replaceState(null, '', url);
+                      }}>Clear filters</button>}</>
+                    : <p>No public packets have arrived for this scope yet.</p>}
+            </div>} />
           {/* Selected details stay outside the measured list so expanding a
               path does not change packet-row scroll anchors. */}
-          {selectedPacket && (
+          {selectedPacket && compact && (
             <section className="uk-feed-mobile-selection" aria-label="Selected packet summary">
               <div className="uk-feed-inline-map">
                 <FeedMapPanel
@@ -511,32 +413,8 @@ export const UKFeedPage: React.FC = () => {
                   isLoading={pathTreeStatus === 'settling' || pathTreeStatus === 'loading'}
                 />
               </div>
-              <div className="uk-feed-mobile-detail">
-                <div className="uk-feed-stats__selected-meta">
-                  <code className="feed-detail__hash">{selectedPacket.packet_hash}</code>
-                  <span className="feed-detail__badge">
-                    {selectedPacket.packet_type != null
-                      ? (PACKET_TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`)
-                      : '—'}
-                  </span>
-                  {selectedPacket.hop_count != null && (
-                    <span className="feed-detail__badge feed-detail__badge--muted">
-                      {selectedPacket.hop_count} hop{selectedPacket.hop_count !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {messageTagKind(selectedPacket) && (
-                    <span className="msg-tag-chip" title={messageTagTitle(selectedPacket)}>
-                      {messageTagKind(selectedPacket)}
-                    </span>
-                  )}
-                </div>
-                <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
-                <div className="uk-feed-stats__actions">
-                  <button type="button" className="uk-feed-stats__tree-toggle" onClick={openPathTree}>
-                    Repeater tree
-                  </button>
-                </div>
-              </div>
+              <SelectedPacketSummary packet={selectedPacket} nodeMap={nodeMap}
+                clear={() => setSelectedPacketHash(null)} openPath={openPathTree} openDetails={() => setDetailOpen(true)} className="uk-feed-mobile-detail" />
             </section>
           )}
         </div>
@@ -548,76 +426,25 @@ export const UKFeedPage: React.FC = () => {
           <div className="uk-feed-map">
             <FeedMapPanel
               key={selectedPacket?.packet_hash ?? 'none'}
-              packet={selectedPacket}
+              packet={compact ? null : selectedPacket}
               nodeMap={nodeMap}
               cachedLazyPath={selectedLazyPath}
               isLoading={pathTreeStatus === 'settling' || pathTreeStatus === 'loading'}
             />
           </div>
 
-          {/* Stats panel */}
-          <div className="uk-feed-stats">
-            <div className="uk-feed-stats__row">
-              <span className={`uk-feed-live-dot uk-feed-live-dot--${connDot}`} />
-              <span className="uk-feed-stats__label">
-                {connLabel}
-              </span>
-              <span className="uk-feed-stats__sep">·</span>
-              <span className="uk-feed-stats__label">{activeObserverCount} observer{activeObserverCount !== 1 ? 's' : ''}</span>
-              <span className="uk-feed-stats__sep">·</span>
-              <span className="uk-feed-stats__label">{networkStats.packetsLastMin} pkt/min</span>
-              <span className="uk-feed-stats__sep">·</span>
-              <span className="uk-feed-stats__label">last: {timeAgo(globalLatestPacket?.time)}</span>
-            </div>
-            {networkStats.topTypes.length > 0 && (
-              <div className="uk-feed-type-tags">
-                {networkStats.topTypes.map(({ label, count, type }) => (
-                  <span key={type} className="uk-feed-type-tag">{label} <strong>{count}</strong></span>
-                ))}
-              </div>
-            )}
-            {selectedPacket && (
-              <div className="uk-feed-stats__selected">
-                <div className="uk-feed-stats__selected-meta">
-                  <code className="feed-detail__hash">{selectedPacket.packet_hash}</code>
-                  <span className="feed-detail__badge">
-                    {selectedPacket.packet_type != null ? (PACKET_TYPE_LABELS[selectedPacket.packet_type] ?? `T${selectedPacket.packet_type}`) : '—'}
-                  </span>
-                  {selectedPacket.hop_count != null && (
-                    <span className="feed-detail__badge feed-detail__badge--muted">
-                      {selectedPacket.hop_count} hop{selectedPacket.hop_count !== 1 ? 's' : ''}
-                    </span>
-                  )}
-                  {messageTagKind(selectedPacket) && (
-                    <span className="msg-tag-chip" title={messageTagTitle(selectedPacket)}>
-                      {messageTagKind(selectedPacket)}
-                    </span>
-                  )}
-                  <button type="button" className="uk-feed-stats__close" onClick={() => setSelectedPacketHash(null)} aria-label="Clear selected packet">✕</button>
-                </div>
-                <p className="uk-feed-stats__selected-summary">{packetSummary(selectedPacket, nodeMap)}</p>
-                <div className="uk-feed-stats__actions">
-                  <button
-                    type="button"
-                    className="uk-feed-stats__tree-toggle"
-                    onClick={openPathTree}
-                  >
-                    Repeater tree
-                  </button>
-                  <button type="button" className="uk-feed-stats__tree-toggle" onClick={() => setDetailOpen(true)}>
-                    Packet details
-                  </button>
-                </div>
-              </div>
-            )}
+          {/* Status owns its clock; packet rows do not subscribe to it. */}
+          <FeedLiveStatus packets={packets} connection={wsConnection} observerCount={activeObserverCount}>
+            {selectedPacket && <SelectedPacketSummary packet={selectedPacket} nodeMap={nodeMap}
+                clear={() => setSelectedPacketHash(null)} openPath={openPathTree} openDetails={() => setDetailOpen(true)} />}
             {latestPacket && !selectedPacket && (
               <p className="uk-feed-stats__latest">Latest: {packetSummary(latestPacket, nodeMap)}</p>
             )}
-          </div>
+          </FeedLiveStatus>
         </div>
 
       </div>
-      <FeedDialogs
+      {selectedPacket && (pathTreeOpen || detailOpen) && <FeedDialogs
         scopeKey={scopeKey}
         packet={selectedPacket}
         nodeMap={nodeMap}
@@ -632,7 +459,7 @@ export const UKFeedPage: React.FC = () => {
         onRetryPath={() => {
           if (selectedPacket) void fetchSelectedLazyPath(selectedPacket, true);
         }}
-      />
+      />}
     </>
   );
 };

@@ -1,7 +1,7 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { useMessages, useNodeMap } from '../hooks/useNodes.js';
 import { PROHIBITED_NODE_MARKER } from '../utils/pathing.js';
-import { aggregatedPacketObserverIataLabel, messageTagKind, messageTagTitle } from '../features/packets/liveFeed.js';
+import { aggregatedPacketObserverIataLabel, FEED_MAX_MESSAGES, messageTagKind, messageTagTitle } from '../features/packets/liveFeed.js';
 import { useOverlayStore } from '../store/overlayStore.js';
 import { useWatchlist } from '../hooks/useWatchlist.js';
 import type { AggregatedPacket } from '../types/domain.js';
@@ -39,18 +39,11 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
   return (
     <div
       className={`packet-item packet-item--clickable${isPinned ? ' packet-item--pinned' : ''}${isNew ? ' packet-item--new' : ''}`}
-      onClick={() => onTogglePacket(p)}
-      role="button"
-      tabIndex={0}
-      aria-pressed={isPinned}
-      aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${typeLabel} packet: ${messageText}`}
-      onKeyDown={(event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        onTogglePacket(p);
-      }}
+      data-packet-key={p.packetHash || p.id}
     >
-      <div className="packet-item__body">
+      <button type="button" className="packet-item__body"
+        onClick={() => onTogglePacket(p)} aria-pressed={isPinned}
+        aria-label={`${isPinned ? 'Unpin' : 'Pin'} ${typeLabel} packet: ${messageText}`}>
         <span className="packet-item__summary" title={display ?? undefined}>{messageText}</span>
         <span className="packet-item__meta" aria-label="Packet metadata">
           <span className="packet-item__type" title={typeLabel}>{typeLabel}</span>
@@ -84,16 +77,14 @@ const PacketFeedItem: React.FC<PacketFeedItemProps> = React.memo(({
             <span className="packet-item__tag msg-tag-chip" title={messageTagTitle(p)}>{messageTagKind(p)}</span>
           </span>
         )}
-      </div>
+      </button>
       <div className="packet-item__actions">
         <button
           type="button"
           className="packet-item__watch"
+          aria-pressed={isWatched}
           aria-label={ (isWatched ? 'Stop watching' : 'Watch') + ' ' + typeLabel + ' packets' }
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleWatch('packet_type', packetTypeId, typeLabel + ' packets');
-          }}
+          onClick={() => onToggleWatch('packet_type', packetTypeId, typeLabel + ' packets')}
         >{isWatched ? '★' : '☆'}</button>
         {isPinned && <span className="packet-item__pin" aria-label="Pinned">●</span>}
       </div>
@@ -107,48 +98,67 @@ export const PacketFeed: React.FC = React.memo(() => {
   const nodes = useNodeMap();
   const pinnedPacketId = useOverlayStore((state) => state.pinnedPacketId);
   const togglePinnedPacket = useOverlayStore((state) => state.togglePinnedPacket);
-  // Oldest first so newest is at the bottom (natural chat order)
+  // Observation updates keep the same packet key; the store bounds this list.
   const visible = [...messages].reverse();
-  const [newestVisibleId, setNewestVisibleId] = useState<string | null>(null);
-  const latestIdRef = useRef<string | null>(null);
-  const animationThrottleRef = useRef<number | null>(null);
+  const [unread, setUnread] = useState(0);
+  const previousKeys = useRef<Set<string> | null>(null);
+  const following = useRef(true);
+  const anchor = useRef<{ key: string; offset: number } | null>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const watchlist = useWatchlist();
 
-  useEffect(() => {
-    const latestId = messages[0]?.id ?? null;
-    if (!latestId || latestIdRef.current === latestId) return;
-    latestIdRef.current = latestId;
-
-    // Scroll immediately so new GRP lines are visible the frame they arrive.
-    if (feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  const rememberAnchor = () => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const top = feed.getBoundingClientRect().top;
+    const rows = feed.querySelectorAll<HTMLElement>('[data-packet-key]');
+    let low = 0, high = rows.length;
+    while (low < high) {
+      const middle = (low + high) >>> 1;
+      if (rows[middle].getBoundingClientRect().bottom <= top) low = middle + 1;
+      else high = middle;
     }
+    const row = rows[low];
+    anchor.current = row ? { key: row.dataset.packetKey!, offset: row.getBoundingClientRect().top - top } : null;
+  };
 
-    // Flash animation is best-effort; never gate scroll/render on it.
-    if (animationThrottleRef.current === null) {
-      setNewestVisibleId(latestId);
-      animationThrottleRef.current = window.setTimeout(() => {
-        animationThrottleRef.current = null;
-      }, 120);
-      const timer = window.setTimeout(
-        () => setNewestVisibleId((current) => (current === latestId ? null : current)),
-        180,
-      );
-      return () => clearTimeout(timer);
+  useLayoutEffect(() => {
+    const feed = feedRef.current;
+    if (!feed) return;
+    const keys = new Set(messages.map(packet => packet.packetHash || packet.id));
+    const added = previousKeys.current === null ? 0 : [...keys].filter(key => !previousKeys.current!.has(key)).length;
+    previousKeys.current = keys;
+    if (following.current) {
+      feed.scrollTop = feed.scrollHeight;
+    } else {
+      const saved = anchor.current;
+      const row = saved && [...feed.querySelectorAll<HTMLElement>('[data-packet-key]')]
+        .find(element => element.dataset.packetKey === saved.key);
+      if (row && saved) feed.scrollTop += row.getBoundingClientRect().top - feed.getBoundingClientRect().top - saved.offset;
+      // An evicted anchor falls back to the oldest retained content.
+      else if (saved) feed.scrollTop = 0;
+      if (added) setUnread(count => Math.min(FEED_MAX_MESSAGES + 1, count + added));
     }
-    return undefined;
-  }, [messages]);
+    if (!following.current) rememberAnchor();
+  }, [messages, unread]);
 
-  // Scroll to bottom on initial load
-  useEffect(() => {
-    if (feedRef.current) {
-      feedRef.current.scrollTop = feedRef.current.scrollHeight;
-    }
+  useLayoutEffect(() => {
+    const resize = new ResizeObserver(() => {
+      const feed = feedRef.current;
+      if (feed && following.current) feed.scrollTop = feed.scrollHeight;
+    });
+    if (feedRef.current) resize.observe(feedRef.current);
+    return () => resize.disconnect();
   }, []);
 
   return (
-  <div className="packet-feed" ref={feedRef}>
+  <div className="packet-feed-frame">
+  <div className="packet-feed" ref={feedRef} onScroll={() => {
+    const feed = feedRef.current!;
+    following.current = feed.scrollHeight - feed.scrollTop - feed.clientHeight <= 48;
+    if (following.current) setUnread(0);
+    if (!following.current) rememberAnchor();
+  }}>
     {visible.map((p) => {
       const observerIata = aggregatedPacketObserverIataLabel(p, nodes);
       return (
@@ -157,13 +167,19 @@ export const PacketFeed: React.FC = React.memo(() => {
           packet={p}
           observerIata={observerIata}
           isPinned={pinnedPacketId === p.id}
-          isNew={newestVisibleId === p.id}
+          isNew={messages[0] === p}
           isWatched={watchlist.isWatched('packet_type', String(p.packetType ?? 'unknown'))}
           onTogglePacket={togglePinnedPacket}
           onToggleWatch={watchlist.toggle}
         />
       );
     })}
+  </div>
+  {unread > 0 && <button type="button" className="packet-feed__jump" onClick={() => {
+    following.current = true;
+    setUnread(0);
+    if (feedRef.current) feedRef.current.scrollTop = feedRef.current.scrollHeight;
+  }}>{unread > FEED_MAX_MESSAGES ? `${FEED_MAX_MESSAGES}+` : unread} new message{unread === 1 ? '' : 's'}. Jump to latest</button>}
   </div>
   );
 });

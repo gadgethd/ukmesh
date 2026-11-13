@@ -731,6 +731,7 @@ button .loading-indicator--inline,
 
 a:focus-visible,
 button:focus-visible,
+summary:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible,
@@ -739,6 +740,18 @@ textarea:focus-visible,
   outline: 3px solid var(--accent);
   outline-offset: 2px;
 }
+.ui-skip-link {
+  position: fixed;
+  top: 8px;
+  left: 8px;
+  z-index: 3000;
+  transform: translateY(-200%);
+  padding: 12px;
+  border: 2px solid var(--accent);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+.ui-skip-link:focus { transform: none; }
 
 @media (pointer: coarse) {
   :where(button, input, select, textarea, [role="button"], [role="tab"], [role="option"]) {

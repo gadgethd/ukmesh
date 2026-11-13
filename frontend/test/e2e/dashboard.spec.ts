@@ -38,6 +38,9 @@ test.beforeEach(async ({ page }) => {
       onerror: ((event: Event) => void) | null = null;
       constructor(_url: string | URL) {
         super();
+        Object.assign(window, { dashboardFixturePublish: (type: string, data: Record<string, unknown>) => {
+          this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type, ts: Date.now(), data: type === 'initial_state' ? { nodes, viable_links: [], ...data } : data }) }));
+        } });
         FixtureWebSocket.connections++;
         window.setTimeout(() => {
           this.readyState = FixtureWebSocket.OPEN;
@@ -120,7 +123,7 @@ test.beforeEach(async ({ page }) => {
     }
     if (path.endsWith('/stats')) {
       return route.fulfill({
-        json: { mqtt_nodes: 0, map_nodes: 0, total_nodes: 0, stale_nodes: 0, packets_24h: 0 },
+        json: { mqttNodes: 0, mapNodes: 0, totalNodes: 0, staleNodes: 0, packetsDay: 0 },
       });
     }
     return route.fulfill({ json: {} });
@@ -390,4 +393,98 @@ test('map modes update layers and produce a shareable URL', async ({ page }, tes
     await page.getByRole('button', { name: 'Layers' }).first().click();
   }
   await expect(page.getByRole('button', { name: 'Diagnose' }).first()).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('message reading preserves anchors, counts unique arrivals and keeps Watch separate from Pin', async ({ page }, info) => {
+  await page.goto('/?layers=feed');
+  if (info.project.name === 'dashboard-mobile') await page.getByRole('button', { name: 'Live', exact: true }).click();
+  await expect(page.locator('.packet-feed')).toBeVisible();
+  await page.evaluate(() => {
+    const packets = Array.from({ length: 200 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, '0'),
+      time: new Date(Date.now() - i * 1000).toISOString(), packet_type: 5, summary: `[Public] Reading fixture ${i}` }));
+    (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('initial_state', { packets, messages: packets });
+  });
+  const feed = page.locator('.packet-feed');
+  await expect(feed.locator('.packet-item')).toHaveCount(200);
+  await feed.evaluate(element => { element.scrollTop = 400; });
+  await expect.poll(() => feed.evaluate(element => element.scrollTop)).toBeGreaterThan(300);
+  const anchor = await feed.evaluate(element => {
+    const top = element.getBoundingClientRect().top;
+    const row = [...element.querySelectorAll<HTMLElement>('[data-packet-key]')].find(item => item.getBoundingClientRect().bottom > top)!;
+    return { key: row.dataset.packetKey, offset: row.getBoundingClientRect().top - top };
+  });
+  const publish = (rx: string) => page.evaluate(receiver => {
+    (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('packet', {
+      id: `new-${receiver}`, packetHash: 'F'.repeat(64), rxNodeId: receiver.repeat(64), topic: 'ukmesh/LON/fixture/packets',
+      packetType: 5, summary: '[Public] A new message', ts: Date.now(),
+    });
+  }, rx);
+  await publish('A');
+  const jump = page.getByRole('button', { name: '1 new message. Jump to latest', exact: true });
+  await expect(jump).toBeVisible();
+  await expect.poll(() => feed.evaluate((element, saved) => {
+    const row = [...element.querySelectorAll<HTMLElement>('[data-packet-key]')].find(item => item.dataset.packetKey === saved.key);
+    return row ? Math.abs(row.getBoundingClientRect().top - element.getBoundingClientRect().top - saved.offset) : Infinity;
+  }, anchor)).toBeLessThan(1);
+  await publish('B');
+  await expect(feed.getByText('2rx', { exact: true }).last()).toBeAttached();
+  await expect(jump).toHaveCount(1);
+  const watch = feed.getByRole('button', { name: 'Watch GRP packets', exact: true }).first();
+  await watch.focus();
+  await page.keyboard.press('Space');
+  await expect(feed.locator('.packet-item--pinned')).toHaveCount(0);
+  await expect(feed.getByRole('button', { name: 'Stop watching GRP packets', exact: true }).first()).toBeAttached();
+  await jump.click();
+  await expect(jump).toHaveCount(0);
+  await expect.poll(() => feed.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(1);
+  await feed.evaluate(element => { element.scrollTop = element.scrollHeight - element.clientHeight - 48; });
+  await page.evaluate(() => {
+    (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('packet', {
+      id: 'within-follow', packetHash: 'E'.repeat(64), packetType: 5, topic: 'ukmesh/LON/fixture/packets', summary: '[Public] Follow arrival', ts: Date.now(),
+    });
+  });
+  await expect(feed.getByText('[Public] Follow arrival', { exact: true })).toBeVisible();
+  await expect.poll(() => feed.evaluate(element => element.scrollHeight - element.clientHeight - element.scrollTop)).toBeLessThan(1);
+  // When the oldest visible packet is evicted, stay at the oldest retained row.
+  await feed.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+  const oldest = await feed.locator('.packet-item').first().getAttribute('data-packet-key');
+  await page.evaluate(() => (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('packet', {
+    id: 'eviction', packetHash: 'C'.repeat(64), packetType: 5, topic: 'ukmesh/LON/fixture/packets', summary: '[Public] Oldest row evicted', ts: Date.now(),
+  }));
+  await expect(feed.locator('.packet-item')).toHaveCount(200);
+  await expect(feed.locator('.packet-item').first()).not.toHaveAttribute('data-packet-key', oldest!);
+  await expect(page.locator('.packet-feed__jump')).toHaveText('1 new message. Jump to latest');
+  await expect.poll(() => feed.evaluate(element => element.scrollTop)).toBe(0);
+});
+
+test('mobile Layers restores focus and a privacy change clears unread messages', async ({ page }, info) => {
+  let generation = 1;
+  await page.route('**/api/runtime-config*', route => route.fulfill({ json: {
+    version: 1, packetArcs: false, heatmap: false, regionScoping: false, privacyGeneration: generation, refreshAfterSeconds: 5,
+  } }));
+  await page.goto('/?layers=feed');
+  await page.waitForFunction(() => typeof (window as unknown as { dashboardFixturePublish?: unknown }).dashboardFixturePublish === 'function');
+  if (info.project.name === 'dashboard-mobile') {
+    const layers = page.getByRole('button', { name: 'Layers', exact: true }).first();
+    await layers.click();
+    await expect(page.getByRole('dialog', { name: 'Map settings' })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('dialog', { name: 'Map settings' })).toHaveCount(0);
+    await expect(layers).toBeFocused();
+    await page.getByRole('button', { name: 'Live', exact: true }).click();
+  }
+  await page.evaluate(() => {
+    const packets = Array.from({ length: 50 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, '0'), time: new Date(Date.now() - i * 1000).toISOString(), packet_type: 5, summary: `[Public] Before reset ${i}` }));
+    (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('initial_state', { packets, messages: packets });
+  });
+  const feed = page.locator('.packet-feed');
+  await expect(feed.locator('.packet-item')).toHaveCount(50);
+  await feed.evaluate(element => { element.scrollTop = 0; element.dispatchEvent(new Event('scroll')); });
+  await page.evaluate(() => (window as unknown as { dashboardFixturePublish(type: string, data: object): void }).dashboardFixturePublish('packet', {
+    id: 'unread', packetHash: 'D'.repeat(64), packetType: 5, topic: 'ukmesh/LON/fixture/packets', summary: '[Public] Unread before reset', ts: Date.now(),
+  }));
+  await expect(page.locator('.packet-feed__jump')).toBeVisible();
+  generation = 2;
+  await expect(page.locator('.packet-feed__jump')).toHaveCount(0, { timeout: 12_000 });
+  await expect(feed.locator('.packet-item')).toHaveCount(0);
 });

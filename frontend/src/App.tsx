@@ -134,6 +134,8 @@ export const App: React.FC = () => {
   const [initialStateLoaded, setInitialStateLoaded] = useState(false);
   const [initialPollLoaded, setInitialPollLoaded] = useState(false);
   const [pollRefreshing, setPollRefreshing] = useState(false);
+  const [pollAttempt, setPollAttempt] = useState(0);
+  const [pollOutcome, setPollOutcome] = useState<{ scope: string; at: number | null; failed: boolean } | null>(null);
   const [mapLight, setMapLight] = useState(() => localStorage.getItem('map-theme') === 'light');
   const [rfCoverageTier, setRfCoverageTier] = useState<RfCoverageTierName>(() => (
     localStorage.getItem(RF_TIER_KEY) === 'precision' ? 'precision' : 'standard'
@@ -369,11 +371,16 @@ export const App: React.FC = () => {
           const payload = await statsRes.value.json() as DashboardStats;
           if (!cancelled) setFetchedStats(payload);
         }
+        if (!cancelled) {
+          const healthy = packetsRes.status === 'fulfilled' && packetsRes.value.ok && statsRes.status === 'fulfilled' && statsRes.value.ok;
+          setPollOutcome(previous => ({ scope: realtimeScopeKey, at: healthy ? Date.now() : previous?.scope === realtimeScopeKey ? previous.at : null, failed: !healthy }));
+        }
       } catch (error) {
         // Scope changes can abort the body after fetch has already fulfilled.
         // Keep that cancellation inside the poller and let the next poll retry.
-        if (!cancelled && (error as DOMException).name !== 'AbortError') {
+        if (!cancelled) {
           console.warn('[app] live data refresh failed');
+          setPollOutcome(previous => ({ scope: realtimeScopeKey, at: previous?.scope === realtimeScopeKey ? previous.at : null, failed: true }));
         }
       } finally {
         if (!cancelled) {
@@ -392,7 +399,7 @@ export const App: React.FC = () => {
       controller?.abort();
       if (timer) window.clearTimeout(timer);
     };
-  }, [isPageVisible, networkFilter, observerFilter, region, scopeReady, scopeState.nodeEpoch]);
+  }, [isPageVisible, networkFilter, observerFilter, region, scopeReady, scopeState.nodeEpoch, pollAttempt, realtimeScopeKey]);
 
   useEffect(() => {
     if (!filters.packetHistory && !(heatmapEnabled && filters.heatmap)) {
@@ -507,6 +514,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null;
+      if (event.defaultPrevented || target?.closest('[role="dialog"]')) return;
       const isEditing = target?.matches('input, textarea, select, [contenteditable="true"]');
       if (event.key === '?' && !isEditing) {
         event.preventDefault();
@@ -532,9 +540,14 @@ export const App: React.FC = () => {
 
   return (
     <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined} data-mobile-fullscreen={fullScreenMap ? 'true' : undefined} data-feed-open={mobileFeedOpen ? 'true' : undefined}>
+      <a href="#map-workspace" className="ui-skip-link">Skip to map</a>
       <AppTopBar
         homeUrl={site.appHomeUrl}
-        wsState={wsState}
+        connection={wsConnection}
+        hasData={initialStateLoaded || (pollOutcome?.scope === realtimeScopeKey && pollOutcome.at !== null)}
+        refreshedAt={pollOutcome?.scope === realtimeScopeKey ? pollOutcome.at : null}
+        refreshing={pollRefreshing}
+        refreshFailed={pollOutcome?.scope === realtimeScopeKey && pollOutcome.failed}
         onShowDisclaimer={() => setShowDisclaimer(true)}
         stats={stats}
         mapLight={mapLight}
@@ -569,7 +582,7 @@ export const App: React.FC = () => {
         }}
       />
 
-      <div className="map-layer">
+      <div className="map-layer" id="map-workspace" role="main" tabIndex={-1}>
         <MapLibreMap
           showLinks={filters.links}
           showTerrain={filters.terrain}
@@ -625,6 +638,10 @@ export const App: React.FC = () => {
             variant="overlay"
           />
         )}
+        {pollOutcome?.scope === realtimeScopeKey && pollOutcome.failed && <div className="app-data-status" role="alert">
+          <span>Refresh failed. {pollOutcome.at !== null || initialStateLoaded ? 'Showing the last received data.' : 'Waiting for map data.'}</span>
+          <button type="button" disabled={pollRefreshing} onClick={() => setPollAttempt(value => value + 1)}>Retry</button>
+        </div>}
         {initialPollLoaded && pollRefreshing && (
           <div className="app-refresh-status">
             <LoadingIndicator label="Refreshing map data..." variant="inline" />
@@ -652,7 +669,7 @@ export const App: React.FC = () => {
         {VIEWSHED_ENABLED && <PlannerComparison enabled />}
       </React.Suspense>
 
-      {filters.livePackets && !fullScreenMap && <PacketFeed />}
+      {filters.livePackets && !fullScreenMap && <PacketFeed key={realtimeScopeKey} />}
 
       {annotation && (
         <button type="button" className="map-annotation" onClick={handleEditAnnotation} title="Edit shared annotation">

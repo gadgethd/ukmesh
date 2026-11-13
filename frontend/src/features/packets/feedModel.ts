@@ -73,16 +73,17 @@ export function feedPathCacheKey(packet: FeedPacket): string {
   return `${packet.packet_hash.toUpperCase()}:${observers}`;
 }
 
-export function formatFeedTimestamp(ts: string): string {
+export function createFeedTimestampFormatter() {
+  return new Intl.DateTimeFormat(undefined, {
+    day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+}
+
+let timestampFormatter: Intl.DateTimeFormat | undefined;
+export function formatFeedTimestamp(ts: string, formatter?: Intl.DateTimeFormat): string {
   const date = new Date(ts);
   if (!Number.isFinite(date.getTime())) return '—';
-  return date.toLocaleString(undefined, {
-    day: '2-digit',
-    month: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  });
+  return (formatter ?? (timestampFormatter ??= createFeedTimestampFormatter())).format(date);
 }
 
 export function packetSummary(packet: FeedPacket, nodeMap?: Map<string, MeshNode>): string {

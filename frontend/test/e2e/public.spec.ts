@@ -228,7 +228,8 @@ test('phone layouts give primary content the full available width', async ({ pag
   const chatBox = await page.locator('.uk-feed-chat').boundingBox();
   expect(channelsBox?.height ?? 200).toBeLessThan(64);
   expect(chatBox?.width ?? 0).toBeGreaterThan(360);
-  await expect(page.locator('.uk-feed-right')).toBeHidden();
+  await expect(page.locator('.uk-feed-map')).toBeHidden();
+  await expect(page.locator('.uk-feed-stats__row')).toBeVisible();
 });
 
 test('tablet topology uses the full-width map workspace', async ({ page }) => {
@@ -306,6 +307,7 @@ test('public site exposes its primary journeys', async ({ page }) => {
   await expect(page).toHaveURL(/\/install$/);
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 
+  await page.locator('.site-nav__group > summary').filter({ hasText: 'Tools' }).click();
   await page.getByRole('link', { name: 'Topology' }).click();
   await expect(page).toHaveURL(/\/topology$/);
   await expect(page.getByRole('heading', { name: 'Repeater topology' })).toBeVisible();
@@ -331,4 +333,32 @@ test('feed page text meets WCAG AA colour contrast', async ({ page }) => {
     .analyze();
   expect(contrast.violations
     .map((violation) => ({ id: violation.id, targets: violation.nodes.map((node) => node.target.join(' ')) }))).toEqual([]);
+});
+
+
+test('navigation groups support keyboard opening, Escape and mobile focus restoration', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('meshcore-cookie-consent-v1', '1'));
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    return route.fulfill({ json: publicFixture(url.pathname, url.searchParams) ?? {} });
+  });
+  await page.goto('/');
+  const tools = page.locator('.site-nav__group > summary').filter({ hasText: 'Tools' });
+  await tools.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeHidden();
+  await expect(tools).toBeFocused();
+  await page.setViewportSize({ width: 390, height: 844 });
+  const menu = page.locator('.site-nav__hamburger');
+  await menu.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.site-nav__links').getByRole('link', { name: 'Regions', exact: true })).toBeVisible();
+  await tools.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(menu).toBeFocused();
+  await expect(menu).toHaveAttribute('aria-expanded', 'false');
 });

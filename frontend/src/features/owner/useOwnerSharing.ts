@@ -39,8 +39,8 @@ function useOwnerState<Value extends object>(key: string, empty: Value) {
     } };
 }
 
-type PacketState = { settings: OwnerPacketSharing | null; loading: boolean; saving: boolean; error: string | null; destinationIds: string[] };
-type FeedState = { settings: OwnerPublicFeed | null; loading: boolean; saving: boolean; error: string | null };
+type PacketState = { settings: OwnerPacketSharing | null; loading: boolean; saving: boolean; error: string | null; destinationIds: string[]; draft: boolean };
+type FeedState = { settings: OwnerPublicFeed | null; loading: boolean; saving: boolean; error: string | null; draft: boolean | null };
 
 export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGeneration, privacyGeneration, selectedNodeId, clearOwnerSession }: {
   hasDashboard: boolean; ownerSessionKey: string | null; ownerSessionGeneration: number;
@@ -56,8 +56,8 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
   const feedKey = JSON.stringify([actorKey, privacyGeneration, hasDashboard]);
   const packetEnabled = hasDashboard && isPacketSharingOwner(ownerSessionKey) && Boolean(selectedNodeId);
   const feedEnabled = hasDashboard && Boolean(ownerSessionKey);
-  const packet = useOwnerState<PacketState>(packetKey, { settings: null, loading: packetEnabled, saving: false, error: null, destinationIds: [] });
-  const feed = useOwnerState<FeedState>(feedKey, { settings: null, loading: feedEnabled, saving: false, error: null });
+  const packet = useOwnerState<PacketState>(packetKey, { settings: null, loading: packetEnabled, saving: false, error: null, destinationIds: [], draft: false });
+  const feed = useOwnerState<FeedState>(feedKey, { settings: null, loading: feedEnabled, saving: false, error: null, draft: null });
 
   const refreshPacketSharing = useVisibilityPoll(async signal => {
     if (packet.isWriting()) return;
@@ -65,7 +65,11 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
     try {
       const settings = await fetchOwnerPacketSharing(selectedNodeId, signal);
       if (signal.aborted || !publish()) return;
-      packet.publish({ settings, destinationIds: settings.destinations.filter(item => item.selected).map(item => item.id), loading: false, error: null });
+      packet.publish(value => {
+        const confirmed = settings.destinations.filter(item => item.selected).map(item => item.id).sort();
+        const draft = value.draft && JSON.stringify(confirmed) !== JSON.stringify([...value.destinationIds].sort());
+        return { settings, destinationIds: draft ? value.destinationIds : confirmed, draft, loading: false, error: draft ? value.error : null };
+      });
     } catch (error) {
       if (!signal.aborted && publish()) {
         if (error instanceof ApiResponseError && error.status === 401) clearOwnerSession();
@@ -81,7 +85,10 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
     try {
       const settings = await fetchOwnerPublicFeed(signal);
       if (signal.aborted || !publish()) return;
-      feed.publish({ settings, loading: false, error: null });
+      feed.publish(value => {
+        const draft = value.draft !== null && value.draft !== settings.enabled ? value.draft : null;
+        return { settings, loading: false, draft, error: draft !== null ? value.error : null };
+      });
     } catch (error) {
       if (!signal.aborted && publish()) {
         if (error instanceof ApiResponseError && error.status === 401) clearOwnerSession();
@@ -98,7 +105,7 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
     if (!feed.value.settings?.featureEnabled) return;
     const operation = feed.beginWrite();
     const publish = operation.valid;
-    feed.publish({ saving: true, error: null });
+    feed.publish({ saving: true, error: null, draft: enabled });
     fetchOwnerCsrfToken()
       .then(csrfToken => {
         requireActor();
@@ -107,7 +114,7 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
           body: JSON.stringify({ enabled }),
         }, { timeoutMs: POLLING.ownerTimeout, maxBytes: 32 * 1024, validate: isOwnerPublicFeedResponse });
       })
-      .then(settings => { if (publish()) feed.publish({ settings }); })
+      .then(settings => { if (publish()) feed.publish({ settings, draft: null }); })
       .catch(error => { if (publish()) feed.publish({ error: error.message }); })
       .finally(() => { if (publish()) { operation.finish(); feed.publish({ saving: false }); refreshPublicFeed(); } });
   };
@@ -116,7 +123,7 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
     const destinationIds = [...new Set(next)].sort();
     const operation = packet.beginWrite();
     const publish = operation.valid;
-    packet.publish({ saving: true, error: null, destinationIds });
+    packet.publish({ saving: true, error: null, destinationIds, draft: true });
     fetchOwnerCsrfToken()
       .then(csrfToken => {
         requireActor();
@@ -130,7 +137,7 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
       })
       .then(result => {
         if (!publish()) return;
-        packet.publish(value => ({ destinationIds: result.destinationIds, settings: value.settings ? {
+        packet.publish(value => ({ destinationIds: result.destinationIds, draft: false, settings: value.settings ? {
           ...value.settings, enabled: result.enabled,
           destinations: value.settings.destinations.map(item => ({ ...item, selected: result.destinationIds.includes(item.id) })),
         } : null }));
@@ -144,7 +151,9 @@ export function useOwnerSharing({ hasDashboard, ownerSessionKey, ownerSessionGen
   };
   return { packetSharing: packet.value.settings, packetSharingLoading: packet.value.loading,
     packetSharingSaving: packet.value.saving, packetSharingError: packet.value.error,
-    packetSharingDestinationIds: packet.value.destinationIds, changePacketSharingDestination,
+    packetSharingDestinationIds: packet.value.destinationIds, packetSharingHasDraft: packet.value.draft,
+    retryPacketSharing: () => savePacketSharing(packet.value.destinationIds), changePacketSharingDestination,
     publicFeed: feed.value.settings, publicFeedLoading: feed.value.loading,
-    publicFeedSaving: feed.value.saving, publicFeedError: feed.value.error, savePublicFeed };
+    publicFeedSaving: feed.value.saving, publicFeedError: feed.value.error, publicFeedDraft: feed.value.draft,
+    retryPublicFeed: () => { if (feed.value.draft !== null) savePublicFeed(feed.value.draft); }, savePublicFeed };
 }

@@ -2,6 +2,17 @@ import { type FormEvent } from 'react';
 import { LoadingIndicator } from '../LoadingIndicator.js';
 import type { OwnerPacketSharing, OwnerPublicFeed } from '../../features/owner/model.js';
 
+function SaveStatus({ saving, error, draft, retry }: { saving: boolean; error: string | null; draft: boolean; retry?: () => void }) {
+  return <>
+    {saving && <p className="prose-note owner-sharing-saving" role="status">Saving...</p>}
+    {error && <div className="prose-note owner-sharing-error" role="alert">
+      <p>{error}</p>
+      {draft && <><p>Your changes have not been confirmed. Your selection is kept.</p>
+        <button type="button" className="site-btn site-btn--ghost" disabled={saving} onClick={retry}>Retry saving</button></>}
+    </div>}
+  </>;
+}
+
 export function OwnerLoginSection(props: {
   username: string;
   password: string;
@@ -17,14 +28,14 @@ export function OwnerLoginSection(props: {
       <p className="prose-note">Enter the MQTT credentials associated with your repeater observer.</p>
       <form className="owner-login__form" onSubmit={props.onSubmit}>
         <label className="owner-login__label" htmlFor="owner-username">MQTT username</label>
-        <input id="owner-username" className="owner-login__input" autoComplete="username" value={props.username} onChange={(event) => props.onUsername(event.target.value)} maxLength={128} />
+        <input id="owner-username" className="owner-login__input" autoComplete="username" aria-describedby={props.error ? 'owner-login-error' : undefined} value={props.username} onChange={(event) => props.onUsername(event.target.value)} maxLength={128} />
         <label className="owner-login__label" htmlFor="owner-key">MQTT password</label>
-        <input id="owner-key" className="owner-login__input" type="password" autoComplete="current-password" value={props.password} onChange={(event) => props.onPassword(event.target.value)} maxLength={256} />
+        <input id="owner-key" className="owner-login__input" type="password" autoComplete="current-password" aria-describedby={props.error ? 'owner-login-error' : undefined} value={props.password} onChange={(event) => props.onPassword(event.target.value)} maxLength={256} />
         <button className="site-btn site-btn--primary owner-login__button" type="submit" disabled={props.submitting}>
           {props.submitting ? <LoadingIndicator label="Logging in..." variant="inline" /> : 'Login'}
         </button>
       </form>
-      {props.error && <p className="prose-note owner-login__error" role="alert">{props.error}{' '}<a href="/install#mqtt-observer">MQTT setup and troubleshooting</a></p>}
+      {props.error && <p id="owner-login-error" className="prose-note owner-login__error" role="alert">{props.error}{' '}<a href="/install#mqtt-observer">MQTT setup and troubleshooting</a></p>}
     </section>
   );
 }
@@ -35,6 +46,8 @@ export function OwnerPacketSharingSection(props: {
   saving: boolean;
   error: string | null;
   selectedDestinationIds: string[];
+  hasDraft?: boolean;
+  onRetry?: () => void;
   onDestination: (destinationId: string, selected: boolean) => void;
 }) {
   if (props.loading) {
@@ -57,7 +70,7 @@ export function OwnerPacketSharingSection(props: {
 
   const settings = props.settings;
   const availableDestinations = settings.destinations.filter((destination) => destination.configured);
-  const selectedDestinations = availableDestinations.filter((destination) => props.selectedDestinationIds.includes(destination.id));
+  const selectedDestinations = availableDestinations.filter(destination => destination.selected);
   return (
     <section className="prose-section owner-sharing-panel" aria-labelledby="owner-sharing-heading">
       <div className="owner-panel__head">
@@ -103,7 +116,7 @@ export function OwnerPacketSharingSection(props: {
                   <small>{destination.configured
                     ? (destination.lastForwardedAt
                       ? 'Last packet forwarded successfully'
-                      : (props.selectedDestinationIds.includes(destination.id) ? 'Waiting for first packet' : 'Ready to enable'))
+                      : (destination.selected ? 'Waiting for first packet' : 'Ready to enable'))
                     : 'Waiting for broker details'}</small>
                 </span>
                 <label className="owner-sharing-switch" title={`Turn packet sharing ${props.selectedDestinationIds.includes(destination.id) ? 'off' : 'on'} for ${destination.name}`}>
@@ -124,8 +137,7 @@ export function OwnerPacketSharingSection(props: {
           </div>
         </>
       )}
-      {props.saving ? <p className="prose-note owner-sharing-saving">Saving…</p> : null}
-      {props.error ? <p className="prose-note owner-sharing-error" role="alert">{props.error}</p> : null}
+      <SaveStatus saving={props.saving} error={props.error} draft={!!props.hasDraft} retry={props.onRetry} />
     </section>
   );
 }
@@ -136,6 +148,8 @@ export function OwnerPublicFeedSection(props: {
   saving: boolean;
   error: string | null;
   onEnabled: (enabled: boolean) => void;
+  draftEnabled?: boolean | null;
+  onRetry?: () => void;
 }) {
   if (props.loading) {
     return (
@@ -174,13 +188,13 @@ export function OwnerPublicFeedSection(props: {
           </p>
         </div>
         <div className="owner-public-feed-switch-control">
-          <span className="owner-public-feed-switch__label">{settings.enabled ? 'On' : 'Off'}</span>
-          <label className="owner-sharing-switch owner-public-feed-switch" title={switchDisabled && lockedForActivity ? 'Publish an eligible packet in the last 24 hours to unlock the public feed' : `Turn the public feed ${settings.enabled ? 'off' : 'on'}`}>
+          <span className="owner-public-feed-switch__label">{props.draftEnabled != null ? 'Unconfirmed' : settings.enabled ? 'On' : 'Off'}</span>
+          <label className="owner-sharing-switch owner-public-feed-switch" title={switchDisabled && lockedForActivity ? 'Publish an eligible packet in the last 24 hours to unlock the public feed' : `Turn the public feed ${(props.draftEnabled ?? settings.enabled) ? 'off' : 'on'}`}>
             <span className="ui-visually-hidden">Publish packets and enable read-only public feed access</span>
             <input
               type="checkbox"
               role="switch"
-              checked={settings.enabled}
+              checked={props.draftEnabled ?? settings.enabled}
               disabled={switchDisabled}
               onChange={(event) => props.onEnabled(event.target.checked)}
             />
@@ -232,8 +246,7 @@ export function OwnerPublicFeedSection(props: {
         <div className="owner-public-feed-details__item"><span className="owner-public-feed-details__label">Recent eligible packets</span><span>{settings.recentPacketCount}</span></div>
         <div className="owner-public-feed-details__item"><span className="owner-public-feed-details__label">Access</span><span>Read-only for opted-in active owners and approved subscribers</span></div>
       </div>
-      {props.saving ? <p className="prose-note owner-sharing-saving">Saving…</p> : null}
-      {props.error ? <p className="prose-note owner-sharing-error" role="alert">{props.error}</p> : null}
+      <SaveStatus saving={props.saving} error={props.error} draft={props.draftEnabled != null} retry={props.onRetry} />
     </section>
   );
 }

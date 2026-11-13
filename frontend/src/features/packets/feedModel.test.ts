@@ -2,9 +2,30 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   mergeFeedPacketObservations,
+  createFeedTimestampFormatter,
+  formatFeedTimestamp,
   packetMatchesMessageScope,
   type FeedPacket,
 } from './feedModel.js';
+
+test('feed timestamps retain native locale formatting across date and daylight-saving boundaries', () => {
+  const formatter = createFeedTimestampFormatter();
+  for (const value of ['2026-03-29T00:59:59Z', '2026-03-29T01:00:00Z', '2026-10-25T00:59:59Z', '2026-10-25T01:00:00Z', '2027-01-01T00:00:00Z']) {
+    assert.equal(formatFeedTimestamp(value, formatter), new Date(value).toLocaleString(undefined, {
+      day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }));
+  }
+  assert.equal(formatFeedTimestamp('invalid'), '—');
+  assert.equal(formatFeedTimestamp(''), '—');
+});
+
+test('feed timestamp formatting accepts a changed locale and timezone without changing the stored date', () => {
+  const value = '2026-07-01T23:30:00Z';
+  for (const [locale, timeZone] of [['en-GB', 'Europe/London'], ['ja-JP', 'Asia/Tokyo']]) {
+    const formatter = new Intl.DateTimeFormat(locale, { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone });
+    assert.equal(formatFeedTimestamp(value, formatter), formatter.format(new Date(value)));
+  }
+});
 
 const retainedMessage: FeedPacket = {
   time: '2026-08-01T12:00:00.000Z',

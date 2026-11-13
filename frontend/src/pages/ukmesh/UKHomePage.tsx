@@ -54,22 +54,9 @@ export const UKHomePage: React.FC = () => {
           <section className="site-home__panel">
             <h2>Network overview</h2>
             <div className="site-home__meta">
-              <div className="site-home__meta-row">
-                <span>Coverage</span>
-                <strong>United Kingdom</strong>
-              </div>
-              <div className="site-home__meta-row">
-                <span>Band</span>
-                <strong>LoRa 868 MHz</strong>
-              </div>
-              <div className="site-home__meta-row">
-                <span>Channel</span>
-                <strong>Public</strong>
-              </div>
-              <div className="site-home__meta-row">
-                <span>Observer ingest</span>
-                <strong>Shared MQTT broker</strong>
-              </div>
+              {[['Coverage', 'United Kingdom'], ['Band', 'LoRa 868 MHz'], ['Channel', 'Public'], ['Observer ingest', 'Shared MQTT broker']].map(([label, value]) => <div className="site-home__meta-row" key={label}>
+                <span>{label}</span><strong>{value}</strong>
+              </div>)}
             </div>
           </section>
         </div>
@@ -113,32 +100,15 @@ export const UKHomePage: React.FC = () => {
             <p>The public site covers the national network, the observer feed, and the operational pages that sit around the live map.</p>
           </div>
           <div className="site-home__cards">
-            <div className="site-home__card">
-              <h3>Get on the air</h3>
-              <p>
-                Flash a supported device, pair it to your phone, and use the UK public profile. That gets you
-                onto the same channel used across the wider network.
-              </p>
-              <Link to="/install" className="site-btn site-btn--ghost">Install guide</Link>
-            </div>
-
-            <div className="site-home__card">
-              <h3>Become an observer</h3>
-              <p>
-                Connect a repeater or room server to the broker, publish packets over MQTT, and add another view
-                of the network from your own location.
-              </p>
-              <Link to="/install" className="site-btn site-btn--ghost">Observer setup</Link>
-            </div>
-
-            <div className="site-home__card">
-              <h3>Inspect live traffic</h3>
-              <p>
-                The live app shows repeater positions, path predictions, coverage layers, decoded packets, and
-                the supporting stats for the UK feed.
-              </p>
-              <a href={site.appUrl} className="site-btn site-btn--primary">Open live map ↗</a>
-            </div>
+            {[
+              { title: 'Get on the air', text: 'Flash a supported device, pair it to your phone, and use the UK public profile. That gets you onto the same channel used across the wider network.', label: 'Install guide', to: '/install' },
+              { title: 'Become an observer', text: 'Connect a repeater or room server to the broker, publish packets over MQTT, and add another view of the network from your own location.', label: 'Observer setup', to: '/install' },
+              { title: 'Inspect live traffic', text: 'The live app shows repeater positions, path predictions, coverage layers, decoded packets, and the supporting stats for the UK feed.', label: 'Open live map ↗', to: site.appUrl , external: true },
+            ].map(card => <div className="site-home__card" key={card.title}>
+              <h3>{card.title}</h3><p>{card.text}</p>
+              {card.external ? <a href={card.to} className="site-btn site-btn--primary">{card.label}</a>
+                : <Link to={card.to} className="site-btn site-btn--ghost">{card.label}</Link>}
+            </div>)}
           </div>
         </div>
       </section>
@@ -150,26 +120,9 @@ export const UKHomePage: React.FC = () => {
             <p>These are the network settings used across the UK public deployment.</p>
           </div>
           <div className="site-home__specs">
-            <div className="site-home__spec-row">
-              <span>Profile</span>
-              <strong>EU/UK Narrow</strong>
-            </div>
-            <div className="site-home__spec-row">
-              <span>Frequency</span>
-              <strong>869.618 MHz</strong>
-            </div>
-            <div className="site-home__spec-row">
-              <span>Bandwidth</span>
-              <strong>62.5 kHz</strong>
-            </div>
-            <div className="site-home__spec-row">
-              <span>Spreading factor</span>
-              <strong>SF8</strong>
-            </div>
-            <div className="site-home__spec-row">
-              <span>Coding rate</span>
-              <strong>CR8</strong>
-            </div>
+              {[['Profile', 'EU/UK Narrow'], ['Frequency', '869.618 MHz'], ['Bandwidth', '62.5 kHz'], ['Spreading factor', 'SF8'], ['Coding rate', 'CR8']].map(([label, value]) => <div className="site-home__spec-row" key={label}>
+                <span>{label}</span><strong>{value}</strong>
+              </div>)}
           </div>
         </div>
       </section>

@@ -253,6 +253,8 @@ export const PacketDetailPanel: React.FC<{
     return positions;
   }, [packet.observer_node_ids, packet.rx_node_id, detail?.observations, nodeMap, resolvedPaths]);
 
+  const cleanHex = detail?.rawHex?.replace(/\s/g, '') ?? '';
+
   return (
     <div className="feed-detail-panel">
       {/* Header */}
@@ -272,42 +274,16 @@ export const PacketDetailPanel: React.FC<{
       {/* Info grid */}
       <div className="feed-detail__section">
         <div className="feed-detail__info-grid">
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Observer</span>
-            <span className="feed-detail__info-value">{observerName}</span>
-          </div>
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Route</span>
-            <span className="feed-detail__info-value">{routeLabel}</span>
-          </div>
-          {radio && (
-            <div className="feed-detail__info-item">
-              <span className="feed-detail__info-label">Radio</span>
-              <span className="feed-detail__info-value">{formatRadio(radio)}</span>
-            </div>
-          )}
-          {propagationTime && (
-            <div className="feed-detail__info-item">
-              <span className="feed-detail__info-label">Propagation</span>
-              <span className="feed-detail__info-value">{propagationTime}</span>
-            </div>
-          )}
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Heard at</span>
-            <span className="feed-detail__info-value">{heardAt}</span>
-          </div>
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Heard by</span>
-            <span className="feed-detail__info-value">{observerCount} observer{observerCount !== 1 ? 's' : ''}</span>
-          </div>
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Observer region</span>
-            <span className="feed-detail__info-value">{observerIata}</span>
-          </div>
-          <div className="feed-detail__info-item">
-            <span className="feed-detail__info-label">Regions heard</span>
-            <span className="feed-detail__info-value">{regionsHeard}</span>
-          </div>
+          {[
+            ['Observer', observerName], ['Route', routeLabel],
+            ...(radio ? [['Radio', formatRadio(radio)]] : []),
+            ...(propagationTime ? [['Propagation', propagationTime]] : []),
+            ['Heard at', heardAt], ['Heard by', `${observerCount} observer${observerCount !== 1 ? 's' : ''}`],
+            ['Observer region', observerIata], ['Regions heard', regionsHeard],
+          ].map(([label, value]) => <div className="feed-detail__info-item" key={label}>
+            <span className="feed-detail__info-label">{label}</span>
+            <span className="feed-detail__info-value">{value}</span>
+          </div>)}
         </div>
       </div>
 
@@ -479,7 +455,7 @@ export const PacketDetailPanel: React.FC<{
       {detail?.rawHex && (
         <div className="feed-detail__section">
           <div className="feed-detail__section-title">
-            Packet Byte Breakdown ({Math.floor(detail.rawHex.replace(/\s/g, '').length / 2)} bytes)
+            Packet Byte Breakdown ({Math.floor(cleanHex.length / 2)} bytes)
           </div>
           <code className="feed-detail__hex">{detail.rawHex.toUpperCase()}</code>
 
@@ -521,7 +497,7 @@ export const PacketDetailPanel: React.FC<{
                 <ByteSection
                   label="Path Data"
                   byteRange={byteRangeName(parsed.pathDataStart, parsed.pathDataEnd)}
-                  hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.pathDataStart, parsed.pathDataEnd)}
+                  hexValue={hexSlice(cleanHex, parsed.pathDataStart, parsed.pathDataEnd)}
                   description="Historical route taken (bytes added as packet floods)"
                 />
               )}
@@ -531,7 +507,7 @@ export const PacketDetailPanel: React.FC<{
                 <ByteSection
                   label={`Payload — ${PAYLOAD_NAMES[parsed.rawPayloadType] ?? `Type ${parsed.rawPayloadType}`}`}
                   byteRange={byteRangeName(parsed.payloadStart, parsed.totalBytes)}
-                  hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.payloadStart, parsed.totalBytes)}
+                  hexValue={hexSlice(cleanHex, parsed.payloadStart, parsed.totalBytes)}
                   description={`${PAYLOAD_NAMES[parsed.rawPayloadType] ?? 'Unknown'} payload data`}
                 >
                   {/* Advertisement decode */}
@@ -562,20 +538,20 @@ export const PacketDetailPanel: React.FC<{
                       <ByteSection
                         label="Destination Hash"
                         byteRange={byteRangeName(parsed.payloadStart, parsed.payloadStart + 1)}
-                        hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.payloadStart, parsed.payloadStart + 1)}
+                        hexValue={hexSlice(cleanHex, parsed.payloadStart, parsed.payloadStart + 1)}
                         description="First byte of destination node public key"
                       />
                       <ByteSection
                         label="Source Hash"
                         byteRange={byteRangeName(parsed.payloadStart + 1, parsed.payloadStart + 2)}
-                        hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.payloadStart + 1, parsed.payloadStart + 2)}
+                        hexValue={hexSlice(cleanHex, parsed.payloadStart + 1, parsed.payloadStart + 2)}
                         description="First byte of source node public key"
                       />
                       {parsed.totalBytes - parsed.payloadStart >= 4 && (
                         <ByteSection
                           label="Cipher MAC"
                           byteRange={byteRangeName(parsed.payloadStart + 2, parsed.payloadStart + 4)}
-                          hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.payloadStart + 2, parsed.payloadStart + 4)}
+                          hexValue={hexSlice(cleanHex, parsed.payloadStart + 2, parsed.payloadStart + 4)}
                           description="MAC for encrypted data"
                         />
                       )}
@@ -583,7 +559,7 @@ export const PacketDetailPanel: React.FC<{
                         <ByteSection
                           label="Ciphertext"
                           byteRange={byteRangeName(parsed.payloadStart + 4, parsed.totalBytes)}
-                          hexValue={hexSlice(detail.rawHex.replace(/\s/g, ''), parsed.payloadStart + 4, parsed.totalBytes)}
+                          hexValue={hexSlice(cleanHex, parsed.payloadStart + 4, parsed.totalBytes)}
                           description="Encrypted message data (timestamp + message text)"
                         />
                       )}

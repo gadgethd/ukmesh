@@ -494,7 +494,7 @@ test('keyboard-only dashboard flow selects a node, reads details, and toggles a 
   await installDashboardWebSocket(page);
   await page.goto(dashboardBaseUrl(info));
 
-  const packet = page.locator('.packet-item').filter({ hasText: 'Keyboard fixture message' });
+  const packet = page.getByRole('button', { name: /^(?:Pin|Unpin) GRP packet: Keyboard fixture message$/ });
   await expect(packet).toHaveAttribute('aria-label', /Pin GRP packet/);
   await packet.focus();
   await page.keyboard.press('Space');
@@ -514,4 +514,18 @@ test('keyboard-only dashboard flow selects a node, reads details, and toggles a 
   await theme.focus();
   await page.keyboard.press('Enter');
   await expect(theme).toContainText('Light');
+});
+
+test.describe('inactive stats module delivery', () => {
+  test.use({ serviceWorkers: 'block' });
+test('a failed inactive stats module leaves tabs available for recovery', async ({ page }) => {
+  await installFixtures(page);
+  await page.route(/\/assets\/StatsSignal-[^/]+\.js/, route => route.abort('failed'));
+  await page.goto('/stats');
+  await page.getByRole('tab', { name: 'Signal', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Signal', exact: true }).getByRole('alert')).toContainText('The stats section could not be loaded.');
+  await page.getByRole('tab', { name: 'Overview', exact: true }).click();
+  await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toContainText('Observed packets (24h)');
+});
+
 });

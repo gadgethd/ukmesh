@@ -1,12 +1,14 @@
-import React from 'react';
+import React, { lazy } from 'react';
 import type { MeshNode } from '../../types/domain.js';
 import { Dialog, DialogTitle } from '../../components/ui/Dialog.js';
-import { PacketDetailPanel } from './PacketDetailPanel.js';
+import { LazyMapBoundary } from '../../components/Map/LazyMapBoundary.js';
 import type { LazyPathResult } from '../../features/packets/feedModel.js';
 import { FeedMapPanel, PacketPathTree } from './FeedPathViews.js';
 import type { FeedPacket } from '../../features/packets/feedModel.js';
 import type { PathTreeStatus } from '../../features/packets/feedState.js';
 import '../path-modal.css';
+
+const PacketDetailPanel = lazy(() => import('./PacketDetailPanel.js').then(module => ({ default: module.PacketDetailPanel })));
 
 export const FeedDialogs: React.FC<{
   scopeKey: string;
@@ -93,7 +95,7 @@ export const FeedDialogs: React.FC<{
         overlayClassName="disclaimer-overlay"
         className="uk-feed-detail-modal"
       >
-        <PacketDetailPanel
+        <LazyMapBoundary key={packet.packet_hash} className="feed-detail__loading" label="Packet details" resource="packet details" onClose={onCloseDetail}><PacketDetailPanel
           key={`${scopeKey}:${packet.packet_hash}`}
           packet={packet}
           nodeMap={nodeMap}
@@ -101,7 +103,7 @@ export const FeedDialogs: React.FC<{
           observer={observer}
           cachedLazyPath={lazyPath}
           onClose={onCloseDetail}
-        />
+        /></LazyMapBoundary>
       </Dialog>
     )}
   </>

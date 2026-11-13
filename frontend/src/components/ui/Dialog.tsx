@@ -7,6 +7,7 @@ import {
 } from 'react-aria-components';
 
 export type DialogProps = {
+  id?: string;
   isOpen: boolean;
   onOpenChange: (isOpen: boolean) => void;
   ariaLabel?: string;
@@ -16,6 +17,7 @@ export type DialogProps = {
 };
 
 export function Dialog({
+  id,
   isOpen,
   onOpenChange,
   ariaLabel,
@@ -44,6 +46,7 @@ export function Dialog({
     >
       <Modal className="ui-dialog-modal">
         <AriaDialog
+          id={id}
           ref={dialogRef}
           aria-label={ariaLabel}
           className={className ? `ui-dialog ${className}` : 'ui-dialog'}

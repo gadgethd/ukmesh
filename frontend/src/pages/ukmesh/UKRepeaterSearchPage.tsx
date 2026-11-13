@@ -247,6 +247,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const [nodes, setNodes] = useState<MeshNode[]>([]);
   const [loadingNodes, setLoadingNodes] = useState(true);
   const [nodesError, setNodesError] = useState<string | null>(null);
+  const [indexAttempt, setIndexAttempt] = useState(0);
   const [topAdverts, setTopAdverts] = useState<TopAdvertNode[]>([]);
   const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
   const [links, setLinks] = useState<NodeLink[]>([]);
@@ -260,6 +261,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   useEffect(() => {
     const controller = new AbortController();
     setLoadingNodes(true);
+    setNodesError(null);
     setNodes([]);
     setSelectedNode(null);
     selectionControllerRef.current?.abort();
@@ -283,7 +285,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
     return () => {
       controller.abort();
     };
-  }, [network, observer, runtimeFeatures.privacyGeneration]);
+  }, [network, observer, runtimeFeatures.privacyGeneration, indexAttempt]);
 
   // Top adverting repeaters (last 24h) — served from a 1h backend cache.
   useEffect(() => {
@@ -447,6 +449,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                 <div className="repeater-details-card__empty" role="alert">
                   <h3>Repeater index unavailable</h3>
                   <p>{nodesError}</p>
+                  <button type="button" className="site-btn site-btn--ghost" onClick={() => setIndexAttempt(value => value + 1)}>Retry repeaters</button>
                 </div>
               ) : (
                 <div className="repeater-details-card__empty">
@@ -549,39 +552,16 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       </button>
                     )}
                   </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Position</span>
-                    <span className="repeater-details-card__value">
-                      {selectedNode.lat !== undefined && selectedNode.lat !== null
-                        && selectedNode.lon !== undefined && selectedNode.lon !== null
-                        ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}`
-                        : 'Unknown'}
-                    </span>
-                  </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Elevation</span>
-                    <span className="repeater-details-card__value">
-                      {selectedNode.elevation_m !== undefined && selectedNode.elevation_m !== null
-                        ? `${Math.round(selectedNode.elevation_m)} m`
-                        : 'N/A'}
-                    </span>
-                  </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Network</span>
-                    <span className="repeater-details-card__value">{selectedNode.iata || 'N/A'}</span>
-                  </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Hardware</span>
-                    <span className="repeater-details-card__value">{selectedNode.hardware_model || 'Unknown'}</span>
-                  </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Last Seen</span>
-                    <span className="repeater-details-card__value">{timeAgo(selectedNode.last_seen)}</span>
-                  </div>
-                  <div className="repeater-details-card__field">
-                    <span className="repeater-details-card__label">Advert Count</span>
-                    <span className="repeater-details-card__value">{selectedNode.advert_count?.toLocaleString() || '0'}</span>
-                  </div>
+                  {[
+                    ['Position', selectedNode.lat != null && selectedNode.lon != null
+                      ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}` : 'Unknown'],
+                    ['Elevation', selectedNode.elevation_m != null ? `${Math.round(selectedNode.elevation_m)} m` : 'N/A'],
+                    ['Network', selectedNode.iata || 'N/A'], ['Hardware', selectedNode.hardware_model || 'Unknown'],
+                    ['Last Seen', timeAgo(selectedNode.last_seen)], ['Advert Count', selectedNode.advert_count?.toLocaleString() || '0'],
+                  ].map(([label, value]) => <div className="repeater-details-card__field" key={label}>
+                    <span className="repeater-details-card__label">{label}</span>
+                    <span className="repeater-details-card__value">{value}</span>
+                  </div>)}
                   {prediction && (
                     <div className="repeater-details-card__field">
                       <span className="repeater-details-card__label">Predicted Next Advert</span>

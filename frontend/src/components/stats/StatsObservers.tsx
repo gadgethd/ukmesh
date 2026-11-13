@@ -46,18 +46,13 @@ export function StatsObservers({ data, liveObservers, observerError }: { data: C
                             <button type="button" onClick={() => watchlist.toggle('observer', region.iata, `${region.iata} observers`)}>{watchlist.isWatched('observer', region.iata) ? '★ Observers' : '☆ Observers'}</button>
                           </div>
                           <div className="stats-page__observer-metrics">
-                            <div className="stats-page__observer-metric">
-                              <span>Packets (7D)</span>
-                              <strong>{region.historyAvailable ? formatCount(region.packets7d) : '—'}</strong>
-                            </div>
-                            <div className="stats-page__observer-metric">
-                              <span>Packets (24h)</span>
-                              <strong>{region.historyAvailable ? formatCount(region.packets24h) : '—'}</strong>
-                            </div>
-                            <div className="stats-page__observer-metric">
-                              <span>Active observers / 7D snapshot</span>
-                              <strong>{formatCount(region.activeObservers)} / {region.historyAvailable ? formatCount(region.observers) : '—'}</strong>
-                            </div>
+                            {[
+                              ['Packets (7D)', region.historyAvailable ? formatCount(region.packets7d) : '—'],
+                              ['Packets (24h)', region.historyAvailable ? formatCount(region.packets24h) : '—'],
+                              ['Active observers / 7D snapshot', `${formatCount(region.activeObservers)} / ${region.historyAvailable ? formatCount(region.observers) : '—'}`],
+                            ].map(([label, value]) => <div className="stats-page__observer-metric" key={label}>
+                              <span>{label}</span><strong>{value}</strong>
+                            </div>)}
                           </div>
                           <div className="stats-page__observer-chart">
                             <ResponsiveContainer width="100%" height={90}>

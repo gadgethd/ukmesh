@@ -1,7 +1,3 @@
-import { StatsSignal } from '../components/stats/StatsSignal.js';
-import { StatsPaths } from '../components/stats/StatsPaths.js';
-import { StatsObservers } from '../components/stats/StatsObservers.js';
-import { StatsTraffic } from '../components/stats/StatsTraffic.js';
 import { StatsOverview } from '../components/stats/StatsOverview.js';
 import type { StatsTabId } from '../features/stats/model.js';
 import React, { lazy, useEffect, useRef, useState } from 'react';
@@ -16,6 +12,10 @@ import './path-modal.css';
 import './stats-page.css';
 
 const StatsDecodedPathDialog = lazy(() => import('../components/stats/StatsDecodedPathDialog.js').then(module => ({ default: module.StatsDecodedPathDialog })));
+const StatsSignal = lazy(() => import('../components/stats/StatsSignal.js').then(module => ({ default: module.StatsSignal })));
+const StatsPaths = lazy(() => import('../components/stats/StatsPaths.js').then(module => ({ default: module.StatsPaths })));
+const StatsObservers = lazy(() => import('../components/stats/StatsObservers.js').then(module => ({ default: module.StatsObservers })));
+const StatsTraffic = lazy(() => import('../components/stats/StatsTraffic.js').then(module => ({ default: module.StatsTraffic })));
 export const StatsPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
@@ -138,7 +138,7 @@ export const StatsPage: React.FC = () => {
           </div>
         )}
 
-            {data && !dataIsEmpty && (<>
+            {data && !dataIsEmpty && (<LazyMapBoundary key={activeTab} className="stats-page__request-state" label="Network stats" resource="stats section">
 
             {activeTab === 'overview' && <StatsOverview data={data} />}
 
@@ -149,7 +149,7 @@ export const StatsPage: React.FC = () => {
             {activeTab === 'paths' && <StatsPaths data={data} openPath={openPath} />}
 
             {activeTab === 'signal' && <StatsSignal data={data} />}
-            </>)}
+            </LazyMapBoundary>)}
             </div>
           </div>
 

@@ -25,3 +25,16 @@ export function OwnerPanelState({ label, hasData, error, onRetry, children }: Ow
     {hasData ? children : null}
   </>;
 }
+
+/** Shared panel spacing keeps loading, cached data and retry actions aligned. */
+export function OwnerPanel({ className, title, description, ...state }: OwnerPanelStateProps & {
+  className: string; title?: React.ReactNode; description?: string;
+}) {
+  return <section className={className}>
+    <div className="owner-panel__head"><div>
+      <h2>{title ?? state.label}</h2>
+      {description && <p className="prose-note" style={{ marginTop: 0 }}>{description}</p>}
+    </div></div>
+    <OwnerPanelState {...state} />
+  </section>;
+}

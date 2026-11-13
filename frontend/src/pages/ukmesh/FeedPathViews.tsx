@@ -1,9 +1,14 @@
-import React, { useMemo } from 'react';
+import React, { lazy, useMemo } from 'react';
+import { messageTagKind, messageTagTitle } from '../../features/packets/liveFeed.js';
+import { PACKET_TYPE_LABELS } from '../../config/packetTypes.js';
+import { packetSummary } from '../../features/packets/feedModel.js';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import type { MeshNode } from '../../types/domain.js';
-import { PathMap } from './PacketPathMap.js';
+import { LazyMapBoundary } from '../../components/Map/LazyMapBoundary.js';
 import type { PathTreeStatus } from '../../features/packets/feedState.js';
 import type { FeedPacket, LazyPath, LazyPathNode, LazyPathResult, PathTreeBranchNode } from '../../features/packets/feedModel.js';
+
+const PathMap = lazy(() => import('./PacketPathMap.js').then(module => ({ default: module.PathMap })));
 
 export const FeedMapPanel: React.FC<{
   packet: FeedPacket | null;
@@ -34,6 +39,7 @@ export const FeedMapPanel: React.FC<{
     return <div className="uk-feed-map-placeholder">Select a packet to see its path</div>;
   }
   return (
+    <LazyMapBoundary className="uk-feed-map-placeholder" label="Packet path map">
     <PathMap
       observerPositions={observerPositions}
       lazyPaths={(cachedLazyPath?.paths ?? []) as LazyPath[]}
@@ -41,6 +47,7 @@ export const FeedMapPanel: React.FC<{
       nodeMap={nodeMap}
       isLoading={isLoading}
     />
+    </LazyMapBoundary>
   );
 };
 
@@ -234,3 +241,43 @@ export const PacketPathTree: React.FC<{
     </div>
   );
 };
+
+export function SelectedPacketSummary({ packet, nodeMap, clear, openPath, openDetails, className = 'uk-feed-stats__selected' }: {
+  packet: FeedPacket; nodeMap: Map<string, MeshNode>; clear: () => void;
+  openPath: () => void; openDetails: () => void; className?: string;
+}) {
+  return (
+<div className={className}>
+                <div className="uk-feed-stats__selected-meta">
+                  <code className="feed-detail__hash">{packet.packet_hash}</code>
+                  <span className="feed-detail__badge">
+                    {packet.packet_type != null ? (PACKET_TYPE_LABELS[packet.packet_type] ?? `T${packet.packet_type}`) : '—'}
+                  </span>
+                  {packet.hop_count != null && (
+                    <span className="feed-detail__badge feed-detail__badge--muted">
+                      {packet.hop_count} hop{packet.hop_count !== 1 ? 's' : ''}
+                    </span>
+                  )}
+                  {messageTagKind(packet) && (
+                    <span className="msg-tag-chip" title={messageTagTitle(packet)}>
+                      {messageTagKind(packet)}
+                    </span>
+                  )}
+                  <button type="button" className="uk-feed-stats__close" onClick={() => clear()} aria-label="Clear selected packet">✕</button>
+                </div>
+                <p className="uk-feed-stats__selected-summary">{packetSummary(packet, nodeMap)}</p>
+                <div className="uk-feed-stats__actions">
+                  <button
+                    type="button"
+                    className="uk-feed-stats__tree-toggle"
+                    onClick={openPath}
+                  >
+                    Repeater tree
+                  </button>
+                  <button type="button" className="uk-feed-stats__tree-toggle" onClick={() => openDetails()}>
+                    Packet details
+                  </button>
+                </div>
+              </div>
+  );
+}

@@ -1,5 +1,9 @@
 import { chartStats } from './fixtures/chartStats.mjs';
 import { expect, test, type Page } from '@playwright/test';
+import { installMapRoutes, installTerrainRoutes } from './mapFixtures.js';
+
+// Keep renderer/detail faults under page routing; cache cutover has its own lane.
+test.use({ serviceWorkers: 'block' });
 
 async function assertContiguous(page: Page) {
   const geometry = await page.locator('.uk-feed-packets-list').evaluate(container => {
@@ -169,5 +173,132 @@ for (const width of [390, 1280]) {
     await expect.poll(() => list.evaluate(element => element.scrollHeight > element.clientHeight + 1
       ? element.scrollTop : -element.getBoundingClientRect().top)).toBeLessThan(1);
     expect(errors).toEqual([]);
+  });
+}
+
+async function installQuietFeed(page: Page) {
+  await installMapRoutes(page);
+  await installTerrainRoutes(page);
+  await page.route('**/api/**', route => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/radio-stats' || (path.startsWith('/api/packets/') && path !== '/api/packets/recent')) {
+      return route.fulfill({ status: 404, json: { error: 'No retained details in the quiet-feed fixture' } });
+    }
+    return route.fulfill({ json: path === '/api/runtime-config'
+      ? { version: 1, packetArcs: false, heatmap: false, regionScoping: true, privacyGeneration: 1, refreshAfterSeconds: 30 }
+      : path === '/api/stats/charts' ? chartStats : [] });
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('meshcore-cookie-consent-v1', '1');
+    const count = { formats: 0 };
+    Object.assign(window, { feedFormatProbe: count });
+    const descriptor = Object.getOwnPropertyDescriptor(Intl.DateTimeFormat.prototype, 'format')!;
+    Object.defineProperty(Intl.DateTimeFormat.prototype, 'format', { ...descriptor, get() {
+      const format = descriptor.get!.call(this);
+      return (value: Date | number) => { count.formats++; return format(value); };
+    } });
+    const locale = Date.prototype.toLocaleString;
+    Date.prototype.toLocaleString = function (...args) { count.formats++; return locale.apply(this, args); };
+    const packets = Array.from({ length: 30 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, 'A'), packet_type: 5,
+      time: new Date(Date.now() - i * 1000).toISOString(), observer_iatas: ['ABC'], summary: `[Public] Quiet feed fixture ${i}` }));
+    class FixtureWebSocket extends EventTarget {
+      static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
+      readyState = 0; onopen: ((event: Event) => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
+      send() {} close() { this.readyState = 3; }
+      constructor() { super(); setTimeout(() => {
+        this.readyState = 1; this.onopen?.(new Event('open'));
+        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'initial_state', ts: Date.now(), data: { nodes: [], packets, messages: packets } }) }));
+      }, 0); }
+    }
+    Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
+  });
+}
+
+test('feed clocks leave packet timestamps untouched and suspend while hidden', async ({ page }) => {
+  await installQuietFeed(page);
+  await page.clock.install();
+  const scripts: string[] = [];
+  page.on('request', request => { if (request.resourceType() === 'script') scripts.push(request.url()); });
+  await page.goto('/feed');
+  await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
+  await page.evaluate(async () => { await document.fonts.ready; });
+  await page.clock.fastForward(2000);
+  const before = await page.locator('.uk-feed-stats__row').textContent();
+  await page.evaluate(() => { (window as unknown as { feedFormatProbe: { formats: number } }).feedFormatProbe.formats = 0; });
+  await page.clock.fastForward(6000);
+  await expect.poll(() => page.locator('.uk-feed-stats__row').textContent()).not.toBe(before);
+  expect(await page.evaluate(() => (window as unknown as { feedFormatProbe: { formats: number } }).feedFormatProbe.formats)).toBe(0);
+  expect(scripts.filter(url => /maplibre|deck-|PacketPathMap|PacketDetailPanel/.test(url))).toEqual([]);
+  const visibleText = await page.locator('.uk-feed-stats__row').textContent();
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await page.clock.fastForward(20_000);
+  expect(await page.locator('.uk-feed-stats__row').textContent()).toBe(visibleText);
+  await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true }); document.dispatchEvent(new Event('visibilitychange')); });
+  await expect.poll(() => page.locator('.uk-feed-stats__row').textContent()).not.toBe(visibleText);
+});
+
+test('clearing packet filters preserves the chosen region and selection loads its map on demand', async ({ page }) => {
+  await installQuietFeed(page);
+  const scripts: string[] = [];
+  page.on('request', request => { if (request.resourceType() === 'script') scripts.push(request.url()); });
+  await page.goto('/feed');
+  await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
+  await page.getByRole('button', { name: 'ABC', exact: true }).click();
+  await page.getByRole('searchbox', { name: 'Search packets', exact: true }).fill('no matching packet');
+  await expect(page.getByText('No packets match the current filters in ABC.', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Clear filters', exact: true }).click();
+  await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
+  await expect(page.getByRole('button', { name: 'ABC', exact: true })).toHaveClass(/--active/);
+  expect(scripts.filter(url => /maplibre|deck-|PacketPathMap|PacketDetailPanel/.test(url))).toEqual([]);
+  await page.locator('.uk-feed-packet-row').first().click();
+  await expect.poll(() => scripts.some(url => /PacketPathMap/.test(url))).toBe(true);
+  await expect(page.locator('.maplibregl-map')).toHaveCount(1);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(page.locator('.maplibregl-map')).toHaveCount(1);
+  await page.getByRole('button', { name: 'Repeater tree', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Predicted repeater tree', exact: true })).toBeVisible();
+  expect(scripts.filter(url => /PacketDetailPanel/.test(url))).toEqual([]);
+  await page.keyboard.press('Escape');
+  const details = page.getByRole('button', { name: 'Packet details', exact: true });
+  await details.click();
+  await expect.poll(() => scripts.some(url => /PacketDetailPanel/.test(url))).toBe(true);
+  await expect(page.getByRole('dialog', { name: 'Packet details', exact: true })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(details).toBeFocused();
+});
+
+for (const failure of [false, true]) {
+  test(`packet details remain dismissible when their module is ${failure ? 'unavailable' : 'pending'}`, async ({ page }) => {
+    await installQuietFeed(page);
+    let release!: () => void;
+    let requests = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    await page.route(/\/assets\/PacketDetailPanel-[^/]+\.js/, async route => {
+      requests++;
+      if (failure) await route.abort('failed');
+      else { await gate; await route.continue(); }
+    });
+    try {
+      await page.goto('/feed');
+      await page.locator('.uk-feed-packet-row').first().click();
+      const trigger = page.getByRole('button', { name: 'Packet details', exact: true });
+      await trigger.click();
+      await expect.poll(() => requests).toBe(1);
+      const dialog = page.getByRole('dialog', { name: 'Packet details', exact: true });
+      await expect(dialog).toBeVisible();
+      if (failure) {
+        await expect(dialog.getByRole('alert')).toContainText('The packet details could not be loaded.');
+        await expect(dialog.getByRole('button', { name: 'Reload packet details', exact: true })).toBeVisible();
+      } else await expect(dialog.getByRole('status')).toBeVisible();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toHaveCount(0);
+      await expect(trigger).toBeFocused();
+      await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
+      release();
+      if (!failure) {
+        await trigger.click();
+        await expect(dialog.getByRole('button', { name: 'Close packet details', exact: true })).toBeVisible();
+      }
+    } finally { release(); }
   });
 }

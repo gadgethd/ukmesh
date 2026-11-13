@@ -75,6 +75,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
   const navRef = useRef<HTMLElement>(null);
+  const menuTrigger = useRef<HTMLButtonElement>(null);
   const [ownerLabel, setOwnerLabel] = useState<string | null>(null);
   const [activeSpamIncidents, setActiveSpamIncidents] = useState(0);
   const [cookieConsent, setCookieConsent] = useState<boolean>(() => {
@@ -84,23 +85,33 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
       return false;
     }
   });
-  const navItems: NavItem[] = [
-    { to: '/feed', label: 'Feed', enabled: showFeed },
-    { to: '/repeater', label: 'Repeaters', enabled: showRepeaterSearch },
-    { to: '/companion', label: 'Companions', enabled: showCompanion },
-    { to: '/regions', label: 'Regions', enabled: showRegions },
-    { to: '/topology', label: 'Topology', enabled: showTopology },
-    { to: '/spam', label: 'Spam', enabled: showSpam },
-    { to: '/about', label: 'What is MeshCore', enabled: showAbout },
-    { to: '/install', label: 'Install', enabled: showInstall },
-    { to: '/mqtt', label: 'MQTT', enabled: showMqtt },
-    { to: '/packets', label: 'Packets', enabled: showPackets },
-    { to: '/open-source', label: 'Open Source', enabled: showOpenSource },
-    { to: '/stats', label: 'Stats', enabled: showStats },
-    { to: '/docs', label: 'Docs', enabled: showBestPractice },
-  ];
+  const navItems: NavItem[] = ([
+    ['/feed', 'Feed', showFeed],
+    ['/repeater', 'Repeaters', showRepeaterSearch],
+    ['/companion', 'Companions', showCompanion],
+    ['/regions', 'Regions', showRegions],
+    ['/topology', 'Topology', showTopology],
+    ['/spam', 'Spam', showSpam],
+    ['/about', 'What is MeshCore', showAbout],
+    ['/install', 'Install', showInstall],
+    ['/mqtt', 'MQTT', showMqtt],
+    ['/packets', 'Packets', showPackets],
+    ['/open-source', 'Open Source', showOpenSource],
+    ['/stats', 'Stats', showStats],
+    ['/docs', 'Docs', showBestPractice],
+  ] satisfies [string, string, boolean][]).map(([to, label, enabled]) => ({ to, label, enabled }));
 
-  const closeMenu = () => setMenuOpen(false);
+  const closeMenu = () => {
+    setMenuOpen(false);
+    navRef.current?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach(group => { group.open = false; });
+  };
+  const renderLink = (item: NavItem) => <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={closeMenu} className={navClassName}>
+    {item.label}
+    {item.to === '/spam' && activeSpamIncidents > 0 && <span className="site-nav__badge" aria-label={`${activeSpamIncidents} active incidents`}>{activeSpamIncidents}</span>}
+  </NavLink>;
+  const primary = navItems.filter(item => item.enabled && ['/repeater', '/feed', '/regions'].includes(item.to));
+  const tools = navItems.filter(item => item.enabled && ['/topology', '/companion', '/spam', '/stats', '/packets'].includes(item.to));
+  const help = navItems.filter(item => item.enabled && !primary.includes(item) && !tools.includes(item));
 
   useEffect(() => {
     if (!showSpam) return;
@@ -113,10 +124,12 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   }, [showSpam, privacyGeneration]);
 
   useEffect(() => {
-    if (!menuOpen) return undefined;
-
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeMenu();
+      if (event.key !== 'Escape') return;
+      const summary = navRef.current?.querySelector<HTMLElement>('details[open] > summary');
+      if (!summary && !menuOpen) return;
+      closeMenu();
+      (menuOpen ? menuTrigger.current : summary)?.focus();
     };
     const handlePointerDown = (event: PointerEvent) => {
       if (!navRef.current?.contains(event.target as Node)) closeMenu();
@@ -183,7 +196,8 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
 
   return (
     <div className="site-layout">
-      <nav ref={navRef} className="site-nav">
+      <a href="#site-main" className="ui-skip-link">Skip to content</a>
+      <nav ref={navRef} className="site-nav" aria-label="Main navigation">
         <Link to="/" className="site-nav__brand" onClick={closeMenu}>
           <span className="site-nav__icon">◈</span>
           <span className="site-nav__name">{brandName}</span>
@@ -202,19 +216,20 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
               Live Map <span className="site-nav__external-icon" aria-hidden="true">↗</span>
             </a>
           )}
-          {navItems.filter((item) => item.enabled).map((item) => (
-            <NavLink
-              key={item.to}
-              to={item.to}
-              end={item.to === '/'}
-              onClick={closeMenu}
-              className={navClassName}
-            >
-              {item.label}
-              {item.to === '/spam' && activeSpamIncidents > 0 && <span className="site-nav__badge" aria-label={`${activeSpamIncidents} active incidents`}>{activeSpamIncidents}</span>}
-            </NavLink>
+          {primary.map(renderLink)}
+          {[{ label: 'Tools', items: tools }, { label: 'Help', items: help }].filter(group => group.label === 'Tools' || group.items.length).map(group => (
+            <details className="site-nav__group" key={group.label} onToggle={event => {
+              if (event.currentTarget.open) navRef.current?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach(other => {
+                if (other !== event.currentTarget) other.open = false;
+              });
+            }}>
+              <summary className="site-nav__link">{group.label} <span aria-hidden="true">▾</span></summary>
+              <div className="site-nav__group-links">
+                {group.items.map(renderLink)}
+                {group.label === 'Tools' && <a href="https://healthcheck.ukmesh.com" className="site-nav__link" onClick={closeMenu}>Health Check</a>}
+              </div>
+            </details>
           ))}
-          <a href="https://healthcheck.ukmesh.com" className="site-nav__link">Health Check</a>
           <NavLink
             to="/login"
             onClick={closeMenu}
@@ -225,18 +240,19 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         </div>
 
         <button
+          ref={menuTrigger}
           type="button"
           className="site-nav__hamburger"
           aria-label={menuOpen ? 'Close menu' : 'Open menu'}
           aria-controls="site-navigation"
           aria-expanded={menuOpen}
-          onClick={() => setMenuOpen((open) => !open)}
+          onClick={() => { if (menuOpen) closeMenu(); else setMenuOpen(true); }}
         >
           {menuOpen ? '✕' : '☰'}
         </button>
       </nav>
 
-      <main className="site-main">
+      <main className="site-main" id="site-main" tabIndex={-1}>
         <Outlet />
       </main>
 

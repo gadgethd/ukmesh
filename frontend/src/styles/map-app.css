@@ -1202,7 +1202,7 @@
 }
 
 /* ─── Live packet feed (bottom left) ────────────────────────────────────── */
-.packet-feed {
+.packet-feed-frame {
   position: absolute;
   bottom: 16px;
   left: 16px;
@@ -1210,12 +1210,12 @@
   width: min(400px, calc(100vw - 32px));
   height: min(268px, calc(100vh - 80px));
   max-height: 268px;
-  overflow-y: auto;
+  overflow: hidden;
   overflow-x: hidden;
   pointer-events: auto;
   display: flex;
   flex-direction: column;
-  padding: 8px 4px 2px 0;
+
   border: 1px solid rgba(214, 232, 255, 0.28);
   border-radius: var(--radius-lg);
   background: rgba(8, 16, 27, 0.97);
@@ -1223,6 +1223,23 @@
   scrollbar-width: thin;
   scrollbar-color: rgba(214, 232, 255, 0.52) rgba(8, 16, 27, 0.7);
   scroll-padding-top: 8px;
+}
+.packet-feed {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 4px 2px 0;
+  overflow-anchor: none;
+}
+.packet-feed__jump {
+  flex-shrink: 0;
+  min-height: 44px;
+  border: 0;
+  border-top: 1px solid var(--border-bright);
+  background: var(--bg-panel);
+  color: var(--accent);
+  font: inherit;
+  cursor: pointer;
 }
 .packet-feed::-webkit-scrollbar { width: 8px; }
 .packet-feed::-webkit-scrollbar-track {
@@ -1257,9 +1274,54 @@
 }
 
 .packet-item__body {
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
   min-width: 0;
   overflow: hidden;
   white-space: normal;
+}
+.map-advanced-layers > summary {
+  padding: 12px 8px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.map-advanced-layers > p {
+  margin: 0 8px 8px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mobile-map-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  background: rgba(0, 0, 0, 0.45);
+}
+.conn-indicator__labels { display: grid; max-width: 140px; }
+.conn-indicator__labels > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conn-indicator__refresh { font-size: 10px; color: var(--text-secondary); }
+.app-data-status {
+  position: absolute;
+  right: 16px;
+  bottom: 48px;
+  z-index: 810;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: min(400px, calc(100% - 32px));
+  padding: 8px 12px;
+  border: 1px solid var(--border-bright);
+  border-radius: var(--radius-md);
+  background: var(--bg-panel);
+  color: var(--text-primary);
+}
+@media (pointer: coarse) {
+  .packet-item__watch { min-width: 44px; min-height: 44px; }
 }
 
 .packet-item__actions {
@@ -1569,7 +1631,7 @@
   .timeline-control__meta { flex-wrap: wrap; gap: 5px 12px; }
   /* The node dock becomes a bottom sheet on mobile; hide the bottom-left packet
      feed underneath it so they don't overlap. */
-  .app-shell[data-node-open="true"] .packet-feed { display: none; }
+  .app-shell[data-node-open="true"] .packet-feed-frame { display: none; }
   .planner-comparison {
     top: auto;
     right: 8px;
@@ -1771,7 +1833,7 @@
     grid-template-columns: repeat(4, minmax(0, 1fr));
   }
   .map-area .node-search { display: none; }
-  .packet-feed {
+  .packet-feed-frame {
     width: calc(100% - 32px);
     height: min(180px, calc(100dvh - 80px));
     max-height: 180px;
@@ -2025,7 +2087,7 @@
     right: auto;
     width: calc(58% - 12px);
   }
-  .app-shell:has(.rf-coverage-status) .packet-feed {
+  .app-shell:has(.rf-coverage-status) .packet-feed-frame {
     right: 8px;
     left: auto;
     width: calc(42% - 12px);
@@ -2033,7 +2095,7 @@
     max-height: 150px;
     bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   }
-  .app-shell > .packet-feed {
+  .app-shell > .packet-feed-frame {
     bottom: calc(8px + env(safe-area-inset-bottom, 0px));
   }
 }
@@ -2149,7 +2211,10 @@
     letter-spacing: 0.08em;
     text-transform: uppercase;
   }
+  .mobile-menu .mobile-menu__title { margin: 0; font-size: 14px; text-transform: none; }
   .mobile-menu__close {
+    min-width: 44px;
+    min-height: 44px;
     padding: 4px 8px;
     border: 0;
     background: none;
@@ -2233,7 +2298,7 @@
     border: 0;
   }
   /* Packet feed stays hidden on mobile until the Live chip is pressed. */
-  .app-shell:not([data-feed-open='true']) .packet-feed {
+  .app-shell:not([data-feed-open='true']) .packet-feed-frame {
     display: none;
   }
   /* Coverage details collapse behind the toggle on mobile. */

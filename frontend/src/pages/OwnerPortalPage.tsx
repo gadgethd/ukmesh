@@ -8,11 +8,11 @@ import { useOwnerSession } from '../features/owner/useOwnerSession.js';
 import { useOwnerSharing } from '../features/owner/useOwnerSharing.js';
 import { useOwnerLive } from '../features/owner/useOwnerLive.js';
 import { PACKET_LABELS, ROUTE_LABELS, cleanPacketBody, fmtTs, formatCompactTs, formatPathLoss,
-  isPacketSharingOwner, linkBadge, nodeRoleLabel } from '../features/owner/model.js';
+  isPacketSharingOwner, linkBadge, nodeRoleLabel, type LivePeer } from '../features/owner/model.js';
 import { LastHopStrengthChart, TELEMETRY_SERIES, TelemetryMiniChart, TelemetryStatCard,
   TrendBars, formatUptime } from './owner/OwnerPortalCharts.js';
 import { OwnerMapView } from './owner/OwnerMapView.js';
-import { OwnerPanelState } from './owner/OwnerPanelState.js';
+import { OwnerPanel, OwnerPanelState } from './owner/OwnerPanelState.js';
 import { OwnerHeardNeighbors } from './owner/OwnerHeardNeighbors.js';
 import { OwnerStatusFields } from './owner/OwnerStatusFields.js';
 
@@ -22,14 +22,20 @@ export const OwnerPortalPage: React.FC = () => {
   const { mqttUsername, setMqttUsername, mqttPassword, setMqttPassword, loading, submitting, error,
     dashboard, selectedNodeId, setSelectedNodeId, ownerSessionKey, ownerSessionGeneration, handleLogin, handleLogout } = session;
   const { packetSharing, packetSharingLoading, packetSharingSaving, packetSharingError,
-    packetSharingDestinationIds, changePacketSharingDestination, publicFeed, publicFeedLoading,
-    publicFeedSaving, publicFeedError, savePublicFeed } = useOwnerSharing({
+    packetSharingDestinationIds, packetSharingHasDraft, retryPacketSharing, changePacketSharingDestination, publicFeed, publicFeedLoading,
+    publicFeedSaving, publicFeedError, publicFeedDraft, retryPublicFeed, savePublicFeed } = useOwnerSharing({
       hasDashboard: dashboard !== null, ownerSessionKey, ownerSessionGeneration, privacyGeneration, selectedNodeId, clearOwnerSession: session.clearOwnerSession });
   const { live, livePanelState, mapPoints, ownerCoord, mapPeers, strongestLink, viableLinkCount,
     latestTelemetry, compareNodeIds, setCompareNodeIds, toggleCompareNode, compareChartSeries,
     lastHopResult, lastHopViewScope, lastHopError, retryLastHop, lastHopStrength, lastHopWindow,
     setLastHopWindow } = useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashboard, selectedNodeId,
       setSelectedNodeId, ownerSessionKey, clearOwnerSession: session.clearOwnerSession });
+
+  const peerGroups: { label: string; peers: (LivePeer & { packets_7d?: number; best_hops?: number | null })[]; empty: string; description?: string }[] = [
+    { label: 'Direct Senders', peers: live?.incomingPeers ?? [], empty: 'No direct sender nodes found in the last 24 hours.' },
+    { label: 'Nodes That Heard This Repeater', peers: live?.heardBy ?? [], empty: 'No nodes have received packets from this node in the last 7 days.',
+      description: 'Other nodes that received packets transmitted by this repeater (last 7d)' },
+  ];
 
   return (
     <>
@@ -114,18 +120,17 @@ export const OwnerPortalPage: React.FC = () => {
               </div>
               <OwnerPanelState label="Live summary" {...livePanelState}>
               <div className="site-stats-grid site-stats-grid--6 owner-summary-grid">
-                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.name ?? 'Unnamed'}</span><span className="site-stat__label">{nodeRoleLabel(live?.ownerNode.role ?? null)}</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.network ?? '-'}</span><span className="site-stat__label">Network</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.iata ?? '-'}</span><span className="site-stat__label">IATA</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.ownerNode.advert_count ?? 0}</span><span className="site-stat__label">Adverts</span></div>
-                <div className="site-stat"><span className="site-stat__value">{fmtTs(live?.ownerNode.last_seen ?? null)}</span><span className="site-stat__label">Last Seen</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.incomingPeers.length ?? 0}</span><span className="site-stat__label">Direct Senders (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{viableLinkCount}</span><span className="site-stat__label">Viable Links</span></div>
-                <div className="site-stat"><span className="site-stat__value">{strongestLink?.peer_name ?? '-'}</span><span className="site-stat__label">Strongest Link</span></div>
-                <div className="site-stat"><span className="site-stat__value">{formatPathLoss(strongestLink?.itm_path_loss_db ?? null)}</span><span className="site-stat__label">Best Path Loss</span></div>
-                <div className="site-stat"><span className="site-stat__value">{(live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)}</span><span className="site-stat__label">Adverts (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.packetsSent24h ?? 0}</span><span className="site-stat__label">Packets Sent (24h)</span></div>
-                <div className="site-stat"><span className="site-stat__value">{live?.packetsReceived24h ?? 0}</span><span className="site-stat__label">Packets Received (24h)</span></div>
+                {[
+                  [nodeRoleLabel(live?.ownerNode.role ?? null), live?.ownerNode.name ?? 'Unnamed'],
+                  ['Network', live?.ownerNode.network ?? '-'], ['IATA', live?.ownerNode.iata ?? '-'],
+                  ['Adverts', live?.ownerNode.advert_count ?? 0], ['Last Seen', fmtTs(live?.ownerNode.last_seen ?? null)],
+                  ['Direct Senders (24h)', live?.incomingPeers.length ?? 0], ['Viable Links', viableLinkCount],
+                  ['Strongest Link', strongestLink?.peer_name ?? '-'], ['Best Path Loss', formatPathLoss(strongestLink?.itm_path_loss_db ?? null)],
+                  ['Adverts (24h)', (live?.advertTrend24h ?? []).reduce((sum, point) => sum + point.adverts, 0)],
+                  ['Packets Sent (24h)', live?.packetsSent24h ?? 0], ['Packets Received (24h)', live?.packetsReceived24h ?? 0],
+                ].map(([label, value]) => <div className="site-stat" key={label}>
+                  <span className="site-stat__value">{value}</span><span className="site-stat__label">{label}</span>
+                </div>)}
               </div>
               </OwnerPanelState>
             </section>
@@ -176,20 +181,13 @@ export const OwnerPortalPage: React.FC = () => {
             </section>
 
             <div className="owner-dashboard-grid">
-              <section className="prose-section owner-panel owner-panel--map">
-                <div className="owner-panel__head">
-                  <div><h2>Direct Sender Map</h2></div>
-                </div>
-                <OwnerPanelState label="Direct Sender Map" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--map" label="Direct Sender Map" {...livePanelState}>
                 <div className="owner-map-wrap">
                   <OwnerMapView ownerCoord={ownerCoord} peers={mapPeers} allPoints={mapPoints} />
                 </div>
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
 
-              <section className="prose-section owner-panel owner-panel--alerts">
-                <div className="owner-panel__head"><h2>Alerts</h2></div>
-                <OwnerPanelState label="Alerts" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--alerts" label="Alerts" {...livePanelState}>
                 <div className="owner-alerts">
                   {live?.alerts.length === 0 ? <p className="prose-note">No active alerts.</p> : null}
                   {(live?.alerts ?? []).map((alert, idx) => (
@@ -199,21 +197,15 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                 </div>
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
 
-              <section className="prose-section owner-panel owner-panel--trend">
-                <div className="owner-panel__head"><h2>Advert Trend</h2></div>
-                <OwnerPanelState label="Advert Trend" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--trend" label="Advert Trend" {...livePanelState}>
                 {(live?.advertTrend24h ?? []).some((point) => point.adverts > 0)
                   ? <TrendBars points={live?.advertTrend24h ?? []} />
                   : <p className="prose-note">No adverts observed in the last 24 hours.</p>}
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
 
-              <section className="prose-section owner-panel owner-panel--links">
-                <div className="owner-panel__head"><h2>RF Link Health</h2></div>
-                <OwnerPanelState label="RF Link Health" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--links" label="RF Link Health" {...livePanelState}>
                 <div className="owner-list">
                   {(live?.linkHealth ?? []).slice(0, 8).map((link) => (
                     <article key={link.peer_node_id} className="owner-list__row">
@@ -233,77 +225,30 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No link health data has been calculated for this node yet.</p>
                   ) : null}
                 </div>
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
 
-              <section className="prose-section owner-panel owner-panel--senders">
-                <div className="owner-panel__head"><h2>Direct Senders</h2></div>
-                <OwnerPanelState label="Direct Senders" {...livePanelState}>
+              {peerGroups.map(({ label, peers, empty, description }) => <OwnerPanel key={label} className="prose-section owner-panel owner-panel--senders"
+                label={label} description={description} {...livePanelState}>
                 <div className="owner-list">
-                  {(live?.incomingPeers ?? []).slice(0, 8).map((peer) => (
-                    <article key={peer.node_id} className="owner-list__row">
-                      <div className="owner-list__primary">
-                        <strong>{peer.name ?? peer.node_id}</strong>
-                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
-                      </div>
-                      <div className="owner-list__metrics">
-                        <span>{peer.packets_24h} / 24h</span>
-                        <span>{formatCompactTs(peer.last_seen)}</span>
-                      </div>
-                    </article>
-                  ))}
-                  {(live?.incomingPeers ?? []).length === 0 ? (
-                    <p className="prose-note">No direct sender nodes found in the last 24 hours.</p>
-                  ) : null}
+                  {peers.slice(0, 8).map(peer => <article key={peer.node_id} className="owner-list__row">
+                    <div className="owner-list__primary">
+                      <strong>{peer.name ?? peer.node_id}</strong><span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
+                    </div>
+                    <div className="owner-list__metrics">
+                      <span>{peer.packets_24h} / 24h</span>
+                      {description && <><span>{peer.packets_7d} / 7d</span><span>{peer.best_hops != null ? `${peer.best_hops} hops` : '-'}</span></>}
+                      <span>{formatCompactTs(peer.last_seen)}</span>
+                    </div>
+                  </article>)}
+                  {peers.length === 0 && <p className="prose-note">{empty}</p>}
                 </div>
-                </OwnerPanelState>
-              </section>
+              </OwnerPanel>)}
 
-              <section className="prose-section owner-panel owner-panel--senders">
-                <div className="owner-panel__head">
-                  <div>
-                    <h2>Nodes That Heard This Repeater</h2>
-                    <p className="prose-note" style={{ marginTop: 0 }}>Other nodes that received packets transmitted by this repeater (last 7d)</p>
-                  </div>
-                </div>
-                <OwnerPanelState label="Nodes That Heard This Repeater" {...livePanelState}>
-                <div className="owner-list">
-                  {(live?.heardBy ?? []).slice(0, 8).map((peer) => (
-                    <article key={peer.node_id} className="owner-list__row">
-                      <div className="owner-list__primary">
-                        <strong>{peer.name ?? peer.node_id}</strong>
-                        <span>{peer.network ?? '-'} · {peer.iata ?? '-'}</span>
-                      </div>
-                      <div className="owner-list__metrics">
-                        <span>{peer.packets_24h} / 24h</span>
-                        <span>{peer.packets_7d} / 7d</span>
-                        <span>{peer.best_hops != null ? `${peer.best_hops} hops` : '-'}</span>
-                        <span>{formatCompactTs(peer.last_seen)}</span>
-                      </div>
-                    </article>
-                  ))}
-                  {(live?.heardBy ?? []).length === 0 ? (
-                    <p className="prose-note">No nodes have received packets from this node in the last 7 days.</p>
-                  ) : null}
-                </div>
-                </OwnerPanelState>
-              </section>
-
-              <section className="prose-section owner-panel owner-panel--neighbors">
-                <div className="owner-panel__head">
-                  <div>
-                    <h2>Heard neighbors</h2>
-                    <p className="prose-note" style={{ marginTop: 0 }}>Reported neighbors or directly received senders, sorted by last-seen recency (up to 32 nodes).</p>
-                  </div>
-                </div>
-                <OwnerPanelState label="Heard neighbors" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--neighbors" label="Heard neighbors" description={'Reported neighbors or directly received senders, sorted by last-seen recency (up to 32 nodes).'} {...livePanelState}>
                 <OwnerHeardNeighbors neighbors={live?.heardNeighbors ?? []} source={live?.heardNeighborsSource} sampledAt={live?.heardNeighborsSampledAt} />
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
 
-              <section className="prose-section owner-panel owner-panel--packets">
-                <div className="owner-panel__head"><h2>Live Packets Received By {nodeRoleLabel(live?.ownerNode.role ?? null)}</h2></div>
-                <OwnerPanelState label="Live packets" {...livePanelState}>
+              <OwnerPanel className="prose-section owner-panel owner-panel--packets" label="Live packets" title={<>Live Packets Received By {nodeRoleLabel(live?.ownerNode.role ?? null)}</>} {...livePanelState}>
                 <div className="owner-packets">
                   {(live?.recentPackets ?? []).map((packet, idx) => (
                     <article key={`${packet.time}-${packet.packet_hash ?? `row-${idx}`}`} className="owner-packet">
@@ -324,8 +269,7 @@ export const OwnerPortalPage: React.FC = () => {
                     <p className="prose-note">No packets received by this node in the last 30 days.</p>
                   ) : null}
                 </div>
-                </OwnerPanelState>
-              </section>
+                </OwnerPanel>
             </div>
 
             {isPacketSharingOwner(ownerSessionKey) ? (
@@ -335,6 +279,8 @@ export const OwnerPortalPage: React.FC = () => {
                 saving={packetSharingSaving}
                 error={packetSharingError}
                 selectedDestinationIds={packetSharingDestinationIds}
+                hasDraft={packetSharingHasDraft}
+                onRetry={retryPacketSharing}
                 onDestination={changePacketSharingDestination}
               />
             ) : null}
@@ -344,6 +290,8 @@ export const OwnerPortalPage: React.FC = () => {
               saving={publicFeedSaving}
               error={publicFeedError}
               onEnabled={savePublicFeed}
+              draftEnabled={publicFeedDraft}
+              onRetry={retryPublicFeed}
             />
           </>
         ) : null}
