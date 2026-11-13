@@ -135,8 +135,8 @@ export function formatFeedTimestamp(ts: string): string {
   });
 }
 
-/** Suffix the backend appends to summaries it recovered from MeshOS-signed packets. */
-export const MESHOS_SIGNED_MARKER = 'MeshOS-signed (unverified)';
+/** Suffix the backend appends to group text carrying the MeshOS signed ending. */
+export const MESHOS_SIGNED_MARKER = 'MeshOS-signed';
 
 /**
  * Split the MeshOS marker off a feed summary so the UI can badge it separately.

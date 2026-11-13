@@ -221,72 +221,62 @@ export function identifyChannel(rawHex: string, entries: ChannelEntry[]): string
 }
 
 /** Appended to summaries for MeshOS-signed group text; the feed badges this suffix. */
-export const MESHOS_SIGNED_MARKER = 'MeshOS-signed (unverified)';
+export const MESHOS_SIGNED_MARKER = 'MeshOS-signed';
 
 /**
- * Recover MeshOS-signed group text.
+ * Structural MeshOS signature detector.
  *
- * MeshOS signs Public 2 messages with the sender's key but writes a
- * non-standard 2-byte tag, so MeshCore's HMAC check fails while the
- * AES-128-ECB ciphertext still decrypts with the channel key. Recover the
- * plaintext so the feed can show it (flagged as unverified) instead of a bare
- * "[encrypted]". Only plain-text payloads with a plausible timestamp and
- * printable body are accepted, so a colliding channel stays encrypted.
+ * Mirrors MeshCore-SignatureFreeZone `src/helpers/SignatureFreeZone.h`: MeshOS
+ * appends a signed ending *inside* the encrypted plaintext —
+ *   [timestamp 4B][flags 1B]["<Name>: <text>"][0x00]["S" 0x01][signer key id 8B]
+ *   [Ed25519 signature 64B][zero pad <= 15B]
+ * — so the packet still passes MeshCore's HMAC check and only the tail marks it
+ * as signed. Detection is structural only; the signature is not verified here.
  */
-export function decodeMeshosSignedGroupText(
-  p: GroupTextPayload,
-  entries: ChannelEntry[],
-): { channel: string; text: string } | undefined {
-  const ciphertextHex = (p as unknown as { ciphertext?: unknown }).ciphertext;
-  const channelHash = (p as unknown as { channelHash?: unknown }).channelHash;
-  if (typeof ciphertextHex !== 'string' || typeof channelHash !== 'string') return undefined;
-  const expectedHash = channelHash.trim().toUpperCase();
-  if (expectedHash.length !== 2) return undefined;
+export function isMeshosSignedPlaintext(plaintext: Buffer): boolean {
+  const len = plaintext.length;
+  if (len < 6) return false;
+  let i = 5; // skip timestamp(4) + flags(1)
+  while (i < len && plaintext[i] !== 0x00) i += 1;
+  if (i >= len) return false;
+  const ext = i + 1;
+  const extEnd = ext + 74; // 0x53 0x01 + 8B key id + 64B signature
+  if (extEnd > len) return false;
+  if (plaintext[ext] !== 0x53 || plaintext[ext + 1] !== 0x01) return false;
+  if (len - extEnd > 15) return false;
+  for (let j = extEnd; j < len; j += 1) {
+    if (plaintext[j] !== 0x00) return false;
+  }
+  return true;
+}
+
+/** Decrypt a group-text ciphertext with the channel secret (no padding removal). */
+function decryptGroupPlaintext(secret: Buffer, ciphertextHex: string): Buffer | undefined {
   const ciphertext = Buffer.from(ciphertextHex, 'hex');
   if (ciphertext.length < 16 || ciphertext.length % 16 !== 0) return undefined;
+  try {
+    const decipher = createDecipheriv('aes-128-ecb', secret, null);
+    decipher.setAutoPadding(false);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch {
+    return undefined;
+  }
+}
 
-  const nowSeconds = Math.floor(Date.now() / 1000);
+/** True when the decrypted group text carries the MeshOS signed ending. */
+export function hasMeshosSignature(p: GroupTextPayload, entries: ChannelEntry[]): boolean {
+  const ciphertextHex = (p as unknown as { ciphertext?: unknown }).ciphertext;
+  const channelHash = (p as unknown as { channelHash?: unknown }).channelHash;
+  if (typeof ciphertextHex !== 'string' || typeof channelHash !== 'string') return false;
+  const expectedHash = channelHash.trim().toUpperCase();
+  if (expectedHash.length !== 2) return false;
+
   for (const entry of entries) {
     if (ChannelCrypto.calculateChannelHash(entry.secret).toUpperCase() !== expectedHash) continue;
-    let plaintext: Buffer;
-    try {
-      const decipher = createDecipheriv('aes-128-ecb', Buffer.from(entry.secret, 'hex'), null);
-      decipher.setAutoPadding(false);
-      plaintext = Buffer.concat([decipher.update(ciphertext), decipher.final()]);
-    } catch {
-      continue;
-    }
-    if (plaintext.length < 6) continue;
-
-    const timestamp = plaintext.readUInt32LE(0);
-    if (timestamp < 1_600_000_000 || timestamp > nowSeconds + 2 * 86_400) continue;
-
-    const flags = plaintext[4]!;
-    if (((flags >> 2) & 0x3f) !== 0) continue; // plain text only
-
-    let body = plaintext.subarray(5);
-    let end = body.length;
-    while (end > 0 && body[end - 1] === 0) end -= 1;
-    if (end < 2) continue;
-    body = body.subarray(0, end);
-
-    // MeshOS tails the message with binary signature material; keep only the
-    // leading printable run so the feed never shows control bytes.
-    const raw = body.toString('utf8').replace(/\u0000/g, '');
-    let printableRun = '';
-    for (const ch of raw) {
-      const code = ch.codePointAt(0) ?? 0;
-      const isPrintable = ch === '\n' || ch === '\t' || (code >= 0x20 && code !== 0xfffd);
-      if (!isPrintable) break;
-      printableRun += ch;
-    }
-    const truncated = printableRun.length < raw.length;
-    const text = `${printableRun.trim()}${truncated ? '…' : ''}`;
-    if (printableRun.trim().length < 6) continue;
-
-    return { channel: entry.name, text };
+    const plaintext = decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), ciphertextHex);
+    return plaintext ? isMeshosSignedPlaintext(plaintext) : false;
   }
-  return undefined;
+  return false;
 }
 
 /** Build a short human-readable summary from a decoded payload. */
@@ -305,11 +295,9 @@ export function buildSummary(payloadType: number, decoded: unknown, rawHex?: str
         const sender  = p.decrypted.sender ?? '?';
         const channel = rawHex && entries ? identifyChannel(rawHex, entries) : undefined;
         const prefix  = channel ? `[${channel}] ` : '';
-        return `${prefix}${sender}: ${p.decrypted.message}`;
-      }
-      const signed = entries ? decodeMeshosSignedGroupText(p, entries) : undefined;
-      if (signed) {
-        return `[${signed.channel}] ${signed.text} · ${MESHOS_SIGNED_MARKER}`;
+        const signed  = entries ? hasMeshosSignature(p, entries) : false;
+        const suffix  = signed ? ` · ${MESHOS_SIGNED_MARKER}` : '';
+        return `${prefix}${sender}: ${p.decrypted.message}${suffix}`;
       }
       return '[encrypted]';
     }

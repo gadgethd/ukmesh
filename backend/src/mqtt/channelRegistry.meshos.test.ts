@@ -1,31 +1,38 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
-import { createCipheriv, createHash } from 'node:crypto';
+import { createCipheriv, createHash, createHmac } from 'node:crypto';
 import test from 'node:test';
 import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import {
   buildChannelEntries,
   buildSummary,
-  decodeMeshosSignedGroupText,
+  hasMeshosSignature,
+  isMeshosSignedPlaintext,
   MESHOS_SIGNED_MARKER,
 } from './channelRegistry.js';
 import { decodePacketCompat } from './decodePacket.js';
 
+// Public 2 secret used by the repo's VALIDATED_CHANNELS.
 const PUBLIC2_SECRET = '8b4b705b080c0d943b1c80f6b3ef6b6d';
 
-/** Build a flood group-text packet carrying the supplied 2-byte tag and optional binary tail. */
+/**
+ * Build a MAC-valid flood group-text packet.
+ * MeshOS signed ending (mirrors SignatureFreeZone.h): text + 0x00 + 'S' 0x01 +
+ * signer key id (8B) + Ed25519 signature (64B) + zero pad.
+ */
 function buildGroupTextPacket(
   secretHex: string,
   text: string,
-  macHex: string,
-  options: { timestamp?: number; tailHex?: string } = {},
+  options: { timestamp?: number; signed?: boolean } = {},
 ): string {
   const timestamp = options.timestamp ?? Math.floor(Date.now() / 1000) - 60;
   const body = Buffer.from(text, 'utf8');
-  const tail = Buffer.from(options.tailHex ?? '', 'hex');
+  const tail = options.signed
+    ? Buffer.concat([Buffer.from([0x00, 0x53, 0x01]), Buffer.alloc(8, 0xab), Buffer.alloc(64, 0x11)])
+    : Buffer.alloc(0);
   const plaintext = Buffer.alloc(5 + body.length + tail.length);
   plaintext.writeUInt32LE(timestamp, 0);
-  plaintext[4] = 0x00; // plain text, first attempt
+  plaintext[4] = 0x00; // plain text
   body.copy(plaintext, 5);
   tail.copy(plaintext, 5 + body.length);
 
@@ -36,49 +43,63 @@ function buildGroupTextPacket(
   cipher.setAutoPadding(false);
   const ciphertext = Buffer.concat([cipher.update(padded), cipher.final()]);
 
+  const macKey = Buffer.concat([Buffer.from(secretHex, 'hex'), Buffer.alloc(16)]);
+  const mac = createHmac('sha256', macKey).update(ciphertext).digest().subarray(0, 2);
   const channelHash = createHash('sha256').update(Buffer.from(secretHex, 'hex')).digest().subarray(0, 1);
-  const payload = Buffer.concat([channelHash, Buffer.from(macHex, 'hex'), ciphertext]);
+
+  const payload = Buffer.concat([channelHash, mac, ciphertext]);
   // version 0, payload type 5 (group text), route flood; zero hops
   return Buffer.concat([Buffer.from([0x15, 0x00]), payload]).toString('hex').toUpperCase();
 }
 
-test('recovers MeshOS-signed group text when the standard MAC does not verify', () => {
+function decodedPayload(rawHex: string) {
+  return decodePacketCompat(rawHex, MeshCoreDecoder.createKeyStore({ channelSecrets: [PUBLIC2_SECRET] }))
+    .decoded?.payload?.decoded;
+}
+
+test('detects the MeshOS signed ending on authenticated group text', () => {
+  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Pink Rabbit: hello mesh', { signed: true });
+  const decoded = decodedPayload(rawHex);
+  assert.ok(decoded?.decrypted, 'signed packets still authenticate as standard MeshCore');
+
   const entries = buildChannelEntries('');
-  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Pink Rabbit: hello mesh', '0000');
-
-  const standard = decodePacketCompat(rawHex, MeshCoreDecoder.createKeyStore({ channelSecrets: [PUBLIC2_SECRET] }));
-  const decoded = standard.decoded?.payload?.decoded as Parameters<typeof decodeMeshosSignedGroupText>[0];
-  assert.equal(
-    (decoded as { decrypted?: unknown }).decrypted,
-    undefined,
-    'standard decoder must reject the non-standard tag',
-  );
-
-  const recovered = decodeMeshosSignedGroupText(decoded, entries);
-  assert.equal(recovered?.channel, 'public2');
-  assert.equal(recovered?.text, 'Pink Rabbit: hello mesh');
-
-  const summary = buildSummary(5, decoded, rawHex, entries);
-  assert.equal(summary, `[public2] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
+  assert.equal(hasMeshosSignature(decoded as never, entries), true);
+  assert.equal(buildSummary(5, decoded, rawHex, entries), `[public2] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
 });
 
-test('truncates the binary signature tail instead of leaking control bytes', () => {
+test('plain group text gets no signature marker', () => {
+  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'M0CNQ: morning all');
+  const decoded = decodedPayload(rawHex);
   const entries = buildChannelEntries('');
-  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Lee G3LJL: testing', '0000', { tailHex: 'F0FF01'.repeat(6) });
-  const decoded = decodePacketCompat(rawHex, MeshCoreDecoder.createKeyStore({ channelSecrets: [PUBLIC2_SECRET] }))
-    .decoded?.payload?.decoded;
 
-  const recovered = decodeMeshosSignedGroupText(decoded as Parameters<typeof decodeMeshosSignedGroupText>[0], entries);
-  assert.equal(recovered?.text, 'Lee G3LJL: testing…');
+  assert.equal(hasMeshosSignature(decoded as never, entries), false);
+  assert.equal(buildSummary(5, decoded, rawHex, entries), '[public2] M0CNQ: morning all');
 });
 
-test('leaves genuinely foreign ciphertext encrypted', () => {
-  const entries = buildChannelEntries('');
-  // 32 bytes of non-decrypting ciphertext under the public2 hash byte.
-  const rawHex = `1500660000${'AB'.repeat(32)}`.toUpperCase();
-  const decoded = decodePacketCompat(rawHex, MeshCoreDecoder.createKeyStore({ channelSecrets: [PUBLIC2_SECRET] }))
-    .decoded?.payload?.decoded;
+test('a MAC-failing packet stays encrypted and is never labelled MeshOS', () => {
+  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Lee G3LJL: hello', { signed: true });
+  const tampered = `${rawHex.slice(0, -4)}0000`;
+  const decoded = decodedPayload(tampered);
 
-  assert.equal(decodeMeshosSignedGroupText(decoded as Parameters<typeof decodeMeshosSignedGroupText>[0], entries), undefined);
-  assert.equal(buildSummary(5, decoded, rawHex, entries), '[encrypted]');
+  assert.equal(decoded?.decrypted, undefined);
+  assert.equal(buildSummary(5, decoded, tampered, buildChannelEntries('')), '[encrypted]');
+});
+
+test('detector requires the exact tail shape', () => {
+  const base = Buffer.alloc(96);
+  base.writeUInt32LE(Math.floor(Date.now() / 1000), 0);
+  base[4] = 0;
+  Buffer.from('sender: hi').copy(base, 5);
+  base[15] = 0x00;
+  base[16] = 0x53;
+  base[17] = 0x01;
+  assert.equal(isMeshosSignedPlaintext(base), true);
+
+  const wrongVersion = Buffer.from(base);
+  wrongVersion[17] = 0x02;
+  assert.equal(isMeshosSignedPlaintext(wrongVersion), false);
+
+  const noTerminator = Buffer.from(base);
+  noTerminator[15] = 0x41;
+  assert.equal(isMeshosSignedPlaintext(noTerminator), false);
 });
