@@ -16,13 +16,13 @@ the three trial p95 values in milliseconds.
 
 | Lookup | Retained baseline | Retained candidate | 10× baseline | 10× candidate |
 | --- | ---: | ---: | ---: | ---: |
-| First map page | 297.8 | 86.0 | 3,665.8 | 90.3 |
-| Name search | 320.4 | 73.3 | 4,396.3 | 90.5 |
-| Observer map | 459.0 | 88.5 | 3,903.9 | 97.8 |
-| Node links | 61.2 | 17.0 | 609.2 | 13.0 |
+| First map page | 297.8 | 78.5 | 3,665.8 | 93.1 |
+| Name search | 320.4 | 72.7 | 4,396.3 | 92.1 |
+| Observer map | 459.0 | 85.6 | 3,903.9 | 98.4 |
+| Node links | 61.2 | 18.3 | 609.2 | 15.0 |
 
 All twelve candidate cases passed their per-trial budgets: 100 ms p95 on the
-retained fixture and 250 ms at 10×. The worst trial was 95.1 / 211.9 ms,
+retained fixture and 250 ms at 10×. The worst trial was 95.0 / 212.3 ms,
 including the large invented region scope. Cases also covered ID, short and
 missing searches, populated history, packet details/misses and the next map
 page. Separate single-request and warm-cache trials remain in the evidence.
@@ -36,11 +36,10 @@ topology comparison checked every eligible link on the retained fixture.
 Native fixtures cover legacy keys, normalization collisions, aliases, literal
 searches, private-only observations, network/observer/region scope and paging.
 
-The initial index-only comparison used three fresh three-node fixtures per
-revision, each ingesting 2,000 invented ACKs
-and drained completely. Median persisted throughput was 76.7 / 78.1 packets/s.
-Application CPU per packet was 2.03 / 2.00 ms and database CPU 11.33 / 11.20 ms.
-WAL was 9,488 / 10,335 bytes per packet, an 8.9% increase within the 10% budget.
+Three fresh three-node fixtures per revision each ingested 2,000 invented ACKs
+and drained completely. Median persisted throughput was 77.4 / 105.5 packets/s.
+Application CPU per packet was 1.97 / 1.85 ms and database CPU 11.24 / 7.87 ms.
+WAL was 9,495 / 10,332 bytes per packet, an 8.8% increase within the 10% budget.
 The enqueue-to-commit p95 stayed within the same 25 ms histogram bucket.
 
 The first 40-minute mixed-load run stored and delivered all 72,000 packets,
@@ -59,11 +58,9 @@ the original memory and latency gates; these SQL timings do not substitute for
 that qualification. Cache metrics now give every registered cache its own
 bounded label so the soak can check each policy independently.
 
-Repeating ingest in both run orders after the graph changes showed a small
-throughput deficit, despite passing CPU/WAL budgets. The batch writer now
-reuses its two fixed singleton statement forms on the existing connection.
-A 2,000-packet probe reached 104 packets/s with the same commit-latency bucket;
-the final matched ingest comparison and mixed soak remain separate gates.
+The batch writer reuses its two fixed singleton statement forms on the existing
+connection. All three matched pairs passed throughput, CPU, WAL and latency
+gates; earlier attempts and reverse-order trials remain in the evidence.
 Native tests reuse both forms across privacy-generation changes, historical
 chunks and idempotent replay. Statement names never contain packet values.
 

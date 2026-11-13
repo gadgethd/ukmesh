@@ -18,11 +18,15 @@ test('prepared packet batches preserve fresh values, privacy generations, chunk 
   await admin.query(`CREATE DATABASE ${name}`);
   const pool = new pg.Pool({ connectionString: url.href, max: 2, options: POST_MOVE_SEARCH_PATH });
   const runtime = createDatabaseRuntime({ DATABASE_URL: url.href, DATABASE_POOL_MAX: '1' });
-  t.after(async () => { await runtime.close(); await pool.end(); await admin.query(`DROP DATABASE ${name} WITH (FORCE)`); await admin.end(); });
+  let reserved: pg.PoolClient | undefined;
+  t.after(async () => { reserved?.release(); await runtime.close(); await pool.end(); await admin.query(`DROP DATABASE ${name} WITH (FORCE)`); await admin.end(); });
   await bootstrapBaseSchemaFixture(pool);
   for (const prefix of ['AA', 'BB', 'CC']) await pool.query(`INSERT INTO core.nodes(node_id,name,lat,lon,role,network)
     VALUES($1,'Invented prepared-batch relay',52,-1,2,'ukmesh')`, [prefix.repeat(32)]);
   while (await processNextPrivacyRematerialization(pool, { chunkPauseMs: 0 })) { /* certify fixture */ }
+  // Prepared plans belong to a connection. Hold the spare slot so concurrent
+  // prefix refreshes cannot switch the writer to another session mid-proof.
+  reserved = await runtime.ingestPool.connect();
   const entries = Array.from({ length: 18 }, (_, i) => ({ observationId: randomUUID(), input: { ...buildPacketBatchInput({
     packetHash: (i + 1).toString(16).padStart(64, '0'),
     rxNodeId: 'AA'.repeat(32), topic: `meshcore/LHR/${'AA'.repeat(32)}/packets`,
