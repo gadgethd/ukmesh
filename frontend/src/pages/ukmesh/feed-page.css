@@ -503,6 +503,13 @@
   min-width: 0;
 }
 
+.uk-feed-packet-row__hash {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .uk-feed-packet-row__observer {
   color: var(--accent);
   font-weight: 500;
