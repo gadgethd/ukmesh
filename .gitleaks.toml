@@ -23,3 +23,15 @@ regexes = [
   # history of that fixture so --all scans stay clean.
   '''85953e404cd421a5d845051a8674d52bc38de2972f2357072ec1e79a79be47ed''',
 ]
+
+# The public2 protocol key is public channel material, including this decoder fixture.
+# Require the exact value AND exact test path; private values still fail here.
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Reviewed public2 material in the MeshOS decoder fixture, stable across branch rebases"
+condition = "AND"
+regexTarget = "secret"
+regexes = ['''(?i)^8b4b705b080c0d943b1c80f6b3ef6b6d$''']
+paths = ['''(^|/)backend/src/mqtt/channelRegistry\.meshos\.test\.ts$''']
