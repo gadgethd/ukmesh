@@ -54,9 +54,12 @@ stop_processes() {
         kill "$pid" 2>/dev/null || true
         for ((attempt=0; attempt<100; attempt++)); do
           kill -0 "$pid" 2>/dev/null || break
+          [[ $(ps -p "$pid" -o stat= 2>/dev/null) != Z* ]] || break
           sleep 0.1
         done
-        if kill -0 "$pid" 2>/dev/null; then echo "$service did not stop; inspect PID $pid" >&2; return 1; fi
+        if kill -0 "$pid" 2>/dev/null && [[ $(ps -p "$pid" -o stat= 2>/dev/null) != Z* ]]; then
+          echo "$service did not stop; inspect PID $pid" >&2; return 1
+        fi
       fi
       rm "$state/$service.pid"
     fi
@@ -107,13 +110,19 @@ fi
 export UKMESH_DEV_API_TARGET=http://127.0.0.1:3100
 export VITE_BUILD_TARGET=public-website VITE_SITE=ukmesh VITE_APP_HOSTNAME=localhost
 tsx=(node --import "$repo/backend/node_modules/tsx/dist/loader.mjs")
+migration_env=()
 if [[ $action != start ]]; then
 for bootstrap in bootstrap-backend-roles.sql bootstrap-reader-roles.sql; do
   "${compose[@]}" exec -T db psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
     < "$repo/scripts/$bootstrap" > "$state/$bootstrap.log"
 done
-MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL=bootstrap-ledger-from-base-schema \
-  "${tsx[@]}" "$repo/backend/src/tools/migrate.ts" > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
+  migration_env=(MIGRATION_BASE_SCHEMA_BOOTSTRAP_APPROVAL=bootstrap-ledger-from-base-schema)
+fi
+# An existing fixture needs the current schema too. Only new/reset fixtures may
+# bootstrap a base-schema ledger; a restart must preserve its data and ledger.
+env "${migration_env[@]}" "${tsx[@]}" "$repo/backend/src/tools/migrate.ts" \
+  > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
+if [[ $action != start ]]; then
 "${compose[@]}" exec -T db psql -U meshcore -d meshcore -v ON_ERROR_STOP=1 \
   -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
 "${compose[@]}" exec -T db createdb -U meshcore meshcore_owner_auth

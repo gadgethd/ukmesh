@@ -42,6 +42,13 @@ scripts/dev-stack.sh reset      # explicitly discard this stack and rebuild
 scripts/dev-stack.sh cleanup    # stop and delete only this stack and its DB volume
 ```
 
+After pulling backend changes, use `start` to apply pending migrations before
+rebuilding and restarting the local services. It keeps the prepared data and
+owner-auth database, and does not reload, shift or replay the fixture. A failed
+migration stops startup before the backend is launched; inspect
+`plans/dev-stack/migrate.log`. Base-schema ledger bootstrap approval is limited
+to `up` and `reset`.
+
 ## Snapshot/API fixture
 
 A snapshot loads all rows before deriving read models. It must be kept
