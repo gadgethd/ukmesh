@@ -15,9 +15,14 @@ import type { LookupCacheModule } from './lookupBenchmarkSession.js';
 import { LookupResponseVerifier, LOOKUP_RESPONSE_VALIDATION_LIMITS } from './lookupResponseVerifier.js';
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import { lookupSourceIdentity } from './lookupSource.js';
+import { LookupTimeline } from './lookupTimeline.js';
 
 const args = process.argv.slice(2);
 const { source, output, samples, concurrency, trials, cache, budgetMs } = lookupBenchmarkOptions(args);
+const timeline = new LookupTimeline();
+let completed = false;
+try {
+await timeline.span({ phase: 'benchmark' }, async () => {
 const sourceIdentity = await lookupSourceIdentity(source, option(args, 'reference-revision') ?? null);
 configureLookupReadOnlyEnvironment(process.env['DATABASE_URL'] ?? '', process.env);
 
@@ -155,7 +160,7 @@ await withLookupSource(source, async (load, runtime) => {
     if (selected?.some(name => !cases.some(item => item.name === name))) throw new Error('unknown lookup case');
     const cpuBefore = process.cpuUsage(), resourceStarted = performance.now();
     for (let trial = 0; trial < trials; trial++) {
-      await withLookupTrial(cacheModule, async ({ caches, ownRoutes, listen }) => {
+      await timeline.span({ phase: 'trial', trial: trial + 1 }, () => withLookupTrial(cacheModule, async ({ caches, ownRoutes, listen }) => {
         const router = Router();
         const { nodeLinksCache, nodeLinksInflight, inferredNodesCache, inferredNodesInflight } = caches;
         const closeNodes = registerNodeRoutes(router, {
@@ -172,6 +177,7 @@ await withLookupSource(source, async (load, runtime) => {
         const app = express(); app.use('/api', createGlobalApiLimiter(), router); app.use(apiErrorMiddleware);
         const port = await listen(app);
         for (const definition of cases.filter(item => !selected || selected.includes(item.name))) {
+          await timeline.span({ phase: 'case', trial: trial + 1, case: definition.name }, async () => {
           const testCase = { ...definition };
           // Long baseline runs must not expire a valid pagination snapshot.
           // Record a fresh request snapshot per case; it is fixed within a trial.
@@ -181,23 +187,26 @@ await withLookupSource(source, async (load, runtime) => {
             testCase.route = url.pathname + url.search;
           }
           workload = testCase.name;
-          for (let warmup = 0; warmup < 3; warmup++) await request(port, testCase);
+          await timeline.span({ phase: 'warmup', trial: trial + 1, case: testCase.name }, async () => {
+            for (let warmup = 0; warmup < 3; warmup++) await request(port, testCase);
+          });
           const results: Awaited<ReturnType<typeof request>>[] = [];
           let next = 0;
-          await Promise.all(Array.from({ length: concurrency }, async () => {
+          await timeline.span({ phase: 'samples', trial: trial + 1, case: testCase.name }, () => Promise.all(Array.from({ length: concurrency }, async () => {
             while (next++ < samples) {
               if (cache === 'miss') { nodeLinksCache.clear(); inferredNodesCache.clear(); }
               results.push(await request(port, testCase));
             }
-          }));
+          })));
           const result = { trial: trial + 1, name: testCase.name, samples: results.length,
             p50Ms: percentile(results.map(row => row.ms), .5), p95Ms: percentile(results.map(row => row.ms), .95),
             p99Ms: percentile(results.map(row => row.ms), .99), bytes: results[0]!.bytes,
             entries: results[0]!.entries, digests: [...new Set(results.map(row => row.digest))],
             dataDigests: [...new Set(results.map(row => row.dataDigest))] };
           report.push(result); console.log(JSON.stringify(result));
+          });
         }
-      });
+      }));
     }
     const resources = { wallMs: performance.now() - resourceStarted, cpuMicros: process.cpuUsage(cpuBefore),
       memory: process.memoryUsage(), note: 'Handler and loopback HTTP timing share this process; one bounded worker validates each completed response. SQL plans exclude this overhead.' };
@@ -222,7 +231,7 @@ await withLookupSource(source, async (load, runtime) => {
       settings: { samples, trials, concurrency, cache, clients: agents.length, productionRateLimits: true, regionEnabled,
         responseValidation: LOOKUP_RESPONSE_VALIDATION_LIMITS,
         scope: 'ukmesh', note: 'Actual public routers, pool size and privacy delivery gates; excludes unrelated background services. Cache-miss bursts may coalesce identical work.' },
-      results: report, queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
+      timeline: 'timeline.json', results: report, queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
     }, null, 2) + '\n');
     if (!sourceStable) throw new Error('lookup source changed during the benchmark; see saved evidence');
     if (budgetMs !== undefined && report.some(result => result.p95Ms > budgetMs)) {
@@ -233,3 +242,11 @@ await withLookupSource(source, async (load, runtime) => {
     finally { await verifier.close(); }
   }
 });
+});
+completed = true;
+} finally {
+  await mkdir(output, { recursive: true });
+  await writeFile(path.join(output, 'timeline.json'), JSON.stringify({ ...timeline.finish(completed),
+    source, settings: { samples, concurrency, trials, cache },
+    note: 'Actual native boundaries outside HTTP timers; no per-request events or inferred intervals.' }, null, 2) + '\n', { flag: 'wx' });
+}

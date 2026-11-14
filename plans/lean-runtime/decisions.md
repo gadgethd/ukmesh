@@ -332,3 +332,22 @@ Health Check POST uses the same owner while retaining its64KiB response limit.
 No shared opener, SSL context cache, app/resource change or new matrix method.
 Keep every failed429 sample and repeat both scales under the same100/250ms and
 10% gates after independent behavioral review.
+
+## Native lookup phases own their observation boundaries
+
+The companion collector preserves every observation and its four caller-owned
+mode boundaries, but the native lookup process owns the actual trial, case,
+warmup and measured-request intervals. Inferring those intervals from an outer
+mode duration or splitting it into thirds would invent missing evidence. This
+hidden lifecycle link prevents causal comparison of a companion tail with the
+actual request mix and background-service work.
+
+Record bounded in-memory UTC and monotonic start/finish events inside the native
+benchmark at those owning boundaries. Flush a separate timeline after cleanup,
+including partial failed spans, without per-request events or I/O. Preserve the
+existing HTTP timing positions, queries, case order, three trials,20/200 samples,
+C1/C8 slots, cache behavior, response verifier, worker budgets and all-sample
+100/250ms and10% gates. The caller may join real timestamps to retained raw
+companion observations; it must not infer uncollected intervals, trim samples or
+rewrite the failed02685ec aggregate. A prospective same-source A/A diagnostic
+belongs in a unique run and requires its own reviewed, frozen execution window.
