@@ -90,6 +90,9 @@ def compose(fixture: dict, *, public: bool, args: list[str]) -> None:
     if public:
         invocation += ["-f", str(REPO / "scripts/full-dev/corescope-public.yml")]
     invocation += args
+    config = projection_directory(fixture) / "config.json" if public else REPO / "scripts/companion-dev/corescope.json"
+    invocation = ["bash", str(REPO / "scripts/companion-dev/revisions.sh"),
+                  "--component", "corescope", "--core-config", str(config), "--", *invocation]
     environment = ["env", "CORESCOPE_DATA_DIR=" + fixture["corescope_data_dir"],
                    "CORESCOPE_PUBLIC_DIR=" + str(projection_directory(fixture)),
                    "COMPANION_UID=" + str(os.getuid()), "COMPANION_GID=" + str(os.getgid())]

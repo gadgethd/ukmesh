@@ -3,6 +3,7 @@ from copy import deepcopy
 import importlib.util
 from pathlib import Path
 import sqlite3
+import shlex
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -13,6 +14,27 @@ spec.loader.exec_module(core)
 
 
 class PublicProjectionConfiguration(unittest.TestCase):
+    def test_compose_loads_core_only_published_metadata_for_each_actual_config(self):
+        with tempfile.TemporaryDirectory(prefix='core metadata ') as temporary:
+            root = Path(temporary)
+            state = root / 'plans/lean-runtime'
+            (state / 'runtime/fixtures/owned').mkdir(parents=True)
+            fixture = {'token': 'owned', 'corescope_data_dir': str(state / 'runtime/fixtures/owned/corescope')}
+            for public in (True, False):
+                with self.subTest(public=public), patch.object(core, 'REPO', root), \
+                     patch.object(core, 'STATE', state), patch.object(core, 'command') as command:
+                    core.compose(fixture, public=public, args=['config', '--quiet'])
+                    argv = command.call_args.args[0]
+                    shell = shlex.split(argv[-1])
+                    config = state / 'runtime/fixtures/owned/corescope-public/config.json' if public else root / 'scripts/companion-dev/corescope.json'
+                    self.assertEqual(shell[:7], ['bash', str(root / 'scripts/companion-dev/revisions.sh'),
+                        '--component', 'corescope', '--core-config', str(config), '--'])
+                    self.assertEqual(shell[7:13], ['docker', 'compose', '--project-name', 'ukmesh-companions', '--env-file', '/dev/null'])
+                    self.assertEqual(shell[-2:], ['config', '--quiet'])
+                    self.assertEqual(argv[0], 'env')
+                    self.assertIn('CORESCOPE_DATA_DIR=' + fixture['corescope_data_dir'], argv)
+                    self.assertEqual(argv[-4:-1], ['sg', 'docker', '-c'])
+
     def test_ram_drain_includes_undelivered_entries(self):
         responses = [1, [{"name": "owned", "pending": 0, "lag": 2}],
                      1, [{"name": "owned", "pending": 0, "lag": 0}]]

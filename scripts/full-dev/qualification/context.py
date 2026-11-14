@@ -55,6 +55,7 @@ def corescope_application_context(policy_fixture_token: str | None = None) -> di
                      "scripts/full-dev/corescope-public.yml", "scripts/full-dev/corescope-ram-runtime.sh",
                      "scripts/full-dev/runtime.sh", "scripts/full-dev/environment.sh",
                      "docker-compose.yml", "scripts/full-dev/compose.yml", "scripts/companion-dev/compose.yml",
+                     "scripts/companion-dev/revisions.sh",
                      "scripts/full-dev/corescope-public-proof.mjs", "scripts/full-dev/corescope-ram-proof.mjs",
                      "scripts/full-dev/corescope-proof-utils.mjs", "backend/src/tools/generateSampleDataset.ts",
                      "backend/src/tools/replaySampleMqtt.ts", "backend/src/tools/ownedLookupFixture.ts"):

@@ -74,26 +74,9 @@ case "$action:$service" in
   start:*|companions:*|build:*|restart:beacon-web)
     python3 "$repo/scripts/companion-dev/artifacts.py" recover-web ;;
 esac
-# Load the published revisions even when only another component is requested.
-# A dependency must not acquire "unknown" and be recreated incidentally.
-for component in corescope beacon; do
-  published=unknown
-  if [[ -f $state/$component-source ]]; then published=$(cat "$state/$component-source"); fi
-  [[ $published =~ ^[a-f0-9]{64}$ ]] || published=unknown
-  if [[ $component == corescope ]]; then
-    export COMPANION_CORESCOPE_SOURCE=$published
-  else
-    export COMPANION_BEACON_SOURCE=$published
-  fi
-done
-COMPANION_WEB_SOURCE=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-revision)
-COMPANION_WEB_PUBLICATION=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-publication)
-export COMPANION_WEB_SOURCE COMPANION_WEB_PUBLICATION
-for setting in CORESCOPE:corescope.json BEACON:beacon.yaml WEB:nginx.conf; do
-  name=${setting%%:*} file=${setting#*:}
-  revision=$(sha256sum "$repo/scripts/companion-dev/$file")
-  export "COMPANION_${name}_CONFIG=${revision%% *}"
-done
+# Keep published consumer metadata identical across canonical and proof starts.
+source "$repo/scripts/companion-dev/revisions.sh"
+load_companion_revisions
 projects=(corescope beacon-server beacon-web)
 case "$action:$service" in
   restart:corescope|restart:corescope-ingestor) projects=(corescope) ;;
@@ -148,9 +131,7 @@ if [[ $action == build || $action == start || $action == companions || ( $action
     "${compose[@]}" run --rm --no-deps web-build
     python3 "$repo/scripts/companion-dev/artifacts.py" publish-web "$web_hash"
   fi
-  COMPANION_WEB_SOURCE=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-revision)
-  COMPANION_WEB_PUBLICATION=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-publication)
-  export COMPANION_WEB_SOURCE COMPANION_WEB_PUBLICATION
+  load_companion_revisions
 fi
 if [[ $action == build ]]; then exit 0; fi
 if [[ $action == start || $action == companions || ( $action == restart && $service == beacon* && $service != beacon-web ) ]]; then

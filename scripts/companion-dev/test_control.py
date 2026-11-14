@@ -23,7 +23,7 @@ class CompanionLifecycle(unittest.TestCase):
         self.root = Path(self.temporary.name)
         self.tools = self.root / 'scripts/companion-dev'
         self.tools.mkdir(parents=True)
-        for name in ('control.sh', 'source-hash.py', 'artifacts.py', 'build.sh',
+        for name in ('control.sh', 'source-hash.py', 'artifacts.py', 'revisions.sh', 'build.sh',
                      'build-corescope.sh', 'build-beacon.sh', 'web-build.sh', 'compose.yml',
                      'corescope.json', 'beacon.yaml', 'nginx.conf'):
             shutil.copyfile(HERE / name, self.tools / name)
@@ -127,6 +127,8 @@ if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exis
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['args'][-2:], ['corescope-ingestor', 'corescope'])
         self.assertEqual(starts[0]['revisions']['COMPANION_WEB_PUBLICATION'], publication)
+        self.assertEqual(starts[0]['revisions']['COMPANION_CORESCOPE_CONFIG'],
+                         hashlib.sha256((self.tools / 'corescope.json').read_bytes()).hexdigest())
 
     def test_repeated_identical_build_preserves_published_bind_mount(self):
         result = self.run_control('build')
