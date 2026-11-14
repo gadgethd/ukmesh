@@ -7,35 +7,12 @@ import json
 from pathlib import Path
 import re
 import time
-import urllib.request
-from urllib.parse import urlsplit
 
 from common import REPO, command, docker, safe_error, service_manifest, sql, utc_now, write_json
 from context import phase_context
 from fixtures import current_targets
 from inventory_schema import coverage
-
-
-def local_url(url: str) -> None:
-    parsed = urlsplit(url)
-    if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost", "::1") or parsed.username:
-        raise ValueError("qualification HTTP probes must use loopback without embedded credentials")
-
-
-class LocalRedirects(urllib.request.HTTPRedirectHandler):
-    def redirect_request(self, request, response, code, message, headers, new_url):
-        local_url(new_url)
-        return super().redirect_request(request, response, code, message, headers, new_url)
-
-
-def http_get(url: str, *, timeout: float = 15) -> tuple[bytes, str]:
-    local_url(url)
-    request = urllib.request.Request(url, headers={"User-Agent": "UKMesh-owned-full-stack-qualification"})
-    with urllib.request.build_opener(LocalRedirects()).open(request, timeout=timeout) as response:
-        body = response.read(8 * 1024 * 1024 + 1)
-        if len(body) > 8 * 1024 * 1024:
-            raise ValueError("probe response exceeded 8 MiB")
-        return body, response.headers.get("Content-Type", "")
+from loopback_http import http_get
 
 
 def inspected_containers() -> dict:

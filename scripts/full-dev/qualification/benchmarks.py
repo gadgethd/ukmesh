@@ -10,7 +10,8 @@ from common import REPO, STATE, digest, command, read_json, safe_error, utc_now,
 from companion_reads import CompanionReads, companion_summary, measured_companions
 from context import phase_context
 from fixtures import bundle, current_targets
-from probes import http_get, inventory
+from probes import inventory
+from loopback_http import http_get
 from source_identity import expected_sources, identify, validate_measurements
 
 

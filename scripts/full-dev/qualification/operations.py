@@ -15,7 +15,8 @@ from benchmarks import active_fixture, node_tool
 from companion_reads import CompanionReads
 from common import REPO, read_json, utc_now, write_json
 from context import phase_context
-from probes import http_get, inventory
+from probes import inventory
+from loopback_http import http_get
 from source_identity import expected_sources
 
 NAMES = {"summary", "charts", "nodes-csv", "nodes-geojson"}

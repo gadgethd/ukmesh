@@ -316,3 +316,19 @@ regular nonsymlink target, device+inode equality, private/tmp compatibility, exa
 busy0, byte stability, replacement survival and EOF/timeout cleanup on an owned
 isolated volume before any guarded live rollout. No production-store or RF job
 is authorized by this source change alone.
+
+## Plain loopback transport owns local qualification requests
+
+The Beacon10x failure exposed an observation cost: the probe rejects HTTPS URLs,
+yet urllib's default opener constructs an HTTPS handler and TLS context for every
+plain HTTP read. The isolated no-network profile measured four-actor opener
+p95 at66.27ms versus0.072ms for a fresh HTTP-only opener. This needless TLS/proxy/
+FTP dependency consumes VM CPU and obscures the measured server behavior.
+
+Move local URL validation, redirect restrictions and fresh plain-HTTP requests
+into loopback_http.py. Keep timing before construction and through network/body/
+JSON work, fresh connections, four1Hz actors,15s timeout and8MiB GET limit. The
+Health Check POST uses the same owner while retaining its64KiB response limit.
+No shared opener, SSL context cache, app/resource change or new matrix method.
+Keep every failed429 sample and repeat both scales under the same100/250ms and
+10% gates after independent behavioral review.

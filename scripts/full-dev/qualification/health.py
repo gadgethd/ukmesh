@@ -10,7 +10,7 @@ import time
 import urllib.request
 
 from common import STATE, read_json, utc_now, write_json
-from probes import LocalRedirects, http_get
+from loopback_http import http_get, open_local
 
 
 PROOF = STATE / "runtime/health-proof.json"
@@ -24,7 +24,7 @@ def create_session(run: Path, fixture: dict, explicit_code: str | None = None) -
     else:
         request = urllib.request.Request("http://127.0.0.1:3090/api/sessions", data=b"{}", method="POST",
                                          headers={"Content-Type": "application/json"})
-        with urllib.request.build_opener(LocalRedirects()).open(request, timeout=15) as response:
+        with open_local(request, timeout=15) as response:
             raw = response.read(65537)
             if len(raw) > 65536:
                 raise ValueError("Health Check session response exceeded its byte budget")

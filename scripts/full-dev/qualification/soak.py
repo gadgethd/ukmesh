@@ -12,7 +12,8 @@ from benchmarks import active_fixture, node_tool
 from companion_reads import CompanionReads
 from common import STATE, read_json, safe_error, utc_now, write_json
 from context import phase_context
-from probes import http_get, inventory
+from probes import inventory
+from loopback_http import http_get
 from resources import sample
 from traffic import verify_companion_acks, verify_typed
 from health import create_session, verify_session

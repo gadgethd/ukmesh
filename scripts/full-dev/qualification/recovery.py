@@ -13,7 +13,8 @@ import uuid
 from benchmarks import active_fixture, node_tool
 from common import REPO, STATE, command, digest, docker, read_json, safe_error, sql, utc_now, write_json
 from context import phase_context
-from probes import http_get, inventory
+from probes import inventory
+from loopback_http import http_get
 from traffic import typed_counts, verify_typed
 from fixtures import bundle
 
