@@ -128,7 +128,7 @@ def check(name):
         deadline = time.monotonic() + 25
         while time.monotonic() < deadline:
             result = request('http://127.0.0.1:3107/counts')
-            if result['lastAlertProbe'] == probe:
+            if time.monotonic() <= deadline and probe in result.get('alertProbes', []):
                 return {'native_forwarding': True}
             time.sleep(.5)
         raise AssertionError('the admitted Alertmanager probe did not reach the local destination')
