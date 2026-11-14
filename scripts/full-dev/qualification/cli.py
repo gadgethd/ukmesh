@@ -25,6 +25,7 @@ def main() -> int:
     parser.add_argument("--reader-schema", default="corescope_public")
     parser.add_argument("--label", choices=("baseline", "candidate"), default="candidate")
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--paired", action="store_true", help="run the source-selected operations as synchronized baseline/candidate trials")
     parser.add_argument("--count", type=int, default=72000)
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--traffic-interval-ms", type=int, default=1000)
@@ -48,8 +49,10 @@ def main() -> int:
             from common import REPO
             result = reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
         elif args.action == "operations":
-            from operations import operations
-            result = operations(run, label=args.label, source_root=args.source_root)
+            from operations import operations,operations_pair
+            if args.paired and args.source_root:
+                raise ValueError('paired operations select both sealed/current source roots explicitly')
+            result = operations_pair(run) if args.paired else operations(run, label=args.label, source_root=args.source_root)
         elif args.action == "parity":
             from benchmarks import parity
             if not args.source_root:

@@ -9,10 +9,15 @@ import { lookupSourceIdentity } from './lookupSource.js';
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import { OPERATION_CASES, readOperation, validateOperationResponse } from './operationResponse.js';
 import type { OperationSnapshot } from './operationResponse.js';
+import { createOperationPair } from './operationPair.js';
 
 const args = process.argv.slice(2), source = path.resolve(option(args, 'source-root') ?? 'src');
 const output = path.resolve(option(args, 'output') ?? '../plans/database-lookups/operations');
 const sourceIdentity = await lookupSourceIdentity(source, option(args, 'reference-revision') ?? null);
+const pairDirectory = option(args, 'pair-directory'), pairToken = option(args, 'pair-token'), pairLabel = option(args, 'pair-label');
+if ([pairDirectory, pairToken, pairLabel].some(Boolean) && ![pairDirectory, pairToken, pairLabel].every(Boolean)) throw new Error('complete operation pair identity required');
+const pair = pairDirectory && pairToken && pairLabel
+  ? await createOperationPair(pairDirectory, pairToken, pairLabel, sourceIdentity) : undefined;
 configureLookupReadOnlyEnvironment(process.env['DATABASE_URL'] ?? '', process.env);
 const records: Array<Record<string, unknown>> = [];
 let failure: unknown;
@@ -29,14 +34,18 @@ try {
               const delay = 13_000 - (performance.now() - lastExport);
               if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
             }
+            const paired = pair ? await pair.wait(trial, definition.name, snapshot) : undefined;
             const started = performance.now();
-            const record: Record<string, unknown> = { name: definition.name, trial, passed: false };
+            const record: Record<string, unknown> = { name: definition.name, trial, passed: false,
+              startedAt: new Date().toISOString(), ...(paired ? { paired } : {}) };
             try {
               const result = await readOperation(port, definition.route, agent);
+              record['finishedAt'] = new Date().toISOString();
               Object.assign(record, { ms: result.ms, status: result.status, contentType: result.type },
                 validateOperationResponse(result.body, definition.format, result.status, result.type, snapshot));
               record['passed'] = result.ms <= 30_000;
             } catch (error) {
+              record['finishedAt'] ??= new Date().toISOString();
               record['error'] = error instanceof Error ? error.message : String(error);
               record['ms'] ??= performance.now() - started;
             }
@@ -60,6 +69,7 @@ const passed = !failure && sourceStable && records.length === 12 && records.ever
 await mkdir(output, { recursive: true });
 await writeFile(path.join(output, 'operations.json'), JSON.stringify({ passed, at: new Date().toISOString(),
   settings: { trials: 3, deadlineMs: 30_000, maxResponseBytes: LOOKUP_RESPONSE_MAX_BYTES, exportSpacingMs: 13_000,
-    readOnly: true, httpConcurrency: 1 }, chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
+    readOnly: true, httpConcurrency: 1 }, pair: pair ? { token: pair.token, label: pair.label } : null,
+  chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
   error: failure instanceof Error ? failure.message : failure ? String(failure) : null }, null, 2) + '\n');
 if (!passed) throw new Error('statistics/export qualification failed; see saved evidence');

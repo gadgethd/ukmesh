@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import datetime as dt
 import json
 import os
 from pathlib import Path
@@ -630,6 +631,7 @@ class OperationSourceEvidence(unittest.TestCase):
         runs = []
         for scale in ("1x", "10x"):
             for label in sources:
+                pair='a'*32 if scale=='1x' else 'b'*32
                 records = [{"name": name, "trial": trial, "passed": True, "status": 200,
                     "bytes": 100, "ms": 100, "digest": "c"*64, "dataDigest": "d"*64,
                     "entries": 2 if name.startswith("nodes-") else None,
@@ -637,19 +639,24 @@ class OperationSourceEvidence(unittest.TestCase):
                     for trial in range(3) for name in sorted(operations.NAMES)]
                 runs.append({"scale": scale, "label": label, "fixture_token": scale,
                     "passed": True, "measured_source": sources[label], "source_identity": sources[label],
+                    'pair':{'token':pair,'label':label},'context_before':{},'context':{},'source_settings_fixture_stable':True,
                     "source_identity_after": sources[label], "source_stable": True,
                     "settings": {"trials": 3, "deadlineMs": 30000, "maxResponseBytes": 8*1024*1024,
                         "exportSpacingMs": 13000, "readOnly": True, "httpConcurrency": 1},
                     "chart_snapshot": {"generatedAt": "2026-11-14T00:00:00Z", "visibilityGeneration": 7, "maxAgeMs": 1800000},
                     "records": records, "identity_checks": [{"trial": trial, "passed": True} for trial in range(3)]})
                 for item in records:
+                    started=dt.datetime(2026,11,14,0,10,tzinfo=dt.timezone.utc)+dt.timedelta(seconds=item['trial']*40+{'summary':0,'charts':1,'nodes-csv':2,'nodes-geojson':16}[item['name']])
+                    item.update(startedAt=started.isoformat(),finishedAt=(started+dt.timedelta(milliseconds=100)).isoformat(),
+                        paired={'token':pair,'readyAt':(started-dt.timedelta(milliseconds=10)).isoformat(),
+                                'releaseAt':(started-dt.timedelta(milliseconds=1)).isoformat()})
                     if item["name"] == "charts": item["snapshot"] = {**runs[-1]["chart_snapshot"], "status": "complete", "scope": "ukmesh", "ageMs": 1000}
         return runs, sources
 
     def test_operations_require_actual_baseline_bytes_complete_trials_identity_and_data_parity(self):
         runs, sources = self.records()
         self.assertTrue(operations.comparison(runs, sources)["passed"])
-        for mutation in ("source", "drift", "incomplete", "duplicate", "identity", "data", "regression", "fixture"):
+        for mutation in ("source", "drift", "incomplete", "duplicate", "identity", "data", "regression", "fixture",'pair','skew','release','context','spacing','snapshot'):
             changed = copy.deepcopy(runs)
             if mutation == "source": changed[0]["source_identity"] = sources["candidate"]
             elif mutation == "drift": changed[0]["source_stable"] = False
@@ -659,14 +666,20 @@ class OperationSourceEvidence(unittest.TestCase):
             elif mutation == "data": changed[1]["records"][0]["dataDigest"] = "f"*64
             elif mutation == "regression":
                 for item in changed[1]["records"]: item["ms"] = 111
-            else: changed[1]["fixture_token"] = "other"
+            elif mutation=='fixture':changed[1]["fixture_token"] = "other"
+            elif mutation=='pair':changed[1]['pair']['token']='c'*32
+            elif mutation=='skew':changed[1]['records'][0]['startedAt']='2026-11-14T00:10:01.101+00:00'
+            elif mutation=='release':changed[1]['records'][0]['paired']['releaseAt']='2026-11-14T00:10:00.998+00:00'
+            elif mutation=='context':changed[1]['context']={'changed':True}
+            elif mutation=='snapshot':changed[1]['chart_snapshot']['generatedAt']='2026-11-14T00:00:01Z'
+            else:changed[1]['records'][2]['startedAt']='2026-11-14T00:10:03+00:00'
             self.assertFalse(operations.comparison(changed, sources)["passed"], mutation)
 
     def test_report_cannot_accept_two_current_source_runs_relabelled_as_baseline(self):
         runs, sources = self.records()
         current = {"run_id": "run", "profile_sha256": "profile", "source": {
             "root_content_sha256": "current", "submodules_sha256": "same"}}
-        for row in runs: row["context"] = current
+        for row in runs: row["context"] = row['context_before'] = current
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)/"run"
             value = {"passed": True, "context": current, "runs": runs, **operations.comparison(runs, sources)}
@@ -678,6 +691,77 @@ class OperationSourceEvidence(unittest.TestCase):
                 common.write_json(directory/"other-operations.json", value)
                 result = report.report(directory)
                 self.assertFalse(next(item for item in result["phases"] if item["phase"] == "other-operations")["passed"])
+
+    def test_matching_trials_allow_clock_changes_between_trials_without_dropping_exact_pair_parity(self):
+        runs,sources=self.records()
+        for row in runs:
+            for item in row['records']:item['dataDigest']=f"{item['trial']+1:064x}"
+        self.assertTrue(operations.comparison(runs,sources)['passed'])
+        runs[1]['records'][0]['dataDigest']='f'*64
+        self.assertFalse(operations.comparison(runs,sources)['passed'])
+
+    def test_pair_start_skew_keeps_the_exact_hundred_millisecond_boundary(self):
+        for skew,allowed in ((100,True),(101,False)):
+            runs,sources=self.records()
+            record=runs[1]['records'][0]
+            record['startedAt']=(dt.datetime.fromisoformat(record['startedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
+            record['finishedAt']=(dt.datetime.fromisoformat(record['finishedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
+            self.assertEqual(operations.comparison(runs,sources)['passed'],allowed)
+
+    def test_one_exited_process_aborts_its_waiting_peer_and_releases_shared_readers(self):
+        _,sources=self.records()
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)
+            fixture={'kind':'1x','token':'owned','databases':[{'label':'ukmesh','database':'lean_1x_owned'}]}
+            peer_closed=threading.Event()
+            def process(tool,args,database,log,**kwargs):
+                self.assertEqual(tool,'benchmarkOperations');self.assertEqual(database,'lean_1x_owned')
+                label=args[args.index('--pair-label')+1]
+                if label=='candidate':return 1
+                pair=Path(args[args.index('--pair-directory')+1])
+                for _ in range(100):
+                    if (pair/'abort.json').exists():peer_closed.set();return 1
+                    peer_closed.wait(.01)
+                raise AssertionError('peer was not aborted')
+            companions=Mock();companions.finish.return_value={name:{'requests':1,'failures':0} for name in ('corescope','beacon')}
+            with patch.object(operations,'active_fixture',return_value=fixture),patch.object(operations,'inventory',return_value={'passed':True}), \
+                 patch.object(operations,'expected_sources',return_value=sources),patch.object(operations,'phase_context',return_value={'stable':True}), \
+                 patch.object(operations,'CompanionReads',return_value=companions),patch.object(operations,'node_tool',side_effect=process):
+                result=operations.operations_pair(directory)
+                self.assertFalse(result['passed']);self.assertTrue(peer_closed.is_set())
+                companions.start.assert_called_once();companions.finish.assert_called_once()
+                self.assertTrue((Path(result['attempt'])/'summary.json').is_file())
+                self.assertFalse(common.read_json(directory/'other-operations.json')['passed'])
+
+    def test_controller_releases_only_exact_sources_same_snapshot_and_fresh_state(self):
+        _,sources=self.records();token='a'*32
+        for mutation in ('none','source','token','step','snapshot','expiry','short-ttl'):
+            with tempfile.TemporaryDirectory() as temporary:
+                directory=Path(temporary)
+                generated=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=1)).isoformat()
+                snapshot={'generatedAt':generated,'visibilityGeneration':7,'maxAgeMs':1800000}
+                for trial in range(3):
+                    for name in operations.ORDER:
+                        for label in sources:
+                            value={'token':token,'label':label,'trial':trial,'name':name,'source':sources[label],
+                                   'snapshot':copy.deepcopy(snapshot),'readyAt':dt.datetime.now(dt.timezone.utc).isoformat()}
+                            if trial==0 and name=='summary' and label=='candidate':
+                                if mutation=='source':value['source']=sources['baseline']
+                                elif mutation=='token':value['token']='b'*32
+                                elif mutation=='step':value['name']='charts'
+                                elif mutation=='snapshot':value['snapshot']['visibilityGeneration']=8
+                                elif mutation=='expiry':value['snapshot']['maxAgeMs']=1
+                                elif mutation=='short-ttl':value['snapshot']['maxAgeMs']=300000
+                            common.write_json(directory/f'{trial}-{name}-{label}.ready.json',value)
+                futures={label:Mock() for label in sources}
+                for future in futures.values():future.done.return_value=False
+                if mutation=='none':
+                    releases=operations.release_pair(directory,token,sources,futures)
+                    self.assertEqual(len(releases),12)
+                    self.assertEqual(len(list(directory.glob('*.release.json'))),12)
+                else:
+                    with self.assertRaises(ValueError):operations.release_pair(directory,token,sources,futures)
+                    self.assertFalse(list(directory.glob('*.release.json')))
 
 
 class HealthSessionEvidence(unittest.TestCase):
