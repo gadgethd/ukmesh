@@ -22,6 +22,16 @@ x-anubis-base: &anubis-base
 x-internal-hosts: &internal-hosts
   {}  # Docker's internal DNS handles service name resolution
 
+# Standalone workers use their own credential for every runtime pool. The general
+# query API is called HTTP inside databaseRuntime, but has worker privileges here.
+x-worker-database: &worker-database
+  DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
+  MESHCORE_HTTP_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+  MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+  MESHCORE_INGEST_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+  DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
+  DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-2}
+
 x-application-hardening: &application-hardening
   read_only: true
   cap_drop:
@@ -45,11 +55,13 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: "no"
     logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &db-migrate-memory "${MIGRATE_MEMORY_LIMIT:-256m}"
+    memswap_limit: *db-migrate-memory
     command: ["node", "dist/tools/migrate.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_URL: ${MESHCORE_MIGRATE_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
+      MESHCORE_MIGRATE_DATABASE_URL: ${MESHCORE_MIGRATE_DATABASE_URL:-}
+      DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
       DATABASE_STATEMENT_TIMEOUT_MS: 0
       NODE_ENV: production
     depends_on:
@@ -67,10 +79,15 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "1g"
-    memswap_limit: "1g"
+    mem_limit: &backend-memory "${BACKEND_MEMORY_LIMIT:-1g}"
+    memswap_limit: *backend-memory
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
+      MESHCORE_HTTP_DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-}
+      MESHCORE_INGEST_DATABASE_URL: ${MESHCORE_INGEST_DATABASE_URL:-}
+      MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+      DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
+      OWNER_DATABASE_POOL_MAX: ${OWNER_DATABASE_POOL_MAX:-2}
       DATABASE_APPLICATION_NAME: meshcore-backend
       OWNER_DATABASE_APPLICATION_NAME: meshcore-backend-owner-auth
       OWNER_DATABASE_ADMIN_APPLICATION_NAME: meshcore-backend-owner-auth-admin
@@ -127,7 +144,7 @@ services:
       # API and ingest use the OLTP deadline; identity/chart analyses use the
       # separate analytics pool and retain its longer query budget.
       DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
-      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-16}
+      DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
@@ -250,11 +267,11 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &path-learning-worker-memory "${PATH_LEARNING_MEMORY_LIMIT:-512m}"
+    memswap_limit: *path-learning-worker-memory
     command: ["node", "dist/workers/path-learning.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: meshcore-path-learning
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
@@ -282,11 +299,11 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &health-worker-memory "${HEALTH_WORKER_MEMORY_LIMIT:-192m}"
+    memswap_limit: *health-worker-memory
     command: ["node", "dist/workers/health.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: meshcore-health-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
@@ -327,12 +344,13 @@ services:
       dockerfile: Dockerfile
     restart: always
     logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &tagger-worker-memory "${TAGGER_MEMORY_LIMIT:-128m}"
+    memswap_limit: *tagger-worker-memory
     cpus: 1.0
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: ukmesh-tagger-worker
+      TYPESAFE_API_URL: ${TYPESAFE_API_URL:-https://api.typesafe.ai/v1/systemone}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
       TAGGER_START: ${TAGGER_START:-}
       TAGGER_POLL_S: ${TAGGER_POLL_S:-5}
@@ -350,12 +368,12 @@ services:
     restart: always
     logging: *json-log-limits
     cpus: 1.0
-    mem_limit: "1g"
-    memswap_limit: "1g"
+    mem_limit: &region-snapshot-worker-memory "${REGION_SNAPSHOT_MEMORY_LIMIT:-1g}"
+    memswap_limit: *region-snapshot-worker-memory
     command: ["node", "--max-old-space-size=128", "dist/workers/region-snapshot.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
-      MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+      <<: *worker-database
+      DATABASE_APPLICATION_NAME: meshcore-region-snapshot
       DATABASE_SKIP_SCHEMA_INIT: "true"
       MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-}
       MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
@@ -381,11 +399,11 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &privacy-remat-worker-memory "${PRIVACY_REMAT_MEMORY_LIMIT:-192m}"
+    memswap_limit: *privacy-remat-worker-memory
     command: ["node", "dist/workers/privacy-rematerialization.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: meshcore-privacy-remat
       DATABASE_SKIP_SCHEMA_INIT: "true"
       DATABASE_STATEMENT_TIMEOUT_MS: 900000
@@ -407,11 +425,11 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &synthetic-monitor-memory "${SYNTHETIC_MEMORY_LIMIT:-128m}"
+    memswap_limit: *synthetic-monitor-memory
     command: ["node", "dist/workers/synthetic-monitor.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: meshcore-synthetic-monitor
       DATABASE_SKIP_SCHEMA_INIT: "true"
       SYNTHETIC_BASE_URL: http://backend:3000
@@ -442,13 +460,13 @@ services:
       dockerfile: Dockerfile.backend
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
-    restart: on-failure:3
+    restart: "no"
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &link-backfill-worker-memory "${LINK_BACKFILL_MEMORY_LIMIT:-192m}"
+    memswap_limit: *link-backfill-worker-memory
     command: ["node", "dist/workers/link-backfill.js"]
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
@@ -473,11 +491,11 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *json-log-limits
-    mem_limit: "2g"
-    memswap_limit: "2g"
+    mem_limit: &link-worker-memory "${LINK_WORKER_MEMORY_LIMIT:-768m}"
+    memswap_limit: *link-worker-memory
     cpus: 2.0
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
+      <<: *worker-database
       DATABASE_APPLICATION_NAME: meshcore-link-worker
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
@@ -521,12 +539,12 @@ services:
         SOURCE_REVISION: ${HOPREACH_SOURCE_REVISION:-58b2eb9ccdadd2e1b5e54c7548e48f92cc526119}
     restart: always
     logging: *json-log-limits
-    cpus: ${HOPREACH_CPUS:-4.0}
-    mem_limit: ${HOPREACH_MEMORY_LIMIT:-8g}
-    memswap_limit: ${HOPREACH_MEMORY_LIMIT:-8g}
+    cpus: ${HOPREACH_CPUS:-2.0}
+    mem_limit: &hopreach-memory "${HOPREACH_MEMORY_LIMIT:-768m}"
+    memswap_limit: *hopreach-memory
     environment:
       HOPREACH_CONFIG: /config/config.yaml
-      GOMAXPROCS: ${HOPREACH_CPU_WORKERS:-4}
+      GOMAXPROCS: ${HOPREACH_CPU_WORKERS:-2}
     volumes:
       - rf_coverage_data:/data
       - ./rf-coverage/config.ukmesh.yaml:/config/config.yaml:ro
@@ -550,8 +568,8 @@ services:
         VITE_RF_COVERAGE_ENABLED: ${RF_COVERAGE_ENABLED:-true}
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &app-ukmesh-memory "${APP_MEMORY_LIMIT:-48m}"
+    memswap_limit: *app-ukmesh-memory
     depends_on:
       backend:
         condition: service_healthy
@@ -587,8 +605,8 @@ services:
         VITE_SITE: ukmesh
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &website-ukmesh-memory "${WEBSITE_MEMORY_LIMIT:-48m}"
+    memswap_limit: *website-ukmesh-memory
     ports:
       - "127.0.0.1:3004:8080"
     networks:
@@ -623,8 +641,8 @@ services:
         chmod 0750 /app/data
     restart: "no"
     network_mode: "none"
-    mem_limit: "64m"
-    memswap_limit: "64m"
+    mem_limit: &mesh-health-check-data-init-memory "${HEALTHCHECK_INIT_MEMORY_LIMIT:-64m}"
+    memswap_limit: *mesh-health-check-data-init-memory
     cap_add:
       - CHOWN
       - DAC_OVERRIDE
@@ -643,8 +661,8 @@ services:
         MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:?HEALTHCHECK_SOURCE_REF full commit required}
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &mesh-health-check-memory "${HEALTHCHECK_MEMORY_LIMIT:-128m}"
+    memswap_limit: *mesh-health-check-memory
     environment:
       PORT: "3090"
       APP_TITLE: ${HEALTHCHECK_APP_TITLE:-UKMesh Health Check}
@@ -722,8 +740,8 @@ services:
     restart: always
     profiles: [dev]
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &website-dev-memory "${WEBSITE_DEV_MEMORY_LIMIT:-48m}"
+    memswap_limit: *website-dev-memory
     ports:
       - "127.0.0.1:3006:8080"
     networks:
@@ -753,8 +771,8 @@ services:
 
   anubis-website-ukmesh:
     <<: [*anubis-base, *internal-hosts]
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &anubis-website-ukmesh-memory "${ANUBIS_WEBSITE_MEMORY_LIMIT:-64m}"
+    memswap_limit: *anubis-website-ukmesh-memory
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
@@ -775,8 +793,8 @@ services:
 
   anubis-app-ukmesh:
     <<: [*anubis-base, *internal-hosts]
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &anubis-app-ukmesh-memory "${ANUBIS_APP_MEMORY_LIMIT:-64m}"
+    memswap_limit: *anubis-app-ukmesh-memory
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
@@ -797,8 +815,8 @@ services:
 
   anubis-health-check:
     <<: [*anubis-base, *internal-hosts]
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &anubis-health-check-memory "${ANUBIS_HEALTHCHECK_MEMORY_LIMIT:-64m}"
+    memswap_limit: *anubis-health-check-memory
     environment:
       ED25519_PRIVATE_KEY_HEX: "${ANUBIS_ED25519_PRIVATE_KEY_HEX:?ANUBIS_ED25519_PRIVATE_KEY_HEX required}"
       BIND: ":8923"
@@ -826,8 +844,8 @@ services:
     image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     restart: always
     logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &cloudflared-memory "${TUNNEL_MEMORY_LIMIT:-128m}"
+    memswap_limit: *cloudflared-memory
     user: "65532:65532"
     read_only: true
     cap_drop:
@@ -859,8 +877,8 @@ services:
     image: grafana/loki@sha256:5fe9fa99e9a747297cdf0239a5b25d192d8f668bd6505b09beef4dffcab5aac2
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &loki-memory "${LOKI_MEMORY_LIMIT:-192m}"
+    memswap_limit: *loki-memory
     command: -config.file=/etc/loki/loki.yaml
     read_only: true
     cap_drop:
@@ -888,8 +906,8 @@ services:
       options:
         max-size: "10m"
         max-file: "3"
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &alloy-memory "${ALLOY_MEMORY_LIMIT:-128m}"
+    memswap_limit: *alloy-memory
     user: "473:473"
     group_add:
       - "${JOURNAL_GID:-999}"
@@ -924,8 +942,8 @@ services:
     image: prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     restart: always
     logging: *json-log-limits
-    mem_limit: "256m"
-    memswap_limit: "256m"
+    mem_limit: &prometheus-memory "${PROMETHEUS_MEMORY_LIMIT:-192m}"
+    memswap_limit: *prometheus-memory
     command:
       - --config.file=/etc/prometheus/prometheus.yml
       - --storage.tsdb.retention.time=15d
@@ -968,8 +986,8 @@ services:
     image: grafana/grafana@sha256:0a2874cf39c6487093c682215f7c7903ed8646d78ae5f911af945d2dfcc0a447
     restart: always
     logging: *json-log-limits
-    mem_limit: "512m"
-    memswap_limit: "512m"
+    mem_limit: &grafana-memory "${GRAFANA_MEMORY_LIMIT:-192m}"
+    memswap_limit: *grafana-memory
     read_only: true
     cap_drop:
       - ALL
@@ -1010,8 +1028,8 @@ services:
     command: ["node", "dist/workers/alert-receiver.js"]
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &alert-receiver-memory "${ALERT_RECEIVER_MEMORY_LIMIT:-96m}"
+    memswap_limit: *alert-receiver-memory
     read_only: true
     cap_drop:
       - ALL
@@ -1040,8 +1058,8 @@ services:
     image: prom/alertmanager@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &alertmanager-memory "${ALERTMANAGER_MEMORY_LIMIT:-64m}"
+    memswap_limit: *alertmanager-memory
     command:
       - --config.file=/etc/alertmanager/alertmanager.yml
       - --storage.path=/alertmanager
@@ -1072,15 +1090,15 @@ services:
     image: quay.io/prometheuscommunity/postgres-exporter@sha256:fb96c4413985d4b23ab02b19022b3d70a86c8e0a62f41ab15ebb6f4673781a5d
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &postgres-exporter-memory "${POSTGRES_EXPORTER_MEMORY_LIMIT:-32m}"
+    memswap_limit: *postgres-exporter-memory
     read_only: true
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
     environment:
-      DATA_SOURCE_NAME: postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}?sslmode=disable
+      DATA_SOURCE_NAME: ${POSTGRES_EXPORTER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}?sslmode=disable}
     healthcheck:
       test: ["CMD", "/bin/postgres_exporter", "--version"]
       interval: 30s
@@ -1091,8 +1109,8 @@ services:
     image: oliver006/redis_exporter@sha256:4c8000eb3525e0f6ed1327499861e272fcce358a9e7a87dd9db74c44607e6d8e
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &redis-exporter-memory "${REDIS_EXPORTER_MEMORY_LIMIT:-32m}"
+    memswap_limit: *redis-exporter-memory
     read_only: true
     cap_drop:
       - ALL
@@ -1112,8 +1130,8 @@ services:
     image: prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &node-exporter-memory "${NODE_EXPORTER_MEMORY_LIMIT:-32m}"
+    memswap_limit: *node-exporter-memory
     pid: host
     command:
       - --path.rootfs=/host
@@ -1138,8 +1156,8 @@ services:
     image: prom/blackbox-exporter@sha256:a50c4c0eda297baa1678cd4dc4712a67fdea713b832d43ce7fcc5f9bea05094d
     restart: always
     logging: *json-log-limits
-    mem_limit: "128m"
-    memswap_limit: "128m"
+    mem_limit: &blackbox-exporter-memory "${BLACKBOX_EXPORTER_MEMORY_LIMIT:-32m}"
+    memswap_limit: *blackbox-exporter-memory
     command: ["--config.file=/etc/blackbox_exporter/config.yml"]
     read_only: true
     cap_drop:
