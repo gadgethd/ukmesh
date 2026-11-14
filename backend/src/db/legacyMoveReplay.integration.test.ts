@@ -25,7 +25,7 @@ const roleBootstrap = [
   readFileSync(new URL('../../../scripts/bootstrap-reader-roles.sql', import.meta.url), 'utf8'),
 ];
 const allMigrations = loadMigrationFiles();
-const HEAD = '150_share_normalized_lookup_order.sql';
+const HEAD = '152_bound_retention_calendar_intervals.sql';
 // Everything before 078 is unaffected by this change; splitting the band there
 // lets the second test insert the legacy relations at the point they would have
 // existed on a live database.
@@ -94,6 +94,26 @@ async function seedFreshVolume(harness: Harness): Promise<void> {
   for (const script of roleBootstrap) await harness.pool.query(script);
 }
 
+async function assertMaintenanceAuthority(pool: pg.Pool): Promise<void> {
+  const { rows } = await pool.query(`
+    SELECT p.prosecdef AS security_definer, p.proconfig AS settings,
+           pg_get_userbyid(p.proowner) = current_user AS migration_owned,
+           has_function_privilege('meshcore_worker', p.oid, 'EXECUTE') AS worker_execute,
+           has_function_privilege('meshcore_api', p.oid, 'EXECUTE') AS api_execute,
+           has_function_privilege('meshcore_ingest', p.oid, 'EXECUTE') AS ingest_execute,
+           NOT EXISTS (
+             SELECT 1 FROM aclexplode(COALESCE(p.proacl, acldefault('f', p.proowner))) acl
+             WHERE acl.grantee = 0 AND acl.privilege_type = 'EXECUTE'
+           ) AS public_execute_revoked
+    FROM pg_proc p
+    WHERE p.oid = 'ops.prune_expired_hypertable(regclass,interval)'::regprocedure
+  `);
+  assert.deepEqual(rows, [{
+    security_definer: true, settings: ['search_path=pg_catalog'], migration_owned: true,
+    worker_execute: true, api_execute: false, ingest_execute: false, public_execute_revoked: true,
+  }]);
+}
+
 test(`a fresh base-schema database replays the whole band to head ${HEAD.slice(0, 3)}`, {
   skip: endpoint ? false : 'owned PostgreSQL required',
   timeout: 300000,
@@ -119,6 +139,7 @@ test(`a fresh base-schema database replays the whole band to head ${HEAD.slice(0
   assert.equal(ledger.rows.length, allMigrations.length);
   assert.equal(ledger.rows.at(-1)?.name, HEAD);
   assert.equal(Math.max(...ledger.rows.map((row) => Number(row.name.slice(0, 3)))), Number(HEAD.slice(0, 3)));
+  await assertMaintenanceAuthority(harness.pool);
   const snapshotColumns = await harness.pool.query<{ table_schema: string; table_name: string; column_name: string }>(`
     SELECT table_schema, table_name, column_name FROM information_schema.columns
     WHERE (table_schema, table_name) IN (('core', 'region_scope_run'), ('analytics', 'spam_message_incidents'))
@@ -174,15 +195,24 @@ test('the guarded moves still move the legacy relations and carry their grants',
   // sees them as drift.
   await harness.pool.query(legacyRelations);
   // An operator-provisioned export schema must survive 087 untouched.
+  const plannerOwner = `planner_${harness.fixture.name}`;
+  const roleAdmin = new pg.Client({ connectionString: endpoint });
+  let plannerRoleCreated = false;
+  t.after(async () => {
+    try {
+      // The schema depends on its role. Dispose its database first, regardless
+      // of test-hook order; the shared fixture's disposal is idempotent.
+      await harness.fixture.dispose();
+      if (plannerRoleCreated) await roleAdmin.query(`DROP ROLE "${plannerOwner}"`);
+    } finally {
+      await roleAdmin.end();
+    }
+  });
+  await roleAdmin.connect();
+  await roleAdmin.query(`CREATE ROLE "${plannerOwner}" NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT`);
+  plannerRoleCreated = true;
   await harness.pool.query(`
-    DO $$
-    BEGIN
-      IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'legacy_planner_owner') THEN
-        CREATE ROLE legacy_planner_owner NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT;
-      END IF;
-    END
-    $$;
-    CREATE SCHEMA IF NOT EXISTS planner_export AUTHORIZATION legacy_planner_owner;
+    CREATE SCHEMA IF NOT EXISTS planner_export AUTHORIZATION "${plannerOwner}";
     GRANT USAGE ON SCHEMA planner_export TO ukmesh_planner_reader;
   `);
 
@@ -193,6 +223,7 @@ test('the guarded moves still move the legacy relations and carry their grants',
     'SELECT name FROM public.schema_migrations ORDER BY name',
   );
   assert.equal(ledger.rows.at(-1)?.name, HEAD);
+  await assertMaintenanceAuthority(harness.pool);
 
   // Every guarded move actually ran: no public.* source names remain, and each
   // relation is in its intended schema.
@@ -261,7 +292,7 @@ test('the guarded moves still move the legacy relations and carry their grants',
     SELECT pg_get_userbyid(nspowner) AS owner, array_to_string(nspacl, ' ') AS acl
       FROM pg_namespace WHERE nspname = 'planner_export'
   `);
-  assert.equal(exportSchema.rows[0]?.owner, 'legacy_planner_owner');
+  assert.equal(exportSchema.rows[0]?.owner, plannerOwner);
   assert.match(exportSchema.rows[0]?.acl ?? '', /ukmesh_planner_reader=U\//);
 });
 
