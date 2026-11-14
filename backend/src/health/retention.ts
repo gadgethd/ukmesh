@@ -68,81 +68,28 @@ export function retentionDeleteSql(target: RetentionTarget): string {
        ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`;
 }
 
-async function rowsOf(
-  execute: (text: string, params?: unknown[]) => Promise<unknown>,
-  text: string,
-  params?: unknown[],
-): Promise<Array<Record<string, unknown>>> {
-  const result = (await execute(text, params)) as { rows?: Array<Record<string, unknown>> } | undefined;
-  return result?.rows ?? [];
-}
-
 export async function deleteExpiredRows(
   target: RetentionTarget,
   execute: (text: string, params?: unknown[]) => Promise<unknown> = query,
 ): Promise<void> {
   // Row-level DELETE on a compressed hypertable forces transparent
   // decompression and can exceed TimescaleDB's per-DML decompression limit.
-  // Whole-chunk drops are the supported retention path; the boundary chunk is
-  // kept until it is fully expired, so retention can overshoot by one chunk.
+  // The database capability handles whole chunks and the compressed boundary
+  // without granting their ownership to the health process.
   if (policyForTarget(target.table).kind === 'hypertable') {
     try {
       const qualifiedTable = target.qualifiedTable ?? target.table;
-      const [schemaName, tableName] = qualifiedTable.includes('.')
-        ? qualifiedTable.split('.', 2) as [string, string]
-        : ['public', qualifiedTable] as [string, string];
-      // Remove every chunk that is entirely past the retention horizon without
-      // decompressing anything.
+      // The database owns chunk discovery, ownership and compressed-boundary
+      // cleanup. Runtime credentials cannot operate on arbitrary chunks.
       await execute(
-        'SELECT drop_chunks($1::regclass, older_than => $2::interval)',
+        'SELECT ops.prune_expired_hypertable($1::regclass, $2::interval)',
         [qualifiedTable, target.retention],
       );
-      // The boundary chunk can still hold a few expired rows next to retained
-      // ones. Row DML on a compressed chunk is rejected by TimescaleDB's
-      // decompression limit, so decompress just that chunk, delete, recompress.
-      const chunks = await rowsOf(
-        execute,
-        `SELECT format('%I.%I', chunk_schema, chunk_name) AS chunk, is_compressed
-           FROM timescaledb_information.chunks
-          WHERE hypertable_schema = $1
-            AND hypertable_name = $2
-            AND range_end > now() - $3::interval
-          ORDER BY range_end ASC
-          LIMIT 1`,
-        [schemaName, tableName, target.retention],
-      );
-      const chunk = chunks[0];
-      if (!chunk) return;
-      const chunkName = String(chunk['chunk']);
-      const expired = await rowsOf(
-        execute,
-        `SELECT 1 FROM ${chunkName}
-          WHERE ${target.timestampColumn} < now() - $1::interval
-          LIMIT 1`,
-        [target.retention],
-      );
-      if (expired.length === 0) return;
-      await execute('SELECT decompress_chunk($1::regclass, if_compressed => true)', [chunkName]);
-      try {
-        // Delete only inside this chunk. A table-wide boundary can reach into
-        // older compressed chunks that were not decompressed and trip the
-        // per-DML decompression limit again.
-        await execute(
-          `DELETE FROM ${chunkName}
-            WHERE ${target.timestampColumn} < now() - $1::interval
-            ${target.extraPredicate ? `AND ${target.extraPredicate}` : ''}`,
-          [target.retention],
-        );
-      } finally {
-        if (chunk['is_compressed'] === true) {
-          await execute('SELECT compress_chunk($1::regclass, if_not_compressed => true)', [chunkName]);
-        }
-      }
       return;
     } catch (error) {
       // Non-Timescale databases (unit/integration fixtures) have plain tables.
       const code = (error as { code?: string }).code;
-      if (code !== '42809' && code !== '42883' && code !== '42P01') throw error;
+      if (code !== '42809' && code !== '42883' && code !== '42P01' && code !== '3F000') throw error;
     }
   }
   await execute(retentionDeleteSql(target), [target.retention, target.batchSize]);
