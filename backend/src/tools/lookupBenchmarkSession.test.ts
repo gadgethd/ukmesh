@@ -99,3 +99,13 @@ test('trial cleanup closes caches when route registration fails, even if its dis
   }), /route cleanup failed/);
   assert.deepEqual(events, ['routes', 'caches']);
 });
+
+test('trial cleanup awaits asynchronous route work before closing its caches', async () => {
+  const events: string[] = [];
+  const cacheModule = { createApiCaches: () => ({ close() { events.push('caches'); } }) } as unknown as LookupCacheModule;
+  await withLookupTrial(cacheModule, async ({ ownRoutes }) => {
+    ownRoutes(async () => { await new Promise(resolve => setTimeout(resolve, 10)); events.push('routes'); });
+    events.push('work');
+  });
+  assert.deepEqual(events, ['work', 'routes', 'caches']);
+});

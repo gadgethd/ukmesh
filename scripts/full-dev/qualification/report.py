@@ -90,6 +90,13 @@ def report(run: Path) -> dict:
                 if name=='reads':
                     from source_identity import expected_sources,validate_measurements
                     validate_measurements(value.get('runs',[]),expected_sources())
+                else:
+                    from source_identity import expected_sources
+                    from operations import validate_operations,comparison
+                    expected=expected_sources()
+                    validate_operations(value.get('runs',[]),expected)
+                    if not comparison(value.get('runs',[]),expected)['passed']:
+                        passed,error=False,'statistics/export source, data or regression comparison failed'
                 for measurement in value.get("runs", []):
                     if measurement.get("context", {}).get("run_id") != run.name or any(
                             measurement.get("context", {}).get(key) != context.get(key)

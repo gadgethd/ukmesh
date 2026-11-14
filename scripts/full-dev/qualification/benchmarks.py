@@ -26,7 +26,7 @@ def active_fixture() -> dict:
 
 
 def node_tool(tool: str, args: list[str], database: str, log: Path, *, timeout: int = 1800) -> int:
-    if tool not in ("benchmarkLookups", "generateSampleDataset", "loadSampleDataset", "prepareSampleDataset",
+    if tool not in ("benchmarkLookups", "benchmarkOperations", "generateSampleDataset", "loadSampleDataset", "prepareSampleDataset",
                     "soakDatabaseLookups", "checkLookupParity", "checkPathContext", "fullStackTraffic", "dataLifecycle"):
         raise ValueError("unknown existing qualification tool")
     endpoint = "postgresql://meshcore:meshcore@127.0.0.1:5433/" + database

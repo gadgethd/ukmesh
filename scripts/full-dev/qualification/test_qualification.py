@@ -30,6 +30,7 @@ import soak
 import core_projection
 import source_identity
 import context
+import operations
 from unittest.mock import Mock
 
 
@@ -199,6 +200,32 @@ class LookupSourceEvidence(unittest.TestCase):
                 patch.object(source_identity,'identify') as loader:
             with self.assertRaisesRegex(ValueError,'Git-verified'):source_identity.expected_sources()
             loader.assert_not_called()
+
+    def test_baseline_package_and_dependency_resolution_are_bound_to_git_and_current_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root=Path(temporary);source=root/'plans/baseline/backend/src';source.mkdir(parents=True)
+            installed=root/'backend/node_modules';installed.mkdir(parents=True)
+            metadata={'package.json':b'{"type":"module"}', 'package-lock.json':b'{"lockfileVersion":3}'}
+            for name,value in metadata.items(): (source.parent/name).write_bytes(value)
+            (root/'backend/package-lock.json').write_bytes(metadata['package-lock.json'])
+            link=source.parent/'node_modules';link.symlink_to(installed,target_is_directory=True)
+            def git(args):
+                self.assertEqual(args[:2],['git','show'])
+                return subprocess.CompletedProcess(args,0,metadata[args[-1].split('/')[-1]],b'')
+            with patch.object(source_identity,'REPO',root),patch.object(source_identity,'command',side_effect=git):
+                source_identity.validate_baseline_dependencies(source,'a'*40)
+                for name in metadata:
+                    path=source.parent/name;path.write_bytes(b'edited')
+                    with self.assertRaisesRegex(ValueError,'Git blob'):source_identity.validate_baseline_dependencies(source,'a'*40)
+                    path.write_bytes(metadata[name])
+                package=source.parent/'package.json';package.unlink();package.symlink_to(root/'backend/package-lock.json')
+                with self.assertRaisesRegex(ValueError,'Git blob'):source_identity.validate_baseline_dependencies(source,'a'*40)
+                package.unlink();package.write_bytes(metadata['package.json'])
+                (root/'backend/package-lock.json').write_bytes(b'other dependency versions')
+                with self.assertRaisesRegex(ValueError,'locks differ'):source_identity.validate_baseline_dependencies(source,'a'*40)
+                (root/'backend/package-lock.json').write_bytes(metadata['package-lock.json'])
+                link.unlink();foreign=root/'foreign-dependencies';foreign.mkdir();link.symlink_to(foreign,target_is_directory=True)
+                with self.assertRaisesRegex(ValueError,'dependency link'):source_identity.validate_baseline_dependencies(source,'a'*40)
 
 
 class HTTPReaderOwnership(unittest.TestCase):
@@ -499,6 +526,63 @@ class EvidenceAcceptance(unittest.TestCase):
         self.assertTrue(benchmarks.read_comparison(runs)["passed"])
         runs[-1]["modes"][-1]["results"].pop()
         self.assertFalse(benchmarks.read_comparison(runs)["passed"])
+
+
+class OperationSourceEvidence(unittest.TestCase):
+    def records(self):
+        sources = {label: {"source_root": "/"+label, "revision": digit*40, "sha256": digit*64, "files": 20}
+                   for label, digit in (("baseline", "a"), ("candidate", "b"))}
+        runs = []
+        for scale in ("1x", "10x"):
+            for label in sources:
+                records = [{"name": name, "trial": trial, "passed": True, "status": 200,
+                    "bytes": 100, "ms": 100, "digest": "c"*64, "dataDigest": "d"*64,
+                    "entries": 2 if name.startswith("nodes-") else None,
+                    "identityDigest": "e"*64 if name.startswith("nodes-") else None}
+                    for trial in range(3) for name in sorted(operations.NAMES)]
+                runs.append({"scale": scale, "label": label, "fixture_token": scale,
+                    "passed": True, "measured_source": sources[label], "source_identity": sources[label],
+                    "source_identity_after": sources[label], "source_stable": True,
+                    "settings": {"trials": 3, "deadlineMs": 30000, "maxResponseBytes": 8*1024*1024,
+                        "exportSpacingMs": 13000, "readOnly": True, "httpConcurrency": 1},
+                    "chart_snapshot": {"generatedAt": "2026-11-14T00:00:00Z", "visibilityGeneration": 7, "maxAgeMs": 1800000},
+                    "records": records, "identity_checks": [{"trial": trial, "passed": True} for trial in range(3)]})
+                for item in records:
+                    if item["name"] == "charts": item["snapshot"] = {**runs[-1]["chart_snapshot"], "status": "complete", "scope": "ukmesh", "ageMs": 1000}
+        return runs, sources
+
+    def test_operations_require_actual_baseline_bytes_complete_trials_identity_and_data_parity(self):
+        runs, sources = self.records()
+        self.assertTrue(operations.comparison(runs, sources)["passed"])
+        for mutation in ("source", "drift", "incomplete", "duplicate", "identity", "data", "regression", "fixture"):
+            changed = copy.deepcopy(runs)
+            if mutation == "source": changed[0]["source_identity"] = sources["candidate"]
+            elif mutation == "drift": changed[0]["source_stable"] = False
+            elif mutation == "incomplete": changed[0]["records"].pop()
+            elif mutation == "duplicate": changed[0]["records"][-1] = changed[0]["records"][0]
+            elif mutation == "identity": changed[0]["records"][1]["identityDigest"] = "f"*64
+            elif mutation == "data": changed[1]["records"][0]["dataDigest"] = "f"*64
+            elif mutation == "regression":
+                for item in changed[1]["records"]: item["ms"] = 111
+            else: changed[1]["fixture_token"] = "other"
+            self.assertFalse(operations.comparison(changed, sources)["passed"], mutation)
+
+    def test_report_cannot_accept_two_current_source_runs_relabelled_as_baseline(self):
+        runs, sources = self.records()
+        current = {"run_id": "run", "profile_sha256": "profile", "source": {
+            "root_content_sha256": "current", "submodules_sha256": "same"}}
+        for row in runs: row["context"] = current
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)/"run"
+            value = {"passed": True, "context": current, "runs": runs, **operations.comparison(runs, sources)}
+            common.write_json(directory/"other-operations.json", value)
+            with patch.object(report, "phase_context", return_value=current), patch.object(source_identity, "expected_sources", return_value=sources):
+                result = report.report(directory)
+                self.assertTrue(next(item for item in result["phases"] if item["phase"] == "other-operations")["passed"])
+                value["runs"][0]["source_identity"] = sources["candidate"]
+                common.write_json(directory/"other-operations.json", value)
+                result = report.report(directory)
+                self.assertFalse(next(item for item in result["phases"] if item["phase"] == "other-operations")["passed"])
 
 
 class HealthSessionEvidence(unittest.TestCase):

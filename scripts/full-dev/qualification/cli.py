@@ -49,7 +49,7 @@ def main() -> int:
             result = reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
         elif args.action == "operations":
             from operations import operations
-            result = operations(run, label=args.label)
+            result = operations(run, label=args.label, source_root=args.source_root)
         elif args.action == "parity":
             from benchmarks import parity
             if not args.source_root:

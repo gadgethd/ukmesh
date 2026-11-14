@@ -49,7 +49,7 @@ export function configureLookupReadOnlyEnvironment(endpoint: string, env: NodeJS
   delete env['DATABASE_SCHEMA'];
 }
 
-type LookupRuntime = { pool: pg.Pool; query: DatabaseQueryFn; closeDb: () => Promise<void> };
+type LookupRuntime = { pool: pg.Pool; query: DatabaseQueryFn; analyticsQuery: DatabaseQueryFn; closeDb: () => Promise<void> };
 export type LookupSourceLoader = (file: string) => Promise<any>;
 
 /** Archived revisions also import their process-default runtime. Configure the
@@ -70,11 +70,11 @@ type LookupCaches = ReturnType<LookupCacheModule['createApiCaches']>;
  * including resources allocated before setup or listen fails. */
 export async function withLookupTrial<T>(cacheModule: LookupCacheModule, work: (trial: {
   caches: LookupCaches;
-  ownRoutes: (close: () => void) => void;
+  ownRoutes: (close: () => void | Promise<void>) => void;
   listen: (app: Express) => Promise<number>;
 }) => Promise<T>): Promise<T> {
   const caches = cacheModule.createApiCaches();
-  let closeRoutes: (() => void) | undefined;
+  let closeRoutes: (() => void | Promise<void>) | undefined;
   let server: Server | undefined;
   try {
     return await work({
@@ -87,7 +87,7 @@ export async function withLookupTrial<T>(cacheModule: LookupCacheModule, work: (
       },
     });
   } finally {
-    try { closeRoutes?.(); }
+    try { await closeRoutes?.(); }
     finally {
       try {
         if (server) {
