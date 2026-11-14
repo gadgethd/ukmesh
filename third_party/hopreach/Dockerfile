@@ -65,6 +65,7 @@ COPY docker/config.docker.yaml /config/config.yaml
 COPY LICENSE UPSTREAM_COMMIT /usr/share/doc/hopreach/
 RUN chmod +x /entrypoint.sh /app/hopreach /app/hopreach-shareapi \
   && mkdir -p /data/dem-cache /data/shared-plans /var/cache/nginx/dem-tiles \
+  && ln -s /data/.hopreach.lock /tmp/hopreach.lock \
   && chown -R www-data:www-data /var/cache/nginx/dem-tiles
 
 # The only environment variable HopReach's own binaries read — everything

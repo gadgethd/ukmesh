@@ -290,3 +290,29 @@ benchmark's three-run median changes4.164s to0.396s; transient allocation rises
 from1.629MB to3.770MB per representative raster. Existing UK4600 Standard and
 Precision speed ratios remain0.262/0.259 against their unchanged0.70 limit.
 This does not predict whole-region completion or replace whole-VM qualification.
+
+## Publication ownership persists across Docker replacement
+
+Keep the calculator's existing lock pathname and flock semantics, but make its
+Docker image resolve that pathname to a root-owned lock inode in the existing
+data volume. Never unlink, replace or archive that persistent inode.
+
+- Hidden link: container startup performs an initial calculation, and an expired
+  last-good cache can be overwritten before qualification has archived it.
+- Hidden link: a lease on the old container's private/tmp inode cannot protect
+  a replacement container, even when both use the same pathname.
+- Fix: an image-owned/tmp/hopreach.lock symlink to/data/.hopreach.lock. Bridge
+  the old private lease through old-container stop while a separate bounded
+  volume carrier already owns the persistent lease. Startup must demonstrate
+  the existing successful busy skip before any RF write; protected cache bytes
+  remain unchanged. Source, config, model, cron and freshness gates stay intact.
+
+The temporary carrier is a one-shot orchestration owner, not a resident service.
+Its1200-second lease spans the existing900-second canonical startup allowance;
+the owned startup child inherits its stdin lease and survives controller-group
+interruption. Expired/foreign leases fail closed before dispatch; failure stops
+the owned new RF resident before protection is released. Verify root ownership,
+regular nonsymlink target, device+inode equality, private/tmp compatibility, exact
+busy0, byte stability, replacement survival and EOF/timeout cleanup on an owned
+isolated volume before any guarded live rollout. No production-store or RF job
+is authorized by this source change alone.
