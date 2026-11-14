@@ -125,6 +125,8 @@ TO meshcore_api;
 GRANT INSERT, UPDATE ON analytics.stats_chart_snapshots, analytics.path_slow_resolutions,
   ops.frontend_error_events, ops.ingest_rejections, ops.operator_audit_events TO meshcore_api;
 GRANT SELECT ON ops.ingest_rejections TO meshcore_api;
+-- The backend spam analyzer owns its lease lifecycle through the HTTP pool.
+GRANT INSERT, UPDATE ON analytics.analysis_runs, analytics.analysis_workload_state TO meshcore_api;
 GRANT SELECT, UPDATE, DELETE ON mesh.packet_forwarding_outbox TO meshcore_api;
 GRANT UPDATE (last_predicted_online_at, last_path_evidence_at) ON core.nodes TO meshcore_api;
 -- PostgreSQL requires an UPDATE privilege for SELECT FOR SHARE/UPDATE fences.
@@ -186,6 +188,10 @@ TO meshcore_worker;
 GRANT UPDATE, DELETE ON core.nodes TO meshcore_worker;
 GRANT INSERT, UPDATE ON core.node_name_history, mesh.message_tags,
   ops.operational_check_results, ops.maintenance_removed_records TO meshcore_worker;
+-- Chart refresh uses the analytics pool (worker role) for bounded fact
+-- backfill, coverage publication and the generation-fenced stored snapshot.
+GRANT INSERT, UPDATE ON mesh.multibyte_path_facts, mesh.multibyte_path_fact_state,
+  analytics.stats_chart_snapshots TO meshcore_worker;
 GRANT UPDATE ON core.observer_registration_requests TO meshcore_worker;
 GRANT UPDATE ON mesh.packets, mesh.packet_paths TO meshcore_worker;
 GRANT DELETE ON ops.frontend_error_events, ops.operational_check_results,
