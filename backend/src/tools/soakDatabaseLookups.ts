@@ -3,21 +3,28 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import http from 'node:http';
+import { realpath, stat } from 'node:fs/promises';
 import pg from 'pg';
 import WebSocket from 'ws';
 import { assertLocalDatabaseUrl, option, readGzipCsv, requiredOption, rowObject } from './sampleData.js';
 import { replaySampleMqtt } from './replaySampleMqtt.js';
 import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
+import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
+import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
+import { waitForInitialState } from './soakSocket.js';
 
 const args = process.argv.slice(2), endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
-if (!new URL(endpoint).pathname.startsWith('/lookup_')) throw new Error('owned lookup database required');
+if (!new URL(endpoint).pathname.startsWith('/lookup_')) await assertOwnedLeanFixture(endpoint);
 const directory = path.resolve(requiredOption(args, 'data-dir'));
 const output = path.resolve(requiredOption(args, 'output'));
 const base = new URL(option(args, 'base-url') ?? 'http://127.0.0.1:3101');
 const metricsUrl = new URL(option(args, 'metrics-url') ?? 'http://127.0.0.1:9093/metrics');
 const broker = new URL(option(args, 'broker') ?? 'ws://127.0.0.1:9003');
+const envelopeFormat = option(args, 'envelope-format') ?? 'legacy';
+if (envelopeFormat !== 'legacy' && envelopeFormat !== 'observer') throw new Error('--envelope-format must be legacy or observer');
 for (const url of [base, metricsUrl, broker]) {
   if (!['localhost','127.0.0.1','[::1]'].includes(url.hostname)) throw new Error('owned loopback endpoints required');
 }
@@ -25,6 +32,38 @@ const count = Number(option(args, 'limit') ?? 72000), rate = Number(option(args,
 const budgetMs = Number(option(args,'budget-ms') ?? 250);
 if (!Number.isSafeInteger(count) || count < 30 || count > 108000 || rate !== 30) throw new Error('use 30 packets/s and 30..108000 unique packets');
 if (!Number.isFinite(budgetMs)||budgetMs<=0) throw new Error('positive lookup budget required');
+const auxiliaryFile = option(args, 'auxiliary-traffic');
+const auxiliaryTraffic = auxiliaryFile ? await readFullStackTraffic(auxiliaryFile) : undefined;
+const readerSocket = option(args, 'http-reader-socket');
+if (readerSocket) {
+  if (!auxiliaryTraffic || await realpath(readerSocket) !== path.join(path.dirname(output), 'http-reader/reader.sock')
+    || !(await stat(readerSocket)).isSocket()) throw new Error('owned full-stack HTTP reader socket required');
+}
+async function readHttp(route: string, slot: number): Promise<{status: number; body: Buffer}> {
+  if (!readerSocket) {
+    const response = await fetch(new URL(route,base), {signal:AbortSignal.timeout(15_000)});
+    return {status: response.status, body: Buffer.from(await response.arrayBuffer())};
+  }
+  return new Promise((resolve, reject) => {
+    const request = http.get({socketPath: readerSocket, path: route, headers: {'x-owned-reader-slot': String(slot)}, timeout: 15000}, response => {
+      const chunks: Buffer[] = []; let bytes = 0;
+      response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 8*1024*1024) response.destroy(new Error('response budget exceeded')); else chunks.push(chunk); });
+      response.once('end', () => resolve({status: response.statusCode ?? 0, body: Buffer.concat(chunks)}));
+      response.once('error', reject);
+    });
+    request.once('timeout', () => request.destroy(new Error('HTTP reader deadline')));
+    request.once('error', reject);
+  });
+}
+if (auxiliaryTraffic) {
+  await assertOwnedLeanFixture(endpoint);
+  if (envelopeFormat !== 'observer') throw new Error('full-stack auxiliary traffic requires observer envelopes');
+  if (auxiliaryTraffic.events.at(-1)!.offsetMs > count / rate * 1000) throw new Error('auxiliary traffic must fit the ACK replay window');
+}
+const expectedDeltas = { packets: count, paths: count, facts: count, ledger: count };
+if (auxiliaryTraffic) for (const key of ['packets', 'paths', 'facts', 'ledger'] as const) {
+  expectedDeltas[key] += auxiliaryTraffic.expected.ukmesh[key];
+}
 const manifest = JSON.parse(await readFile(path.join(directory, 'fixture.json'), 'utf8'));
 if (!manifest.synthetic || manifest.count !== count) throw new Error('matching invented fixture required');
 const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
@@ -83,19 +122,19 @@ try {
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
   const socket = new URL('/ws?network=ukmesh',base); socket.protocol='ws:';
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
-  let wsErrors = 0;
+  let wsErrors = 0, wsUnexpectedCloses=0, wsCloseCode: number|null=null, wsOpened=false;
+  ws.on('open',()=>{wsOpened=true;});
+  ws.on('close',code=>{wsUnexpectedCloses++;wsCloseCode=code;});
   ws.on('error',()=>{ wsErrors++; });
   ws.on('message',bytes=>{
-    for (const line of bytes.toString().split('\n').filter(Boolean)) {
-      const value=JSON.parse(line), hash=value.data?.packetHash;
-      if (value.type==='packet' && expected.has(hash)) seen.add(hash);
-    }
+    try {
+      for (const line of bytes.toString().split('\n').filter(Boolean)) {
+        const value=JSON.parse(line), hash=value.data?.packetHash;
+        if (value.type==='packet' && expected.has(hash)) seen.add(hash);
+      }
+    } catch {wsErrors++;}
   });
-  await new Promise<void>((resolve,reject)=>{
-    const deadline=setTimeout(()=>reject(new Error('WebSocket did not open')),15_000);
-    ws!.once('open',()=>{clearTimeout(deadline);resolve();});
-    ws!.once('error',error=>{clearTimeout(deadline);reject(error);});
-  });
+  await waitForInitialState(ws);
   const started=performance.now();
   let lastBackground=0, metricsFailures=0;
   const readBurst=async()=>{
@@ -105,12 +144,12 @@ try {
       lastBackground=performance.now()-started;
     }
     // Eight total HTTP slots, including background work; no overlapping bursts.
-    await Promise.all(selected.map(async ([name,route])=>{
+    await Promise.all(selected.map(async ([name,route],slot)=>{
       const at=performance.now(); let status=0,bytes=0,entries: number|null=null;
       try {
-        const response=await fetch(new URL(route!,base),{signal:AbortSignal.timeout(15_000)});
+        const response=await readHttp(route!,slot);
         status=response.status;
-        const body=await response.arrayBuffer(); bytes=body.byteLength;
+        const body=response.body; bytes=body.byteLength;
         if (bytes>8*1024*1024) throw new Error('response budget exceeded');
         const value=JSON.parse(Buffer.from(body).toString());
         entries=Array.isArray(value)?value.length:Array.isArray(value?.nodes)?value.nodes.length:null;
@@ -124,20 +163,29 @@ try {
     } catch { metricsFailures++; }
   };
   timer=setInterval(()=>{ if (!readWork) readWork=readBurst().finally(()=>{readWork=undefined;}); },5000);
-  let acknowledgedMs=0,drained=false;
+  let acknowledgedMs=0,drained=false,auxiliaryAcknowledgements=0;
+  const auxiliaryController = new AbortController();
+  let auxiliaryWork: Promise<void> | undefined;
   try {
-    await replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1']);
+    auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
+      .then(sent => { auxiliaryAcknowledgements = sent; }) : undefined;
+    await Promise.all([auxiliaryWork,
+      replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
+        '--envelope-format',envelopeFormat])]);
     acknowledgedMs=performance.now()-started;
     const deadline=Date.now()+120_000;
     while (Date.now()<deadline) {
       const current=await metrics(), persisted=await counts();
-      if (persisted.packets-before.packets===count && current.get('meshcore_packet_batch_queue_depth')===0
+      if (persisted.packets-before.packets===expectedDeltas.packets && current.get('meshcore_packet_batch_queue_depth')===0
         && current.get('meshcore_mqtt_ingest_queue_depth')===0 && current.get('meshcore_mqtt_ingest_active')===0) {
         drained=true;break;
       }
       await wait(1000);
     }
-  } catch (error) { failure=error; }
+  } catch (error) {
+    failure=error; auxiliaryController.abort();
+    if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
+  }
   finally { clearInterval(timer);timer=undefined;await readWork; }
   const after=await counts(), afterMetrics=await metrics();
   const elapsedMs=performance.now()-started;
@@ -180,8 +228,9 @@ try {
     return {key,maximum,middleLow,finalLow,growth,plateau,withinBound:maximum<=1024*1024*1024};
   });
   const memoryPassed=memory.length===2&&memory.every(value=>value.plateau&&value.withinBound);
-  const passed=!failure&&drained&&Object.values(deltas).every(value=>value===count)
-    && failures.length===0 && metricsFailures===0 && wsErrors===0 && seen.size===count
+  const passed=!failure&&drained&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
+    && (!auxiliaryTraffic || auxiliaryAcknowledgements===auxiliaryTraffic.events.length)
+    && failures.length===0 && metricsFailures===0 && wsErrors===0 && wsUnexpectedCloses===0 && wsOpened && seen.size===count
     && badOutcomes.length===0 && dropped.length===0 && dedupMaximum<=50_000
     && cacheViolations.length===0 && memoryPassed
     && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
@@ -189,9 +238,14 @@ try {
   await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,
     commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
-    settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest},
-    elapsedMs,acknowledgedMs,drained,before,after,deltas,walBytes,walBytesPerPacket:walBytes/count,
-    wsPackets:seen.size,wsErrors,metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
+    settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
+      httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct'},
+    elapsedMs,acknowledgedMs,drained,before,after,deltas,expectedDeltas,
+    auxiliaryTraffic:auxiliaryTraffic?{seed:auxiliaryTraffic.seed,cycles:auxiliaryTraffic.cycles,
+      intervalMs:auxiliaryTraffic.intervalMs,expected:auxiliaryTraffic.expected,auxiliaryAcknowledgements}:null,
+    walBytes,walBytesPerPacket:walBytes/count,
+    wsPackets:seen.size,wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode},
+    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));

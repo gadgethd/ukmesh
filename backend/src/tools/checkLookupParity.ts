@@ -10,9 +10,11 @@ import { PUBLIC_MAP_ALLOWED_FIELDS } from '../nodes/publicMap.js';
 import { networkFilters } from '../platform/query/networkFilters.js';
 import { combinedTopologyRows } from '../repositories/networkAnalysis.js';
 import { assertLocalDatabaseUrl, requiredOption } from './sampleData.js';
+import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 
 const args=process.argv.slice(2), endpoint=process.env['DATABASE_URL']??'';
 assertLocalDatabaseUrl(endpoint);
+if (new URL(endpoint).pathname.startsWith('/lean_')) await assertOwnedLeanFixture(endpoint);
 const baseline=path.resolve(requiredOption(args,'baseline-source-root'));
 const output=path.resolve(requiredOption(args,'output'));
 const oldModule=await import(pathToFileURL(path.join(baseline,'repositories/nodes.ts')).href);
