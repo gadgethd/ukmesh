@@ -438,3 +438,26 @@ parsing is avoided, while every response is checked for byte identity.
 
 These changes require independent review and fresh qualification. They do not
 clear any previous performance, permission-oracle or diagnostic failure.
+
+## Request slots own their sockets and settle before teardown
+
+The incomplete e8 10x comparison failed in the fourth, baseline window with
+ECONNRESET during regional reads. No request-level socket receipt exists, so
+that connection's exact cause is unproved. The installed Node26 Agent source
+nevertheless exposes a concrete lifetime defect: a custom keep-alive agent
+with no positive timeout ignores the server's shorter Keep-Alive hint because
+its default zero timeout wins. The 128 rotating clients can retain free sockets
+past the loopback server's advertised lifetime during slow baseline cases.
+The live 43-service stack passed its closing guard; this is not evidence that
+an application service restarted or that any performance gate passed.
+
+The request fleet owns a finite free-socket lifetime that honors server hints,
+while each active request retains its existing 30-second timeout. Separately,
+Promise.all currently lets one failed request unwind the trial and close its
+server and database while the other request loops are still active. The batch
+owner must stop admitting work on the first error, await every active slot,
+and then rethrow that first error before its existing cleanup. No retry,
+sample selection, timer/count change or failure-to-success conversion is
+allowed. Add equivalent real local HTTP and concurrent-failure coverage before
+changing these ownership boundaries. Preserve the failed execution unchanged;
+new matched measurements must use the same corrected client for both sources.

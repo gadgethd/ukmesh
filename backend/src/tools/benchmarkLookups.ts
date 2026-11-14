@@ -16,6 +16,7 @@ import { LookupResponseVerifier, LOOKUP_RESPONSE_VALIDATION_LIMITS } from './loo
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import { lookupSourceIdentity } from './lookupSource.js';
 import { LookupTimeline } from './lookupTimeline.js';
+import { createLookupAgents, runLookupSamples, setLookupRequestDeadline } from './lookupHttpTransport.js';
 
 const args = process.argv.slice(2);
 const { source, output, samples, concurrency, trials, cache, budgetMs } = lookupBenchmarkOptions(args);
@@ -77,8 +78,7 @@ await withLookupSource(source, async (load, runtime) => {
   };
   // Many real loopback clients keep the deployed per-client rate limits intact.
   // They share eight active request slots, rather than raising any server limits.
-  const agents = Array.from({ length: 128 }, (_, index) => new http.Agent({ keepAlive: true,
-    maxSockets: 1, localAddress: `127.0.1.${index + 1}` }));
+  const agents = createLookupAgents();
   type Case = { name: string; route: string; expected?: number; populated?: boolean };
   type LookupResult = { trial: number; name: string; samples: number; p50Ms: number; p95Ms: number; p99Ms: number;
     bytes: number; entries: number | null; digests: string[]; dataDigests: string[] };
@@ -103,7 +103,7 @@ await withLookupSource(source, async (load, runtime) => {
           } catch (error) { reject(error); }
         });
       });
-      req.setTimeout(30_000, () => req.destroy(new Error('request timed out')));
+      setLookupRequestDeadline(req);
       req.on('error', reject);
     });
   }
@@ -190,14 +190,11 @@ await withLookupSource(source, async (load, runtime) => {
           await timeline.span({ phase: 'warmup', trial: trial + 1, case: testCase.name }, async () => {
             for (let warmup = 0; warmup < 3; warmup++) await request(port, testCase);
           });
-          const results: Awaited<ReturnType<typeof request>>[] = [];
-          let next = 0;
-          await timeline.span({ phase: 'samples', trial: trial + 1, case: testCase.name }, () => Promise.all(Array.from({ length: concurrency }, async () => {
-            while (next++ < samples) {
+          const results = await timeline.span({ phase: 'samples', trial: trial + 1, case: testCase.name },
+            () => runLookupSamples(samples, concurrency, () => {
               if (cache === 'miss') { nodeLinksCache.clear(); inferredNodesCache.clear(); }
-              results.push(await request(port, testCase));
-            }
-          })));
+              return request(port, testCase);
+            }));
           const result = { trial: trial + 1, name: testCase.name, samples: results.length,
             p50Ms: percentile(results.map(row => row.ms), .5), p95Ms: percentile(results.map(row => row.ms), .95),
             p99Ms: percentile(results.map(row => row.ms), .99), bytes: results[0]!.bytes,
