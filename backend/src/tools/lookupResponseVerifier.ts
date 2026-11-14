@@ -2,12 +2,15 @@ import { fileURLToPath } from 'node:url';
 import { Worker } from 'node:worker_threads';
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import type { LookupResponseEvidence, LookupResponseSpec } from './lookupResponseBody.js';
+import { LOOKUP_RESPONSE_MEMO_COUNTER_NAMES, LOOKUP_RESPONSE_MEMO_MAX_ENTRIES } from './lookupResponseMemo.js';
+import type { LookupResponseMemoStatistics } from './lookupResponseMemo.js';
 
 type Pending = { resolve: (value: LookupResponseEvidence) => void; reject: (error: Error) => void;
   deadline: ReturnType<typeof setTimeout> };
 
 export const LOOKUP_RESPONSE_VALIDATION_LIMITS = Object.freeze({
   workerCount: 1, maxPending: 8, maxBytes: LOOKUP_RESPONSE_MAX_BYTES, timeoutMs: 30_000,
+  memoMaxEntries: LOOKUP_RESPONSE_MEMO_MAX_ENTRIES,
   resourceLimits: Object.freeze({ maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 16, stackSizeMb: 4 }),
 });
 
@@ -18,6 +21,8 @@ export class LookupResponseVerifier {
   private sequence = 0;
   private failure: Error | undefined;
   private termination: Promise<number> | undefined;
+  private statisticsPending: { id: number; resolve: (value: LookupResponseMemoStatistics) => void;
+    reject: (error: Error) => void; deadline: ReturnType<typeof setTimeout> } | undefined;
 
   constructor(worker?: Worker) {
     const source = fileURLToPath(import.meta.url).endsWith('.ts');
@@ -32,7 +37,22 @@ export class LookupResponseVerifier {
         || ('error' in message && message.error !== undefined && typeof message.error !== 'string')) {
         this.fail(new Error('lookup response worker returned a malformed reply')); return;
       }
-      const reply = message as { id: number; error?: string; result?: LookupResponseEvidence };
+      const reply = message as { id: number; error?: string; result?: LookupResponseEvidence;
+        statistics?: LookupResponseMemoStatistics };
+      if (reply.id === this.statisticsPending?.id) {
+        const job = this.statisticsPending; this.statisticsPending = undefined; clearTimeout(job.deadline);
+        if (reply.error) { job.reject(new Error(reply.error)); return; }
+        const stats = reply.statistics;
+        if (!stats || LOOKUP_RESPONSE_MEMO_COUNTER_NAMES.some(name => !Number.isSafeInteger(stats[name]) || stats[name] < 0)
+          || stats.entries > LOOKUP_RESPONSE_MEMO_MAX_ENTRIES || stats.maxEntries > LOOKUP_RESPONSE_MEMO_MAX_ENTRIES
+          || stats.entries > stats.maxEntries || stats.freshHashes > stats.calls
+          || stats.hits + stats.misses > stats.calls || stats.fullValidations !== stats.misses
+          || stats.errors > stats.calls || stats.evictions > stats.misses) {
+          const error = new Error('lookup response worker returned invalid statistics');
+          job.reject(error); this.fail(error); return;
+        }
+        job.resolve({ ...stats }); return;
+      }
       const job = this.pending.get(reply.id);
       if (!job) { this.fail(new Error('lookup response worker returned an unknown job')); return; }
       this.pending.delete(reply.id); clearTimeout(job.deadline);
@@ -51,6 +71,7 @@ export class LookupResponseVerifier {
 
   verify(body: Buffer, spec: LookupResponseSpec): Promise<LookupResponseEvidence> {
     if (this.failure) return Promise.reject(this.failure);
+    if (this.statisticsPending) return Promise.reject(new Error('lookup response statistics are in progress'));
     if (body.byteLength > LOOKUP_RESPONSE_MAX_BYTES) return Promise.reject(new Error('response byte budget exceeded'));
     if (this.pending.size >= LOOKUP_RESPONSE_VALIDATION_LIMITS.maxPending) return Promise.reject(new Error('lookup response validation queue is full'));
     const id = ++this.sequence;
@@ -66,11 +87,28 @@ export class LookupResponseVerifier {
     });
   }
 
+  /** Collect counters after all timed requests, without extra per-response IPC. */
+  readStatistics(): Promise<LookupResponseMemoStatistics> {
+    if (this.failure) return Promise.reject(this.failure);
+    if (this.pending.size || this.statisticsPending) return Promise.reject(new Error('lookup response statistics require an idle verifier'));
+    const id = ++this.sequence;
+    return new Promise((resolve, reject) => {
+      const deadline = setTimeout(() => this.fail(new Error('lookup response statistics deadline exceeded')),
+        LOOKUP_RESPONSE_VALIDATION_LIMITS.timeoutMs);
+      this.statisticsPending = { id, resolve, reject, deadline };
+      try { this.worker.postMessage({ id, command: 'statistics' }); }
+      catch (error) { this.fail(error instanceof Error ? error : new Error('lookup response statistics submission failed')); }
+    });
+  }
+
   private fail(error: Error): void {
     if (this.failure) return;
     this.failure = error;
     for (const job of this.pending.values()) { clearTimeout(job.deadline); job.reject(error); }
     this.pending.clear();
+    if (this.statisticsPending) {
+      clearTimeout(this.statisticsPending.deadline); this.statisticsPending.reject(error); this.statisticsPending = undefined;
+    }
     void this.terminate().catch(() => undefined);
   }
 

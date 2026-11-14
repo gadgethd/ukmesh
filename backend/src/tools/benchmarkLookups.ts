@@ -209,7 +209,8 @@ await withLookupSource(source, async (load, runtime) => {
       }));
     }
     const resources = { wallMs: performance.now() - resourceStarted, cpuMicros: process.cpuUsage(cpuBefore),
-      memory: process.memoryUsage(), note: 'Handler and loopback HTTP timing share this process; one bounded worker validates each completed response. SQL plans exclude this overhead.' };
+      memory: process.memoryUsage(), responseValidation: await verifier.readStatistics(),
+      note: 'Handler and loopback HTTP timing share this process; one bounded worker validates each completed response. Validation counters are collected after timing. SQL plans exclude this overhead.' };
     const plans = [];
     // Explain outside request timing. These are the real SQL strings and binds.
     if (args.includes('--plans')) for (const item of [...captured.values()].sort((a, b) => b.totalMs - a.totalMs)) {

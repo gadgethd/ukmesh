@@ -69,10 +69,53 @@ test('at most eight queued validations and idempotent close rejects every outsta
   const verifier = new LookupResponseVerifier(worker);
   const pending = Array.from({ length: 8 }, () => verifier.verify(Buffer.from('[1]'), spec).then(() => false, () => true));
   await assert.rejects(verifier.verify(Buffer.from('[1]'), spec), /queue is full/);
+  await assert.rejects(verifier.readStatistics(), /idle verifier/);
   await verifier.close(); await verifier.close();
   assert.deepEqual(await Promise.all(pending), Array(8).fill(true));
   assert.equal(worker.threadId, -1);
   await assert.rejects(verifier.verify(Buffer.from('[1]'), spec), /closed/);
+});
+
+test('real worker reports copied memo counters after requests without retaining response bodies', async () => {
+  const verifier = new LookupResponseVerifier();
+  try {
+    const raw = '{"nodes":[1],"page":{"snapshot":"one"}}';
+    const results = await Promise.all(Array.from({ length: 8 }, () => verifier.verify(Buffer.from(raw), spec)));
+    for (const result of results) assert.deepEqual(result, results[0]);
+    const stats = await verifier.readStatistics();
+    assert.deepEqual(stats, { calls: 8, freshHashes: 8, hits: 7, misses: 1,
+      evictions: 0, fullValidations: 1, errors: 0, entries: 1, maxEntries: 1 });
+    stats.calls = 0; assert.equal((await verifier.readStatistics()).calls, 8);
+    await verifier.verify(Buffer.from(raw.replace('one', 'two')), spec);
+    assert.equal((await verifier.readStatistics()).fullValidations, 2);
+  } finally { await verifier.close(); }
+});
+
+test('malformed statistics fail the worker protocol instead of entering native evidence', async () => {
+  const worker = new Worker("const {parentPort}=require('node:worker_threads');parentPort.on('message',({id})=>parentPort.postMessage({id,statistics:{calls:1,entries:9}}));", { eval: true });
+  const verifier = new LookupResponseVerifier(worker);
+  try {
+    await assert.rejects(verifier.readStatistics(), /invalid statistics/);
+    await assert.rejects(verifier.verify(Buffer.from('[1]'), spec), /invalid statistics/);
+  } finally { await verifier.close(); }
+  assert.equal(worker.threadId, -1);
+});
+
+test('silent statistics requests retain the existing deadline and reject on worker shutdown', async t => {
+  const worker = new Worker("require('node:worker_threads').parentPort.on('message',()=>{});", { eval: true });
+  const verifier = new LookupResponseVerifier(worker);
+  const realSetTimeout = globalThis.setTimeout;
+  let expire: (() => void) | undefined;
+  t.mock.method(globalThis, 'setTimeout', (callback: () => void, milliseconds: number) => {
+    if (milliseconds === 30_000 && !expire) expire = callback;
+    return realSetTimeout(callback, milliseconds);
+  });
+  const pending = verifier.readStatistics();
+  const rejected = assert.rejects(pending, /statistics deadline exceeded/);
+  await assert.rejects(verifier.verify(Buffer.from('[1]'), spec), /statistics are in progress/);
+  try { assert.ok(expire); expire(); await rejected; }
+  finally { await verifier.close(); }
+  assert.equal(worker.threadId, -1);
 });
 
 test('malformed worker replies fail under the owner and reject all queued responses', async () => {
