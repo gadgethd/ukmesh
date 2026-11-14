@@ -44,8 +44,7 @@ test('bounded markers refuse excess work and incomplete or invalid clocks', asyn
   release(); await work; assert.equal(open.finish(true).events.length, 2);
   assert.throws(() => new LookupTimeline({ utc: () => 'invalid', monotonic: () => 0 }), /clock/);
   let monotonic = 100;
-  const reversed = new LookupTimeline({ utc: () => new Date().toISOString(), monotonic: () => monotonic-- });
-  await assert.rejects(reversed.span({ phase: 'invalid' }, async () => {}), /clock/);
+  assert.throws(() => new LookupTimeline({ utc: () => new Date().toISOString(), monotonic: () => monotonic-- }), /clock/);
 });
 
 test('native setup failure flushes real partial evidence and refuses to overwrite an older timeline', async t => {
@@ -69,4 +68,26 @@ test('native setup failure flushes real partial evidence and refuses to overwrit
   assert.ok(evidence.durationMs >= evidence.events[1].offsetMs);
   await assert.rejects(run(), /EEXIST/);
   assert.equal(await readFile(path.join(output, 'timeline.json'), 'utf8'), before);
+});
+
+
+test('origin and event preemption remain explicit monotonic brackets around actual UTC reads', async () => {
+  let mono = 100, captures = 0;
+  const epoch = Date.parse('2026-11-14T10:00:00.000Z');
+  const timeline = new LookupTimeline({ monotonic: () => mono, utc: () => {
+    const at = new Date(epoch + Math.floor(mono - 100)).toISOString();
+    if (captures === 0) mono += 2.4;
+    if (captures === 2) mono += 8;
+    captures++; return at;
+  } });
+  await timeline.span({ phase: 'case', trial: 1, case: 'map-page' }, async () => { mono += 10; });
+  const evidence = timeline.finish(true);
+  assert.equal(evidence.version, 2);
+  assert.equal(evidence.originClock.monotonicBeforeMs, 100);
+  assert.ok(Math.abs(evidence.originClock.monotonicAfterMs - 102.4) < 1e-9);
+  assert.equal(evidence.originClock.at, '2026-11-14T10:00:00.000Z');
+  assert.equal(evidence.events[1]!.clock.at, '2026-11-14T10:00:00.012Z');
+  assert.equal(evidence.events[1]!.clock.monotonicAfterMs - evidence.events[1]!.clock.monotonicBeforeMs, 8);
+  assert.equal(evidence.finishedClock.at, '2026-11-14T10:00:00.020Z');
+  assert.equal(evidence.events[1]!.offsetMs, evidence.events[1]!.clock.monotonicAfterMs - evidence.originClock.monotonicAfterMs);
 });

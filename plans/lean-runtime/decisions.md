@@ -351,3 +351,23 @@ C1/C8 slots, cache behavior, response verifier, worker budgets and all-sample
 companion observations; it must not infer uncollected intervals, trim samples or
 rewrite the failed02685ec aggregate. A prospective same-source A/A diagnostic
 belongs in a unique run and requires its own reviewed, frozen execution window.
+
+## Clock captures own their uncertainty
+
+The first same-source control stopped invalid before its second label: the
+native origin recorded UTC before its first monotonic reading, leaving an
+unmeasured initial gap. The first boundary already differed by1.896ms and later
+UTC-minus-monotonic differences occupied a0.991ms range. This does not establish
+a system clock change. A fixed2ms join guard assumed a capture cost the tool had
+never measured; the failed control and original performance failure stay intact.
+
+Bracket every actual UTC read, including origin and final capture, with immediate
+monotonic readings. Preserve both endpoints and the unmodified UTC value. Native
+Date readings have1ms quantization: for a UTC millisecond W and monotonic bracket
+[B,A], a consistent UTC-minus-monotonic offset lies in[W-A,W+1-B). A causal join
+requires a nonempty intersection across all captures, ordered monotonic brackets
+and nondecreasing actual UTC. Retain bracket uncertainty and crossing intervals;
+never shift timestamps, raise a tolerance, infer missing boundaries or omit
+samples. HTTP request clocks and every workload/acceptance gate remain unchanged.
+A new prospective protocol records this sampling correction before one fresh
+same-source control; it cannot retroactively validate the first attempt.
