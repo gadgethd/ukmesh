@@ -1,1 +1,1 @@
-{"maxStartSkewMs":100,"minSnapshotFreshMs":300000,"barrierTimeoutMs":45000,"trials":3,"statsSamples":20,"exportSamples":1,"clients":8,"httpConcurrency":1,"exportSpacingMs":13000,"responseDeadlineMs":30000}
+{"maxStartSkewMs":100,"minSnapshotFreshMs":300000,"barrierTimeoutMs":45000,"trials":3,"statsSamples":20,"exportSamples":20,"clients":8,"httpConcurrency":1,"exportSpacingMs":13000,"responseDeadlineMs":30000}

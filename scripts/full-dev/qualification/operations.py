@@ -101,9 +101,11 @@ def validate_operations(runs: list[dict], expected: dict) -> None:
                         or state["ageMs"] > snapshot["maxAgeMs"]:
                     raise ValueError("chart snapshot freshness or generation was not proved")
         checks = row.get("identity_checks", [])
-        if len(checks) != 3 or {item.get("trial") for item in checks} != {0, 1, 2} or not all(item.get("passed") is True for item in checks):
+        if len(checks) != PAIR_POLICY['trials'] or {item.get("trial") for item in checks} != set(range(PAIR_POLICY['trials'])) \
+                or not all(item.get("passed") is True and item.get('csvSamples') == PAIR_POLICY['exportSamples']
+                           and item.get('geojsonSamples') == PAIR_POLICY['exportSamples'] for item in checks):
             raise ValueError("CSV/GeoJSON identity parity was not proved")
-        for trial in range(3):
+        for trial in range(PAIR_POLICY['trials']):
             identities = {item["identityDigest"] for item in records if item["trial"] == trial and item["name"].startswith("nodes-")}
             if len(identities) != 1:
                 raise ValueError("CSV/GeoJSON export identity sets differ")
@@ -111,8 +113,11 @@ def validate_operations(runs: list[dict], expected: dict) -> None:
         ordered=sorted(records,key=lambda item:timestamp(item['startedAt']))
         if any(timestamp(later['startedAt'])<timestamp(earlier['finishedAt']) for earlier,later in zip(ordered,ordered[1:])):
             raise ValueError('operation HTTP requests overlapped instead of C1')
-        if any(timestamp(later['startedAt'])-timestamp(earlier['finishedAt'])<PAIR_POLICY['exportSpacingMs'] for earlier,later in zip(exports,exports[1:])):
-            raise ValueError('operation export spacing fell below13 seconds')
+        for actor in actors:
+            actor_exports=[item for item in exports if item['actor']==actor]
+            if any(timestamp(later['startedAt'])-timestamp(earlier['finishedAt'])<PAIR_POLICY['exportSpacingMs']
+                   for earlier,later in zip(actor_exports,actor_exports[1:])):
+                raise ValueError('operation export spacing for a source IP fell below13 seconds')
         first=next(item for item in records if item['trial']==0 and item['name']=='summary')
         if timestamp(snapshot['generatedAt'])+snapshot['maxAgeMs']-timestamp(first['paired']['releaseAt'])<PAIR_POLICY['minSnapshotFreshMs']:
             raise ValueError('operation pair began without five minutes of chart freshness')

@@ -461,3 +461,24 @@ sample selection, timer/count change or failure-to-success conversion is
 allowed. Add equivalent real local HTTP and concurrent-failure coverage before
 changing these ownership boundaries. Preserve the failed execution unchanged;
 new matched measurements must use the same corrected client for both sources.
+
+## Export repetitions and pacing belong to the measured client
+
+The actual 1x CSV comparison has one observation in each of three trials:
+baseline90.42/79.81/82.06ms and current126.81/102.12/69.09ms. Its median
+fails the unchanged10% gate. The24 normalized CSV application dependencies are
+byte-identical; this does not invalidate the failed observation or prove its
+cause. Three singleton samples provide little protection against environmental
+variation, unlike the20 samples already used for statistics in each trial.
+
+The existing eight serial clients each have their own source IP and deployed
+five-per-minute export bucket. A global13-second delay needlessly couples
+independent clients. Use20 export samples per trial, retaining three trials,
+the same median rule and every raw result. The next actual source IP owns its
+13-second cooldown, shared by CSV and GeoJSON across all trials. Keep one HTTP
+request active, eight IPs,30-second deadlines, exact paired clocks/data and
+chart-freshness guards. Validate every export identity, not only the first.
+
+Independent review approved this prospective measurement repair before edits.
+It requires focused rate/lifecycle/data tests and fresh complete comparisons;
+no application code, production limit, threshold or old evidence changes.

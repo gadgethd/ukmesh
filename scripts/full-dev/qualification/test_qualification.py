@@ -769,11 +769,14 @@ class OperationSourceEvidence(unittest.TestCase):
                 token=('a' if scale=='1x' else 'b')*32
                 actors=[f"127.0.{6 if label=='baseline' else 7}.{index+1}" for index in range(8)]
                 snapshot={'generatedAt':'2026-11-14T00:00:00Z','visibilityGeneration':7,'maxAgeMs':1800000}
-                records=[]
+                records=[];next_start=0;export_done={}
                 for index,(trial,name,sample) in enumerate(operations.operation_steps()):
-                    started=dt.datetime(2026,11,14,0,10,tzinfo=dt.timezone.utc)+dt.timedelta(
-                        seconds=trial*40+{'summary':0,'charts':5,'nodes-csv':10,'nodes-geojson':24}[name]+sample*.2)
                     export=name.startswith('nodes-')
+                    actor=actors[index%8]
+                    if export:next_start=max(next_start,export_done.get(actor,-13000)+13000)
+                    started=dt.datetime(2026,11,14,0,10,tzinfo=dt.timezone.utc)+dt.timedelta(milliseconds=next_start)
+                    if export:export_done[actor]=next_start+100
+                    next_start+=200
                     record={'name':name,'trial':trial,'sample':sample,'actor':actors[index%8],
                         'passed':True,'status':200,'bytes':100,'ms':100,'digest':'c'*64,'dataDigest':'d'*64,
                         'entries':2 if export else None,'identityDigest':'e'*64 if export else None,
@@ -794,7 +797,8 @@ class OperationSourceEvidence(unittest.TestCase):
                     'pair':{'token':token,'label':label},'context_before':{},'context':{},'source_settings_fixture_stable':True,
                     'settings':{**settings,'deadlineMs':30000,'maxResponseBytes':8388608,'readOnly':True},
                     'actors':actors,'executor_profile':{name:{'max':maximum} for name,maximum in (('pool',8),('analyticsPool',2),('ingestPool',2))},
-                    'chart_snapshot':snapshot,'records':records,'identity_checks':[{'trial':trial,'passed':True} for trial in range(3)]})
+                    'chart_snapshot':snapshot,'records':records,'identity_checks':[{'trial':trial,'passed':True,
+                        'csvSamples':operations.PAIR_POLICY['exportSamples'],'geojsonSamples':operations.PAIR_POLICY['exportSamples']} for trial in range(3)]})
         return runs,sources
 
     def test_operations_require_actual_baseline_bytes_complete_trials_identity_and_data_parity(self):
@@ -848,11 +852,10 @@ class OperationSourceEvidence(unittest.TestCase):
 
     def test_all_twenty_samples_and_cold_response_remain_in_trial_medians(self):
         runs,sources=self.records()
-        self.assertEqual(len(runs[0]['records']),126)
+        self.assertEqual(len(runs[0]['records']),240)
         for row in runs:
             for item in row['records']:
-                if item['name'] not in ('summary','charts'):continue
-                item['ms']=110 if item['trial']==0 and item['sample']==0 else (10 if row['label']=='baseline' else 10.5)
+                item['ms']=90 if item['trial']==0 and item['sample']==0 else (10 if row['label']=='baseline' else 10.5)
                 item['transport']['endMs']=item['ms']
                 item['transport']['headersMs']=min(9,item['ms'])
                 item['finishedAt']=(dt.datetime.fromisoformat(item['startedAt'])+dt.timedelta(milliseconds=item['ms'])).isoformat()
@@ -861,9 +864,14 @@ class OperationSourceEvidence(unittest.TestCase):
         summary=next(item for item in result['checks'] if item['name']=='1x:summary')
         self.assertEqual(summary['baseline_trial_medians_ms'],[10,10,10])
         self.assertEqual(summary['candidate_trial_medians_ms'],[10.5,10.5,10.5])
-        self.assertEqual(summary['baseline_ms'][0],110)
+        self.assertEqual(summary['baseline_ms'][0],90)
         self.assertEqual(len(summary['paired_trials']),60)
-        for mutation in ('missing-sample','duplicate-sample','sample-hash','actor','one-actor','overlap','telemetry','nonfinite-cpu','pool-profile'):
+        exports=next(item for item in result['checks'] if item['name']=='1x:nodes-csv')
+        self.assertEqual(exports['baseline_trial_medians_ms'],[10,10,10])
+        self.assertEqual(exports['candidate_trial_medians_ms'],[10.5,10.5,10.5])
+        self.assertEqual(len(exports['baseline_ms']),60)
+        self.assertEqual(len(exports['paired_trials']),60)
+        for mutation in ('missing-sample','duplicate-sample','sample-hash','actor','one-actor','overlap','telemetry','nonfinite-cpu','pool-profile','regression'):
             changed=copy.deepcopy(runs)
             if mutation=='missing-sample':changed[0]['records'].pop(19)
             elif mutation=='duplicate-sample':changed[0]['records'][19]=changed[0]['records'][18]
@@ -874,8 +882,16 @@ class OperationSourceEvidence(unittest.TestCase):
             elif mutation=='overlap':changed[1]['records'][19]['startedAt']=changed[1]['records'][18]['startedAt']
             elif mutation=='telemetry':changed[1]['records'][19]['diagnostics']['database'].pop()
             elif mutation=='nonfinite-cpu':changed[1]['records'][19]['diagnostics']['cpu']['user']=float('inf')
-            else:changed[1]['executor_profile']['pool']['max']=10
-            self.assertFalse(operations.comparison(changed,sources)['passed'],mutation)
+            elif mutation=='pool-profile':changed[1]['executor_profile']['pool']['max']=10
+            else:
+                for item in changed[1]['records']:
+                    item['ms']=item['transport']['endMs']=11.1
+                    item['finishedAt']=(dt.datetime.fromisoformat(item['startedAt'])+dt.timedelta(milliseconds=11.1)).isoformat()
+            result=operations.comparison(changed,sources)
+            self.assertFalse(result['passed'],mutation)
+            if mutation=='regression':
+                self.assertEqual(result['missing'],[])
+                self.assertTrue(all(not row['passed'] and row['data_parity'] for row in result['checks'] if row['name'].startswith('1x:')))
 
     def test_pair_start_skew_keeps_the_exact_hundred_millisecond_boundary(self):
         for skew,allowed in ((100,True),(101,False)):
@@ -884,6 +900,39 @@ class OperationSourceEvidence(unittest.TestCase):
                 record['startedAt']=(dt.datetime.fromisoformat(record['startedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
                 record['finishedAt']=(dt.datetime.fromisoformat(record['finishedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
             self.assertEqual(operations.comparison(runs,sources)['passed'],allowed)
+
+    def test_exports_use_each_actual_actors_shared_cooldown_at_the_exact_boundary(self):
+        runs,sources=self.records()
+        self.assertTrue(operations.comparison(runs,sources)['passed'])
+        exports=[item for item in runs[0]['records'] if item['name'].startswith('nodes-')]
+        self.assertTrue(any(operations.timestamp(later['startedAt'])-operations.timestamp(earlier['finishedAt'])<13000
+                            for earlier,later in zip(exports,exports[1:])), 'different actors need no global cooldown')
+        for transition in ('same-format','csv-to-geojson','next-trial'):
+            changed=copy.deepcopy(runs[0])
+            actor_exports=[item for item in changed['records'] if item['actor']==changed['actors'][0] and item['name'].startswith('nodes-')]
+            earlier,later=next((left,right) for left,right in zip(actor_exports,actor_exports[1:])
+                if (transition=='same-format' and left['name']==right['name'] and left['trial']==right['trial'])
+                or (transition=='csv-to-geojson' and left['name']=='nodes-csv' and right['name']=='nodes-geojson')
+                or (transition=='next-trial' and left['trial']!=right['trial']))
+            self.assertEqual(operations.timestamp(later['startedAt'])-operations.timestamp(earlier['finishedAt']),13000)
+            started=dt.datetime.fromisoformat(later['startedAt'])-dt.timedelta(milliseconds=1)
+            later['startedAt']=started.isoformat();later['finishedAt']=(started+dt.timedelta(milliseconds=100)).isoformat()
+            later['paired']['readyAt']=(started-dt.timedelta(milliseconds=10)).isoformat()
+            later['paired']['releaseAt']=(started-dt.timedelta(milliseconds=1)).isoformat()
+            with self.assertRaisesRegex(ValueError,'source IP'):
+                operations.validate_operations([changed],sources)
+
+    def test_every_export_sample_must_retain_complete_format_and_identity_proofs(self):
+        runs,sources=self.records()
+        for fault in ('late-csv','late-geojson','missing','duplicate','count'):
+            changed=copy.deepcopy(runs)
+            index=next(index for index,item in enumerate(changed[0]['records'])
+                       if item['trial']==2 and item['name']==('nodes-csv' if fault=='late-csv' else 'nodes-geojson') and item['sample']==19)
+            if fault=='missing':changed[0]['records'].pop(index)
+            elif fault=='duplicate':changed[0]['records'][index]=changed[0]['records'][index-1]
+            elif fault=='count':changed[0]['identity_checks'][2]['geojsonSamples']=1
+            else:changed[0]['records'][index]['identityDigest']='f'*64
+            self.assertFalse(operations.comparison(changed,sources)['passed'],fault)
 
     def test_one_exited_process_aborts_its_waiting_peer_and_releases_shared_readers(self):
         _,sources=self.records()
@@ -933,8 +982,8 @@ class OperationSourceEvidence(unittest.TestCase):
                 for future in futures.values():future.done.return_value=False
                 if mutation=='none':
                     releases=operations.release_pair(directory,token,sources,futures)
-                    self.assertEqual(len(releases),126)
-                    self.assertEqual(len(list(directory.glob('*.release.json'))),126)
+                    self.assertEqual(len(releases),240)
+                    self.assertEqual(len(list(directory.glob('*.release.json'))),240)
                 else:
                     with self.assertRaises(ValueError):operations.release_pair(directory,token,sources,futures)
                     self.assertFalse(list(directory.glob('*.release.json')))

@@ -12,6 +12,7 @@ import { OPERATION_CASES, readOperation, validateOperationResponse } from './ope
 import type { OperationSnapshot } from './operationResponse.js';
 import { createOperationPair, operationSamples, OPERATION_PAIR_POLICY as policy } from './operationPair.js';
 import { metricDifferences } from './operationDiagnostics.js';
+import { createExportPacer, exportIdentityChecks } from './operationExports.js';
 
 const args = process.argv.slice(2), source = path.resolve(option(args, 'source-root') ?? 'src');
 const output = path.resolve(option(args, 'output') ?? '../plans/database-lookups/operations');
@@ -32,19 +33,18 @@ try {
       chartSnapshot = snapshot;
       executorProfile = diagnostics.profile;
       const agents = actors.map(localAddress => new http.Agent({ keepAlive: true, maxSockets: 1, localAddress }));
-      let lastExport = -Infinity, requestId = 0;
+      const exportPacer = createExportPacer(actors);
+      let requestId = 0;
       try {
         for (let trial = 0; trial < policy.trials; trial++) {
           for (const definition of OPERATION_CASES) {
            for (let sample = 0; sample < operationSamples(definition.name); sample++) {
-            if (definition.format === 'csv' || definition.format === 'geojson') {
-              const delay = policy.exportSpacingMs - (performance.now() - lastExport);
-              if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
-            }
+            const actor = requestId++ % actors.length;
+            const exporting = definition.format === 'csv' || definition.format === 'geojson';
+            if (exporting) await exportPacer.wait(actors[actor]);
             const metricsBefore = await diagnostics.metrics();
             const poolsBefore = diagnostics.pools();
             const paired = pair ? await pair.wait(trial, definition.name, snapshot, sample) : undefined;
-            const actor = requestId++ % actors.length;
             const cpuBefore = process.cpuUsage(), loopBefore = performance.eventLoopUtilization();
             const started = performance.now();
             const record: Record<string, unknown> = { name: definition.name, trial, sample, actor: actors[actor], passed: false,
@@ -67,7 +67,7 @@ try {
             }
             records.push(record);
             if (!record['passed']) throw new Error(`operation ${definition.name} failed; see retained response evidence`);
-            if (definition.format === 'csv' || definition.format === 'geojson') lastExport = performance.now();
+            if (exporting) exportPacer.complete(actors[actor]);
            }
           }
         }
@@ -76,11 +76,7 @@ try {
 } catch (error) { failure = error; }
 const after = await lookupSourceIdentity(source, sourceIdentity.revision);
 const sourceStable = JSON.stringify(sourceIdentity) === JSON.stringify(after);
-const identityChecks = Array.from({ length: policy.trials }, (_, trial) => {
-  const csv = records.find(row => row['trial'] === trial && row['name'] === 'nodes-csv');
-  const geo = records.find(row => row['trial'] === trial && row['name'] === 'nodes-geojson');
-  return { trial, passed: Boolean(csv?.['identityDigest']) && csv?.['identityDigest'] === geo?.['identityDigest'] };
-});
+const identityChecks = exportIdentityChecks(records);
 const passed = !failure && sourceStable && records.length === policy.trials * OPERATION_CASES.reduce((total, item) => total + operationSamples(item.name), 0) && records.every(row => row['passed'])
   && identityChecks.every(row => row.passed);
 await mkdir(output, { recursive: true });
