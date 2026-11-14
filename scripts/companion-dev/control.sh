@@ -87,7 +87,8 @@ for component in corescope beacon; do
   fi
 done
 COMPANION_WEB_SOURCE=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-revision)
-export COMPANION_WEB_SOURCE
+COMPANION_WEB_PUBLICATION=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-publication)
+export COMPANION_WEB_SOURCE COMPANION_WEB_PUBLICATION
 for setting in CORESCOPE:corescope.json BEACON:beacon.yaml WEB:nginx.conf; do
   name=${setting%%:*} file=${setting#*:}
   revision=$(sha256sum "$repo/scripts/companion-dev/$file")
@@ -147,7 +148,9 @@ if [[ $action == build || $action == start || $action == companions || ( $action
     "${compose[@]}" run --rm --no-deps web-build
     python3 "$repo/scripts/companion-dev/artifacts.py" publish-web "$web_hash"
   fi
-  export COMPANION_WEB_SOURCE=$web_hash
+  COMPANION_WEB_SOURCE=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-revision)
+  COMPANION_WEB_PUBLICATION=$(python3 "$repo/scripts/companion-dev/artifacts.py" web-publication)
+  export COMPANION_WEB_SOURCE COMPANION_WEB_PUBLICATION
 fi
 if [[ $action == build ]]; then exit 0; fi
 if [[ $action == start || $action == companions || ( $action == restart && $service == beacon* && $service != beacon-web ) ]]; then

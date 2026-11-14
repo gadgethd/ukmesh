@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import yaml
 
 HERE = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('build_inputs', HERE / 'source-hash.py')
@@ -63,7 +64,7 @@ root=Path.cwd(); args=sys.argv[1:]
 with (root/'calls.jsonl').open('a') as log:
     log.write(json.dumps({'args':args, 'revisions':{key:os.getenv(key) for key in
       ('COMPANION_CORESCOPE_SOURCE','COMPANION_BEACON_SOURCE','COMPANION_WEB_SOURCE',
-       'COMPANION_CORESCOPE_CONFIG','COMPANION_BEACON_CONFIG','COMPANION_WEB_CONFIG')}})+'\\n')
+       'COMPANION_WEB_PUBLICATION','COMPANION_CORESCOPE_CONFIG','COMPANION_BEACON_CONFIG','COMPANION_WEB_CONFIG')}})+'\\n')
 if 'run' in args and 'build' in args:
     component=args[-1]
     names=['beacon'] if component=='beacon' else ['corescope-server','corescope-ingestor']
@@ -74,7 +75,7 @@ if 'run' in args and 'web-build' in args:
     output=root/'plans/companion-dev/runtime/beacon-web.next'
     (output/'partial.js').write_text('partial asset')
     if (root/'fail-web').exists(): sys.exit(42)
-    (output/'index.html').write_text('complete new site')
+    (output/'index.html').write_text((root/'web-output').read_text() if (root/'web-output').exists() else 'complete new site')
 if 'ps' in args and 'beacon-migrate' in args: print('owned-migration-container')
 if 'logs' in args: print('retained migration output')
 if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exists() else 'exited:0')
@@ -94,6 +95,10 @@ if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exis
     def calls(self):
         return [json.loads(line) for line in (self.root / 'calls.jsonl').read_text().splitlines()]
 
+    def publication(self):
+        return subprocess.check_output(['python3', str(self.tools / 'artifacts.py'), 'web-publication'],
+            env={'PATH': os.environ['PATH'], 'HOME': str(self.root), 'LANG': 'C.UTF-8'}, text=True).strip()
+
     def test_web_restart_does_not_require_or_restart_unrelated_repositories(self):
         shutil.rmtree(self.root / 'third_party/corescope')
         (self.root / 'third_party/beacon-web/source.txt').write_text('changed web source')
@@ -108,9 +113,11 @@ if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exis
         self.assertIn('--force-recreate', starts[0]['args'])
         self.assertEqual(starts[0]['revisions']['COMPANION_BEACON_SOURCE'], self.revisions['beacon'])
         self.assertEqual(starts[0]['revisions']['COMPANION_CORESCOPE_SOURCE'], self.revisions['corescope'])
+        self.assertEqual(starts[0]['revisions']['COMPANION_WEB_PUBLICATION'], self.publication())
         self.assertEqual((self.state / 'beacon-web/index.html').read_text(), 'complete new site')
 
     def test_core_rebuild_replaces_both_processes_without_starting_beacon(self):
+        publication = self.publication()
         (self.root / 'third_party/corescope/source.txt').write_text('changed core source')
         result = self.run_control('restart', 'corescope-ingestor')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -119,6 +126,38 @@ if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exis
         starts = [row for row in calls if 'up' in row['args'] or 'restart' in row['args']]
         self.assertEqual(len(starts), 1)
         self.assertEqual(starts[0]['args'][-2:], ['corescope-ingestor', 'corescope'])
+        self.assertEqual(starts[0]['revisions']['COMPANION_WEB_PUBLICATION'], publication)
+
+    def test_repeated_identical_build_preserves_published_bind_mount(self):
+        result = self.run_control('build')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        active = self.state / 'beacon-web'
+        inode, index = active.stat().st_ino, (active / 'index.html').stat().st_ino
+        publication = self.publication()
+        result = self.run_control('build')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((active.stat().st_ino, (active / 'index.html').stat().st_ino), (inode, index))
+        self.assertEqual(self.publication(), publication)
+
+    def test_same_source_changed_output_changes_next_start_consumer_revision(self):
+        result = self.run_control('build')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.run_control('start')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        original = [row for row in self.calls() if 'up' in row['args']][-1]['revisions']
+        (self.root / 'web-output').write_text('different complete build from the same source')
+        result = self.run_control('build')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(self.publication(), original['COMPANION_WEB_PUBLICATION'])
+        result = self.run_control('start')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        current = [row for row in self.calls() if 'up' in row['args']][-1]['revisions']
+        self.assertEqual(current['COMPANION_WEB_SOURCE'], original['COMPANION_WEB_SOURCE'])
+        self.assertEqual(current['COMPANION_WEB_PUBLICATION'], self.publication())
+        self.assertNotEqual(current['COMPANION_WEB_PUBLICATION'], original['COMPANION_WEB_PUBLICATION'])
+        configuration = yaml.safe_load((HERE / 'compose.yml').read_text())
+        self.assertEqual(configuration['services']['beacon-web']['environment']['COMPANION_PUBLICATION_REVISION'],
+                         '${COMPANION_WEB_PUBLICATION:-unknown}')
 
     def test_failed_web_build_preserves_site_and_next_restart_recovers(self):
         (self.root / 'third_party/beacon-web/source.txt').write_text('changed web source')

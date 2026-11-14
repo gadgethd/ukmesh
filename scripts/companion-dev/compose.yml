@@ -161,6 +161,7 @@ services:
     image: ${APP_IMAGE:-ukmesh-full-app:local}
     environment:
       COMPANION_SOURCE_REVISION: ${COMPANION_WEB_SOURCE:-unknown}
+      COMPANION_PUBLICATION_REVISION: ${COMPANION_WEB_PUBLICATION:-unknown}
       COMPANION_CONFIG_REVISION: ${COMPANION_WEB_CONFIG:-unknown}
     ports: ["127.0.0.1:5175:8080"]
     volumes:
