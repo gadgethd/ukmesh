@@ -11,6 +11,13 @@
 - operations and edge: Mosquitto, TimescaleDB, Redis, Nginx/Anubis,
   Prometheus, Alertmanager, Grafana, Loki, Alloy, and bounded exporters.
 
+## Companion development repositories
+
+CoreScope, Beacon Server and Beacon Web are independent Git submodules under
+`third_party`. The optional [DEV launcher](companion-development.md) gives them
+separate storage and ports while sharing the local fixture MQTT broker with
+UKMesh. They are outside UKMesh's production Compose and release builds.
+
 ## HopReach boundary
 
 The complete HopReach v0.1.32 source is vendored at

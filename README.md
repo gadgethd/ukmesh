@@ -4,6 +4,9 @@ A real-time analytics platform for [MeshCore](https://meshcore.io) networks. It 
 
 ---
 
+For local development with CoreScope and Beacon, see
+[companion development](docs/companion-development.md).
+
 ## Local development
 
 With Node (see `.nvmrc`), npm, Docker Engine and Compose available, use the

@@ -1,0 +1,148 @@
+name: ukmesh-companions
+x-go: &go
+  image: golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea # 1.27-bookworm, native cgo
+  user: "${COMPANION_UID:-1000}:${COMPANION_GID:-1000}"
+  environment: &go-env
+    HOME: /tmp
+    GOCACHE: /cache/build
+    GOPATH: /cache/go
+    GOMAXPROCS: "2"
+    GOFLAGS: "-mod=readonly -p=2"
+  init: true
+services:
+  build:
+    <<: *go
+    profiles: [tools]
+    working_dir: /src
+    environment:
+      <<: *go-env
+      COMPANION_CORESCOPE_COMMIT: "${COMPANION_CORESCOPE_COMMIT:-unknown}"
+    entrypoint: [bash, /dev-tools/build.sh]
+    volumes:
+      - ../../third_party/corescope:/src/corescope:ro
+      - ../../third_party/beacon-server:/src/beacon-server:ro
+      - ../../plans/companion-dev/runtime/bin:/out
+      - ../../plans/companion-dev/go-cache:/cache/build
+      - ../../plans/companion-dev/go-mod:/cache/go
+      - .:/dev-tools:ro
+    mem_limit: 1200m
+  beacon-db:
+    image: postgres@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca # 16-bookworm
+    environment:
+      POSTGRES_USER: beacon_dev
+      POSTGRES_PASSWORD: local-companion-only
+      POSTGRES_DB: beacon_dev
+    ports: ["127.0.0.1:5435:5432"]
+    volumes: [beacon-db:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -h 127.0.0.1 -U beacon_dev -d beacon_dev"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+    mem_limit: 512m
+    shm_size: 128m
+  beacon-redis:
+    image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
+    command: [redis-server, --save, "", --appendonly, "no"]
+    healthcheck:
+      test: [CMD, redis-cli, ping]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+    mem_limit: 128m
+  corescope-ingestor:
+    <<: *go
+    volumes:
+      - ../../plans/companion-dev/runtime/bin:/bin/companions:ro
+      - ../../plans/companion-dev/runtime/corescope:/data
+      - ./corescope.json:/config/config.json:ro
+    # Absolute executable paths avoid PATH or inherited environment overrides.
+    entrypoint: [/bin/companions/corescope-ingestor, -config, /config/config.json]
+    command: []
+    networks: [default, sample]
+    healthcheck:
+      test: [CMD-SHELL, "test -s /data/analyzer.db"]
+      interval: 2s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    mem_limit: 384m
+    stop_grace_period: 30s
+  corescope:
+    <<: *go
+    entrypoint: [/bin/companions/corescope-server, -config-dir, /config, -public, /public]
+    command: []
+    ports: ["127.0.0.1:3102:3000"]
+    volumes:
+      - ../../plans/companion-dev/runtime/bin:/bin/companions:ro
+      - ../../plans/companion-dev/runtime/corescope:/data
+      - ../../third_party/corescope/public:/public:ro
+      - ./corescope.json:/config/config.json:ro
+    depends_on:
+      corescope-ingestor: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:3000/api/stats]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
+    mem_limit: 384m
+  beacon:
+    <<: *go
+    entrypoint: [/bin/companions/beacon]
+    command: []
+    working_dir: /tmp
+    environment:
+      <<: *go-env
+      LISTEN_ADDR: ":8080"
+      POSTGRES_DSN: postgres://beacon_dev:local-companion-only@beacon-db:5432/beacon_dev?sslmode=disable
+      REDIS_ADDR: beacon-redis:6379
+      CONFIG_PATH: /config/beacon.yaml
+      MQTT_BROKER_1_URL: tcp://ukmesh-sample-mqtt:1883
+    ports: ["127.0.0.1:3103:8080"]
+    volumes:
+      - ../../plans/companion-dev/runtime/bin:/bin/companions:ro
+      - ./beacon.yaml:/config/beacon.yaml:ro
+    networks: [default, sample]
+    depends_on:
+      beacon-db: {condition: service_healthy}
+      beacon-redis: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, curl, --fail, --silent, http://127.0.0.1:8080/api/v1/info]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+    mem_limit: 384m
+    stop_grace_period: 30s
+  beacon-web:
+    image: node@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1 # 26-bookworm-slim
+    user: "${COMPANION_UID:-1000}:${COMPANION_GID:-1000}"
+    init: true
+    working_dir: /work
+    environment:
+      HOME: /tmp
+      VITE_API_BASE: /api/v1
+      BEACON_DEV_ENV_DIR: /tmp/ukmesh-empty-env
+      VITE_DEV_PROXY: http://beacon:8080
+    ports: ["127.0.0.1:5175:5175"]
+    volumes:
+      - ../../third_party/beacon-web:/work:ro
+      - ../../third_party/beacon-web/node_modules:/work/node_modules
+      - ../../plans/companion-dev/runtime/npm-cache:/npm-cache
+      - .:/dev-tools:ro
+    entrypoint: [sh, /dev-tools/web-start.sh]
+    depends_on:
+      beacon: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:5175').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    mem_limit: 768m
+volumes:
+  beacon-db:
+networks:
+  sample:
+    name: ukmesh-sample_default
+    external: true

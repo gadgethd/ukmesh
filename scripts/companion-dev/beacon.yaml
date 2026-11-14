@@ -1,0 +1,15 @@
+# Fixture broker only. Beacon owns its database; no UKMesh DSN or credentials.
+log: {level: info, format: text}
+websocket:
+  max_connections: 1000
+  max_connections_per_ip: 50
+  max_connects_per_minute: 60
+  allowed_origins: ["http://127.0.0.1:5175", "http://localhost:5175"]
+cors:
+  allowed_origins: ["http://127.0.0.1:5175", "http://localhost:5175"]
+iatas:
+  LON: {name: London}
+regions:
+  - slug: dev
+    name: DEV fixture
+    iatas: [LON]
