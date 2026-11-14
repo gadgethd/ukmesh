@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import {
   AlertQueueFullError,
+  AlertRedriveError,
   DurableAlertQueue,
   type AlertDeliveryQueueMetrics,
   type AlertReceipt,
@@ -195,6 +196,8 @@ const emptyQueueMetrics: AlertDeliveryQueueMetrics = {
   pendingCount: 0,
   oldestQueueAgeSeconds: 0,
   deadLetterCount: 0,
+  unresolvedDeadLetterCount: 0,
+  resolvedDeadLetterCount: 0,
   lastSuccessAt: null,
   lastError: null,
 };
@@ -209,8 +212,8 @@ export function deriveDeliveryHealth(
   }
   if (!queueReady) return { degraded: true, detail: 'durable forwarding queue is not ready' };
   if (!metrics.lastSuccessAt) return { degraded: true, detail: 'no successful forward since startup' };
-  if (metrics.deadLetterCount > 0) {
-    return { degraded: true, detail: `${metrics.deadLetterCount} alert(s) are dead-lettered` };
+  if (metrics.unresolvedDeadLetterCount > 0) {
+    return { degraded: true, detail: `${metrics.unresolvedDeadLetterCount} alert(s) are dead-lettered` };
   }
   if (metrics.lastError) {
     return { degraded: true, detail: 'a forwarding attempt failed; retry is pending' };
@@ -264,12 +267,15 @@ const server = http.createServer(async (req, res) => {
       pending_count: health.metrics.pendingCount,
       queue_oldest_age_seconds: health.metrics.oldestQueueAgeSeconds,
       dead_letter_count: health.metrics.deadLetterCount,
+      unresolved_dead_letter_count: health.metrics.unresolvedDeadLetterCount,
+      resolved_dead_letter_count: health.metrics.resolvedDeadLetterCount,
       last_success_at: health.metrics.lastSuccessAt,
       last_error: health.metrics.lastError,
     });
     return;
   }
-  if (req.method !== 'POST' || req.url !== '/alerts') {
+  const redriveRoute = req.url?.match(/^\/alerts\/dead-letters\/(.+)\/redrive$/);
+  if (req.method !== 'POST' || (req.url !== '/alerts' && !redriveRoute)) {
     json(res, 404, { error: 'not found' });
     return;
   }
@@ -291,6 +297,28 @@ const server = http.createServer(async (req, res) => {
   } catch (error) {
     const tooLarge = (error as Error).message === 'request body too large';
     json(res, tooLarge ? 413 : 400, { error: tooLarge ? 'request too large' : 'invalid alert payload' });
+    return;
+  }
+
+  if (redriveRoute) {
+    if (!deliveryQueueReady || !deliveryQueue) {
+      json(res, 503, { error: 'durable alert forwarding queue is not ready' });
+      return;
+    }
+    const request = object(payload);
+    if (typeof request?.['requestId'] !== 'string' || typeof request['reason'] !== 'string') {
+      json(res, 400, { error: 'provide a redrive requestId and reason' });
+      return;
+    }
+    try {
+      const result = await deliveryQueue.redrive(redriveRoute[1]!, request['requestId'], request['reason']);
+      json(res, result.state === 'resolved' ? 200 : 202, { accepted: true, ...result });
+    } catch (error) {
+      const status = error instanceof AlertRedriveError ? error.statusCode : 503;
+      if (status === 503) res.setHeader('retry-after', '5');
+      json(res, status, { error: error instanceof AlertRedriveError || error instanceof AlertQueueFullError
+        ? error.message : 'could not persist dead-letter redrive' });
+    }
     return;
   }
 

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import http from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
@@ -315,4 +316,77 @@ test('deployed receiver bearer authentication survives the durability changes', 
     })).status, 202);
     assert.equal((await readFile(child.receipt, 'utf8')).trim().split('\n').length, 1);
   } finally { await child.close(); }
+});
+
+test('authenticated redrive retains dead letters and restores readiness only after delivery, including restart', { timeout: 15_000 }, async () => {
+  let mode: 'fail' | 'hold' | 'success' = 'fail';
+  let calls = 0;
+  const held: http.ServerResponse[] = [];
+  const stub = http.createServer((_req, res) => {
+    calls += 1;
+    if (mode === 'hold') held.push(res);
+    else res.writeHead(mode === 'fail' ? 503 : 204).end();
+  });
+  stub.listen(0, '127.0.0.1');
+  await once(stub, 'listening');
+  const url = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/owned-redrive`;
+  const child = await receiver(url, { keepFiles: true });
+  let restarted: Awaited<ReturnType<typeof receiver>> | undefined;
+  try {
+    assert.equal((await fetch(`${child.base}/alerts`, {
+      method: 'POST', headers: { authorization: `Bearer ${ALERT_TOKEN}` },
+      body: JSON.stringify({ service: 'meshcore-analytics', kind: 'alert', check: 'redrive-owned' }),
+    })).status, 202);
+    const directory = `${child.receipt}.queue`;
+    const [name] = await waitFor(async () => (await readdir(directory)).filter((file) => file.endsWith('.dead.json')), (names) => names.length === 1);
+    const original = await readFile(path.join(directory, name!));
+    const id = name!.slice(0, -'.dead.json'.length);
+    const requestId = randomUUID();
+    const endpoint = `${child.base}/alerts/dead-letters/${id}/redrive`;
+    const body = JSON.stringify({ requestId, reason: 'owned endpoint recovered' });
+    const post = (target = endpoint, token = ALERT_TOKEN, content = body) => fetch(target, {
+      method: 'POST', headers: { authorization: `Bearer ${token}` }, body: content,
+    });
+    assert.equal((await fetch(endpoint, { method: 'POST', body: 'not-json' })).status, 401);
+    for (const target of [endpoint, `${child.base}/alerts/dead-letters/${randomUUID()}/redrive`]) {
+      assert.equal((await post(target, 'incorrect', 'not-json')).status, 401, 'auth precedes lookup and body parsing');
+    }
+    assert.equal((await post(`${child.base}/alerts/dead-letters/${randomUUID()}/redrive`)).status, 404);
+    assert.equal((await post(`${child.base}/alerts/dead-letters/%2e%2e%2foutside/redrive`)).status, 400);
+    assert.equal((await post(endpoint, ALERT_TOKEN, '{}')).status, 400);
+    await waitFor(async () => (await (await fetch(`${child.base}/healthz`)).json() as { pending_count: number }).pending_count, (count) => count === 0);
+    mode = 'hold';
+    const admitted = await post();
+    assert.equal(admitted.status, 202, (await admitted.text()) + child.logs());
+    await waitFor(async () => held.length, (count) => count === 1);
+    assert.equal((await post()).status, 202, 'same request remains idempotent during delivery');
+    assert.equal((await post(endpoint, ALERT_TOKEN, JSON.stringify({ requestId: randomUUID(), reason: 'competing' }))).status, 409);
+    const pendingResponse = await fetch(`${child.base}/readyz`);
+    assert.equal(pendingResponse.status, 503);
+    const pending = await pendingResponse.json() as Record<string, unknown>;
+    assert.equal(pending['dead_letter_count'], 1);
+    assert.equal(pending['unresolved_dead_letter_count'], 1);
+    assert.equal(pending['resolved_dead_letter_count'], 0);
+    held[0]!.writeHead(204).end();
+    mode = 'success';
+    await waitFor(async () => (await fetch(`${child.base}/readyz`)).status, (status) => status === 200);
+    assert.deepEqual(await readFile(path.join(directory, name!)), original);
+    assert.equal((await post()).status, 200);
+    await child.terminate();
+    restarted = await receiver(url, { directory: child.directory, keepFiles: true });
+    const health = await (await fetch(`${restarted.base}/readyz`)).json() as Record<string, unknown>;
+    assert.equal(health['status'], 'ok');
+    assert.equal(health['dead_letter_count'], 1);
+    assert.equal(health['unresolved_dead_letter_count'], 0);
+    assert.equal(health['resolved_dead_letter_count'], 1);
+    assert.equal(calls, 3, 'two failed initial sends and one successful redrive; restart does not resend');
+    assert.deepEqual(await readFile(path.join(directory, name!)), original);
+  } finally {
+    for (const res of held) res.destroy();
+    await child.close();
+    await restarted?.close();
+    stub.closeAllConnections();
+    await new Promise<void>((resolve) => stub.close(() => resolve()));
+    await rm(child.directory, { recursive: true, force: true });
+  }
 });
