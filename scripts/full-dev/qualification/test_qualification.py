@@ -308,10 +308,11 @@ class RecoverySafety(unittest.TestCase):
 
     def test_unrelated_pending_alert_cannot_trigger_restart_before_owned_failed_forward(self):
         probe='a'*32
-        health=iter([{'dead_letter_count':0},
-            {'dead_letter_count':0,'pending_count':1},{'dead_letter_count':0,'pending_count':1},
-            {'dead_letter_count':0,'pending_count':1,'status':'ok'},
-            {'dead_letter_count':0,'pending_count':0,'status':'ok'}])
+        retained={'dead_letter_count':1,'unresolved_dead_letter_count':0,'resolved_dead_letter_count':1}
+        health=iter([retained,
+            {**retained,'pending_count':1},{**retained,'pending_count':1},
+            {**retained,'pending_count':1,'status':'ok'},
+            {**retained,'pending_count':0,'status':'ok'}])
         counts=iter([{'failedAlertProbes':[]},{'failedAlertProbes':[probe]},
                      {'alertProbes':[]},{'alertProbes':[probe]}])
         failed_checks=[]
@@ -334,13 +335,14 @@ class RecoverySafety(unittest.TestCase):
             network.return_value.__enter__.return_value.status=200
             result=recovery.alert_delivery()
             self.assertTrue(result['passed'])
+            self.assertEqual(result['retained_dead_letter_history'],{'raw':1,'unresolved':0,'resolved':1})
             self.assertEqual(provider.call_args_list[0].kwargs,{'status':503,'alert_probe':probe})
             self.assertEqual(provider.call_count,3)
 
     def test_alert_fault_is_released_after_restart_failure_and_existing_dead_letters_refuse_fault(self):
         with patch.object(recovery,'http_get',return_value=(b'{"dead_letter_count":1}',200)), \
              patch.object(recovery,'provider') as provider,patch.object(recovery,'docker') as docker:
-            with self.assertRaisesRegex(RuntimeError,'pre-existing dead letters'):recovery.alert_delivery()
+            with self.assertRaisesRegex(RuntimeError,'pre-existing unresolved dead letters'):recovery.alert_delivery()
             provider.assert_not_called();docker.assert_not_called()
         with patch.object(recovery,'http_get',return_value=(b'{"dead_letter_count":0}',200)), \
              patch.object(recovery,'provider') as provider,patch.object(recovery,'wait_for',return_value={'passed':True}), \
@@ -349,6 +351,42 @@ class RecoverySafety(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError,'restart failed'):recovery.alert_delivery()
             self.assertEqual(provider.call_count,2)
             self.assertEqual(provider.call_args.kwargs,{})
+
+    def test_dead_letter_history_fallback_is_only_for_absent_fields_and_inconsistent_counts_fail(self):
+        self.assertEqual(recovery.alert_history({'dead_letter_count':0}),{'raw':0,'unresolved':0,'resolved':0})
+        self.assertEqual(recovery.alert_history({'dead_letter_count':1}),{'raw':1,'unresolved':1,'resolved':0})
+        for health in (
+            {'dead_letter_count':1,'unresolved_dead_letter_count':None,'resolved_dead_letter_count':1},
+            {'dead_letter_count':1,'unresolved_dead_letter_count':0},
+            {'dead_letter_count':1,'unresolved_dead_letter_count':0,'resolved_dead_letter_count':0},
+            {'dead_letter_count':True}, {'dead_letter_count':-1},
+        ):
+            with self.assertRaisesRegex(ValueError,'inconsistent'):recovery.alert_history(health)
+
+    def test_new_or_changed_dead_letter_history_blocks_owned_fault_recovery(self):
+        probe='a'*32
+        initial={'dead_letter_count':1,'unresolved_dead_letter_count':0,'resolved_dead_letter_count':1}
+        for changed in (
+            {'dead_letter_count':2,'unresolved_dead_letter_count':1,'resolved_dead_letter_count':1},
+            {'dead_letter_count':2,'unresolved_dead_letter_count':0,'resolved_dead_letter_count':2},
+        ):
+            def response(url):
+                if url.endswith('/counts'):return json.dumps({'failedAlertProbes':[probe]}).encode(),200
+                return json.dumps({**changed,'pending_count':1}).encode(),200
+            def wait(check):
+                self.assertFalse(check(),'changed history must not qualify even with zero unresolved items')
+                raise RuntimeError('history changed')
+            with patch.object(recovery.uuid,'uuid4',return_value=Mock(hex=probe)), \
+                 patch.object(recovery,'provider') as provider,patch.object(recovery,'http_get') as http, \
+                 patch.object(recovery,'wait_for',side_effect=wait),patch.object(recovery,'docker') as docker, \
+                 patch.object(recovery,'urlopen') as network:
+                network.return_value.__enter__.return_value.status=200
+                def first_then_changed(url):
+                    http.side_effect=response
+                    return json.dumps(initial).encode(),200
+                http.side_effect=first_then_changed
+                with self.assertRaisesRegex(RuntimeError,'history changed'):recovery.alert_delivery()
+                docker.assert_not_called();self.assertEqual(provider.call_args.kwargs,{})
 
     def test_another_selected_fixture_stops_driver_before_process_creation(self):
         with patch.object(recovery,'active_fixture',return_value={'token':'other'}),patch.object(recovery,'command') as process:

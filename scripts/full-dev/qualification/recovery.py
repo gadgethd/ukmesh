@@ -95,10 +95,19 @@ def queues_drained() -> bool:
     return all(metrics.get(key)==0 for key in ('meshcore_packet_batch_queue_depth','meshcore_mqtt_ingest_queue_depth','meshcore_mqtt_ingest_active'))
 
 
+def alert_history(health: dict) -> dict:
+    raw=health['dead_letter_count']
+    unresolved=health.get('unresolved_dead_letter_count',raw)
+    resolved=health.get('resolved_dead_letter_count',0)
+    if any(type(value) is not int or value<0 for value in (raw,unresolved,resolved)) or raw!=unresolved+resolved:
+        raise ValueError('local alert dead-letter history counters are inconsistent')
+    return {'raw':raw,'unresolved':unresolved,'resolved':resolved}
+
+
 def alert_delivery() -> dict:
-    initial=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
-    if initial['dead_letter_count']!=0:
-        raise RuntimeError('local alert recovery requires zero pre-existing dead letters')
+    history=alert_history(json.loads(http_get('http://127.0.0.1:3106/healthz')[0]))
+    if history['unresolved']!=0:
+        raise RuntimeError('local alert recovery requires zero pre-existing unresolved dead letters')
     probe=uuid.uuid4().hex
     provider(status=503,alert_probe=probe)
     try:
@@ -110,18 +119,18 @@ def alert_delivery() -> dict:
         def owned_failure():
             failed=probe in json.loads(http_get('http://127.0.0.1:3107/counts')[0]).get('failedAlertProbes',[])
             health=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
-            return failed and health['pending_count']>0 and health['dead_letter_count']==0
+            return failed and health['pending_count']>0 and alert_history(health)==history
         queued=wait_for(owned_failure)
         docker(['restart','ukmesh-full-alert-receiver-1'],timeout=30)
         provider()
         delivered=wait_for(lambda:probe in json.loads(http_get('http://127.0.0.1:3107/counts')[0]).get('alertProbes',[]))
         def healthy_queue():
             health=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
-            return health['pending_count']==0 and health['dead_letter_count']==0 and health['status']=='ok'
+            return health['pending_count']==0 and alert_history(health)==history and health['status']=='ok'
         drained=wait_for(healthy_queue)
         return {'passed':queued['passed'] and delivered['passed'] and drained['passed'],
                 'owned_failed_forward_observed':queued,'delivery_after_receiver_restart':delivered,
-                'queue_drained_without_dead_letters':drained}
+                'queue_drained_without_unresolved_dead_letters':drained,'retained_dead_letter_history':history}
     finally:provider()
 
 
