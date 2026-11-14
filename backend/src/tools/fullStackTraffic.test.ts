@@ -42,6 +42,8 @@ test('native count expectations distinguish packets, observations and same-obser
   assert.equal(traffic.expected.ukmesh.statuses, 2);
   assert.equal(traffic.expected.corescope.statuses, 2);
   assert.equal(traffic.expected.beacon.statuses, 2);
+  assert.equal(new Set(traffic.statusObserverIds).size,2,'each cycle owns one native telemetry bucket');
+  assert.deepEqual(traffic.events.filter(event=>event.topic.endsWith('/status')).map(event=>event.envelope.origin_id),traffic.statusObserverIds);
   const other = buildFullStackTraffic('another-run', '2026-11-14T00:00:00Z', 2, 1000);
   assert.notEqual(traffic.statusObserverId, other.statusObserverId, 'status samples must not overlap between independent runs');
 });

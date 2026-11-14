@@ -21,7 +21,8 @@ const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: [channel.secre
 type TrafficEvent = { offsetMs: number; topic: string; envelope: Record<string, unknown> };
 export type FullStackTraffic = {
   version: 1; synthetic: true; seed: string; at: string; cycles: number; intervalMs: number; healthCode?: string;
-  nodeIds: string[]; observerIds: string[]; statusObserverId: string; ukmeshHashes: string[]; radioHashes: string[]; channelHashes: string[];
+  nodeIds: string[]; observerIds: string[]; statusObserverId: string; statusObserverIds: string[];
+  ukmeshHashes: string[]; radioHashes: string[]; channelHashes: string[];
   events: TrafficEvent[];
   expected: { ukmesh: { packets: number; paths: number; facts: number; ledger: number; statuses: number };
     corescope: { transmissions: number; observations: number; statuses: number };
@@ -76,8 +77,13 @@ export function buildFullStackTraffic(seed: string, at: string, cycles: number, 
   assert.ok(Number.isFinite(Date.parse(at)));
   if (healthCode) assert.match(healthCode, /^[a-zA-Z0-9_-]{1,64}$/);
   const observers = [2, 3].map(index => identity(seed, index).publicKey.toString('hex').toUpperCase());
+  // Core and Beacon bucket telemetry per observer. Distinct bounded actors give
+  // each cycle one exact native sample without changing those application rules.
+  const statusObservers = Array.from({length:cycles}, (_,index)=>index===0?observers[0]!:
+    identity(seed,100+index).publicKey.toString('hex').toUpperCase());
   const result: FullStackTraffic = { version: 1, synthetic: true, seed, at, cycles, intervalMs, healthCode,
-    nodeIds: [], observerIds: observers, statusObserverId: observers[0]!, ukmeshHashes: [], radioHashes: [], channelHashes: [], events: [],
+    nodeIds: [], observerIds: observers, statusObserverId: statusObservers[0]!, statusObserverIds: statusObservers,
+    ukmeshHashes: [], radioHashes: [], channelHashes: [], events: [],
     expected: { ukmesh: { packets: cycles * 4, paths: 0, facts: 0, ledger: cycles * 4, statuses: cycles },
       corescope: { transmissions: cycles * 3, observations: cycles * 4, statuses: cycles },
       beacon: { packets: cycles * 3, observations: cycles * 4, messages: cycles, statuses: cycles } } };
@@ -101,8 +107,8 @@ export function buildFullStackTraffic(seed: string, at: string, cycles: number, 
     packet(message, observers[0]!, offset + 100);
     packet(message, observers[0]!, offset + 150); // Deliberate same-observer redelivery.
     packet(message, observers[1]!, offset + 200);
-    result.events.push({ offsetMs: offset + 250, topic: `meshcore/LHR/${observers[0]}/status`, envelope: {
-      status: 'online', origin: 'Qualification observer', origin_id: observers[0], radio: '868.1,62.5,7,5',
+    result.events.push({ offsetMs: offset + 250, topic: `meshcore/LHR/${statusObservers[cycle]}/status`, envelope: {
+      status: 'online', origin: 'Qualification observer', origin_id: statusObservers[cycle], radio: '868.1,62.5,7,5',
       model: 'Invented DEV observer', firmware_version: 'qualification', stats: { battery_mv: 4100,
         uptime_secs: 3600 + cycle, tx_air_secs: 10 + cycle, rx_air_secs: 20 + cycle } } });
   }

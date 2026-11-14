@@ -19,6 +19,7 @@ from fixtures import bundle
 
 REQUIRED_CHECKS={'three-application-native-commits-before-faults','lost-real-api-database-sessions',
     'packet-lock-contention-and-aborted-lock-holder','owned-sqlite-write-contention',
+    'native-same-observer-telemetry-coalescing',
     'duplicate-and-delayed-observer-delivery','local-provider-rate-limit-and-slow-response',
     'local-alert-503-durable-queue-and-restart','overlapping-health-learning-and-ingestion',
     'serial-owned-service-restarts-and-durable-state',
@@ -149,6 +150,33 @@ def recovery(run: Path) -> dict:
             return {'passed':native['passed'] and restored['passed'],'native':native,'reconnected':restored}
         record('lost-real-api-database-sessions',lost_sessions)
         record('packet-lock-contention-and-aborted-lock-holder',lambda:commit_check(directory,fixture,'lock')[0])
+        def telemetry_coalescing():
+            native,path=driver(directory,fixture,'coalescing')
+            plan=read_json(path);plan['statusCycles']=6
+            plan['expected']['ukmesh']['statuses']=6
+            observer=plan['statusObserverId']
+            core_bucket=dt.datetime.fromisoformat(native['coreBucket']).isoformat().replace('+00:00','Z')
+            beacon_bucket=dt.datetime.fromisoformat(native['beaconBucket']).isoformat()
+            last_published=dt.datetime.fromisoformat(native['lastStatusPublishedAt']).isoformat()
+            beacon=next(row for row in fixture['databases'] if row['label']=='beacon')
+            started=time.monotonic()
+            while True:
+                proof=verify_typed(plan,fixture,timeout=0)
+                with sqlite3.connect((Path(fixture['corescope_data_dir'])/'analyzer.db').as_uri()+'?mode=ro',uri=True,timeout=15) as reader:
+                    latest=reader.execute('SELECT count(*) FROM observer_metrics WHERE observer_id IN (?,?) AND timestamp=? '
+                        'AND tx_air_secs=15 AND rx_air_secs=25 AND battery_mv=4100',(observer,observer.lower(),core_bucket)).fetchone()[0]==1
+                retained=int(sql(beacon['container'],beacon['database'],beacon['user'],
+                    "SELECT count(*) FROM observer_telemetry m JOIN observers o ON o.id=m.observer_id "
+                    "WHERE o.public_key=decode('"+observer+"','hex') AND m.reported_at='"+beacon_bucket+"'::timestamptz "
+                    "AND m.uptime_seconds=3600 AND m.airtime_tx_secs=10 AND m.airtime_rx_secs=20 AND o.uptime_seconds=3605 "
+                    "AND o.last_status_at>='"+last_published+"'::timestamptz"))==1
+                elapsed=time.monotonic()-started
+                passed=native['passed'] and proof['passed'] and latest and retained and elapsed<=120
+                if passed or elapsed>=120:break
+                time.sleep(.5)
+            return {'passed':passed,'native':native,'elapsed_seconds':elapsed,
+                    'commits':proof,'core_replaced_with_latest':latest,'beacon_retained_first_and_processed_latest':retained}
+        record('native-same-observer-telemetry-coalescing',telemetry_coalescing)
         def sqlite_contention():
             file=Path(fixture['corescope_data_dir'])/'analyzer.db'
             with sqlite3.connect(file,timeout=5) as writer, ThreadPoolExecutor(max_workers=1) as executor:
