@@ -5,6 +5,7 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 if [[ ${UKMESH_COMPANION_ENV_CLEAN:-} != 1 ]]; then
   exec env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 UKMESH_COMPANION_ENV_CLEAN=1 bash "$repo/scripts/companion-dev/control.sh" "$@"
 fi
+export DOCKER_HOST=unix:///var/run/docker.sock
 cd "$repo"
 action=${1:-start}
 service=${2:-}
@@ -151,18 +152,19 @@ fi
 if [[ $action == build ]]; then exit 0; fi
 if [[ $action == start || $action == companions || ( $action == restart && $service == beacon* && $service != beacon-web ) ]]; then
   "${compose[@]}" up -d --wait beacon-db beacon-redis
-  if [[ $action == restart && $service == beacon-migrate ]]; then
-    "${compose[@]}" up -d --no-deps --force-recreate beacon-migrate
-    "${compose[@]}" wait beacon-migrate
-    migration_container=$("${compose[@]}" ps -a -q beacon-migrate)
-    [[ -n $migration_container ]] || { echo 'Beacon migration container is missing' >&2; exit 1; }
-    migration_state=$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$migration_container")
-    [[ $migration_state == exited:0 ]] || { echo 'Beacon migration job failed or did not complete' >&2; exit 1; }
-    bash "$repo/scripts/companion-dev/beacon-access.sh" "$BEACON_DATABASE"
-    exit 0
-  fi
-  "${compose[@]}" run --rm --no-deps beacon-migrate
+  "${compose[@]}" up -d --no-deps --force-recreate beacon-migrate > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
+  migration_wait=0
+  "${compose[@]}" wait beacon-migrate >> "$state/migrate.log" 2>&1 || migration_wait=$?
+  "${compose[@]}" logs --no-color beacon-migrate >> "$state/migrate.log" 2>&1
+  migration_container=$("${compose[@]}" ps -a -q beacon-migrate)
+  [[ -n $migration_container ]] || { echo 'Beacon migration container is missing' >&2; exit 1; }
+  migration_state=$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$migration_container")
+  [[ $migration_wait == 0 && $migration_state == exited:0 ]] || {
+    tail -30 "$state/migrate.log" >&2
+    echo 'Beacon migration job failed or did not complete' >&2; exit 1;
+  }
   bash "$repo/scripts/companion-dev/beacon-access.sh" "$BEACON_DATABASE"
+  if [[ $action == restart && $service == beacon-migrate ]]; then exit 0; fi
 fi
 if [[ $action == restart ]]; then
   targets=("$service")
@@ -171,6 +173,8 @@ if [[ $action == restart ]]; then
   if [[ $service == corescope || $service == corescope-ingestor ]]; then targets=(corescope-ingestor corescope); fi
   "${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 180 "${targets[@]}"
 else
-  "${compose[@]}" up -d --wait --wait-timeout 240
+  # Migration already completed above. Keep it out of the explicit up targets,
+  # while Compose still orders the resident services' normal dependencies.
+  "${compose[@]}" up -d --wait --wait-timeout 240 corescope-ingestor corescope beacon beacon-web
 fi
 printf 'UKMesh http://127.0.0.1:5173\nCoreScope http://127.0.0.1:3102\nBeacon http://127.0.0.1:5175 (API http://127.0.0.1:3103)\n'

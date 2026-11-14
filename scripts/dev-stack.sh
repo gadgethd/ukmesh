@@ -6,6 +6,7 @@ if [[ ${UKMESH_LOCAL_ENV_CLEAN:-} != 1 ]]; then
   exec env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 UKMESH_LOCAL_ENV_CLEAN=1 \
     bash "$repo/scripts/dev-stack.sh" "$@"
 fi
+export DOCKER_HOST=unix:///var/run/docker.sock
 cd "$repo"
 state="$repo/plans/dev-stack"
 mkdir -p "$state"

@@ -5,6 +5,8 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 if [[ ${UKMESH_COMPANION_ENV_CLEAN:-} != 1 ]]; then
   exec env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 UKMESH_COMPANION_ENV_CLEAN=1 bash "$repo/scripts/dev-all.sh" "$@"
 fi
+# This launcher manages this VM, regardless of a saved Docker CLI context.
+export DOCKER_HOST=unix:///var/run/docker.sock
 action=${1:-start}
 service=${2:-}
 case "$action" in

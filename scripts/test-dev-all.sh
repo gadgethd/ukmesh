@@ -15,6 +15,7 @@ for subsystem in full-dev companion-dev; do
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "$0")/../.." && pwd)
 [[ ! ${DATABASE_URL+x} && ! ${UNTRUSTED_SETTING+x} ]] || exit 91
+[[ $DOCKER_HOST == unix:///var/run/docker.sock ]] || exit 92
 name=$(basename "$(dirname "$0")")
 printf '%s %s\n' "$name" "$*" >> "$repo/calls"
 if [[ $name == full-dev && $1 == build ]]; then
@@ -31,7 +32,7 @@ cat > "$checkout/scripts/qualify-full-stack.sh" <<'MOCK'
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
 printf 'qualify %s\n' "$*" >> "$repo/calls"
 MOCK
-run() { env DATABASE_URL=postgres://untrusted.invalid UNTRUSTED_SETTING=discard bash "$checkout/scripts/dev-all.sh" "$@" > "$fixture/output" 2>&1; }
+run() { env DOCKER_HOST=ssh://untrusted.invalid DATABASE_URL=postgres://untrusted.invalid UNTRUSTED_SETTING=discard bash "$checkout/scripts/dev-all.sh" "$@" > "$fixture/output" 2>&1; }
 run start
 [[ $(cat "$checkout/calls") == $'full-dev start\ncompanion-dev start' ]]
 [[ $(cat "$checkout/plans/dev-stack/fixture-ready") == retained ]]

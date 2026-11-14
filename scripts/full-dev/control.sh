@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+export DOCKER_HOST=unix:///var/run/docker.sock
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
 source "$repo/scripts/full-dev/runtime.sh"
@@ -65,7 +66,17 @@ if [[ $images_ready != true ]]; then build_images; fi
 
 # Schema owners run only in this bounded bootstrap step. Runtime containers
 # below receive their role DSNs, including on a newly selected fixture.
-"${compose[@]}" run --rm --no-deps db-migrate > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
+"${compose[@]}" up -d --no-deps --force-recreate db-migrate > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
+migration_wait=0
+"${compose[@]}" wait db-migrate >> "$state/migrate.log" 2>&1 || migration_wait=$?
+"${compose[@]}" logs --no-color db-migrate >> "$state/migrate.log" 2>&1
+migration_container=$("${compose[@]}" ps -a -q db-migrate)
+[[ -n $migration_container ]] || { echo 'Database migration container is missing' >&2; exit 1; }
+migration_state=$(docker inspect --format '{{.State.Status}}:{{.State.ExitCode}}' "$migration_container")
+[[ $migration_wait == 0 && $migration_state == exited:0 ]] || {
+  tail -30 "$state/migrate.log" >&2
+  echo 'Database migration job failed or did not complete' >&2; exit 1;
+}
 bash "$repo/scripts/full-dev/access.sh" "$UKMESH_DATABASE" "$OWNER_DATABASE" > "$state/access.log" 2>&1 || { tail -20 "$state/access.log" >&2; exit 1; }
 
 # Retire only PIDs owned by the old fixture launcher, after images exist.

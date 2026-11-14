@@ -76,6 +76,7 @@ if 'run' in args and 'web-build' in args:
     if (root/'fail-web').exists(): sys.exit(42)
     (output/'index.html').write_text('complete new site')
 if 'ps' in args and 'beacon-migrate' in args: print('owned-migration-container')
+if 'logs' in args: print('retained migration output')
 if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exists() else 'exited:0')
 ''')
         docker.chmod(0o755)
@@ -145,6 +146,17 @@ if args and args[0]=='inspect': print('exited:1' if (root/'fail-migration').exis
         calls = self.calls()
         self.assertFalse(any('run' in row['args'] for row in calls))
         self.assertEqual(len([row for row in calls if 'up' in row['args'] and row['args'][-1]=='beacon-migrate']), 1)
+        self.assertTrue((self.root / 'access-called').exists())
+        self.assertIn('retained migration output',(self.state / 'migrate.log').read_text())
+
+    def test_normal_start_runs_one_named_migration_and_keeps_it_out_of_resident_targets(self):
+        result = self.run_control('start')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.calls()
+        self.assertFalse(any('run' in row['args'] and row['args'][-1]=='beacon-migrate' for row in calls))
+        starts = [row for row in calls if 'up' in row['args']]
+        self.assertEqual(len([row for row in starts if row['args'][-1]=='beacon-migrate']),1)
+        self.assertEqual(starts[-1]['args'][-4:],['corescope-ingestor','corescope','beacon','beacon-web'])
         self.assertTrue((self.root / 'access-called').exists())
 
     def test_failed_migration_never_provisions_access(self):
