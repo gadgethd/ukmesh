@@ -191,9 +191,9 @@
         },
         {
           "kind": "http",
-          "url": "http://127.0.0.1:3003/api/nodes?network=ukmesh",
+          "url": "http://127.0.0.1:3003/api/nodes/map?network=ukmesh&limit=20",
           "min": 1,
-          "json_path": ""
+          "json_path": "nodes"
         }
       ]
     },

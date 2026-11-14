@@ -517,3 +517,23 @@ saturation and fixed-demand evidence have separate owners and collection
 budgets. Both are required for clean new qualification. All old experiments,
 failures and source revisions remain immutable; fresh complete measurements
 under the new committed method must precede any result claim.
+
+
+## Useful-work probes must fit the capability they observe
+
+The 1ba2ab7 preflight retained two actual failures. The app-ukmesh work probe
+requested the legacy unbounded `/api/nodes?network=ukmesh` endpoint; an actual
+header-only response confirmed200 JSON and12,578,628 bytes on the owned10x
+fixture. The8MiB guard correctly rejected that response. The manifest coupled
+frontend useful-work proof to a full dataset transfer that grows with scale.
+Use the existing bounded `/api/nodes/map?network=ukmesh&limit=20` endpoint and
+its `nodes` array for this work proof, retaining the8MiB guard and minimum one
+node. No application capability, production endpoint or response cap changes.
+
+The separate link-worker oracle returned an actual zero commits and remains
+a required failure until an eligible owned fixture job traverses the existing
+queue and the real worker commits it. Preserve path uniqueness, ambiguity and
+role checks; do not insert the ledger or substitute idle health for useful work.
+Record that input/admission/worker commit independently before repeating the
+full work proof under the final source context. Root authorized this narrow
+manifest repair and native owned-job preparation before these edits.
