@@ -222,6 +222,7 @@ func marginsRowIndexed(margins []float32, py, imageWidth, imageHeight int, bound
 // and factoring invariant path calculations out of inner loops. GPU paths are
 // still checked against the retained upstream CPU reference below.
 func ComputeMarginsCPU(grid Grid, sites []Site, bounds Bounds, imageWidth, imageHeight int, rangeKm float64, p Params, progress func(done, total int)) []float32 {
+	sites = cpuSiteRepresentatives(sites)
 	margins := make([]float32, imageWidth*imageHeight)
 	index := NewSpatialIndex(sites, rangeKm)
 	rp := prepareRasterParams(p)

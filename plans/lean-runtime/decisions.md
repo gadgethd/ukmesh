@@ -249,3 +249,44 @@ companion_reads.py. Callers pass the existing bounded HTTP function explicitly
 and own scope transitions; generic collection imports no fixtures or application
 inventory. The matched-read comparison remains responsible for applying its
 unchanged budget and regression gates to the audited observations.
+
+## CPU propagation owns equivalence of resolved RF work
+
+Keep the complete selected identity/site list as the publication and checkpoint
+input. Within the CPU margin calculation, evaluate each finite, bit-identical
+resolved Site only once, preserving the first occurrence and all four values
+(latitude, longitude, ground elevation and transmitter height). Raster coverage
+is the maximum of independent path margins with shared propagation parameters;
+an identical path repeated by another identity cannot change that maximum.
+
+- Hidden link: identity cardinality currently determines repeated terrain-path
+  work even when every physical RF input is identical. The owned10x preview has
+  38,388 selected identities at3,671 coordinates. Equality must be established
+  after tier-specific ground heights are resolved, rather than from coordinates.
+- Needless link: reducing duplicate CPU work through selection, GeoJSON, tile
+  signatures or SpatialIndex.Query would alter a separate identity/publication
+  contract. Keep that index's every-candidate contract and all GPU/remote inputs.
+- Surplus: evaluating the same path repeatedly changes neither best margin nor
+  coverage, but consumes CPU throughout every raster tile.
+- Necessary special case: nonfinite values remain separate; signed zeros and
+  any differing IEEE-754 field bits remain distinct. Do not round positions,
+  approximate terrain, sample inputs, cap transmitters or change RF parameters.
+
+Capture pre-change optimized full float32 raster and actual PNG hashes before
+the production call is changed. Require exact parity afterwards, retain existing
+upstream1e-5dB gates, and test differing heights, input ownership, progress, empty
+sets and bit-edge values. Benchmark the complete retained duplicate-coordinate
+distribution against the pre-change implementation using controlled terrain;
+this is a CPU benchmark, not actual fixture coverage or an invented RF deadline.
+No product computation, target switch or cache mutation is part of this batch.
+
+Native before/after evidence retains six complete float32/PNG files, all byte
+identical across the committed pre-change CPU, a read-only pre-change overlay and
+the final candidate. Both propagation/coverage packages pass24 top-level tests;
+the pure physics package also passes on the current companion Go toolchain.
+The PNG integration fixture belongs to coverage tests, avoiding a new GPU/CGo
+dependency in propagation tests. The complete38,388-site controlled-terrain
+benchmark's three-run median changes4.164s to0.396s; transient allocation rises
+from1.629MB to3.770MB per representative raster. Existing UK4600 Standard and
+Precision speed ratios remain0.262/0.259 against their unchanged0.70 limit.
+This does not predict whole-region completion or replace whole-VM qualification.
