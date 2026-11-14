@@ -90,6 +90,9 @@ def report(run: Path) -> dict:
                 if name=='reads':
                     from source_identity import expected_sources,validate_measurements
                     validate_measurements(value.get('runs',[]),expected_sources())
+                    from benchmarks import read_comparison
+                    if not read_comparison(value.get('runs',[]))['passed']:
+                        passed,error=False,'read source, raw companion evidence or regression comparison failed'
                 else:
                     from source_identity import expected_sources
                     from operations import validate_operations,comparison

@@ -11,12 +11,14 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import uuid
 import unittest
 from unittest.mock import patch
 
 import access
 import backups
 import benchmarks
+import companion_reads
 import common
 import fixtures
 import health
@@ -617,11 +619,153 @@ class EvidenceAcceptance(unittest.TestCase):
                           "results": [{"name": "map", "p95Ms": 40} for _ in range(3)]}
                          for concurrency in (1, 8) for cache in ("miss", "warm")]
                 runs.append({"scale": scale, "label": label, "modes": modes,
+                    "companion_evidence": {"collector_id":uuid.uuid4().hex},
                     "companions": {name: {"p95_ms": 10, "requests": 100, "failures": 0}
                                    for name in ("corescope", "beacon")}})
-        self.assertTrue(benchmarks.read_comparison(runs)["passed"])
-        runs[-1]["modes"][-1]["results"].pop()
-        self.assertFalse(benchmarks.read_comparison(runs)["passed"])
+        with patch.object(benchmarks, "measured_companions", side_effect=lambda row: row["companions"]):
+            self.assertTrue(benchmarks.read_comparison(runs)["passed"])
+            runs[-1]["modes"][-1]["results"].pop()
+            self.assertFalse(benchmarks.read_comparison(runs)["passed"])
+
+
+class CompanionRawEvidence(unittest.TestCase):
+    def raw(self, ms=10):
+        base = dt.datetime(2026,11,14,tzinfo=dt.timezone.utc)
+        at = lambda offset: (base+dt.timedelta(seconds=offset)).isoformat()
+        scopes = [("setup",0),("c1-miss",.5),("between",1.5),("c1-warm",2),("between",2.5),
+                  ("c8-miss",3),("between",3.5),("c8-warm",4),("between",5.5),("teardown",6)]
+        boundaries = [{"id":index,"scope":scope,"at":at(offset),"offset_seconds":offset} for index,(scope,offset) in enumerate(scopes)]
+        scope_at = lambda offset: max(item["id"] for item in boundaries if item["offset_seconds"]<=offset)
+        records=[]
+        for actor,name in companion_reads.COMPANION_ACTORS.items():
+            for sequence in range(6):
+                start=sequence+.1;end=start+ms/1000
+                records.append({"actor":actor,"name":name,"sequence":sequence,"passed":True,"ms":ms,
+                    "started_at":at(start),"finished_at":at(end),"start_offset_seconds":start,"end_offset_seconds":end,
+                    "scope_at_start":scope_at(start),"scope_at_finish":scope_at(end)})
+        return {"version":1,"collector":{"collector_id":uuid.uuid4().hex,"started_at":at(0),"origin_monotonic":100,
+            "stop_requested_at":at(6),"stop_requested_offset_seconds":6,"finished_at":at(7),"finished_offset_seconds":7,
+            "actors":companion_reads.COMPANION_ACTORS,"cadence_seconds":1,"attempted":{actor:6 for actor in companion_reads.COMPANION_ACTORS},
+            "boundaries":boundaries,"records":records},"summary":companion_reads.companion_summary(records)}
+
+    def test_all_samples_including_failures_and_crossed_boundaries_determine_summary(self):
+        raw=self.raw();row=raw['collector']['records'][0];row.update(passed=False,ms=800,end_offset_seconds=.9,
+            finished_at='2026-11-14T00:00:00.900000+00:00',scope_at_finish=1)
+        raw['summary']=companion_reads.companion_summary(raw['collector']['records'])
+        summary=companion_reads.validate_companion_samples(raw)
+        self.assertEqual(summary['corescope'],{'requests':12,'failures':1,'p95_ms':800})
+
+    def test_mutated_raw_identity_timing_sequence_or_aggregate_fails(self):
+        for mutation in ('missing-actor','duplicate-sequence','nonfinite','summary','cadence','scope','missing-mode'):
+            raw=self.raw()
+            if mutation=='missing-actor':raw['collector']['records']=raw['collector']['records'][6:]
+            elif mutation=='duplicate-sequence':raw['collector']['records'][1]['sequence']=0
+            elif mutation=='nonfinite':raw['collector']['records'][0]['ms']=float('nan')
+            elif mutation=='summary':raw['summary']['corescope']['p95_ms']=1
+            elif mutation=='cadence':raw['collector']['records'][1]['start_offset_seconds']=.5
+            elif mutation=='scope':raw['collector']['records'][0]['scope_at_start']=1
+            else:raw['collector']['boundaries'][7]['scope']='between'
+            with self.subTest(mutation=mutation),self.assertRaises((ValueError,KeyError)):
+                companion_reads.validate_companion_samples(raw)
+
+    def test_exact_file_digest_and_source_fixture_label_bind_each_independent_collector(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(companion_reads,'EVIDENCE',Path(temporary)):
+            path=Path(temporary)/'companions.json';raw=self.raw()
+            record={'scale':'1x','label':'baseline','fixture_token':'owned','measured_source':{'sha256':'a'*64},'context':{'run_id':'owned'}}
+            raw.update(record);common.write_json(path,raw);record['companions']=raw['summary']
+            record['companion_evidence']={'path':str(path),'sha256':common.digest(path),'collector_id':raw['collector']['collector_id']}
+            self.assertEqual(companion_reads.measured_companions(record),raw['summary'])
+            record['label']='candidate'
+            with self.assertRaisesRegex(ValueError,'identity'):companion_reads.measured_companions(record)
+            record['label']='baseline';path.write_text(path.read_text()+' ')
+            with self.assertRaisesRegex(ValueError,'digest'):companion_reads.measured_companions(record)
+
+    def test_same_raw_file_cannot_make_both_labels_pass_and_valid_11_percent_regression_fails(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(companion_reads,'EVIDENCE',Path(temporary)):
+            runs=[]
+            for scale in ('1x','10x'):
+                for label in ('baseline','candidate'):
+                    raw=self.raw(11.1 if scale=='10x' and label=='candidate' else 10)
+                    record={'scale':scale,'label':label,'fixture_token':scale,'measured_source':{'label':label},'context':{'run_id':'owned'},
+                        'modes':[{'concurrency':concurrency,'cache':cache,'results':[{'name':'map','p95Ms':40} for _ in range(3)]} for concurrency in (1,8) for cache in ('miss','warm')]}
+                    raw.update({key:record[key] for key in ('scale','label','fixture_token','measured_source','context')})
+                    path=Path(temporary)/f'{scale}-{label}.json';common.write_json(path,raw)
+                    record.update(companions=raw['summary'],companion_evidence={'path':str(path),'sha256':common.digest(path),'collector_id':raw['collector']['collector_id']});runs.append(record)
+            result=benchmarks.read_comparison(runs)
+            self.assertFalse(result['passed']);self.assertTrue(any(not row['passed'] for row in result['companion_comparisons']))
+            runs[-1]['companion_evidence']=runs[-2]['companion_evidence']
+            self.assertIn('identity',benchmarks.read_comparison(runs)['missing'][0])
+
+    def test_correctly_reheaded_clone_still_cannot_serve_independent_source_labels(self):
+        with tempfile.TemporaryDirectory() as temporary,patch.object(companion_reads,'EVIDENCE',Path(temporary)):
+            original=self.raw();runs=[]
+            for label in ('baseline','candidate'):
+                raw=copy.deepcopy(original)
+                record={'scale':'1x','label':label,'fixture_token':'owned','measured_source':{'label':label},'context':{'run_id':'owned'},'modes':[]}
+                raw.update({key:record[key] for key in ('scale','label','fixture_token','measured_source','context')})
+                path=Path(temporary)/f'{label}.json';common.write_json(path,raw)
+                record.update(companions=raw['summary'],companion_evidence={'path':str(path),'sha256':common.digest(path),'collector_id':raw['collector']['collector_id']});runs.append(record)
+            self.assertIn('reused',benchmarks.read_comparison(runs)['missing'][0])
+
+    def test_partial_actor_submission_is_closed_and_retained_before_native_work(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run=Path(temporary);fixture={'kind':'1x','token':'owned','databases':[{'label':'ukmesh','database':'owned'}]}
+            measured={'source_root':str(common.REPO/'backend/src'),'revision':'a'*40,'sha256':'b'*64,'files':1}
+            reached=threading.Event();requests=[]
+            def request(_):
+                requests.append(True)
+                if len(requests)==2:reached.set()
+                return b'{}','application/json'
+            collector=companion_reads.CompanionReads(request);submit=collector.executor.submit;calls=0
+            def partial(*args):
+                nonlocal calls
+                calls+=1
+                if calls==3:
+                    self.assertTrue(reached.wait(1))
+                    raise RuntimeError('third actor submission failed')
+                return submit(*args)
+            with patch.object(benchmarks,'active_fixture',return_value=fixture),patch.object(benchmarks,'expected_sources',return_value={'candidate':measured}),patch.object(benchmarks,'inventory',return_value={'passed':True}),patch.object(benchmarks,'phase_context',return_value={'run_id':run.name}),patch.object(benchmarks,'CompanionReads',return_value=collector),patch.object(collector.executor,'submit',side_effect=partial),patch.object(benchmarks,'node_tool') as tool:
+                with self.assertRaisesRegex(RuntimeError,'third actor'):benchmarks.reads(run,label='candidate',source_root=common.REPO/'backend/src')
+                tool.assert_not_called()
+            raw=common.read_json(run/'reads-1x-candidate/companions.json')
+            self.assertIsNotNone(raw['collector']['finished_at']);self.assertEqual(len(raw['collector']['records']),2)
+            self.assertTrue(all(task.done() for task in collector.tasks))
+
+    def test_read_owner_preserves_partial_raw_file_when_finish_raises(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            run=Path(temporary);fixture={'kind':'1x','token':'owned','databases':[{'label':'ukmesh','database':'owned'}]}
+            measured={'source_root':str(common.REPO/'backend/src'),'revision':'a'*40,'sha256':'b'*64,'files':1}
+            companion=Mock();companion.records=self.raw()['collector']['records'];companion.evidence.return_value=self.raw()['collector'];companion.finish.side_effect=RuntimeError('owned reader failed')
+            with patch.object(benchmarks,'active_fixture',return_value=fixture),patch.object(benchmarks,'expected_sources',return_value={'candidate':measured}),patch.object(benchmarks,'inventory',return_value={'passed':True}),patch.object(benchmarks,'phase_context',return_value={'run_id':run.name}),patch.object(benchmarks,'CompanionReads',return_value=companion),patch.object(benchmarks,'node_tool',side_effect=RuntimeError('native failed')):
+                with self.assertRaisesRegex(RuntimeError,'reader failed'):benchmarks.reads(run,label='candidate',source_root=common.REPO/'backend/src')
+            raw=common.read_json(run/'reads-1x-candidate/companions.json')
+            self.assertEqual(len(raw['collector']['records']),24);self.assertEqual(raw['label'],'candidate');companion.finish.assert_called_once()
+
+    def test_real_four_actor_collection_retains_inflight_reads_after_stop_request(self):
+        entered=threading.Event();release=threading.Event();lock=threading.Lock();count=0;result={}
+        def fake_http(url):
+            nonlocal count
+            with lock:
+                count+=1
+                if count==4:entered.set()
+            if not release.wait(2):raise RuntimeError('test gate timed out')
+            return (b'not-json' if ':3102' in url else b'{}'),'application/json'
+        collector=companion_reads.CompanionReads(fake_http)
+        with self.subTest('inflight samples survive stop request'):
+            collector.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                for scope in ('c1-miss','between','c1-warm','between','c8-miss','between','c8-warm','between','teardown'):collector.set_scope(scope)
+                closing=threading.Thread(target=lambda:result.update(summary=collector.finish()));closing.start()
+                self.assertTrue(collector.stop.wait(1));release.set();closing.join(2);self.assertFalse(closing.is_alive())
+            finally:
+                release.set();collector.finish()
+        raw={'collector':collector.evidence(),'summary':result['summary']}
+        self.assertEqual(len(raw['collector']['records']),4)
+        self.assertTrue(all(row['end_offset_seconds']>=raw['collector']['stop_requested_offset_seconds'] for row in raw['collector']['records']))
+        self.assertEqual(result['summary']['corescope']['failures'],2)
+        for row in raw['collector']['records']:self.assertEqual(row['sequence'],0)
+        self.assertEqual(companion_reads.validate_companion_samples(raw),result['summary'])
 
 
 class OperationSourceEvidence(unittest.TestCase):

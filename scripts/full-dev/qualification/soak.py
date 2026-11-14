@@ -8,10 +8,11 @@ from pathlib import Path
 import threading
 import uuid
 
-from benchmarks import CompanionReads, active_fixture, node_tool
+from benchmarks import active_fixture, node_tool
+from companion_reads import CompanionReads
 from common import STATE, read_json, safe_error, utc_now, write_json
 from context import phase_context
-from probes import inventory
+from probes import http_get, inventory
 from resources import sample
 from traffic import verify_companion_acks, verify_typed
 from health import create_session, verify_session
@@ -99,7 +100,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
     health_result = {}
     health_worker = threading.Thread(target=lambda: health_result.update(verify_session(health)),
                                      name="health-code-qualification", daemon=True)
-    companions = CompanionReads()
+    companions = CompanionReads(http_get)
     log_started=utc_now()
     reader_name, reader_socket = start_reader(run)
     try:

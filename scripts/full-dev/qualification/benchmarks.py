@@ -2,14 +2,12 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import statistics
-import threading
-import time
 
-from common import REPO, STATE, command, read_json, safe_error, utc_now, write_json
+from common import REPO, STATE, digest, command, read_json, safe_error, utc_now, write_json
+from companion_reads import CompanionReads, companion_summary, measured_companions
 from context import phase_context
 from fixtures import bundle, current_targets
 from probes import http_get, inventory
@@ -46,64 +44,25 @@ def node_tool(tool: str, args: list[str], database: str, log: Path, *, timeout: 
     return result.returncode
 
 
-def percentile(values: list[float], fraction: float) -> float | None:
-    if not values:
-        return None
-    import math
-    return sorted(values)[max(0, math.ceil(len(values) * fraction) - 1)]
-
-
-class CompanionReads:
-    def __init__(self) -> None:
-        self.stop = threading.Event()
-        self.records: list[dict] = []
-        self.executor = ThreadPoolExecutor(max_workers=4)
-        self.tasks = []
-
-    def start(self) -> None:
-        for name, url in (("corescope", "http://127.0.0.1:3102/api/packets?limit=20"),
-                          ("beacon", "http://127.0.0.1:3103/api/v1/packets?limit=20")):
-            for _ in range(2):
-                self.tasks.append(self.executor.submit(self.reader, name, url))
-
-    def reader(self, name: str, url: str) -> None:
-        while not self.stop.is_set():
-            start = time.monotonic()
-            record = {"name": name, "passed": False}
-            try:
-                body, _ = http_get(url)
-                json.loads(body)
-                record["passed"] = True
-            except Exception as error:
-                record["error"] = safe_error(error)
-            record["ms"] = (time.monotonic() - start) * 1000
-            self.records.append(record)
-            self.stop.wait(max(0, 1 - (time.monotonic() - start)))
-
-    def finish(self) -> dict:
-        self.stop.set()
-        for task in self.tasks:
-            task.result(timeout=15)
-        self.executor.shutdown(wait=True)
-        result = {}
-        for name in ("corescope", "beacon"):
-            rows = [row for row in self.records if row["name"] == name]
-            result[name] = {"requests": len(rows), "failures": sum(not row["passed"] for row in rows),
-                            "p95_ms": percentile([row["ms"] for row in rows], .95)}
-        return result
-
 
 def read_comparison(runs: list[dict]) -> dict:
     missing = []
     comparisons = []
     companion_comparisons = []
+    try:
+        audited = {id(row): measured_companions(row) for row in runs}
+        identities = [row.get("companion_evidence", {}).get("collector_id") for row in runs]
+        if len(identities) != len(set(identities)):
+            raise ValueError("independent companion collector identity was reused across labels/scales")
+    except (ValueError, KeyError, TypeError, OSError) as error:
+        return {"passed": False, "missing": [str(error)], "comparisons": [], "companion_comparisons": []}
     for scale in ("1x", "10x"):
         companion_runs = {label: [row for row in runs if row["scale"] == scale and row["label"] == label]
                           for label in ("baseline", "candidate")}
         if all(len(values) == 1 for values in companion_runs.values()):
             for name in ("corescope", "beacon"):
-                before = companion_runs["baseline"][0].get("companions", {}).get(name, {})
-                after = companion_runs["candidate"][0].get("companions", {}).get(name, {})
+                before = audited[id(companion_runs["baseline"][0])][name]
+                after = audited[id(companion_runs["candidate"][0])][name]
                 old, new = before.get("p95_ms"), after.get("p95_ms")
                 valid = old is not None and new is not None and before.get("requests", 0) >= 12 and after.get("requests", 0) >= 12
                 companion_comparisons.append({"scale": scale, "name": name, "baseline_p95_ms": old,
@@ -162,12 +121,14 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
     database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
     directory = run / f"reads-{scale}-{label}"
     directory.mkdir(mode=0o700)
+    context_before = phase_context(run)
     modes = []
-    companions = CompanionReads()
-    companions.start()
+    companions = CompanionReads(http_get)
     try:
+        companions.start()
         for concurrency in (1, 8):
             for cache in ("miss", "warm"):
+                companions.set_scope(f"c{concurrency}-{cache}")
                 output = directory / f"c{concurrency}-{cache}"
                 args = ["--source-root", str(source_root), "--samples", "20" if concurrency == 1 else "200",
                         "--trials", "3", "--concurrency", str(concurrency), "--cache", cache, "--output", str(output),
@@ -175,6 +136,7 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
                 if label == "candidate":
                     args += ["--budget-ms", "100" if scale == "1x" else "250"]
                 code = node_tool("benchmarkLookups", args, database, output.with_suffix(".log"))
+                companions.set_scope("between")
                 result = read_json(output / "lookups.json") if (output / "lookups.json").exists() else {}
                 modes.append({"concurrency": concurrency, "cache": cache, "exit_code": code,
                               "passed": code == 0 and bool(result.get("results")) and result.get('sourceIdentity')==measured
@@ -183,12 +145,31 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
                               "results": result.get("results", []), "settings": result.get("settings", {}),
                               "source": str(output / "lookups.json")})
     finally:
-        companion_results = companions.finish()
+        if companions.origin is not None:
+            companions.set_scope("teardown")
+        try:
+            companion_results = companions.finish()
+        finally:
+            # Preserve partial raw evidence even when a reader/cleanup fails.
+            raw_context_error = None
+            try:
+                raw_context = phase_context(run)
+            except Exception as error:
+                raw_context, raw_context_error = context_before, safe_error(error)
+            raw = {"version": 1, "scale": scale, "label": label, "fixture_token": fixture["token"],
+                   "measured_source": measured, "context": raw_context,
+                   "collector": companions.evidence(), "summary": companion_summary(companions.records),
+                   "context_error": raw_context_error}
+            raw_path = directory / "companions.json"
+            write_json(raw_path, raw)
+            if raw_context_error:
+                raise RuntimeError("companion observations retained but final runtime context failed")
     record = {"at": utc_now(), "scale": scale, "label": label, "fixture_token": fixture["token"],
               'measured_source':measured,
-              "context": phase_context(run),
+              "context": raw_context, "context_before": context_before,
+              "companion_evidence": {"path": str(raw_path), "sha256": digest(raw_path), "collector_id": companions.collector_id},
               "modes": modes, "companions": companion_results,
-              "passed": len(modes) == 4 and all(mode["passed"] for mode in modes)
+              "passed": context_before == raw_context and len(modes) == 4 and all(mode["passed"] for mode in modes)
               and all(value["requests"] > 0 and value["failures"] == 0 for value in companion_results.values())}
     write_json(directory / "summary.json", record)
     summary_path = run / "reads.json"

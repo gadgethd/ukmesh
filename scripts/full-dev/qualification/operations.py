@@ -11,10 +11,11 @@ import math
 import time
 import uuid
 
-from benchmarks import active_fixture, node_tool, CompanionReads
+from benchmarks import active_fixture, node_tool
+from companion_reads import CompanionReads
 from common import REPO, read_json, utc_now, write_json
 from context import phase_context
-from probes import inventory
+from probes import http_get, inventory
 from source_identity import expected_sources
 
 NAMES = {"summary", "charts", "nodes-csv", "nodes-geojson"}
@@ -205,9 +206,10 @@ def operations_pair(run: Path) -> dict:
     directory=run/f"operations-{fixture['kind']}-paired-{token[:8]}";directory.mkdir(mode=0o700)
     write_json(directory/'pair.json',{'token':token,'fixture_token':fixture['token'],'sources':sources})
     database=next(item['database'] for item in fixture['databases'] if item['label']=='ukmesh')
-    companions=CompanionReads();companions.start()
+    companions=CompanionReads(http_get)
     codes={};error=None;releases=[]
     try:
+        companions.start()
         with ThreadPoolExecutor(max_workers=2) as executor:
             futures={label:executor.submit(node_tool,'benchmarkOperations',
                 ['--source-root',source['source_root'],'--reference-revision',source['revision'],
@@ -267,9 +269,9 @@ def operations(run: Path, *, label: str, source_root: Path | None = None) -> dic
     database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
     output = run / f"operations-{fixture['kind']}-{label}"
     output.mkdir(mode=0o700)
-    companions = CompanionReads()
-    companions.start()
+    companions = CompanionReads(http_get)
     try:
+        companions.start()
         code = node_tool("benchmarkOperations", ["--source-root", source["source_root"], "--reference-revision", source["revision"],
                          "--output", str(output)], database, output / "native.log", timeout=600)
         native = read_json(output / "operations.json") if (output / "operations.json").exists() else {}
