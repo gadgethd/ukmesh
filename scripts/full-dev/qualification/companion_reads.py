@@ -34,8 +34,11 @@ def companion_summary(records: list[dict]) -> dict:
 
 
 class CompanionReads:
-    def __init__(self, request) -> None:
+    def __init__(self, request, *, cadence_seconds: float = 1) -> None:
+        if type(cadence_seconds) not in (int, float) or not math.isfinite(cadence_seconds) or cadence_seconds <= 0:
+            raise ValueError('positive finite companion cadence required')
         self.request = request
+        self.cadence = cadence_seconds
         self.collector_id = uuid.uuid4().hex
         self.stop = threading.Event()
         self.records: list[dict] = []
@@ -84,7 +87,7 @@ class CompanionReads:
                            "end_offset_seconds": end - self.origin})
             self.records.append(record)
             sequence += 1
-            self.stop.wait(max(0, 1 - (time.monotonic() - start)))
+            self.stop.wait(max(0, self.cadence - (time.monotonic() - start)))
 
     def finish(self) -> dict:
         if self.stop_requested_at is None:
@@ -116,11 +119,11 @@ class CompanionReads:
         return {"collector_id": self.collector_id, "started_at": self.started_at, "origin_monotonic": self.origin,
                 "stop_requested_at": self.stop_requested_at, "stop_requested_offset_seconds": self.stop_requested_offset,
                 "finished_at": self.finished_at, "finished_offset_seconds": self.finished_offset,
-                "actors": COMPANION_ACTORS, "cadence_seconds": 1, "attempted": self.attempted,
+                "actors": COMPANION_ACTORS, "cadence_seconds": self.cadence, "attempted": self.attempted,
                 "boundaries": self.boundaries, "records": records}
 
 
-def validate_companion_samples(value: dict) -> dict:
+def validate_companion_samples(value: dict, *, cadence_seconds: float = 1) -> dict:
     collector = value["collector"]
     finite = lambda number: type(number) in (int, float) and math.isfinite(number)
     def utc(value):
@@ -130,7 +133,7 @@ def validate_companion_samples(value: dict) -> dict:
         return parsed
     if not re.fullmatch("[a-f0-9]{32}", collector.get("collector_id", "")):
         raise ValueError("independent companion collector identity required")
-    if collector["actors"] != COMPANION_ACTORS or collector["cadence_seconds"] != 1 \
+    if collector["actors"] != COMPANION_ACTORS or collector["cadence_seconds"] != cadence_seconds \
             or not finite(collector["origin_monotonic"]) or collector["origin_monotonic"] <= 0:
         raise ValueError("independent companion actors or cadence differ")
     stop, finished = collector["stop_requested_offset_seconds"], collector["finished_offset_seconds"]
@@ -157,7 +160,7 @@ def validate_companion_samples(value: dict) -> dict:
         if not rows or any(type(row["sequence"]) is not int for row in rows) or [row["sequence"] for row in rows] != list(range(len(rows))) \
                 or collector["attempted"].get(actor) != len(rows) or any(row["name"] != name for row in rows):
             raise ValueError("companion actor samples are missing or duplicated")
-        if any(later["start_offset_seconds"] < max(earlier["end_offset_seconds"], earlier["start_offset_seconds"]+1)-1e-6 for earlier, later in zip(rows, rows[1:])):
+        if any(later["start_offset_seconds"] < max(earlier["end_offset_seconds"], earlier["start_offset_seconds"]+cadence_seconds)-1e-6 for earlier, later in zip(rows, rows[1:])):
             raise ValueError("companion actor cadence or serial requests differ")
         for row in rows:
             start, end, elapsed = row["start_offset_seconds"], row["end_offset_seconds"], row["ms"]
@@ -177,7 +180,7 @@ def validate_companion_samples(value: dict) -> dict:
     return summary
 
 
-def measured_companions(record: dict) -> dict:
+def measured_companion_data(record: dict, *, cadence_seconds: float = 1) -> dict:
     pointer = record["companion_evidence"]
     path = Path(pointer["path"])
     if not path.resolve().is_relative_to(EVIDENCE.resolve()) or path.is_symlink():
@@ -194,11 +197,15 @@ def measured_companions(record: dict) -> dict:
         raise ValueError("companion raw evidence digest differs")
     value = json.loads(data)
     if value.get("version") != 1 or any(value.get(key) != record.get(key) for key in
-            ("scale", "label", "fixture_token", "measured_source", "context")):
+            ("scale", "label", "fixture_token", "measured_source", "context", "protocol", "read_window", "diagnostic_only")):
         raise ValueError("companion raw evidence identity differs")
     if value.get("collector", {}).get("collector_id") != pointer.get("collector_id"):
         raise ValueError("companion collector identity differs from its raw evidence")
-    summary = validate_companion_samples(value)
+    summary = validate_companion_samples(value, cadence_seconds=cadence_seconds)
     if summary != record["companions"]:
         raise ValueError("reported companion aggregate differs from raw evidence")
-    return summary
+    return value
+
+
+def measured_companions(record: dict, *, cadence_seconds: float = 1) -> dict:
+    return measured_companion_data(record, cadence_seconds=cadence_seconds)['summary']

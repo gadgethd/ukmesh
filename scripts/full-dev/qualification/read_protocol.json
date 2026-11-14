@@ -1,0 +1,13 @@
+{
+  "version": 3,
+  "pair_order": [["A", "B"], ["B", "A"], ["A", "B"]],
+  "source_labels": {"A": "baseline", "B": "candidate"},
+  "modes": [{"concurrency": 1, "cache": "miss"}, {"concurrency": 1, "cache": "warm"}, {"concurrency": 8, "cache": "miss"}, {"concurrency": 8, "cache": "warm"}],
+  "native_trials": 3,
+  "samples": {"1": 20, "8": 200},
+  "companion_cadence_seconds": 0.25,
+  "minimum_requests_per_app_window": 12,
+  "regression_ratio": 1.1,
+  "budgets_ms": {"1x": 100, "10x": 250},
+  "collection_budget_seconds": 1440
+}

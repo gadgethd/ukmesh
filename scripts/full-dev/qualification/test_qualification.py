@@ -610,22 +610,14 @@ class EvidenceAcceptance(unittest.TestCase):
         self.assertFalse(result["database_access_denied"])
         self.assertIsNone(result["sqlstate"])
 
-    def test_read_comparison_requires_both_scales_and_three_matched_trials(self):
-        self.assertFalse(benchmarks.read_comparison([])["passed"])
-        runs = []
-        for scale in ("1x", "10x"):
-            for label in ("baseline", "candidate"):
-                modes = [{"concurrency": concurrency, "cache": cache,
-                          "results": [{"name": "map", "p95Ms": 40} for _ in range(3)]}
-                         for concurrency in (1, 8) for cache in ("miss", "warm")]
-                runs.append({"scale": scale, "label": label, "modes": modes,
-                    "companion_evidence": {"collector_id":uuid.uuid4().hex},
-                    "companions": {name: {"p95_ms": 10, "requests": 100, "failures": 0}
-                                   for name in ("corescope", "beacon")}})
-        with patch.object(benchmarks, "measured_companions", side_effect=lambda row: row["companions"]):
-            self.assertTrue(benchmarks.read_comparison(runs)["passed"])
-            runs[-1]["modes"][-1]["results"].pop()
-            self.assertFalse(benchmarks.read_comparison(runs)["passed"])
+    def test_legacy_unpaired_windows_cannot_qualify_the_three_pair_protocol(self):
+        self.assertFalse(benchmarks.read_comparison([])['passed'])
+        legacy = [{'scale': scale, 'label': label, 'modes': [],
+                   'companion_evidence': {'collector_id': uuid.uuid4().hex}}
+                  for scale in ('1x', '10x') for label in ('baseline', 'candidate')]
+        result = benchmarks.read_comparison(legacy)
+        self.assertFalse(result['passed'])
+        self.assertTrue(all('six-matched-windows' in item for item in result['missing']))
 
 
 class CompanionRawEvidence(unittest.TestCase):
@@ -680,7 +672,7 @@ class CompanionRawEvidence(unittest.TestCase):
             record['label']='baseline';path.write_text(path.read_text()+' ')
             with self.assertRaisesRegex(ValueError,'digest'):companion_reads.measured_companions(record)
 
-    def test_same_raw_file_cannot_make_both_labels_pass_and_valid_11_percent_regression_fails(self):
+    def test_same_raw_file_cannot_make_independent_headers_match(self):
         with tempfile.TemporaryDirectory() as temporary,patch.object(companion_reads,'EVIDENCE',Path(temporary)):
             runs=[]
             for scale in ('1x','10x'):
@@ -691,10 +683,9 @@ class CompanionRawEvidence(unittest.TestCase):
                     raw.update({key:record[key] for key in ('scale','label','fixture_token','measured_source','context')})
                     path=Path(temporary)/f'{scale}-{label}.json';common.write_json(path,raw)
                     record.update(companions=raw['summary'],companion_evidence={'path':str(path),'sha256':common.digest(path),'collector_id':raw['collector']['collector_id']});runs.append(record)
-            result=benchmarks.read_comparison(runs)
-            self.assertFalse(result['passed']);self.assertTrue(any(not row['passed'] for row in result['companion_comparisons']))
             runs[-1]['companion_evidence']=runs[-2]['companion_evidence']
-            self.assertIn('identity',benchmarks.read_comparison(runs)['missing'][0])
+            with self.assertRaisesRegex(ValueError, 'identity'):
+                companion_reads.measured_companions(runs[-1])
 
     def test_correctly_reheaded_clone_still_cannot_serve_independent_source_labels(self):
         with tempfile.TemporaryDirectory() as temporary,patch.object(companion_reads,'EVIDENCE',Path(temporary)):
@@ -735,7 +726,7 @@ class CompanionRawEvidence(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             run=Path(temporary);fixture={'kind':'1x','token':'owned','databases':[{'label':'ukmesh','database':'owned'}]}
             measured={'source_root':str(common.REPO/'backend/src'),'revision':'a'*40,'sha256':'b'*64,'files':1}
-            companion=Mock();companion.records=self.raw()['collector']['records'];companion.evidence.return_value=self.raw()['collector'];companion.finish.side_effect=RuntimeError('owned reader failed')
+            companion=Mock();companion.records=self.raw()['collector']['records'];companion.evidence.return_value=self.raw()['collector'];companion.collector_id=companion.evidence.return_value['collector_id'];companion.finish.side_effect=RuntimeError('owned reader failed')
             with patch.object(benchmarks,'active_fixture',return_value=fixture),patch.object(benchmarks,'expected_sources',return_value={'candidate':measured}),patch.object(benchmarks,'inventory',return_value={'passed':True}),patch.object(benchmarks,'phase_context',return_value={'run_id':run.name}),patch.object(benchmarks,'CompanionReads',return_value=companion),patch.object(benchmarks,'node_tool',side_effect=RuntimeError('native failed')):
                 with self.assertRaisesRegex(RuntimeError,'reader failed'):benchmarks.reads(run,label='candidate',source_root=common.REPO/'backend/src')
             raw=common.read_json(run/'reads-1x-candidate/companions.json')

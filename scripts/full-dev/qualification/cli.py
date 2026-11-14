@@ -25,7 +25,7 @@ def main() -> int:
     parser.add_argument("--reader-schema", default="corescope_public")
     parser.add_argument("--label", choices=("baseline", "candidate"), default="candidate")
     parser.add_argument("--source-root", type=Path)
-    parser.add_argument("--paired", action="store_true", help="run the source-selected operations as synchronized baseline/candidate trials")
+    parser.add_argument("--paired", action="store_true", help="run the fixed matched reads or synchronized operations")
     parser.add_argument("--count", type=int, default=72000)
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--traffic-interval-ms", type=int, default=1000)
@@ -45,9 +45,11 @@ def main() -> int:
             from access import access
             result = access(run, reader_role=args.reader_role, reader_schema=args.reader_schema)
         elif args.action == "reads":
-            from benchmarks import reads
+            from benchmarks import reads, reads_pair
             from common import REPO
-            result = reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
+            if args.paired and args.source_root:
+                raise ValueError('paired reads select sealed/current sources explicitly')
+            result = reads_pair(run) if args.paired else reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
         elif args.action == "operations":
             from operations import operations,operations_pair
             if args.paired and args.source_root:

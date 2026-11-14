@@ -371,3 +371,34 @@ never shift timestamps, raise a tolerance, infer missing boundaries or omit
 samples. HTTP request clocks and every workload/acceptance gate remain unchanged.
 A new prospective protocol records this sampling correction before one fresh
 same-source control; it cannot retroactively validate the first attempt.
+
+## The read protocol owns matched companion repetitions
+
+Three native trials previously shared one companion observation window per
+source. That hidden link made native trial count appear to supply three matched
+companion repetitions. The valid same-source control retained312/328 Core reads
+but produced7.109/4.891ms p95 without a source change; it neither explains away
+nor passes the original regression. Short native trials had only6–10 or26–30
+Core observations, so dividing those rows would make p95 too close to a maximum.
+Fixed1Hz sampling can also alias periodic work. Neither trimming startup nor
+selecting a passing interval repairs these structural problems.
+
+Give one read-protocol profile ownership of three complete matched matrix pairs,
+orderedAB/BA/AB prospectively. Each fresh window reuses the existing workload and
+lifecycle owner: four modes, three native trials,20/200 samples andC1/C8 slots.
+The paired read profile alone uses0.25s per existing actor; operations and soak
+retain their1s default. This stays within Beacon's enabled600/minute limit with
+120/minute headroom and preserves fresh HTTP construction/body/JSON clocks.
+
+Keep collector/raw ownership separate from protocol scheduling and comparison.
+Retain every observation and independent collector/window/pair identity. The
+primary companion statistic pools all raw rows by source across all three
+windows, with the unchanged nearest-rankp95 and10% gate; pair/mode/trial results
+are descriptive. Every current-source native value must meet100/250ms, now nine
+values per case/mode. The sealed baseline remains an unbounded reference.
+Normal baseline authority never accepts candidate aliases. Same-source aliases
+are explicitly diagnostic, use candidate authority six times, and cannot enter
+a qualification report. Missing/duplicate pairs, wrong order/cadence, failures
+or source/runtime drift fail closed. One fresh same-source three-pair control
+with a fixed24-minute collection budget precedes any separately authorized
+baseline/current runs; no retries, cadence tuning, weighting or idle padding.

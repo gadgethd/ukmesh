@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-import statistics
+import time
+import uuid
 
 from common import REPO, STATE, digest, command, read_json, safe_error, utc_now, write_json
-from companion_reads import CompanionReads, companion_summary, measured_companions
+from companion_reads import CompanionReads, companion_summary
 from context import phase_context
 from fixtures import bundle, current_targets
 from probes import inventory
 from loopback_http import http_get
 from source_identity import expected_sources, identify, validate_measurements
+from read_protocol import IDENTITY, PROFILE, STEPS
+from read_measurements import native_evidence, read_comparison, validate_read_batches
 
 
 def active_fixture() -> dict:
@@ -46,143 +49,165 @@ def node_tool(tool: str, args: list[str], database: str, log: Path, *, timeout: 
 
 
 
-def read_comparison(runs: list[dict]) -> dict:
-    missing = []
-    comparisons = []
-    companion_comparisons = []
+def read_once(run: Path, *, label: str, source_root: Path, directory: Path | None = None,
+              window: dict | None = None, diagnostic_only: bool = False, cadence_seconds: float = 1,
+              deadline: float | None = None) -> dict:
+    if label not in ('baseline', 'candidate') or (diagnostic_only and label != 'candidate'):
+        raise ValueError('normal source authority is required; diagnostics use candidate only')
+    fixture = active_fixture(); scale = fixture['kind']
+    if scale not in PROFILE['budgets_ms']: raise ValueError('matched reads require retained1x/10x fixtures')
+    measured = expected_sources()[label]
+    if source_root.resolve() != Path(measured['source_root']):
+        raise ValueError('selected lookup source differs from its baseline/candidate authority')
+    if not inventory(run)['passed']: raise RuntimeError('complete service inventory must pass before timing')
+    database = next(item['database'] for item in fixture['databases'] if item['label'] == 'ukmesh')
+    directory = directory or run / f'reads-{scale}-{label}'
+    if not directory.resolve().is_relative_to(run.resolve()) or directory.resolve() == run.resolve():
+        raise ValueError('fresh read output must stay inside this evidence run')
+    directory.mkdir(mode=0o700)
+    context_before = phase_context(run); modes = []; error = None
+    companions = CompanionReads(http_get, cadence_seconds=cadence_seconds)
     try:
-        audited = {id(row): measured_companions(row) for row in runs}
-        identities = [row.get("companion_evidence", {}).get("collector_id") for row in runs]
-        if len(identities) != len(set(identities)):
-            raise ValueError("independent companion collector identity was reused across labels/scales")
-    except (ValueError, KeyError, TypeError, OSError) as error:
-        return {"passed": False, "missing": [str(error)], "comparisons": [], "companion_comparisons": []}
-    for scale in ("1x", "10x"):
-        companion_runs = {label: [row for row in runs if row["scale"] == scale and row["label"] == label]
-                          for label in ("baseline", "candidate")}
-        if all(len(values) == 1 for values in companion_runs.values()):
-            for name in ("corescope", "beacon"):
-                before = audited[id(companion_runs["baseline"][0])][name]
-                after = audited[id(companion_runs["candidate"][0])][name]
-                old, new = before.get("p95_ms"), after.get("p95_ms")
-                valid = old is not None and new is not None and before.get("requests", 0) >= 12 and after.get("requests", 0) >= 12
-                companion_comparisons.append({"scale": scale, "name": name, "baseline_p95_ms": old,
-                    "candidate_p95_ms": new, "passed": valid and before.get("failures") == after.get("failures") == 0
-                    and new <= old * 1.1})
-        for concurrency in (1, 8):
-            for cache in ("miss", "warm"):
-                matches = {}
-                for label in ("baseline", "candidate"):
-                    selected = [row for row in runs if row["scale"] == scale and row["label"] == label]
-                    modes = [mode for run in selected for mode in run["modes"]
-                             if mode["concurrency"] == concurrency and mode["cache"] == cache]
-                    if len(modes) != 1:
-                        missing.append(f"{scale}/{label}/c{concurrency}/{cache}")
-                    else:
-                        matches[label] = modes[0]
-                if len(matches) != 2:
-                    continue
-                grouped = {}
-                for label, mode in matches.items():
-                    grouped[label] = {}
-                    for row in mode["results"]:
-                        grouped[label].setdefault(row["name"], []).append(row["p95Ms"])
-                if set(grouped["baseline"]) != set(grouped["candidate"]):
-                    missing.append(f"{scale}/c{concurrency}/{cache}/case-parity")
-                    continue
-                for name in grouped["baseline"]:
-                    old = statistics.median(grouped["baseline"][name])
-                    new = statistics.median(grouped["candidate"][name])
-                    comparisons.append({"scale": scale, "concurrency": concurrency, "cache": cache, "name": name,
-                                        "baseline_p95_ms": old, "candidate_p95_ms": new,
-                                        "change_percent": (new / old - 1) * 100 if old else None,
-                                        "three_trials": len(grouped["baseline"][name]) == len(grouped["candidate"][name]) == 3,
-                                        "within_budget": new <= (100 if scale == "1x" else 250)})
-    return {"passed": not missing and bool(comparisons) and len(companion_comparisons) == 4
-            and all(row["three_trials"] and row["within_budget"] for row in comparisons)
-            and all(row["passed"] for row in companion_comparisons),
-            "missing": missing, "comparisons": comparisons, "companion_comparisons": companion_comparisons}
+        companions.start()
+        for mode in PROFILE['modes']:
+            concurrency, cache = mode['concurrency'], mode['cache']
+            if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
+            companions.set_scope(f'c{concurrency}-{cache}')
+            output = directory / f'c{concurrency}-{cache}'
+            args = ['--source-root', str(source_root), '--samples', str(PROFILE['samples'][str(concurrency)]),
+                    '--trials', str(PROFILE['native_trials']), '--concurrency', str(concurrency), '--cache', cache,
+                    '--output', str(output), '--reference-revision', measured['revision']]
+            if label == 'candidate': args += ['--budget-ms', str(PROFILE['budgets_ms'][scale])]
+            code = node_tool('benchmarkLookups', args, database, output.with_suffix('.log'),
+                             timeout=1800 if deadline is None else max(.001, deadline-time.monotonic()))
+            companions.set_scope('between')
+            path = output / 'lookups.json'; value = read_json(path) if path.exists() else {}
+            modes.append({**mode, 'exit_code': code, 'passed': code == 0 and bool(value.get('results'))
+                and value.get('sourceIdentity') == measured and value.get('sourceIdentityAfter') == measured
+                and value.get('sourceStable') is True and value.get('passed') is True,
+                'source_identity': value.get('sourceIdentity'), 'source_stable': value.get('sourceStable'),
+                'results': value.get('results', []), 'settings': value.get('settings', {}), 'source': str(path),
+                'evidence_sha256': digest(path) if path.exists() else None,
+                'timeline_sha256': digest(output/'timeline.json') if (output/'timeline.json').exists() else None})
+            if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
+            if not modes[-1]['passed']: raise RuntimeError('native read window failed; exact partial evidence retained')
+            native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured},
+                            {'boundaries': companions.boundaries})
+    except BaseException as caught:
+        error = caught
+    finally:
+        try:
+            if companions.origin is not None: companions.set_scope('teardown')
+        except BaseException as caught: error = caught
+        try: companions.finish()
+        except BaseException as caught: error = caught
+        raw_context_error = None
+        try: context = phase_context(run)
+        except Exception as caught:
+            context, raw_context_error = context_before, safe_error(caught)
+            error = RuntimeError('companion observations retained but final runtime context failed')
+        identity = {'scale': scale, 'label': label, 'fixture_token': fixture['token'], 'measured_source': measured,
+                    'context': context, 'protocol': IDENTITY, 'read_window': window, 'diagnostic_only': diagnostic_only}
+        totals = companion_summary(companions.records)
+        minimum = PROFILE['minimum_requests_per_app_window'] if window is not None else 1
+        raw = {'version': 1, **identity, 'collector': companions.evidence(), 'summary': totals, 'context_error': raw_context_error}
+        raw_path = directory / 'companions.json'; write_json(raw_path, raw)
+        record = {'at': utc_now(), **identity, 'context_before': context_before,
+            'companion_evidence': {'path': str(raw_path), 'sha256': digest(raw_path), 'collector_id': companions.collector_id},
+            'modes': modes, 'companions': totals, 'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)],
+            'passed': error is None and context_before == context and len(modes) == len(PROFILE['modes'])
+                and all(mode['passed'] for mode in modes) and all(v['requests'] >= minimum and v['failures'] == 0 for v in totals.values())}
+        write_json(directory / 'summary.json', record)
+    if error is not None: raise error
+    return record
+
+
+def publish_reads(run, records):
+    validate_measurements(records, expected_sources())
+    comparison = read_comparison(records)
+    value = {'at': utc_now(), 'context': phase_context(run), 'runs': records, **comparison}
+    write_json(run / 'reads.json', value)
+    return value
 
 
 def reads(run: Path, *, label: str, source_root: Path) -> dict:
-    if label not in ("baseline", "candidate"):
-        raise ValueError("read label must be baseline or candidate")
-    fixture = active_fixture()
-    scale = fixture["kind"]
-    if scale not in ("1x", "10x"):
-        raise ValueError("matched lookup reads require a retained 1x or 10x fixture")
-    if not source_root.resolve().is_relative_to(REPO) or not (source_root / "repositories/nodes.ts").is_file():
-        raise ValueError("source root must be an existing backend source directory inside this repository")
-    expected=expected_sources()
-    measured=expected[label]
-    if source_root.resolve()!=Path(measured['source_root']):
-        raise ValueError('selected lookup source differs from its baseline/candidate authority')
-    if not inventory(run)["passed"]:
-        raise RuntimeError("complete service inventory must pass before timing")
-    database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
-    directory = run / f"reads-{scale}-{label}"
-    directory.mkdir(mode=0o700)
-    context_before = phase_context(run)
-    modes = []
-    companions = CompanionReads(http_get)
-    try:
-        companions.start()
-        for concurrency in (1, 8):
-            for cache in ("miss", "warm"):
-                companions.set_scope(f"c{concurrency}-{cache}")
-                output = directory / f"c{concurrency}-{cache}"
-                args = ["--source-root", str(source_root), "--samples", "20" if concurrency == 1 else "200",
-                        "--trials", "3", "--concurrency", str(concurrency), "--cache", cache, "--output", str(output),
-                        '--reference-revision',measured['revision']]
-                if label == "candidate":
-                    args += ["--budget-ms", "100" if scale == "1x" else "250"]
-                code = node_tool("benchmarkLookups", args, database, output.with_suffix(".log"))
-                companions.set_scope("between")
-                result = read_json(output / "lookups.json") if (output / "lookups.json").exists() else {}
-                modes.append({"concurrency": concurrency, "cache": cache, "exit_code": code,
-                              "passed": code == 0 and bool(result.get("results")) and result.get('sourceIdentity')==measured
-                                and result.get('sourceIdentityAfter')==measured and result.get('sourceStable') is True,
-                              'source_identity':result.get('sourceIdentity'),'source_stable':result.get('sourceStable'),
-                              "results": result.get("results", []), "settings": result.get("settings", {}),
-                              "source": str(output / "lookups.json")})
-    finally:
-        if companions.origin is not None:
-            companions.set_scope("teardown")
-        try:
-            companion_results = companions.finish()
-        finally:
-            # Preserve partial raw evidence even when a reader/cleanup fails.
-            raw_context_error = None
-            try:
-                raw_context = phase_context(run)
-            except Exception as error:
-                raw_context, raw_context_error = context_before, safe_error(error)
-            raw = {"version": 1, "scale": scale, "label": label, "fixture_token": fixture["token"],
-                   "measured_source": measured, "context": raw_context,
-                   "collector": companions.evidence(), "summary": companion_summary(companions.records),
-                   "context_error": raw_context_error}
-            raw_path = directory / "companions.json"
-            write_json(raw_path, raw)
-            if raw_context_error:
-                raise RuntimeError("companion observations retained but final runtime context failed")
-    record = {"at": utc_now(), "scale": scale, "label": label, "fixture_token": fixture["token"],
-              'measured_source':measured,
-              "context": raw_context, "context_before": context_before,
-              "companion_evidence": {"path": str(raw_path), "sha256": digest(raw_path), "collector_id": companions.collector_id},
-              "modes": modes, "companions": companion_results,
-              "passed": context_before == raw_context and len(modes) == 4 and all(mode["passed"] for mode in modes)
-              and all(value["requests"] > 0 and value["failures"] == 0 for value in companion_results.values())}
-    write_json(directory / "summary.json", record)
-    summary_path = run / "reads.json"
-    prior = read_json(summary_path).get("runs", []) if summary_path.exists() else []
-    prior.append(record)
-    validate_measurements(prior,expected_sources())
-    comparison = read_comparison(prior)
-    summary = {"at": utc_now(), "context": phase_context(run),
-               "passed": comparison["passed"] and all(row["passed"] for row in prior),
-               "runs": prior, **{key: value for key, value in comparison.items() if key != "passed"}}
-    write_json(summary_path, summary)
+    record = read_once(run, label=label, source_root=source_root)
+    path = run / 'reads.json'; prior = read_json(path).get('runs', []) if path.exists() else []
+    publish_reads(run, prior + [record])
     return record
+
+
+def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
+    fixture = active_fixture(); scale = fixture['kind']; source = expected_sources()
+    if scale not in PROFILE['budgets_ms']: raise ValueError('paired reads require retained1x/10x fixtures')
+    context = phase_context(run); batch = uuid.uuid4().hex
+    directory = run / f'reads-{scale}-paired-{batch}'
+    directory.mkdir(mode=0o700)
+    before = time.monotonic(); deadline = before + PROFILE['collection_budget_seconds']; records = []; error = None
+    path = run / ('reads-control.json' if diagnostic_only else 'reads.json')
+    prior_value = {} if diagnostic_only or not path.exists() else read_json(path)
+    prior = prior_value.get('runs', [])
+    prior_batches = prior_value.get('batches', [])
+    if prior and (not prior_batches or any(not batch.get('passed') for batch in prior_batches)):
+        raise ValueError('previous read batch did not close successfully; archive its evidence first')
+    if prior:
+        validate_measurements(prior, source)
+        validate_read_batches(prior_value, scales=tuple(sorted({row['scale'] for row in prior})))
+    if prior and any(row['scale'] == scale for row in prior): raise ValueError('this scale already has retained read measurements; archive before another attempt')
+    try:
+        for step in STEPS:
+            if time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
+            if phase_context(run) != context: raise ValueError('source/runtime/fixture drift between paired windows')
+            label = 'candidate' if diagnostic_only else PROFILE['source_labels'][step['side']]
+            window = {**step, 'batch_id': batch, 'id': uuid.uuid4().hex}
+            output = directory / f"window-{step['position']}-{step['side']}"
+            try:
+                record = read_once(run, label=label, source_root=Path(source[label]['source_root']), directory=output,
+                    window=window, diagnostic_only=diagnostic_only,
+                    cadence_seconds=PROFILE['companion_cadence_seconds'], deadline=deadline)
+            except BaseException:
+                if (output / 'summary.json').exists(): records.append(read_json(output / 'summary.json'))
+                raise
+            records.append(record)
+            validate_measurements(records, source)
+            if phase_context(run) != context: raise ValueError('source/runtime/fixture drift after paired window')
+            if not record['passed']: raise RuntimeError('paired read window failed')
+            write_json(directory / 'progress.json', {'passed': False, 'pending': True, 'protocol': IDENTITY,
+                'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records})
+    except BaseException as caught: error = caught
+    comparison = read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only)
+    canonical = None
+    if not diagnostic_only:
+        try:
+            validate_measurements(prior + records, expected_sources())
+            canonical = read_comparison(prior + records)
+        except BaseException as caught: error = caught
+    final, final_context_error = context, None
+    try: final = phase_context(run)
+    except BaseException as caught:
+        error = caught; final_context_error = safe_error(caught)
+    if time.monotonic() >= deadline:
+        error = TimeoutError('paired read collection budget exhausted at final closure')
+    stable = final == context and error is None
+    result = {'at': utc_now(), 'context': final, 'context_before': context, 'protocol': IDENTITY,
+              'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records,
+              'collection_seconds': time.monotonic() - before, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
+              'final_context_error': final_context_error,
+              'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)], 'comparison': comparison}
+    if diagnostic_only:
+        result.update(valid=stable and comparison['valid'], symmetric_within_ten_percent=stable and comparison['passed'])
+        write_json(path, result)
+    else:
+        result['passed'] = stable and comparison['passed']
+        write_json(directory / 'summary.json', result)
+        value = {'at': utc_now(), 'context': final, 'runs': prior + records,
+                 **(canonical or {'passed': False, 'diagnostic_only': False, 'protocol': IDENTITY, 'missing': ['read batch finalization failed']}),
+                 'batches': prior_batches + [{'passed': result['passed'], 'scale': scale, 'batch_id': batch,
+                    'path': str(directory/'summary.json'), 'sha256': digest(directory/'summary.json')}]}
+        value['passed'] = stable and value['passed']
+        write_json(path, value)
+    if error is not None: raise error
+    return result
 
 
 def parity(run: Path, *, source_root: Path) -> dict:
