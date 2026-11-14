@@ -1,8 +1,11 @@
 import http from 'node:http';
 
-const counts = {tags: 0, alerts: 0, failures: 0, lastAlertProbe: '', alertProbes: []};
-let failureStatus = 0;
-let delayMs = 0;
+const counts = {tags: 0, alerts: 0, failures: 0, lastAlertProbe: '', alertProbes: [], failedAlertProbes: []};
+let fault = {status: 0, delayMs: 0, route: '/tag', alertProbe: null};
+function remember(values, value) {
+  if (!values.includes(value)) values.push(value);
+  if (values.length > 64) values.shift();
+}
 const server = http.createServer((request, response) => {
   handle(request, response).catch(error => {
     if (!response.headersSent) response.writeHead(error instanceof SyntaxError ? 400 : 500);
@@ -24,19 +27,30 @@ async function handle(request, response) {
   }
   if (url.pathname === '/failure') {
     const value = JSON.parse(body);
-    if (![0, 429, 503].includes(value.status) || !Number.isInteger(value.delayMs ?? 0)
-      || (value.delayMs ?? 0) < 0 || (value.delayMs ?? 0) > 2000) { response.writeHead(400); response.end(); return; }
-    failureStatus = value.status; delayMs = value.delayMs ?? 0;
+    const route = value?.route ?? '/tag';
+    const delayMs = value?.delayMs ?? 0;
+    const alertProbe = value?.alertProbe ?? null;
+    const validTagFault = route === '/tag' && [0, 429].includes(value?.status) && alertProbe === null;
+    const validAlertFault = route === '/alerts' && value?.status === 503 && delayMs === 0
+      && typeof alertProbe === 'string' && /^[a-f0-9]{32}$/.test(alertProbe);
+    if ((!validTagFault && !validAlertFault) || !Number.isInteger(delayMs)
+      || delayMs < 0 || delayMs > 2000) { response.writeHead(400); response.end(); return; }
+    fault = {status: value.status, delayMs, route, alertProbe};
     response.writeHead(204); response.end(); return;
   }
-  if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
-  if (failureStatus) { counts.failures++; response.writeHead(failureStatus); response.end(); return; }
+  const probe = url.pathname === '/alerts' ? body.match(/(?<![A-Za-z0-9_-])OwnedFullStackProbe-([a-f0-9]{32})(?![A-Za-z0-9_-])/)?.[1] : null;
+  const applies = url.pathname === fault.route && (fault.alertProbe === null || probe === fault.alertProbe);
+  const currentFault = applies ? fault : {status: 0, delayMs: 0};
+  if (currentFault.delayMs) await new Promise(resolve => setTimeout(resolve, currentFault.delayMs));
+  if (currentFault.status) {
+    counts.failures++;
+    if (probe) remember(counts.failedAlertProbes, probe);
+    response.writeHead(currentFault.status); response.end(); return;
+  }
   if (url.pathname === '/alerts') {
-    const probe = body.match(/OwnedFullStackProbe-([a-f0-9]{32})/);
     if (probe) {
-      counts.lastAlertProbe = probe[1];
-      if (!counts.alertProbes.includes(probe[1])) counts.alertProbes.push(probe[1]);
-      if (counts.alertProbes.length > 64) counts.alertProbes.shift();
+      counts.lastAlertProbe = probe;
+      remember(counts.alertProbes, probe);
     }
     counts.alerts++; response.writeHead(204); response.end(); return;
   }

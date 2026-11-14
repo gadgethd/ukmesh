@@ -20,6 +20,8 @@ test('local providers survive malformed input and preserve explicit failure/reco
     }
     assert.equal((await post('/failure', {status: 429})).status, 204);
     assert.equal((await post('/tag', {state: 'owned fixture'})).status, 429);
+    assert.equal((await post('/alerts', {content: 'MeshIngestSilent'})).status, 204,
+      'tagger faults must preserve unrelated alert delivery');
     assert.equal((await post('/failure', {status: 0})).status, 204);
     const classification = await (await post('/tag', {state: 'owned fixture'})).json();
     assert.equal(classification.answers.kind.choice, 'test-ping');
@@ -34,6 +36,29 @@ test('local providers survive malformed input and preserve explicit failure/reco
     assert.equal(counts.tags, 2);
     assert.equal(counts.failures, 1);
     assert.equal(counts.lastAlertProbe, probe);
+    for (const value of [
+      {status: 503}, {status: 503, route: '/alerts'},
+      {status: 503, route: '/alerts', alertProbe: probe, delayMs: 1},
+      {status: 503, route: '/alerts', alertProbe: probe + 'a'},
+      {status: 503, route: '/alerts', alertProbe: probe.toUpperCase()},
+      {status: 429, route: '/alerts', alertProbe: probe},
+      {status: 0, route: '/all'}, null,
+    ]) assert.equal((await post('/failure', JSON.stringify(value))).status, 400);
+    assert.equal((await post('/failure', {status: 503, route: '/alerts', alertProbe: probe})).status, 204);
+    assert.equal((await post('/tag', {})).status, 200);
+    assert.equal((await post('/alerts', {content: 'MeshIngestSilent'})).status, 204);
+    assert.equal((await post('/alerts', {content: 'OwnedFullStackProbe-' + 'b'.repeat(32)})).status, 204);
+    for (const content of ['OwnedFullStackProbe-' + probe + 'a', 'OwnedFullStackProbe-' + probe + 'g',
+      'OtherOwnedFullStackProbe-' + probe, 'OwnedFullStackProbe-' + probe + '-other']) {
+      assert.equal((await post('/alerts', {content})).status, 204,
+        'a longer alert name must not match the owned fault');
+    }
+    assert.equal((await post('/alerts', {content: 'OwnedFullStackProbe-' + probe})).status, 503);
+    const failed = await (await fetch(base + '/counts')).json();
+    assert.deepEqual(failed.failedAlertProbes, [probe]);
+    assert.equal(failed.failures, 2);
+    assert.equal((await post('/failure', {status: 0})).status, 204);
+    assert.equal((await post('/alerts', {content: 'OwnedFullStackProbe-' + probe})).status, 204);
   } finally {
     output.close();
     child.kill('SIGTERM');

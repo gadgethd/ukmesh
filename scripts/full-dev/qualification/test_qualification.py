@@ -288,10 +288,67 @@ class HTTPReaderOwnership(unittest.TestCase):
 
 class RecoverySafety(unittest.TestCase):
     def test_provider_control_rejects_unbounded_or_unexpected_faults(self):
-        for settings in ({'delay_ms':2001},{'delay_ms':-1},{'status':500},{'delay_ms':'1000'},{'status':False},{'delay_ms':True}):
+        for settings in ({'delay_ms':2001},{'delay_ms':-1},{'status':500},{'delay_ms':'1000'},{'status':False},{'delay_ms':True},
+                         {'status':503},{'status':503,'alert_probe':'a'*33},{'status':503,'alert_probe':'A'*32},
+                         {'status':503,'alert_probe':'a'*32,'delay_ms':1},{'status':429,'alert_probe':'a'*32}):
             with patch.object(recovery,'urlopen') as network:
                 with self.assertRaises(ValueError):recovery.provider(**settings)
                 network.assert_not_called()
+
+    def test_fault_control_scopes_tag_and_exact_owned_alert(self):
+        with patch.object(recovery,'urlopen') as network:
+            network.return_value.__enter__.return_value.status=204
+            recovery.provider(status=429)
+            self.assertEqual(json.loads(network.call_args.args[0].data),{'status':429,'delayMs':0,'route':'/tag'})
+            recovery.provider(delay_ms=2000)
+            self.assertEqual(json.loads(network.call_args.args[0].data),{'status':0,'delayMs':2000,'route':'/tag'})
+            recovery.provider(status=503,alert_probe='a'*32)
+            self.assertEqual(json.loads(network.call_args.args[0].data),
+                {'status':503,'delayMs':0,'route':'/alerts','alertProbe':'a'*32})
+
+    def test_unrelated_pending_alert_cannot_trigger_restart_before_owned_failed_forward(self):
+        probe='a'*32
+        health=iter([{'dead_letter_count':0},
+            {'dead_letter_count':0,'pending_count':1},{'dead_letter_count':0,'pending_count':1},
+            {'dead_letter_count':0,'pending_count':1,'status':'ok'},
+            {'dead_letter_count':0,'pending_count':0,'status':'ok'}])
+        counts=iter([{'failedAlertProbes':[]},{'failedAlertProbes':[probe]},
+                     {'alertProbes':[]},{'alertProbes':[probe]}])
+        failed_checks=[]
+        def response(url):
+            value=next(counts if url.endswith('/counts') else health)
+            if 'failedAlertProbes' in value:failed_checks.append(value)
+            return json.dumps(value).encode(),200
+        def wait(check):
+            for _ in range(5):
+                if check():return {'passed':True,'elapsed_seconds':0}
+            raise AssertionError('native predicate did not complete')
+        def restart(args,**kwargs):
+            self.assertEqual(args,['restart','ukmesh-full-alert-receiver-1'])
+            self.assertEqual(len(failed_checks),2,'unrelated pending count must not trigger restart')
+            self.assertEqual(failed_checks[-1]['failedAlertProbes'],[probe])
+        with patch.object(recovery.uuid,'uuid4',return_value=Mock(hex=probe)), \
+             patch.object(recovery,'provider') as provider,patch.object(recovery,'http_get',side_effect=response), \
+             patch.object(recovery,'wait_for',side_effect=wait),patch.object(recovery,'docker',side_effect=restart), \
+             patch.object(recovery,'urlopen') as network:
+            network.return_value.__enter__.return_value.status=200
+            result=recovery.alert_delivery()
+            self.assertTrue(result['passed'])
+            self.assertEqual(provider.call_args_list[0].kwargs,{'status':503,'alert_probe':probe})
+            self.assertEqual(provider.call_count,3)
+
+    def test_alert_fault_is_released_after_restart_failure_and_existing_dead_letters_refuse_fault(self):
+        with patch.object(recovery,'http_get',return_value=(b'{"dead_letter_count":1}',200)), \
+             patch.object(recovery,'provider') as provider,patch.object(recovery,'docker') as docker:
+            with self.assertRaisesRegex(RuntimeError,'pre-existing dead letters'):recovery.alert_delivery()
+            provider.assert_not_called();docker.assert_not_called()
+        with patch.object(recovery,'http_get',return_value=(b'{"dead_letter_count":0}',200)), \
+             patch.object(recovery,'provider') as provider,patch.object(recovery,'wait_for',return_value={'passed':True}), \
+             patch.object(recovery,'urlopen') as network,patch.object(recovery,'docker',side_effect=RuntimeError('restart failed')):
+            network.return_value.__enter__.return_value.status=200
+            with self.assertRaisesRegex(RuntimeError,'restart failed'):recovery.alert_delivery()
+            self.assertEqual(provider.call_count,2)
+            self.assertEqual(provider.call_args.kwargs,{})
 
     def test_another_selected_fixture_stops_driver_before_process_creation(self):
         with patch.object(recovery,'active_fixture',return_value={'token':'other'}),patch.object(recovery,'command') as process:

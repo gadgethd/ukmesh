@@ -4,6 +4,7 @@ import datetime as dt
 import hashlib
 import json
 from pathlib import Path
+import re
 import sqlite3
 import time
 from urllib.request import Request, urlopen
@@ -61,10 +62,13 @@ def maintenance_proof() -> dict:
             'receipt_sha256':digest(receipt_path),'fixture_token':fixture['token'],'checks':receipt['checks']}
 
 
-def provider(*, status: int = 0, delay_ms: int = 0) -> None:
-    if type(status) is not int or status not in (0,429,503) or type(delay_ms) is not int or not 0<=delay_ms<=2000:
+def provider(*, status: int = 0, delay_ms: int = 0, alert_probe: str | None = None) -> None:
+    valid_alert = status==503 and delay_ms==0 and isinstance(alert_probe,str) and re.fullmatch('[a-f0-9]{32}',alert_probe)
+    valid_tag = status in (0,429) and alert_probe is None
+    if type(status) is not int or not (valid_alert or valid_tag) or type(delay_ms) is not int or not 0<=delay_ms<=2000:
         raise ValueError('bounded local provider fault required')
-    body=json.dumps({'status':status,'delayMs':delay_ms}).encode()
+    body=json.dumps({'status':status,'delayMs':delay_ms,'route':'/alerts' if valid_alert else '/tag',
+                     **({'alertProbe':alert_probe} if valid_alert else {})}).encode()
     with urlopen(Request('http://127.0.0.1:3107/failure',data=body,headers={'Content-Type':'application/json'}),timeout=5) as response:
         if response.status!=204:
             raise RuntimeError('local provider fault controller rejected the setting')
@@ -89,6 +93,36 @@ def queues_drained() -> bool:
     metrics={parts[0]:float(parts[1]) for line in body.decode().splitlines()
              if len(parts:=line.split())==2 and not line.startswith('#')}
     return all(metrics.get(key)==0 for key in ('meshcore_packet_batch_queue_depth','meshcore_mqtt_ingest_queue_depth','meshcore_mqtt_ingest_active'))
+
+
+def alert_delivery() -> dict:
+    initial=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
+    if initial['dead_letter_count']!=0:
+        raise RuntimeError('local alert recovery requires zero pre-existing dead letters')
+    probe=uuid.uuid4().hex
+    provider(status=503,alert_probe=probe)
+    try:
+        body=json.dumps([{'labels':{'alertname':'OwnedFullStackProbe-'+probe,'severity':'info'},
+                          'annotations':{'summary':'Owned local recovery proof'}}]).encode()
+        with urlopen(Request('http://127.0.0.1:9095/api/v2/alerts',data=body,
+                             headers={'Content-Type':'application/json'}),timeout=10) as response:
+            if response.status!=200:raise RuntimeError('local Alertmanager rejected the recovery alert')
+        def owned_failure():
+            failed=probe in json.loads(http_get('http://127.0.0.1:3107/counts')[0]).get('failedAlertProbes',[])
+            health=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
+            return failed and health['pending_count']>0 and health['dead_letter_count']==0
+        queued=wait_for(owned_failure)
+        docker(['restart','ukmesh-full-alert-receiver-1'],timeout=30)
+        provider()
+        delivered=wait_for(lambda:probe in json.loads(http_get('http://127.0.0.1:3107/counts')[0]).get('alertProbes',[]))
+        def healthy_queue():
+            health=json.loads(http_get('http://127.0.0.1:3106/healthz')[0])
+            return health['pending_count']==0 and health['dead_letter_count']==0 and health['status']=='ok'
+        drained=wait_for(healthy_queue)
+        return {'passed':queued['passed'] and delivered['passed'] and drained['passed'],
+                'owned_failed_forward_observed':queued,'delivery_after_receiver_restart':delivered,
+                'queue_drained_without_dead_letters':drained}
+    finally:provider()
 
 
 def driver(directory: Path, fixture: dict, action: str, *, manifest: Path | None = None, cycles: int = 1) -> tuple[dict,Path]:
@@ -217,23 +251,6 @@ def recovery(run: Path) -> dict:
                         'durable_retry_observed':pending,'slow_response_recovered':tagged,'retry_cleared':cleared,'commits':proof}
             finally:provider()
         record('local-provider-rate-limit-and-slow-response',slow_tagger)
-        def alert_delivery():
-            probe=uuid.uuid4().hex
-            provider(status=503)
-            try:
-                body=json.dumps([{'labels':{'alertname':'OwnedFullStackProbe-'+probe,'severity':'info'},
-                                  'annotations':{'summary':'Owned local recovery proof'}}]).encode()
-                with urlopen(Request('http://127.0.0.1:9095/api/v2/alerts',data=body,
-                                     headers={'Content-Type':'application/json'}),timeout=10) as response:
-                    if response.status!=200:raise RuntimeError('local Alertmanager rejected the recovery alert')
-                queued=wait_for(lambda:json.loads(http_get('http://127.0.0.1:3106/healthz')[0])['pending_count']>0)
-                docker(['restart','ukmesh-full-alert-receiver-1'],timeout=30)
-                provider()
-                delivered=wait_for(lambda:probe in json.loads(http_get('http://127.0.0.1:3107/counts')[0]).get('alertProbes',[]))
-                drained=wait_for(lambda:json.loads(http_get('http://127.0.0.1:3106/healthz')[0])['pending_count']==0)
-                return {'passed':queued['passed'] and delivered['passed'] and drained['passed'],
-                        'durable_queue_observed':queued,'delivery_after_receiver_restart':delivered,'queue_drained':drained}
-            finally:provider()
         record('local-alert-503-durable-queue-and-restart',alert_delivery)
         def overlapping_jobs():
             main=next(row for row in fixture['databases'] if row['label']=='ukmesh')
