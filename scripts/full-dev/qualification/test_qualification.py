@@ -9,6 +9,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -201,6 +202,15 @@ class LookupSourceEvidence(unittest.TestCase):
 
 
 class HTTPReaderOwnership(unittest.TestCase):
+    def test_empty_sampler_error_and_unready_timeout_stop_before_workload(self):
+        ready=Mock();ready.wait.return_value=True
+        with self.assertRaisesRegex(RuntimeError,'first complete sample'):
+            soak.await_first_sample(ready,{'passed':False,'error':''})
+        ready.wait.return_value=False
+        with self.assertRaisesRegex(RuntimeError,'first complete sample'):soak.await_first_sample(ready,{})
+        ready.wait.return_value=True
+        soak.await_first_sample(ready,{})
+
     def backend(self,running=True):
         return {'Id':'owned-backend-id','Image':'immutable-image','State':{'Running':running},
                 'Config':{'Labels':{'com.docker.compose.project':'ukmesh-full','com.docker.compose.service':'backend'}}}
@@ -330,6 +340,40 @@ class ExecutableInventory(unittest.TestCase):
 
 
 class ResourceAcceptance(unittest.TestCase):
+    def sample_workload(self,duration,finished_at):
+        test_clock={'now':0.0};ready_at=[]
+        base=resource_rows()[0]
+        class WorkloadStop:
+            def is_set(self):return test_clock['now']>=finished_at
+            def wait(self,seconds):test_clock['now']+=seconds
+        with tempfile.TemporaryDirectory() as temporary:
+            directory=Path(temporary)
+            class Ready(threading.Event):
+                def set(self):
+                    if not (directory/'resources.jsonl').read_text().strip():raise AssertionError('ready before a sample was persisted')
+                    ready_at.append(test_clock['now']);super().set()
+            def host():return dict(base['host'],monotonic=test_clock['now'])
+            container=dict(base['containers'][0],working_bytes=2000*MIB)
+            with patch.object(resources,'phase_context',return_value={}),patch.object(resources,'current_targets',return_value={}),\
+                    patch.object(resources,'service_manifest',return_value={'services':[{'name':'api','required':True}]}),\
+                    patch.object(resources.time,'monotonic',side_effect=lambda:test_clock['now']),\
+                    patch.object(resources,'host_sample',side_effect=host),patch.object(resources,'container_samples',return_value=[container]),\
+                    patch.object(resources,'native_pss',return_value={'total_bytes':0}),\
+                    patch.object(resources,'database_samples',return_value=base['databases']):
+                result=resources.sample(directory,seconds=duration,interval=.5,warmup=0,
+                                        stop_event=WorkloadStop(),ready_event=Ready())
+            return result,ready_at
+
+    def test_first_sample_barrier_and_sampling_include_actual_workload_drain(self):
+        result,ready=self.sample_workload(2,3)
+        self.assertEqual(ready,[0]);self.assertEqual(result['duration_seconds'],3)
+        self.assertTrue(result['passed'])
+
+    def test_early_native_failure_never_waits_out_a_fake_successful_window(self):
+        result,ready=self.sample_workload(10,.5)
+        self.assertEqual(ready,[0]);self.assertEqual(result['duration_seconds'],.5)
+        self.assertFalse(result['passed']);self.assertFalse(result['checks']['complete_duration'])
+
     def test_existing_swap_usage_is_not_new_swap_growth(self):
         result = resources.evaluate(resource_rows(), duration=2400, warmup=120)
         self.assertTrue(result["passed"])
@@ -386,6 +430,16 @@ class ResourceAcceptance(unittest.TestCase):
 
 
 class EvidenceAcceptance(unittest.TestCase):
+    def test_cold_route_failures_or_missing_warmup_cannot_disappear_from_soak_evidence(self):
+        value={'passed':True,'settings':{'count':72000,'rate':30,'httpConcurrency':8},'drained':True,
+               'wsPackets':72000,'logs_passed':True,'socketReadiness':{'initialState':True,'unexpectedCloses':0},
+               'warmupReads':[{'status':200} for _ in range(8)]}
+        self.assertFalse(report.phase_check('soak',value)[0])
+        value['settings']['httpWarmup']=True
+        self.assertTrue(report.phase_check('soak',value)[0])
+        value['warmupReads'][0]['status']=503
+        self.assertFalse(report.phase_check('soak',value)[0])
+
     def test_missing_phases_and_short_soak_fail_even_with_passed_flag(self):
         self.assertFalse(report.phase_check("soak", {"passed": True, "settings": {"count": 30, "rate": 30,
             "httpConcurrency": 8}, "drained": True, "wsPackets": 30})[0])

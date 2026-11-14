@@ -19,6 +19,11 @@ from read_transport import start_reader, stop_reader
 from runtime_logs import collect_logs
 
 
+def await_first_sample(ready, result):
+    if not ready.wait(30) or result.get('passed') is False:
+        raise RuntimeError('whole-VM sampler did not capture its first complete sample before workload startup')
+
+
 def stop_measurements(worker, health_worker, companions, stop, reader_name):
     stop.set()
     try:
@@ -80,14 +85,16 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
         raise RuntimeError("invented auxiliary traffic preparation failed")
     resources_result = {}
     stop = threading.Event()
+    ready=threading.Event()
     def measure():
         try:
             duration = math.ceil(count / 30)
             resources_result.update(sample(run, seconds=duration, interval=max(.5, min(5, duration / 3)),
-                warmup=min(120, max(0, duration // 4)), stop_event=stop))
+                warmup=min(120, max(0, duration // 4)), stop_event=stop,ready_event=ready))
         except Exception as error:
             resources_result.update({"passed": False, "error": safe_error(error)})
             write_json(run / "resources-failure.json", resources_result)
+            ready.set()
     worker = threading.Thread(target=measure, name="whole-vm-qualification", daemon=True)
     health_result = {}
     health_worker = threading.Thread(target=lambda: health_result.update(verify_session(health)),
@@ -98,6 +105,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
     try:
         companions.start()
         worker.start()
+        await_first_sample(ready,resources_result)
         health_worker.start()
         native_output = run / "native-soak"
         code = node_tool("soakDatabaseLookups", ["--data-dir", str(source), "--output", str(native_output),
@@ -105,6 +113,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
             "--broker", "ws://127.0.0.1:9002", "--limit", str(count), "--rate", "30",
             "--envelope-format", "observer", "--auxiliary-traffic", str(auxiliary / "traffic.json"),
             "--http-reader-socket", str(reader_socket),
+            '--warmup-reads',
             "--budget-ms", "100" if fixture["kind"] == "1x" else "250"], database,
             run / "soak.log", timeout=math.ceil(count / 30) + 300)
     finally:

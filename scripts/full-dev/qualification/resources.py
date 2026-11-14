@@ -198,7 +198,7 @@ def evaluate(samples: list[dict], *, duration: float, warmup: float,
 
 
 def sample(run: Path, *, seconds: int, interval: float, warmup: int,
-           stop_event: threading.Event | None = None) -> dict:
+           stop_event: threading.Event | None = None, ready_event: threading.Event | None = None) -> dict:
     if not 1 <= seconds <= 86400 or not .5 <= interval <= 60 or warmup < 0 or warmup >= seconds:
         raise ValueError("sample requires 1..86400 seconds, .5..60 interval, and warmup shorter than duration")
     manifest = service_manifest()
@@ -224,11 +224,13 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
             rows.append(row)
             stream.write(json.dumps(row) + "\n")
             stream.flush()
+            if ready_event and not ready_event.is_set():
+                ready_event.set()
             elapsed = time.monotonic() - start
-            if elapsed >= seconds or (stop_event and stop_event.is_set()):
+            if (stop_event is None and elapsed >= seconds) or (stop_event and stop_event.is_set()):
                 break
             if stop_event:
-                stop_event.wait(min(interval, seconds - elapsed))
+                stop_event.wait(interval)
             else:
                 time.sleep(min(interval, seconds - elapsed))
     required = {service.get("container", service["name"]) for service in manifest["services"]

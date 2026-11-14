@@ -14,6 +14,7 @@ import { boundedCacheMetricLabel } from '../metrics/labels.js';
 import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
 import { waitForInitialState } from './soakSocket.js';
+import { waitForSoakDrain } from './soakDrain.js';
 
 const args = process.argv.slice(2), endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
@@ -34,6 +35,7 @@ if (!Number.isSafeInteger(count) || count < 30 || count > 108000 || rate !== 30)
 if (!Number.isFinite(budgetMs)||budgetMs<=0) throw new Error('positive lookup budget required');
 const auxiliaryFile = option(args, 'auxiliary-traffic');
 const auxiliaryTraffic = auxiliaryFile ? await readFullStackTraffic(auxiliaryFile) : undefined;
+const httpWarmup=args.includes('--warmup-reads');
 const readerSocket = option(args, 'http-reader-socket');
 if (readerSocket) {
   if (!auxiliaryTraffic || await realpath(readerSocket) !== path.join(path.dirname(output), 'http-reader/reader.sock')
@@ -72,7 +74,6 @@ const expected = new Set(hashes);
 if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
 const receiver = '0102' + '11'.repeat(30);
 const pool = new pg.Pool({ connectionString: endpoint, max: 1, statement_timeout: 30_000 });
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve,ms));
 const percentile = (values: number[], q: number) => [...values].sort((a,b) => a-b)[Math.ceil(values.length*q)-1] ?? null;
 async function metrics() {
   const response = await fetch(metricsUrl, { signal: AbortSignal.timeout(15_000) });
@@ -135,9 +136,10 @@ try {
     } catch {wsErrors++;}
   });
   await waitForInitialState(ws);
-  const started=performance.now();
+  let started=performance.now();
   let lastBackground=0, metricsFailures=0;
-  const readBurst=async()=>{
+  const warmupReads: typeof reads = [];
+  const readBurst=async(target=reads,measureMetrics=true)=>{
     const selected=routes.map(route=>[...route]);
     if (performance.now()-started-lastBackground>=60_000) {
       selected[selected.length-1]=['background-charts','/api/stats/charts?network=ukmesh'];
@@ -154,16 +156,27 @@ try {
         const value=JSON.parse(Buffer.from(body).toString());
         entries=Array.isArray(value)?value.length:Array.isArray(value?.nodes)?value.nodes.length:null;
       } catch { status=0; }
-      reads.push({name:name!,ms:performance.now()-at,status,bytes,entries});
+      target.push({name:name!,ms:performance.now()-at,status,bytes,entries});
     }));
+    if (!measureMetrics) return;
     try {
       const values=await metrics();
       samples.push({elapsedMs:performance.now()-started,values:Object.fromEntries([...values].filter(([key])=>
         /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key)))});
     } catch { metricsFailures++; }
   };
+  if (httpWarmup) await readBurst(warmupReads,false);
+  const warmupMs=httpWarmup?performance.now()-started:0;
+  const warmupPassed=!httpWarmup || (warmupReads.length===8 && warmupReads.every(row=>row.status===200));
+  if (httpWarmup) {
+    await mkdir(output,{recursive:true});
+    await writeFile(path.join(output,'warmup.json'),JSON.stringify({at:new Date().toISOString(),
+      passed:warmupPassed,measured:false,concurrency:8,elapsedMs:warmupMs,checks:warmupReads},null,2)+'\n');
+    if (!warmupPassed) throw new Error('full-stack route warmup failed; see warmup.json');
+  }
+  started=performance.now();
   timer=setInterval(()=>{ if (!readWork) readWork=readBurst().finally(()=>{readWork=undefined;}); },5000);
-  let acknowledgedMs=0,drained=false,auxiliaryAcknowledgements=0;
+  let acknowledgedMs=0,drained=false,drainElapsedMs=0,auxiliaryAcknowledgements=0;
   const auxiliaryController = new AbortController();
   let auxiliaryWork: Promise<void> | undefined;
   try {
@@ -173,15 +186,7 @@ try {
       replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
         '--envelope-format',envelopeFormat])]);
     acknowledgedMs=performance.now()-started;
-    const deadline=Date.now()+120_000;
-    while (Date.now()<deadline) {
-      const current=await metrics(), persisted=await counts();
-      if (persisted.packets-before.packets===expectedDeltas.packets && current.get('meshcore_packet_batch_queue_depth')===0
-        && current.get('meshcore_mqtt_ingest_queue_depth')===0 && current.get('meshcore_mqtt_ingest_active')===0) {
-        drained=true;break;
-      }
-      await wait(1000);
-    }
+    ({drained,drainElapsedMs}=await waitForSoakDrain({before,expectedDeltas,count,metrics,counts,seenCount:()=>seen.size}));
   } catch (error) {
     failure=error; auxiliaryController.abort();
     if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
@@ -239,12 +244,14 @@ try {
     commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
     settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
-      httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct'},
-    elapsedMs,acknowledgedMs,drained,before,after,deltas,expectedDeltas,
+      httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct',httpWarmup},
+    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,
     auxiliaryTraffic:auxiliaryTraffic?{seed:auxiliaryTraffic.seed,cycles:auxiliaryTraffic.cycles,
       intervalMs:auxiliaryTraffic.intervalMs,expected:auxiliaryTraffic.expected,auxiliaryAcknowledgements}:null,
     walBytes,walBytesPerPacket:walBytes/count,
-    wsPackets:seen.size,wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode},
+    wsPackets:seen.size,wsMissingCount:count-seen.size,
+    wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
+    wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode},
     metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');

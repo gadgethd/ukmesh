@@ -29,6 +29,9 @@ def phase_check(name: str, value: dict) -> tuple[bool, str | None]:
         readiness=value.get('socketReadiness',{})
         if readiness.get('initialState') is not True or readiness.get('unexpectedCloses')!=0:
             return False,'authorized live subscription readiness and continuity were not proved'
+        cold=value.get('warmupReads',[])
+        if settings.get('httpWarmup') is not True or len(cold)!=8 or any(row.get('status')!=200 for row in cold):
+            return False,'explicit C8 route warmup with retained successful cold responses is required'
     if name == "reads" and (value.get("missing") or len(value.get("runs", [])) != 4):
         return False, "matched baseline/candidate measurements at both scales are incomplete"
     if name == "access":
