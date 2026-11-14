@@ -35,5 +35,8 @@
         }
       }
     }
+  },
+  "channelKeys": {
+    "#test": "9cd8fcf22a47333b591d96a2b848b73f"
   }
 }

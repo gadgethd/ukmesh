@@ -83,6 +83,11 @@ body[data-ui-theme="light"] {
   padding-top: 20px;
 }
 
+.splash-scene {
+  inset-inline: 0;
+  width: 100%;
+}
+
 .ukmesh-topbar__brand {
   display: flex;
   align-items: center;

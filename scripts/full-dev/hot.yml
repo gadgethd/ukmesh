@@ -1,0 +1,20 @@
+services:
+  website-ukmesh:
+    image: node@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
+    user: "1000:1000"
+    working_dir: /work
+    entrypoint: [node, node_modules/vite/bin/vite.js, --host, 0.0.0.0, --port, "5173", --strictPort]
+    command: []
+    environment:
+      UKMESH_DEV_API_TARGET: http://backend:3000
+      VITE_BUILD_TARGET: public-website
+      VITE_SITE: ukmesh
+      VITE_APP_HOSTNAME: 127.0.0.1:3003
+    volumes: !override
+      - ./frontend:/work:ro
+      - ./frontend/node_modules:/work/node_modules
+    ports: !override ["127.0.0.1:5173:5173", "127.0.0.1:3004:5173"]
+    mem_limit: 768m
+    memswap_limit: 768m
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:5173').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]

@@ -34,12 +34,29 @@ services:
       retries: 30
     cpus: 1
     mem_limit: 256m
+  mqtt-log-init:
+    image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        touch /mosquitto/log/mosquitto.log
+        chown -R 1883:1883 /mosquitto/log
+        chmod 0750 /mosquitto/log
+        chmod 0640 /mosquitto/log/mosquitto.log
+    network_mode: none
+    restart: "no"
+    mem_limit: 16m
+    volumes: [sample-mqtt-log:/mosquitto/log]
   mqtt:
     image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
     container_name: ukmesh-sample-mqtt
     ports: ["127.0.0.1:1884:1883", "127.0.0.1:9002:9001"]
     volumes:
       - ./mosquitto-test.conf:/mosquitto/config/mosquitto.conf:ro
+      - sample-mqtt-log:/mosquitto/log
+    depends_on:
+      mqtt-log-init: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t local/health -m ready -q 1"]
       interval: 2s
@@ -49,3 +66,4 @@ services:
     mem_limit: 256m
 volumes:
   sample-db:
+  sample-mqtt-log:

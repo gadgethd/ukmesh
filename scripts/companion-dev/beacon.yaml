@@ -9,7 +9,11 @@ cors:
   allowed_origins: ["http://127.0.0.1:5175", "http://localhost:5175"]
 iatas:
   LON: {name: London}
+  LHR: {name: London Heathrow}
 regions:
   - slug: dev
     name: DEV fixture
-    iatas: [LON]
+    iatas: [LON, LHR]
+channel_keys:
+  hashtags:
+    - name: test

@@ -31,9 +31,10 @@ bash scripts/dev-all.sh start
 bash scripts/dev-all.sh status
 ```
 
-`start` keeps an already healthy UKMesh fixture running. Otherwise it resumes
-the prepared fixture, or creates one using the existing DEV stack command.
-There is no reset or cleanup action in this launcher.
+`start` runs the complete lean stack, including workers, websites and monitoring.
+It resumes retained fixture storage or prepares it on first use. Builds run one
+at a time. There is no reset or data deletion action in this launcher. See
+[the lean runtime guide](lean-runtime.md) for resource overrides and qualification.
 
 | App | Local URL |
 | --- | --- |
@@ -59,9 +60,11 @@ fixture, so its default map does not need a CARTO API key. The production networ
 and deployment Compose files are
 not used.
 
-Edit any repository directly in its `third_party` checkout. Beacon Web uses
-Vite with hot reload. CoreScope serves the checkout's static files; refresh the
-browser after editing them. Rebuild and restart a Go service after changing it:
+Edit any repository directly in its `third_party` checkout. Websites serve built
+assets by default. Use `bash scripts/dev-all.sh hot beacon-web` for Vite, or
+`bash scripts/dev-all.sh hot ukmesh` for the UKMesh frontend. A normal `start`
+returns to built assets. CoreScope serves its checkout's static files. Restart
+the service that owns a change; only its component is rebuilt:
 
 ```sh
 bash scripts/dev-all.sh restart corescope-ingestor
@@ -70,7 +73,8 @@ bash scripts/dev-all.sh restart beacon
 bash scripts/dev-all.sh logs beacon
 ```
 
-`build` builds the Go binaries without starting services. The launcher discards
+`build` builds application images, companion binaries and web assets without
+starting services. The launcher discards
 inherited application settings and passes Compose an empty env file. The apps
 use explicit fixture configuration, and Beacon Web selects an empty Vite env
 directory. A deployment `.env` is not needed.
@@ -80,7 +84,7 @@ bash scripts/dev-all.sh stop
 bash scripts/dev-all.sh start
 ```
 
-`stop` stops companions and the prepared UKMesh fixture and retains their data.
+`stop` stops the complete stack and retains its data.
 Use `companions` instead of `start` to start only companions against an already
 running sample broker.
 
