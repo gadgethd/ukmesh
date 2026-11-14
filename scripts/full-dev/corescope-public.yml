@@ -1,0 +1,10 @@
+services:
+  corescope-ingestor:
+    volumes:
+      - ${CORESCOPE_PUBLIC_DIR:?owned public projection directory required}:/data
+      - ${CORESCOPE_PUBLIC_DIR}/config.json:/config/config.json:ro
+  corescope:
+    networks: [default, sample]
+    volumes:
+      - ${CORESCOPE_PUBLIC_DIR:?owned public projection directory required}:/data
+      - ${CORESCOPE_PUBLIC_DIR}/config.json:/config/config.json:ro
