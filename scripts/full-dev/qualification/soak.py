@@ -1,0 +1,128 @@
+"""Full-stack soak composes existing replay/read checks and native companion proofs."""
+
+from __future__ import annotations
+
+import fcntl
+import math
+from pathlib import Path
+import threading
+import uuid
+
+from benchmarks import CompanionReads, active_fixture, node_tool
+from common import STATE, read_json, safe_error, utc_now, write_json
+from context import phase_context
+from probes import inventory
+from resources import sample
+from traffic import verify_companion_acks, verify_typed
+from health import create_session, verify_session
+from read_transport import start_reader, stop_reader
+from runtime_logs import collect_logs
+
+
+def stop_measurements(worker, health_worker, companions, stop, reader_name):
+    stop.set()
+    try:
+        if worker.is_alive(): worker.join(timeout=40)
+        return companions.finish()
+    finally:
+        try:
+            if health_worker.is_alive(): health_worker.join(timeout=130)
+        finally:
+            stop_reader(reader_name)
+
+
+def reserve_ack_sequence(count: int) -> int:
+    path = STATE / "runtime/ack-sequence"
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with path.open("a+") as counter:
+        path.chmod(0o600)
+        fcntl.flock(counter, fcntl.LOCK_EX)
+        counter.seek(0)
+        value = int(counter.read().strip() or "1000000000")
+        if value + count > 2 ** 32:
+            raise ValueError("owned ACK sequence space is exhausted")
+        counter.seek(0)
+        counter.truncate()
+        counter.write(str(value + count) + "\n")
+        counter.flush()
+    return value
+
+
+def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> dict:
+    if not isinstance(count, int) or not 30 <= count <= 108000:
+        raise ValueError("soak count must be 30..108000; final qualification requires 72000")
+    fixture = active_fixture()
+    if fixture["kind"] not in ("1x", "10x"):
+        raise ValueError("soak requires a retained public lookup fixture")
+    if not inventory(run)["passed"]:
+        raise RuntimeError("complete service inventory must pass before the soak")
+    context = phase_context(run)
+    database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
+    source = run / "soak-source"
+    sequence = reserve_ack_sequence(count)
+    preparation = [
+        ("generateSampleDataset", ["--data-dir", str(source), "--count", str(count), "--sequence-start", str(sequence)]),
+        ("loadSampleDataset", ["--data-dir", str(source), "--omit-packets", "--fast"]),
+        ("prepareSampleDataset", []),
+    ]
+    for tool, args in preparation:
+        code = node_tool(tool, args, database, run / (tool + ".log"), timeout=1800)
+        if code:
+            raise RuntimeError(tool + " fixture preparation failed")
+    auxiliary = run / "auxiliary-source"
+    health = create_session(run, fixture, health_code)
+    cycles = max(1, min(40, count // 1800))
+    interval = 60000 if count >= 1800 else 1000
+    args = ["--output", str(auxiliary), "--seed", uuid.uuid4().hex, "--cycles", str(cycles),
+            "--interval-ms", str(interval), "--generate-only"]
+    args += ["--health-code", health["code"]]
+    if node_tool("fullStackTraffic", args, database, run / "auxiliary-generate.log"):
+        raise RuntimeError("invented auxiliary traffic preparation failed")
+    resources_result = {}
+    stop = threading.Event()
+    def measure():
+        try:
+            duration = math.ceil(count / 30)
+            resources_result.update(sample(run, seconds=duration, interval=max(.5, min(5, duration / 3)),
+                warmup=min(120, max(0, duration // 4)), stop_event=stop))
+        except Exception as error:
+            resources_result.update({"passed": False, "error": safe_error(error)})
+            write_json(run / "resources-failure.json", resources_result)
+    worker = threading.Thread(target=measure, name="whole-vm-qualification", daemon=True)
+    health_result = {}
+    health_worker = threading.Thread(target=lambda: health_result.update(verify_session(health)),
+                                     name="health-code-qualification", daemon=True)
+    companions = CompanionReads()
+    log_started=utc_now()
+    reader_name, reader_socket = start_reader(run)
+    try:
+        companions.start()
+        worker.start()
+        health_worker.start()
+        native_output = run / "native-soak"
+        code = node_tool("soakDatabaseLookups", ["--data-dir", str(source), "--output", str(native_output),
+            "--base-url", "http://127.0.0.1:3100", "--metrics-url", "http://127.0.0.1:9091/metrics",
+            "--broker", "ws://127.0.0.1:9002", "--limit", str(count), "--rate", "30",
+            "--envelope-format", "observer", "--auxiliary-traffic", str(auxiliary / "traffic.json"),
+            "--http-reader-socket", str(reader_socket),
+            "--budget-ms", "100" if fixture["kind"] == "1x" else "250"], database,
+            run / "soak.log", timeout=math.ceil(count / 30) + 300)
+    finally:
+        companion_results=stop_measurements(worker,health_worker,companions,stop,reader_name)
+    native = read_json(native_output / "soak.json") if (native_output / "soak.json").exists() else {"passed": False}
+    typed = verify_typed(read_json(auxiliary / "traffic.json"), fixture)
+    ack_proof = verify_companion_acks(source, fixture)
+    logs=collect_logs(run,started=log_started,finished=utc_now())
+    logs['context']=context
+    write_json(run/'steady-runtime-logs.json',logs)
+    commit_proof = {"at": utc_now(), "passed": typed["passed"] and ack_proof["passed"] and health_result.get("passed", False),
+                    "checks": typed["checks"] + ack_proof["checks"] + health_result.get("checks", []),
+                    "count": count, "context": context}
+    write_json(run / "companion-commits.json", commit_proof)
+    native.update({"native_passed": native.get("passed", False), "exit_code": code, "context": context,
+                   "resources_passed": resources_result.get("passed", False), "companions": companion_results,
+                   "companion_commits_passed": commit_proof["passed"],"logs_passed":logs['passed']})
+    native["passed"] = code == 0 and native["native_passed"] and native["resources_passed"] and commit_proof["passed"] \
+        and logs['passed'] and all(value["requests"] > 0 and value["failures"] == 0 for value in companion_results.values())
+    write_json(run / "soak.json", native)
+    return native

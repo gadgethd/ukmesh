@@ -15,15 +15,23 @@ test('local providers survive malformed input and preserve explicit failure/reco
     const post = (route, body) => fetch(base + route, {method: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body)});
     assert.equal((await post('/failure', '{broken')).status, 400);
     assert.equal((await fetch(base + '/healthz')).status, 200);
+    for (const delayMs of [-1, 2001, 1.5, '500']) {
+      assert.equal((await post('/failure', {status: 0, delayMs})).status, 400);
+    }
     assert.equal((await post('/failure', {status: 429})).status, 204);
     assert.equal((await post('/tag', {state: 'owned fixture'})).status, 429);
     assert.equal((await post('/failure', {status: 0})).status, 204);
     const classification = await (await post('/tag', {state: 'owned fixture'})).json();
     assert.equal(classification.answers.kind.choice, 'test-ping');
+    assert.equal((await post('/failure', {status: 0, delayMs: 100})).status, 204);
+    const started = performance.now();
+    assert.equal((await post('/tag', {})).status, 200);
+    assert.ok(performance.now() - started >= 90, 'provider delay must affect the real response');
+    assert.equal((await post('/failure', {status: 0})).status, 204);
     const probe = 'a'.repeat(32);
     assert.equal((await post('/alerts', {content: 'OwnedFullStackProbe-' + probe})).status, 204);
     const counts = await (await fetch(base + '/counts')).json();
-    assert.equal(counts.tags, 1);
+    assert.equal(counts.tags, 2);
     assert.equal(counts.failures, 1);
     assert.equal(counts.lastAlertProbe, probe);
   } finally {

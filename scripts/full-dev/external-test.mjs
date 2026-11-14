@@ -1,7 +1,8 @@
 import http from 'node:http';
 
-const counts = {tags: 0, alerts: 0, failures: 0, lastAlertProbe: ''};
+const counts = {tags: 0, alerts: 0, failures: 0, lastAlertProbe: '', alertProbes: []};
 let failureStatus = 0;
+let delayMs = 0;
 const server = http.createServer((request, response) => {
   handle(request, response).catch(error => {
     if (!response.headersSent) response.writeHead(error instanceof SyntaxError ? 400 : 500);
@@ -22,14 +23,21 @@ async function handle(request, response) {
     if (Buffer.byteLength(body) > 1_048_576) { response.writeHead(413); response.end(); return; }
   }
   if (url.pathname === '/failure') {
-    const value = JSON.parse(body).status;
-    if (![0, 429, 503].includes(value)) { response.writeHead(400); response.end(); return; }
-    failureStatus = value; response.writeHead(204); response.end(); return;
+    const value = JSON.parse(body);
+    if (![0, 429, 503].includes(value.status) || !Number.isInteger(value.delayMs ?? 0)
+      || (value.delayMs ?? 0) < 0 || (value.delayMs ?? 0) > 2000) { response.writeHead(400); response.end(); return; }
+    failureStatus = value.status; delayMs = value.delayMs ?? 0;
+    response.writeHead(204); response.end(); return;
   }
+  if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs));
   if (failureStatus) { counts.failures++; response.writeHead(failureStatus); response.end(); return; }
   if (url.pathname === '/alerts') {
     const probe = body.match(/OwnedFullStackProbe-([a-f0-9]{32})/);
-    if (probe) counts.lastAlertProbe = probe[1];
+    if (probe) {
+      counts.lastAlertProbe = probe[1];
+      if (!counts.alertProbes.includes(probe[1])) counts.alertProbes.push(probe[1]);
+      if (counts.alertProbes.length > 64) counts.alertProbes.shift();
+    }
     counts.alerts++; response.writeHead(204); response.end(); return;
   }
   if (url.pathname === '/tag') {
