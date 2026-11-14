@@ -4,6 +4,7 @@
 import hmac
 import os
 import signal
+import stat
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -15,6 +16,27 @@ PASSWD_PATH = os.environ.get("MOSQUITTO_PASSWD_PATH", "/mosquitto/config/passwd"
 RELOAD_ACK_TIMEOUT_SECONDS = float(os.environ.get("MOSQUITTO_RELOAD_ACK_TIMEOUT_SECONDS", "3"))
 RELOAD_MARKER = b"Reloading config."
 RELOAD_LOCK = threading.Lock()
+RELOAD_FIFO = os.environ.get("MOSQUITTO_RELOAD_FIFO", "")
+
+
+def open_reload_fifo(path: str) -> int:
+    """Open only the broker UID's private FIFO, without waiting for a reader."""
+    if not os.path.isabs(path) or os.path.realpath(path) != path:
+        raise RuntimeError("Mosquitto control FIFO must have a canonical path without symlinks")
+    directory = os.stat(os.path.dirname(path), follow_symlinks=False)
+    if not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid() \
+            or directory.st_gid != os.getgid() or stat.S_IMODE(directory.st_mode) != 0o700:
+        raise RuntimeError("Mosquitto control directory is not privately owned by the broker UID")
+    metadata = os.stat(path, follow_symlinks=False)
+    if not stat.S_ISFIFO(metadata.st_mode) or metadata.st_uid != os.getuid() \
+            or metadata.st_gid != os.getgid() or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise RuntimeError("Mosquitto control endpoint is not the broker UID's private FIFO")
+    descriptor = os.open(path, os.O_WRONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    opened = os.fstat(descriptor)
+    if (opened.st_dev, opened.st_ino) != (metadata.st_dev, metadata.st_ino):
+        os.close(descriptor)
+        raise RuntimeError("Mosquitto control FIFO changed while opening it")
+    return descriptor
 
 
 def ensure_config_ownership() -> None:
@@ -107,7 +129,15 @@ def signal_and_wait_for_reload(
     timeout_seconds: float = RELOAD_ACK_TIMEOUT_SECONDS,
 ) -> bool:
     cursor = capture_log_cursor(log_path)
-    os.kill(1, signal.SIGHUP)
+    if RELOAD_FIFO:
+        descriptor = open_reload_fifo(RELOAD_FIFO)
+        try:
+            if os.write(descriptor, b"reload\n") != 7:
+                raise RuntimeError("Mosquitto reload command was not written completely")
+        finally:
+            os.close(descriptor)
+    else:
+        os.kill(1, signal.SIGHUP)
     return wait_for_reload_ack(cursor, timeout_seconds, log_path)
 
 
@@ -126,6 +156,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             try:
                 ensure_log_permissions()
+                if RELOAD_FIFO:
+                    os.close(open_reload_fifo(RELOAD_FIFO))
             except (OSError, RuntimeError):
                 self._send(503, b'{"status":"unhealthy"}')
                 return

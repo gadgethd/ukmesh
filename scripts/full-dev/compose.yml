@@ -8,7 +8,6 @@ services:
       dockerfile: Dockerfile.mosquitto-reloader
       args: {SOURCE_REVISION: "${SOURCE_REVISION}"}
     restart: unless-stopped
-    pid: container:ukmesh-sample-mqtt
     user: "1883:1883"
     read_only: true
     cap_drop: [ALL]
@@ -17,8 +16,9 @@ services:
     memswap_limit: 64m
     environment:
       OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET}
+      MOSQUITTO_RELOAD_FIFO: /mosquitto/control/reload
     ports: ["127.0.0.1:3109:8080"]
-    volumes: [mosquitto_log:/mosquitto/log]
+    volumes: [mosquitto_log:/mosquitto/log, mosquitto_control:/mosquitto/control]
     healthcheck:
       test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
       interval: 15s
@@ -199,3 +199,4 @@ networks:
 volumes:
   timescaledb_data: {external: true, name: ukmesh-sample_sample-db}
   mosquitto_log: {external: true, name: ukmesh-sample_sample-mqtt-log}
+  mosquitto_control: {external: true, name: ukmesh-sample_sample-mqtt-control}
