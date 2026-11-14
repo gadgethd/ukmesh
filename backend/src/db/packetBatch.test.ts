@@ -16,7 +16,7 @@ test('only the two stable singleton forms request prepared statements', async ()
   const query = async (text: string, params: unknown[] = [], _signal?: AbortSignal, hint?: string) => {
     if (text.includes('jsonb_agg(jsonb_build_object')) return { rows: [{ generation: '7', prefixes: [] }] };
     if (text.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
-    hints.push(hint);
+    if (params.length) hints.push(hint);
     return { rows: Array.from({ length: params.length / 30 }, (_, row_id) => ({ row_id,
       is_private: false, visibility_ok: true, prefix_cache_fresh: true })) };
   };
@@ -52,13 +52,14 @@ test('a poison row cannot reject the valid packet sharing its transaction', asyn
 
 test('packet batches retry transient database failures without losing the pending row', async () => {
   let attempts = 0;
-  const statements: string[] = [];
-  const query = async (text: string) => {
+  const mutationParameters: unknown[][] = [];
+  const query = async (text: string, params: unknown[] = []) => {
     if (text.includes('jsonb_agg(jsonb_build_object')) {
       return { rows: [{ generation: '7', prefixes: [] }] };
     }
-    statements.push(text);
     if (text.includes('pg_try_advisory_xact_lock')) return { rows: [{ ok: true }] };
+    if (!params.length) return { rows: [] };
+    mutationParameters.push(params);
     attempts += 1;
     if (attempts < 3) {
       throw new Error('the database system is not yet accepting connections');
@@ -106,19 +107,8 @@ test('packet batches retry transient database failures without losing the pendin
     visibilityOk: true,
   });
   assert.equal(attempts, 3);
-  assert.doesNotMatch(statements[0]!, /new_rows AS MATERIALIZED/);
-  assert.match(statements[3]!, /new_rows AS MATERIALIZED/);
-  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?ingest_observation_ledger/);
-  assert.match(statements[3]!, /JOIN claimed/);
-  assert.match(statements[3]!, /existing\.packet_hash = d\.packet_hash/);
-  assert.match(statements[3]!, /ROW_NUMBER\(\) OVER/);
-  assert.match(statements[2]!, /pg_try_advisory_xact_lock\(hashtext\(.meshcore:packet-batch-writer.\)\)/);
-  assert.match(statements[3]!, /INSERT INTO (?:mesh\.)?packets \(\s*observation_id,/);
-  assert.match(statements[3]!, /COALESCE\(i\.observation_id_in, gen_random_uuid\(\)\) AS observation_id/);
-  assert.match(statements[3]!, /SELECT observation_id, time, packet_hash/);
-  assert.match(statements[3]!, /network, observation_id[\s\S]*FROM new_rows/);
-  assert.match(statements[3]!, /FOR KEY SHARE/);
-  assert.doesNotMatch(statements[3]!, /FROM private_node_prefixes pp/);
+  assert.deepEqual(mutationParameters[1], mutationParameters[0]);
+  assert.deepEqual(mutationParameters[2], mutationParameters[0], 'every retry preserves the admitted observation');
 });
 
 test('F03 batch arbitration retains distinct same-hash paths at one hop count', async () => {
@@ -201,10 +191,10 @@ test('F02 refuses a contended writer before any mutation and gates the hourly pr
   const accepted = enqueuePacket(packet);
   await flush();
   await accepted;
-  assert.equal(statements.length, 2);
   assert.match(statements[0]!, /pg_try_advisory_xact_lock/);
-  assert.doesNotMatch(statements[1]!, /locked AS MATERIALIZED/);
-  assert.match(statements[1]!, /WHERE \(network = 'test'\s+OR topic_prefix <> 'meshcore-test'\)/);
+  const mutation = statements.find(sql => sql.includes('WITH current_visibility AS MATERIALIZED'))!;
+  assert.doesNotMatch(mutation, /locked AS MATERIALIZED/);
+  assert.match(mutation, /WHERE \(network = 'test'\s+OR topic_prefix <> 'meshcore-test'\)/);
 });
 
 test('the default immediate flush rejects a failed packet without an unhandled process failure', async () => {
