@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import stat
 import subprocess
 import tempfile
 from typing import Any, BinaryIO
@@ -78,6 +79,20 @@ def write_json(path: Path, value: Any) -> None:
 
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text())
+
+
+def owned_document(path: Path, expected_sha: str) -> Any:
+    """Read only bounded regular SHA-bound evidence inside the owned run tree."""
+    if not path.resolve().is_relative_to(EVIDENCE.resolve()): raise ValueError('owned read evidence required')
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(descriptor, 'rb') as stream:
+        metadata = os.fstat(stream.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16*1024*1024:
+            raise ValueError('bounded regular read evidence required')
+        data = stream.read(16*1024*1024+1)
+    if len(data) > 16*1024*1024 or hashlib.sha256(data).hexdigest() != expected_sha:
+        raise ValueError('read evidence digest or size differs')
+    return json.loads(data)
 
 
 def digest(path: Path) -> str:

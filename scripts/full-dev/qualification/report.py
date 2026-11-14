@@ -36,6 +36,7 @@ def phase_check(name: str, value: dict) -> tuple[bool, str | None]:
         from read_protocol import IDENTITY, STEPS
         if value.get('diagnostic_only') is not False or value.get('protocol') != IDENTITY \
                 or value.get("missing") or len(value.get("runs", [])) != len(STEPS)*2 \
+                or len(value.get('demand_runs', [])) != len(STEPS)*2 \
                 or len(value.get('batches', [])) != 2 or any(item.get('passed') is not True for item in value.get('batches', [])):
             return False, "three complete canonical matched read pairs at both scales are required"
     if name == "access":
@@ -94,9 +95,10 @@ def report(run: Path) -> dict:
                 if name=='reads':
                     from source_identity import expected_sources,validate_measurements
                     validate_measurements(value.get('runs',[]),expected_sources())
+                    validate_measurements(value.get('demand_runs',[]),expected_sources())
                     from read_measurements import read_comparison, validate_read_batches
                     validate_read_batches(value)
-                    if not read_comparison(value.get('runs',[]))['passed']:
+                    if not read_comparison(value.get('runs',[]), demand_runs=value.get('demand_runs',[]))['passed']:
                         passed,error=False,'read source, raw companion evidence or regression comparison failed'
                 else:
                     from source_identity import expected_sources

@@ -482,3 +482,38 @@ chart-freshness guards. Validate every export identity, not only the first.
 Independent review approved this prospective measurement repair before edits.
 It requires focused rate/lifecycle/data tests and fresh complete comparisons;
 no application code, production limit, threshold or old evidence changes.
+
+## Capacity and equal-demand comparisons answer different questions
+
+The same eight closed-loop request slots generate1.52-1.60 times the request
+rate in the faster current implementation. That is a valid capacity experiment:
+its saturated companion timing increases remain failed observations. Coupling
+those timings to a regression gate for matched external demand hides that the
+neighbours receive different background work. Process isolation did not help
+in the one paired diagnostic and will not be adopted.
+
+Keep every saturated C1/C8, warm/miss trial and its100/250ms current-source gate.
+Keep the saturated companion results and actual throughput in the report. Add
+three prospective AB/BA/AB comparisons with identical offered demand for the
+companion10% regression question. Both independent reviewers agree this fits
+the user's matched-baseline requirement, provided it is never described as
+companion nonregression at eight continuously active requests.
+
+Freeze80 requests/second for120 seconds:9600 planned requests per cohort, the
+same cyclic12-case mix,128 existing real clients, at most eight active slots,
+warm caches and unchanged validation/30-second request deadlines. The rate is
+about80% of the measured baseline's95-100 requests/second, chosen before this
+new experiment. Retain every planned arrival, actual admission, response,
+queue delay, failure and undelivered request. Admission lateness must not exceed
+100ms, the existing paired-clock allowance; actual dispatches are at least10ms
+apart and the complete dispatch span stays within100ms of its fixed schedule.
+No batched catch-up, adaptive rate, dropped samples or passing retry is allowed.
+An unsustained schedule is invalid, not matched80RPS.
+
+Use the existing clock/response/collector owners. Compare every companion read
+whose start belongs to the predeclared120-second window, including boundary
+crossings; retain setup and drain reads with all failures visible. Native
+saturation and fixed-demand evidence have separate owners and collection
+budgets. Both are required for clean new qualification. All old experiments,
+failures and source revisions remain immutable; fresh complete measurements
+under the new committed method must precede any result claim.

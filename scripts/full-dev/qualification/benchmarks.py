@@ -15,7 +15,7 @@ from probes import inventory
 from loopback_http import http_get
 from source_identity import expected_sources, identify, validate_measurements
 from read_protocol import IDENTITY, PROFILE, STEPS
-from read_measurements import native_evidence, read_comparison, validate_read_batches
+from read_measurements import native_evidence, native_read_comparison, read_comparison, validate_read_batches
 
 
 def active_fixture() -> dict:
@@ -28,7 +28,7 @@ def active_fixture() -> dict:
 
 
 def node_tool(tool: str, args: list[str], database: str, log: Path, *, timeout: int = 1800) -> int:
-    if tool not in ("benchmarkLookups", "benchmarkOperations", "generateSampleDataset", "loadSampleDataset", "prepareSampleDataset",
+    if tool not in ("benchmarkLookups", "benchmarkMatchedDemand", "benchmarkOperations", "generateSampleDataset", "loadSampleDataset", "prepareSampleDataset",
                     "soakDatabaseLookups", "checkLookupParity", "checkPathContext", "fullStackTraffic", "dataLifecycle"):
         raise ValueError("unknown existing qualification tool")
     endpoint = "postgresql://meshcore:meshcore@127.0.0.1:5433/" + database
@@ -148,6 +148,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
     prior_value = {} if diagnostic_only or not path.exists() else read_json(path)
     prior = prior_value.get('runs', [])
     prior_batches = prior_value.get('batches', [])
+    prior_demand = prior_value.get('demand_runs', [])
     if prior and (not prior_batches or any(not batch.get('passed') for batch in prior_batches)):
         raise ValueError('previous read batch did not close successfully; archive its evidence first')
     if prior:
@@ -175,23 +176,51 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
             write_json(directory / 'progress.json', {'passed': False, 'pending': True, 'protocol': IDENTITY,
                 'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records})
     except BaseException as caught: error = caught
-    comparison = read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only)
+    native_elapsed = time.monotonic()-before
+    if time.monotonic() >= deadline: error = error or TimeoutError('paired native read collection budget exhausted')
+    demands = []; demand_before = time.monotonic(); demand_deadline = demand_before+PROFILE['demand']['collection_budget_seconds']
+    if not diagnostic_only and error is None:
+        from matched_demand import collect_cohort
+        try:
+            if not native_read_comparison(records, scales=(scale,))['valid']:
+                raise ValueError('native absolute read gates or evidence failed')
+            native_elapsed = time.monotonic()-before
+            if time.monotonic() >= deadline: raise TimeoutError('native read closure exceeded collection budget')
+            for step in STEPS:
+                if time.monotonic() >= demand_deadline: raise TimeoutError('fixed-demand collection budget exhausted')
+                if phase_context(run) != context: raise ValueError('runtime drift before fixed-demand cohort')
+                label = PROFILE['source_labels'][step['side']]
+                window = {**step, 'batch_id': batch, 'id': uuid.uuid4().hex}
+                output = directory/f"demand-{step['position']}-{step['side']}"
+                try:
+                    record = collect_cohort(run, fixture, source[label], label, output, window, context, demand_deadline, node_tool)
+                except BaseException:
+                    if (output/'summary.json').exists(): demands.append(read_json(output/'summary.json'))
+                    raise
+                demands.append(record); validate_measurements(demands, source)
+                if phase_context(run) != context: raise ValueError('runtime drift after fixed-demand cohort')
+                write_json(directory/'demand-progress.json', {'passed': False, 'pending': True, 'runs': demands})
+        except BaseException as caught: error = caught
+    comparison = read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only, demand_runs=demands)
     canonical = None
     if not diagnostic_only:
         try:
             validate_measurements(prior + records, expected_sources())
-            canonical = read_comparison(prior + records)
+            validate_measurements(prior_demand + demands, expected_sources())
+            canonical = read_comparison(prior + records, demand_runs=prior_demand + demands)
         except BaseException as caught: error = caught
     final, final_context_error = context, None
     try: final = phase_context(run)
     except BaseException as caught:
         error = caught; final_context_error = safe_error(caught)
-    if time.monotonic() >= deadline:
+    if (diagnostic_only and time.monotonic() >= deadline) or (not diagnostic_only and time.monotonic() >= demand_deadline):
         error = TimeoutError('paired read collection budget exhausted at final closure')
     stable = final == context and error is None
     result = {'at': utc_now(), 'context': final, 'context_before': context, 'protocol': IDENTITY,
-              'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records,
-              'collection_seconds': time.monotonic() - before, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
+              'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records, 'demand_runs': demands,
+              'collection_seconds': native_elapsed, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
+              'demand_collection_seconds': time.monotonic()-demand_before,
+              'demand_collection_budget_seconds': PROFILE['demand']['collection_budget_seconds'],
               'final_context_error': final_context_error,
               'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)], 'comparison': comparison}
     if diagnostic_only:
@@ -200,7 +229,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
     else:
         result['passed'] = stable and comparison['passed']
         write_json(directory / 'summary.json', result)
-        value = {'at': utc_now(), 'context': final, 'runs': prior + records,
+        value = {'at': utc_now(), 'context': final, 'runs': prior + records, 'demand_runs': prior_demand + demands,
                  **(canonical or {'passed': False, 'diagnostic_only': False, 'protocol': IDENTITY, 'missing': ['read batch finalization failed']}),
                  'batches': prior_batches + [{'passed': result['passed'], 'scale': scale, 'batch_id': batch,
                     'path': str(directory/'summary.json'), 'sha256': digest(directory/'summary.json')}]}

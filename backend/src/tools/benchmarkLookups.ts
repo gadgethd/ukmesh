@@ -4,19 +4,17 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, writeFile } from 'node:fs/promises';
-import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
-import express, { Router } from 'express';
 import pg from 'pg';
 import { option } from './sampleData.js';
-import { configureLookupReadOnlyEnvironment, lookupBenchmarkOptions, withLookupSource, withLookupTrial } from './lookupBenchmarkSession.js';
-import type { LookupCacheModule } from './lookupBenchmarkSession.js';
-import { LookupResponseVerifier, LOOKUP_RESPONSE_VALIDATION_LIMITS } from './lookupResponseVerifier.js';
-import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
+import { configureLookupReadOnlyEnvironment, lookupBenchmarkOptions, withLookupSource } from './lookupBenchmarkSession.js';
+import { LOOKUP_RESPONSE_VALIDATION_LIMITS } from './lookupResponseVerifier.js';
 import { lookupSourceIdentity } from './lookupSource.js';
 import { LookupTimeline } from './lookupTimeline.js';
-import { createLookupAgents, runLookupSamples, setLookupRequestDeadline } from './lookupHttpTransport.js';
+import { runLookupSamples } from './lookupHttpTransport.js';
+import { createLookupRequestFleet } from './lookupHttpRequests.js';
+import { loadLookupHttpWorkload } from './lookupHttpWorkload.js';
 
 const args = process.argv.slice(2);
 const { source, output, samples, concurrency, trials, cache, budgetMs } = lookupBenchmarkOptions(args);
@@ -28,16 +26,7 @@ const sourceIdentity = await lookupSourceIdentity(source, option(args, 'referenc
 configureLookupReadOnlyEnvironment(process.env['DATABASE_URL'] ?? '', process.env);
 
 await withLookupSource(source, async (load, runtime) => {
-  const { createNodeRepository } = await load('repositories/nodes.ts');
-  const nodeReads = await load('repositories/nodeReads.ts');
-  const packetReads = await load('repositories/packetReads.ts');
-  const { registerNodeRoutes } = await load('api/routes/nodes.ts');
-  const { registerMiscRoutes } = await load('api/routes/misc.ts');
-  const { wrapAsyncHandlers, apiErrorMiddleware } = await load('api/errors.ts');
-  const { networkFilters } = await load('platform/query/networkFilters.ts');
-  const { readPublicResponseGeneration } = await load('privacy/responseGeneration.ts');
-  const { createGlobalApiLimiter, NODES_LIMITER, PACKET_DETAIL_LIMITER } = await load('api/bootstrap/limiters.ts');
-  const cacheModule = await load('api/bootstrap/caches.ts') as LookupCacheModule;
+  const workloadRoutes = await loadLookupHttpWorkload(load, runtime);
   const pool = runtime.pool as pg.Pool;
   const query = pool.query.bind(pool);
   type CapturedQuery = { workload: string; sql: string; params: unknown[]; calls: number; totalMs: number };
@@ -76,106 +65,19 @@ await withLookupSource(source, async (load, runtime) => {
     const sorted = [...values].sort((a, b) => a - b);
     return sorted[Math.ceil(sorted.length * quantile) - 1]!;
   };
-  // Many real loopback clients keep the deployed per-client rate limits intact.
-  // They share eight active request slots, rather than raising any server limits.
-  const agents = createLookupAgents();
-  type Case = { name: string; route: string; expected?: number; populated?: boolean };
+  const fleet = createLookupRequestFleet();
   type LookupResult = { trial: number; name: string; samples: number; p50Ms: number; p95Ms: number; p99Ms: number;
     bytes: number; entries: number | null; digests: string[]; dataDigests: string[] };
   const report: LookupResult[] = [];
-  let requestId = 0;
-  const verifier = new LookupResponseVerifier();
-  async function request(port: number, testCase: Case) {
-    const started = performance.now();
-    return new Promise<{ ms: number; bytes: number; digest: string; dataDigest: string; entries: number | null }>((resolve, reject) => {
-      const req = http.get({ hostname: '127.0.0.1', port, path: testCase.route,
-        agent: agents[requestId++ % agents.length], headers: { Accept: 'application/json' } }, res => {
-        const chunks: Buffer[] = []; let bytes = 0;
-        res.on('data', chunk => { bytes += chunk.length; if (bytes > LOOKUP_RESPONSE_MAX_BYTES) req.destroy(new Error('response budget exceeded')); else chunks.push(chunk); });
-        res.on('error', reject);
-        res.on('end', () => {
-          try {
-            if (res.statusCode !== (testCase.expected ?? 200)) throw new Error(`${testCase.name}: HTTP ${res.statusCode}`);
-            const receivedAt = performance.now();
-            void verifier.verify(Buffer.concat(chunks), { status: res.statusCode ?? 0,
-              expectedStatus: testCase.expected ?? 200, populated: testCase.populated ?? false })
-              .then(evidence => resolve({ ms: receivedAt - started, bytes, ...evidence }), reject);
-          } catch (error) { reject(error); }
-        });
-      });
-      setLookupRequestDeadline(req);
-      req.on('error', reject);
-    });
-  }
 
   try {
-    if ((await query("SELECT current_setting('transaction_read_only') AS value")).rows[0]?.value !== 'on') {
-      throw new Error('benchmark connections must enforce read-only transactions');
-    }
-    const counts = (await query(`SELECT (SELECT count(*)::text FROM core.nodes) nodes,
-      (SELECT count(*)::text FROM mesh.packets) observations,
-      (SELECT count(DISTINCT packet_hash)::text FROM mesh.packets) packets,
-      (SELECT count(*)::text FROM core.node_links) links`)).rows[0];
-    if (Number(counts.nodes) < 3 || Number(counts.observations) < 20) throw new Error('populated migrated fixture required');
-    const snapshot = option(args, 'snapshot') ?? new Date().toISOString();
-    const visible = await createNodeRepository(runtime.query).listPublicMapRows(
-      ['node_id'], networkFilters('ukmesh'), snapshot, null, 1000);
-    const identity = (await query(`SELECT n.node_id, n.name FROM core.node_identity_nodes n
-      WHERE n.name IS NOT NULL AND n.name NOT LIKE '%🚫%' AND n.network <> 'test'
-      AND n.role = 2 AND n.lat BETWEEN -90 AND 90 AND n.lon BETWEEN -180 AND 180
-      AND EXISTS (SELECT 1 FROM core.node_identity_links l WHERE l.node_a_id=n.node_id OR l.node_b_id=n.node_id)
-      AND n.node_id = ANY($1::text[])
-      ORDER BY n.advert_count DESC, n.node_id LIMIT 1`, [visible.map((node: {node_id: string}) => node.node_id)])).rows[0];
-    if (!identity) throw new Error('public linked identity required');
-    const packet = (await query(`SELECT packet_hash FROM mesh.packets WHERE visibility_ok IS TRUE
-      AND is_private IS NOT TRUE ORDER BY time DESC, packet_hash LIMIT 1`)).rows[0];
-    if (!packet) throw new Error('public packet required');
-    const observer = (await query(`SELECT p.rx_node_id FROM mesh.packets p
-      WHERE p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE AND p.rx_node_id IS NOT NULL
-      AND p.network <> 'test' AND p.time > NOW() - INTERVAL '7 days'
-      GROUP BY p.rx_node_id ORDER BY count(*) DESC, p.rx_node_id LIMIT 1`)).rows[0]?.rx_node_id;
-    if (!observer) throw new Error('public observer required');
-    const map = `/api/nodes/map?network=ukmesh&snapshot=${encodeURIComponent(snapshot)}&limit=1000`;
-    const cases: Case[] = [
-      { name: 'map-page', route: map, populated: true },
-      { name: 'search-name', route: map + '&q=' + encodeURIComponent(identity.name), populated: true },
-      { name: 'search-id', route: map + '&q=' + identity.node_id.slice(0, 12), populated: true },
-      { name: 'search-short', route: map + '&q=a' },
-      { name: 'search-missing', route: map + '&q=zz_lookup_missing_zz' },
-      { name: 'map-observer', route: map + '&observer=' + observer },
-      { name: 'node-links', route: `/api/nodes/${identity.node_id}/links?network=ukmesh`, populated: true },
-      { name: 'node-history', route: `/api/nodes/${observer}/history?network=ukmesh&hours=672`, populated: true },
-      { name: 'packet-detail', route: `/api/packets/${packet.packet_hash}?network=ukmesh` },
-      { name: 'packet-missing', route: `/api/packets/${'F'.repeat(64)}?network=ukmesh`, expected: 404 },
-    ];
-    const region = (await query(`SELECT region FROM core.region_scope_members
-      GROUP BY region ORDER BY count(*) DESC,region LIMIT 1`)).rows[0]?.region;
-    const regionEnabled = ['1','true','yes','on'].includes(String(process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED']??'').toLowerCase());
-    if (region && regionEnabled) cases.push({ name: 'map-region', route: map + '&region=' + encodeURIComponent(region), populated: true });
-    if (visible.length > 1000) {
-      const cursor = Buffer.from(JSON.stringify({ version: 1, nodeId: visible[999].node_id })).toString('base64url');
-      cases.push({ name: 'map-next-page', route: map + '&cursor=' + cursor, populated: true });
-    }
+    const { counts, snapshot, cases, regionEnabled } = await workloadRoutes.prepare(option(args, 'snapshot'));
     const selected = option(args, 'cases')?.split(',');
     if (selected?.some(name => !cases.some(item => item.name === name))) throw new Error('unknown lookup case');
     const cpuBefore = process.cpuUsage(), resourceStarted = performance.now();
     for (let trial = 0; trial < trials; trial++) {
-      await timeline.span({ phase: 'trial', trial: trial + 1 }, () => withLookupTrial(cacheModule, async ({ caches, ownRoutes, listen }) => {
-        const router = Router();
-        const { nodeLinksCache, nodeLinksInflight, inferredNodesCache, inferredNodesInflight } = caches;
-        const closeNodes = registerNodeRoutes(router, {
-          ...nodeReads, nodeRepository: createNodeRepository(runtime.query), networkFilters,
-          getPublicVisibilityGeneration: () => readPublicResponseGeneration(runtime.query),
-          requireLocalOnly: () => false, nodeLinksCache, nodeLinksInflight, nodeLinksCacheTtlMs: cacheModule.NODE_LINKS_CACHE_TTL_MS,
-          inferredNodesCache, inferredNodesInflight, inferredNodesCacheTtlMs: cacheModule.INFERRED_NODES_CACHE_TTL_MS,
-          nodesLimiter: NODES_LIMITER,
-        });
-        ownRoutes(closeNodes);
-        registerMiscRoutes(router, { query: runtime.query, ...packetReads,
-          getPublicVisibilityGeneration: () => readPublicResponseGeneration(runtime.query), packetDetailLimiter: PACKET_DETAIL_LIMITER });
-        wrapAsyncHandlers(router);
-        const app = express(); app.use('/api', createGlobalApiLimiter(), router); app.use(apiErrorMiddleware);
-        const port = await listen(app);
+      await timeline.span({ phase: 'trial', trial: trial + 1 }, () => workloadRoutes.withTrial(async (port, caches) => {
+        const { nodeLinksCache, inferredNodesCache } = caches;
         for (const definition of cases.filter(item => !selected || selected.includes(item.name))) {
           await timeline.span({ phase: 'case', trial: trial + 1, case: definition.name }, async () => {
           const testCase = { ...definition };
@@ -188,12 +90,12 @@ await withLookupSource(source, async (load, runtime) => {
           }
           workload = testCase.name;
           await timeline.span({ phase: 'warmup', trial: trial + 1, case: testCase.name }, async () => {
-            for (let warmup = 0; warmup < 3; warmup++) await request(port, testCase);
+            for (let warmup = 0; warmup < 3; warmup++) await fleet.request(port, testCase);
           });
           const results = await timeline.span({ phase: 'samples', trial: trial + 1, case: testCase.name },
             () => runLookupSamples(samples, concurrency, () => {
               if (cache === 'miss') { nodeLinksCache.clear(); inferredNodesCache.clear(); }
-              return request(port, testCase);
+              return fleet.request(port, testCase);
             }));
           const result = { trial: trial + 1, name: testCase.name, samples: results.length,
             p50Ms: percentile(results.map(row => row.ms), .5), p95Ms: percentile(results.map(row => row.ms), .95),
@@ -206,7 +108,7 @@ await withLookupSource(source, async (load, runtime) => {
       }));
     }
     const resources = { wallMs: performance.now() - resourceStarted, cpuMicros: process.cpuUsage(cpuBefore),
-      memory: process.memoryUsage(), responseValidation: await verifier.readStatistics(),
+      memory: process.memoryUsage(), responseValidation: await fleet.readStatistics(),
       note: 'Handler and loopback HTTP timing share this process; one bounded worker validates each completed response. Validation counters are collected after timing. SQL plans exclude this overhead.' };
     const plans = [];
     // Explain outside request timing. These are the real SQL strings and binds.
@@ -226,7 +128,7 @@ await withLookupSource(source, async (load, runtime) => {
       database: (await query('SELECT version() version')).rows[0], counts, resources,
       databaseSettings: (await query(`SELECT name,setting,unit FROM pg_settings WHERE name IN
         ('shared_buffers','work_mem','max_connections','max_parallel_workers_per_gather','statement_timeout') ORDER BY name`)).rows,
-      settings: { samples, trials, concurrency, cache, clients: agents.length, productionRateLimits: true, regionEnabled,
+      settings: { samples, trials, concurrency, cache, clients: fleet.clientCount, productionRateLimits: true, regionEnabled,
         responseValidation: LOOKUP_RESPONSE_VALIDATION_LIMITS,
         scope: 'ukmesh', note: 'Actual public routers, pool size and privacy delivery gates; excludes unrelated background services. Cache-miss bursts may coalesce identical work.' },
       timeline: 'timeline.json', results: report, queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
@@ -236,8 +138,7 @@ await withLookupSource(source, async (load, runtime) => {
       throw new Error(`lookup p95 budget ${budgetMs}ms exceeded; see saved evidence`);
     }
   } finally {
-    try { for (const agent of agents) agent.destroy(); }
-    finally { await verifier.close(); }
+    await fleet.close();
   }
 });
 });

@@ -91,3 +91,13 @@ test('origin and event preemption remain explicit monotonic brackets around actu
   assert.equal(evidence.finishedClock.at, '2026-11-14T10:00:00.020Z');
   assert.equal(evidence.events[1]!.offsetMs, evidence.events[1]!.clock.monotonicAfterMs - evidence.originClock.monotonicAfterMs);
 });
+
+test('scheduled work receives the exact existing start bracket without extra clock reads', async () => {
+  let reads=0,mono=100;
+  const timeline=new LookupTimeline({monotonic:()=>{reads++;return mono;},utc:()=>new Date(0).toISOString()});
+  let start;
+  await timeline.span({phase:'demand'},async boundary=>{start=structuredClone(boundary);mono+=120000;});
+  const value=timeline.finish(true);
+  assert.deepEqual(start,value.events[0]);assert.equal(timeline.originMonotonicMs,value.originMonotonicMs);
+  assert.equal(reads,8);assert.equal(value.events[1]!.offsetMs,120000);
+});

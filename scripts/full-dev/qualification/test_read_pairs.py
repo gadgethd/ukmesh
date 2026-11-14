@@ -18,7 +18,9 @@ from read_protocol import IDENTITY, PROFILE, STEPS
 import read_timeline
 import report
 import benchmarks
+import matched_demand
 import source_identity
+from test_matched_demand import cohorts
 
 
 class ReadPairs(unittest.TestCase):
@@ -27,7 +29,7 @@ class ReadPairs(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.addCleanup(patch.stopall)
         patch.object(companion_reads, 'EVIDENCE', self.root).start()
-        patch.object(measured, 'EVIDENCE', self.root).start()
+        patch.object(common, 'EVIDENCE', self.root).start()
         self.base = dt.datetime(2026, 11, 14, tzinfo=dt.timezone.utc)
         self.sources = {label: {'source_root': '/' + label, 'revision': label, 'sha256': label, 'files': 1}
                         for label in ('baseline', 'candidate')}
@@ -109,18 +111,22 @@ class ReadPairs(unittest.TestCase):
         return runs
 
     def complete_summary(self, runs):
-        result = {**measured.read_comparison(runs), 'runs': runs, 'context': runs[-1]['context'], 'batches': []}
+        demand=cohorts(self.root,runs)
+        result = {**measured.read_comparison(runs,demand_runs=demand), 'runs': runs, 'demand_runs': demand,
+                  'context': runs[-1]['context'], 'batches': []}
         for scale in ('1x', '10x'):
             rows = [r for r in runs if r['scale'] == scale]; path = self.root/f'batch-{scale}.json'
             batch = {'passed': True, 'diagnostic_only': False, 'protocol': IDENTITY, 'batch_id': rows[0]['read_window']['batch_id'],
                 'runs': rows, 'context': rows[0]['context'], 'context_before': rows[0]['context'], 'collection_seconds': 60,
+                'demand_runs': [row for row in demand if row['scale']==scale],
+                'demand_collection_seconds': 800, 'demand_collection_budget_seconds': PROFILE['demand']['collection_budget_seconds'],
                 'collection_budget_seconds': PROFILE['collection_budget_seconds'], 'errors': [], 'final_context_error': None}
             common.write_json(path, batch)
             result['batches'].append({'passed': True, 'scale': scale, 'batch_id': batch['batch_id'], 'path': str(path), 'sha256': common.digest(path)})
         return result
 
     def test_complete_pairs_keep_baseline_unbounded_and_all_nine_candidate_trials(self):
-        runs = self.windows(); value = measured.read_comparison(runs)
+        runs = self.windows(); value = measured.native_read_comparison(runs)
         self.assertTrue(value['passed'], value['missing'])
         self.assertEqual(len(value['companion_comparisons']), 4)
         self.assertTrue(all(row['nine_trials'] and len(row['candidate_trials_ms']) == 9 for row in value['comparisons']))
@@ -129,22 +135,35 @@ class ReadPairs(unittest.TestCase):
 
     def test_all_raw_pooling_is_primary_and_never_median_of_window_p95(self):
         runs = self.windows(scales=('10x',), companion_values=lambda side, pair: 100 if side == 'A' and pair == 3 else 10 if side == 'A' else 20)
-        value = measured.read_comparison(runs, scales=('10x',))
+        value = measured.native_read_comparison(runs, scales=('10x',))
         self.assertTrue(value['passed'], value['missing'])
         self.assertTrue(all(row['baseline_p95_ms'] == 100 and row['candidate_p95_ms'] == 20 for row in value['companion_comparisons']))
+
+    def test_fixed_demand_primary_is_separate_and_saturated_failures_stay_visible(self):
+        runs=self.windows(scales=('10x',),companion_values=lambda side,pair:20 if side=='B' else 10)
+        demand=cohorts(self.root,runs)
+        result=measured.read_comparison(runs,scales=('10x',),demand_runs=demand)
+        self.assertTrue(result['passed'],result['missing'])
+        self.assertTrue(all(not row['passed'] for row in result['saturated_companion_comparisons']))
+        self.assertTrue(all(row['passed'] for row in result['companion_comparisons']))
+        self.assertFalse(measured.read_comparison(runs,scales=('10x',))['passed'])
+        demand[0]['measured_source']=self.sources['candidate']
+        with self.assertRaises(ValueError):source_identity.validate_measurements(demand,self.sources)
 
     def test_one_of_nine_over_budget_or_actual_11_percent_companion_shift_fails(self):
         runs = self.windows(); row = next(v for v in runs if v['label'] == 'candidate')
         mode = row['modes'][0]; mode['results'][0]['p95Ms'] = 101
         p = Path(mode['source']); native = common.read_json(p); native['results'] = mode['results']; common.write_json(p, native); mode['evidence_sha256'] = common.digest(p)
-        self.assertFalse(measured.read_comparison(runs)['passed'])
+        self.assertFalse(measured.native_read_comparison(runs)['passed'])
         # Separate fresh evidence demonstrates the actual regression gate, with valid native timings.
         with tempfile.TemporaryDirectory() as other:
             self.root = Path(other)
-            with patch.object(companion_reads, 'EVIDENCE', self.root), patch.object(measured, 'EVIDENCE', self.root):
+            with patch.object(companion_reads, 'EVIDENCE', self.root), patch.object(common, 'EVIDENCE', self.root):
                 shifted = self.windows(scales=('10x',), companion_values=lambda side, pair: 11.1 if side == 'B' and pair == 3 else 10)
-                result = measured.read_comparison(shifted, scales=('10x',))
-                self.assertTrue(result['valid'], result['missing']); self.assertFalse(result['passed'])
+                result = measured.native_read_comparison(shifted, scales=('10x',))
+                self.assertTrue(result['valid'], result['missing']); self.assertTrue(result['passed'])
+                self.assertTrue(any(not row['passed'] for row in result['companion_comparisons']))
+                self.assertFalse(measured.read_comparison(shifted,scales=('10x',))['passed'], 'missing matched demand cannot qualify')
 
     def test_missing_duplicate_wrong_order_cadence_diagnostic_and_native_digest_are_refused(self):
         original = self.windows()
@@ -180,6 +199,8 @@ class ReadPairs(unittest.TestCase):
              patch.object(source_identity, 'expected_sources', return_value=self.sources):
             self.assertTrue(report.report(self.root)['passed'])
             bad = copy.deepcopy(value); bad['runs'][0]['measured_source'] = self.sources['candidate']; common.write_json(self.root/'reads.json', bad)
+            self.assertFalse(report.report(self.root)['passed'])
+            bad = copy.deepcopy(value); bad['demand_runs'][0]['measured_source'] = self.sources['candidate']; common.write_json(self.root/'reads.json', bad)
             self.assertFalse(report.report(self.root)['passed'])
             bad = copy.deepcopy(value); path = Path(bad['batches'][0]['path']); batch = common.read_json(path); batch['final_context_error'] = 'inspection failed'
             common.write_json(path, batch); bad['batches'][0]['sha256'] = common.digest(path); common.write_json(self.root/'reads.json', bad)
@@ -269,5 +290,34 @@ class ReadPairs(unittest.TestCase):
                 batch = next(run.glob('reads-10x-paired-*'))
                 self.assertFalse(common.read_json(batch/'summary.json')['passed'])
                 self.assertFalse(common.read_json(batch/'progress.json')['passed'])
+
+    def test_all_six_demand_cohorts_cannot_publish_success_before_final_context_and_deadline(self):
+        for fault in ('context','deadline'):
+            with tempfile.TemporaryDirectory() as temporary:
+                run=Path(temporary);native=[];demand=[];clock=[0];closed=[False];context={'run_id':run.name}
+                def read(*args,**kwargs):
+                    row={'scale':'10x','passed':True,'label':kwargs['label'],'read_window':kwargs['window']}
+                    native.append(row);return row
+                def cohort(run,fixture,source,label,directory,window,context,deadline,node_tool):
+                    row={'scale':'10x','passed':True,'label':label,'read_window':window};demand.append(row);return row
+                def current(_):
+                    if len(demand)==6:
+                        if closed[0] and fault=='context':raise RuntimeError('final demand inspection failed')
+                        closed[0]=True
+                    return context
+                def comparison(*args,**kwargs):
+                    if len(demand)==6 and fault=='deadline':clock[0]=PROFILE['demand']['collection_budget_seconds']+1
+                    return {'passed':True,'valid':True,'protocol':IDENTITY,'diagnostic_only':False,'missing':[]}
+                with patch.object(benchmarks,'active_fixture',return_value={'kind':'10x'}),patch.object(benchmarks,'expected_sources',return_value=self.sources), \
+                     patch.object(benchmarks,'phase_context',side_effect=current),patch.object(benchmarks,'read_once',side_effect=read), \
+                     patch.object(matched_demand,'collect_cohort',side_effect=cohort),patch.object(benchmarks,'validate_measurements'), \
+                     patch.object(benchmarks,'native_read_comparison',return_value={'valid':True}),patch.object(benchmarks,'read_comparison',side_effect=comparison), \
+                     patch.object(benchmarks.time,'monotonic',side_effect=lambda:clock[0]):
+                    with self.assertRaises((RuntimeError,TimeoutError)):benchmarks.reads_pair(run)
+                self.assertEqual(len(native),6);self.assertEqual(len(demand),6)
+                self.assertFalse(common.read_json(run/'reads.json')['passed'])
+                path=next(run.glob('reads-10x-paired-*'))
+                self.assertFalse(common.read_json(path/'summary.json')['passed'])
+                self.assertFalse(common.read_json(path/'demand-progress.json')['passed'])
 
 if __name__ == '__main__': unittest.main()

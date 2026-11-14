@@ -617,7 +617,8 @@ class EvidenceAcceptance(unittest.TestCase):
                   for scale in ('1x', '10x') for label in ('baseline', 'candidate')]
         result = benchmarks.read_comparison(legacy)
         self.assertFalse(result['passed'])
-        self.assertTrue(all('six-matched-windows' in item for item in result['missing']))
+        self.assertTrue(any('six-matched-windows' in item for item in result['missing']))
+        self.assertTrue(any('six-fixed-demand-cohorts' in item for item in result['missing']))
 
 
 class CompanionRawEvidence(unittest.TestCase):

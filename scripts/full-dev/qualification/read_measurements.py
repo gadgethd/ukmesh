@@ -3,29 +3,14 @@ import datetime as dt
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
-import stat
 import statistics
 
-from common import EVIDENCE
+from common import owned_document
 from companion_reads import companion_summary, measured_companion_data
 from read_protocol import IDENTITY, PROFILE, STEPS
 from read_timeline import timeline
-
-
-def owned_document(path, expected_sha):
-    if not path.resolve().is_relative_to(EVIDENCE.resolve()): raise ValueError('owned read evidence required')
-    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    with os.fdopen(descriptor, 'rb') as stream:
-        metadata = os.fstat(stream.fileno())
-        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 16*1024*1024:
-            raise ValueError('bounded regular read evidence required')
-        data = stream.read(16*1024*1024+1)
-    if len(data) > 16*1024*1024 or hashlib.sha256(data).hexdigest() != expected_sha:
-        raise ValueError('read evidence digest or size differs')
-    return json.loads(data)
 
 
 def native_evidence(mode, record, collector=None):
@@ -72,7 +57,7 @@ def native_evidence(mode, record, collector=None):
     return proof
 
 
-def read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False):
+def native_read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False):
     missing, comparisons, companions, descriptive = [], [], [], []
     raw_identities = set()
     try:
@@ -152,9 +137,41 @@ def read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False):
         missing.append(str(error))
     valid = not missing and bool(comparisons) and len(companions) == len(scales)*2 \
             and all(row['nine_trials'] and row['within_budget'] for row in comparisons)
-    return {'passed': valid and all(row['passed'] for row in companions), 'valid': valid,
+    return {'passed': valid and (not diagnostic_only or all(row['passed'] for row in companions)), 'valid': valid,
             'diagnostic_only': diagnostic_only, 'protocol': IDENTITY, 'missing': missing, 'comparisons': comparisons,
             'companion_comparisons': companions, 'descriptive_pairs': descriptive}
+
+
+def read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False, demand_runs=()):
+    native = native_read_comparison(runs, scales=scales, diagnostic_only=diagnostic_only)
+    if diagnostic_only:
+        return native
+    from matched_demand import demand_comparison
+    demand = demand_comparison(demand_runs, scales=scales)
+    missing = native['missing'] + demand['missing']
+    if not native['missing'] and not demand['missing']:
+        all_rows = list(runs)+list(demand_runs)
+        if len({row['companion_evidence']['collector_id'] for row in all_rows}) != len(all_rows) \
+                or len({row['read_window']['id'] for row in all_rows}) != len(all_rows):
+            missing.append('native-demand observation identity was reused')
+        for scale in scales:
+            before = [row for row in runs if row['scale'] == scale]
+            after = [row for row in demand_runs if row['scale'] == scale]
+            if before and after and (before[0]['context'] != after[0]['context']
+                    or before[0]['fixture_token'] != after[0]['fixture_token']
+                    or before[0]['read_window']['batch_id'] != after[0]['read_window']['batch_id']):
+                missing.append(scale+'/native-demand-source-fixture-batch-differs')
+            if before and after and not native['missing'] and not demand['missing']:
+                previous = measured_companion_data(before[-1], cadence_seconds=PROFILE['companion_cadence_seconds'])['collector']
+                first = measured_companion_data(after[0], cadence_seconds=PROFILE['companion_cadence_seconds'], scopes=['demand'])['collector']
+                if previous['origin_monotonic']+previous['finished_offset_seconds'] > first['origin_monotonic']:
+                    missing.append(scale+'/fixed-demand began before native stage closed')
+    return {**native, 'passed': native['valid'] and demand['passed'] and not missing,
+            'valid': native['valid'] and demand['valid'] and not missing, 'missing': missing,
+            'saturated_companion_comparisons': native['companion_comparisons'],
+            'saturated_companion_status': 'descriptive; native absolute C8 gates remain required',
+            'companion_gate_scope': 'three fixed80RPS120-second cohorts per source; does not prove nonregression at8 continuously busy requests',
+            'companion_comparisons': demand['companion_comparisons']}
 
 
 def validate_read_batches(value, *, scales=('1x', '10x')):
@@ -172,5 +189,12 @@ def validate_read_batches(value, *, scales=('1x', '10x')):
                 or batch.get('errors') or batch.get('final_context_error') \
                 or batch['collection_budget_seconds'] != PROFILE['collection_budget_seconds'] \
                 or type(elapsed) not in (int, float) or not math.isfinite(elapsed) or not 0 <= elapsed < PROFILE['collection_budget_seconds'] \
-                or not read_comparison(rows, scales=(item['scale'],))['passed']:
+                or batch.get('demand_runs') != [r for r in value.get('demand_runs', []) if r['scale'] == item['scale']] \
+                or batch.get('demand_collection_budget_seconds') != PROFILE['demand']['collection_budget_seconds'] \
+                or not number_under_budget(batch.get('demand_collection_seconds'), PROFILE['demand']['collection_budget_seconds']) \
+                or not read_comparison(rows, scales=(item['scale'],), demand_runs=batch.get('demand_runs', []))['passed']:
             raise ValueError('read batch finalization/source/deadline failed')
+
+
+def number_under_budget(value, budget):
+    return type(value) in (int, float) and math.isfinite(value) and 0 <= value < budget

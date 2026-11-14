@@ -123,7 +123,7 @@ class CompanionReads:
                 "boundaries": self.boundaries, "records": records}
 
 
-def validate_companion_samples(value: dict, *, cadence_seconds: float = 1) -> dict:
+def validate_companion_samples(value: dict, *, cadence_seconds: float = 1, scopes=None) -> dict:
     collector = value["collector"]
     finite = lambda number: type(number) in (int, float) and math.isfinite(number)
     def utc(value):
@@ -141,9 +141,10 @@ def validate_companion_samples(value: dict, *, cadence_seconds: float = 1) -> di
             or not utc(collector["started_at"]) <= utc(collector["stop_requested_at"]) <= utc(collector["finished_at"]):
         raise ValueError("companion stop/join lifecycle evidence differs")
     boundaries = collector["boundaries"]
+    expected_scopes = ['c1-miss', 'c1-warm', 'c8-miss', 'c8-warm'] if scopes is None else scopes
     if not boundaries or [item["id"] for item in boundaries] != list(range(len(boundaries))) \
             or boundaries[0]["scope"] != "setup" or boundaries[-1]["scope"] != "teardown" \
-            or [item["scope"] for item in boundaries if item["scope"].startswith("c")] != ["c1-miss", "c1-warm", "c8-miss", "c8-warm"]:
+            or [item['scope'] for item in boundaries if item['scope'] not in ('setup', 'between', 'teardown')] != expected_scopes:
         raise ValueError("complete companion mode boundaries are required")
     previous = 0
     for boundary in boundaries:
@@ -180,7 +181,7 @@ def validate_companion_samples(value: dict, *, cadence_seconds: float = 1) -> di
     return summary
 
 
-def measured_companion_data(record: dict, *, cadence_seconds: float = 1) -> dict:
+def measured_companion_data(record: dict, *, cadence_seconds: float = 1, scopes=None) -> dict:
     pointer = record["companion_evidence"]
     path = Path(pointer["path"])
     if not path.resolve().is_relative_to(EVIDENCE.resolve()) or path.is_symlink():
@@ -201,7 +202,7 @@ def measured_companion_data(record: dict, *, cadence_seconds: float = 1) -> dict
         raise ValueError("companion raw evidence identity differs")
     if value.get("collector", {}).get("collector_id") != pointer.get("collector_id"):
         raise ValueError("companion collector identity differs from its raw evidence")
-    summary = validate_companion_samples(value, cadence_seconds=cadence_seconds)
+    summary = validate_companion_samples(value, cadence_seconds=cadence_seconds, scopes=scopes)
     if summary != record["companions"]:
         raise ValueError("reported companion aggregate differs from raw evidence")
     return value
