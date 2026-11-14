@@ -6,6 +6,10 @@ from common import STATE, read_json
 from fixtures import SQLITE, bundle, current_targets
 
 
+def database_setting(key: str) -> bool:
+    return 'DATABASE_URL' in key or key.endswith('_DSN') or key=='DATA_SOURCE_NAME'
+
+
 def validate_consumers(containers: dict, targets: dict, data_directory: Path) -> list[dict]:
     checks = []
     core_mounts = []
@@ -24,7 +28,7 @@ def validate_consumers(containers: dict, targets: dict, data_directory: Path) ->
         if any(not environment.get(key) for key in required):
             raise ValueError(f"{name} lacks an explicit required database session target")
         for key, value in environment.items():
-            if not value or not ("DATABASE_URL" in key or key.endswith("_DSN") or key == "DATA_SOURCE_NAME"):
+            if not value or not database_setting(key):
                 continue
             parsed = urlsplit(value)
             if parsed.scheme not in ("postgres", "postgresql"):

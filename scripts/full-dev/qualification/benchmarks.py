@@ -13,6 +13,7 @@ from common import REPO, STATE, command, read_json, safe_error, utc_now, write_j
 from context import phase_context
 from fixtures import bundle, current_targets
 from probes import http_get, inventory
+from source_identity import expected_sources, identify, validate_measurements
 
 
 def active_fixture() -> dict:
@@ -152,6 +153,10 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
         raise ValueError("matched lookup reads require a retained 1x or 10x fixture")
     if not source_root.resolve().is_relative_to(REPO) or not (source_root / "repositories/nodes.ts").is_file():
         raise ValueError("source root must be an existing backend source directory inside this repository")
+    expected=expected_sources()
+    measured=expected[label]
+    if source_root.resolve()!=Path(measured['source_root']):
+        raise ValueError('selected lookup source differs from its baseline/candidate authority')
     if not inventory(run)["passed"]:
         raise RuntimeError("complete service inventory must pass before timing")
     database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
@@ -165,18 +170,22 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
             for cache in ("miss", "warm"):
                 output = directory / f"c{concurrency}-{cache}"
                 args = ["--source-root", str(source_root), "--samples", "20" if concurrency == 1 else "200",
-                        "--trials", "3", "--concurrency", str(concurrency), "--cache", cache, "--output", str(output)]
+                        "--trials", "3", "--concurrency", str(concurrency), "--cache", cache, "--output", str(output),
+                        '--reference-revision',measured['revision']]
                 if label == "candidate":
                     args += ["--budget-ms", "100" if scale == "1x" else "250"]
                 code = node_tool("benchmarkLookups", args, database, output.with_suffix(".log"))
                 result = read_json(output / "lookups.json") if (output / "lookups.json").exists() else {}
                 modes.append({"concurrency": concurrency, "cache": cache, "exit_code": code,
-                              "passed": code == 0 and bool(result.get("results")),
+                              "passed": code == 0 and bool(result.get("results")) and result.get('sourceIdentity')==measured
+                                and result.get('sourceIdentityAfter')==measured and result.get('sourceStable') is True,
+                              'source_identity':result.get('sourceIdentity'),'source_stable':result.get('sourceStable'),
                               "results": result.get("results", []), "settings": result.get("settings", {}),
                               "source": str(output / "lookups.json")})
     finally:
         companion_results = companions.finish()
     record = {"at": utc_now(), "scale": scale, "label": label, "fixture_token": fixture["token"],
+              'measured_source':measured,
               "context": phase_context(run),
               "modes": modes, "companions": companion_results,
               "passed": len(modes) == 4 and all(mode["passed"] for mode in modes)
@@ -185,6 +194,7 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
     summary_path = run / "reads.json"
     prior = read_json(summary_path).get("runs", []) if summary_path.exists() else []
     prior.append(record)
+    validate_measurements(prior,expected_sources())
     comparison = read_comparison(prior)
     summary = {"at": utc_now(), "context": phase_context(run),
                "passed": comparison["passed"] and all(row["passed"] for row in prior),
@@ -197,6 +207,9 @@ def parity(run: Path, *, source_root: Path) -> dict:
     fixture = active_fixture()
     if not source_root.resolve().is_relative_to(REPO / "plans") or not (source_root / "repositories/nodes.ts").is_file():
         raise ValueError("parity requires a frozen baseline backend source under plans")
+    sources=expected_sources()
+    if source_root.resolve()!=Path(sources['baseline']['source_root']):
+        raise ValueError('parity baseline differs from the Git-verified source seal')
     database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
     output = run / "native-parity"
     context_output = run / "path-context.json"
@@ -205,11 +218,14 @@ def parity(run: Path, *, source_root: Path) -> dict:
              node_tool("checkPathContext", ["--output", str(context_output)], database, run / "path-context.log")]
     repository = read_json(output / "parity.json") if (output / "parity.json").exists() else {}
     graph = read_json(context_output) if context_output.exists() else {}
+    source_stable=all(identify(Path(value['source_root']),value['revision'])==value for value in sources.values())
     checks = [{"name": "complete repository parity", "passed": codes[0] == 0 and repository.get("passed") is True
                and repository.get("caseCount", 0) > 0, "cases": repository.get("caseCount")},
               {"name": "complete path graph parity and unchanged budget", "passed": codes[1] == 0 and graph.get("passed") is True
                and graph.get("links", 0) > 0, "nodes": graph.get("nodes"), "links": graph.get("links")}]
     result = {"at": utc_now(), "passed": all(check["passed"] for check in checks), "checks": checks,
-              "context": phase_context(run)}
+              "context": phase_context(run),'sources':sources}
+    checks.append({'name':'sealed baseline and current source remained unchanged','passed':source_stable})
+    result['passed']=all(check['passed'] for check in checks)
     write_json(run / "parity.json", result)
     return result

@@ -84,6 +84,9 @@ def report(run: Path) -> dict:
                          for key in ("root_content_sha256", "submodules_sha256")):
                     passed, error = False, "source changed since this phase"
             if name in ("reads", "other-operations"):
+                if name=='reads':
+                    from source_identity import expected_sources,validate_measurements
+                    validate_measurements(value.get('runs',[]),expected_sources())
                 for measurement in value.get("runs", []):
                     if measurement.get("context", {}).get("run_id") != run.name or any(
                             measurement.get("context", {}).get(key) != context.get(key)

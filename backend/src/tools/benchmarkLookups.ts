@@ -12,9 +12,13 @@ import pg from 'pg';
 import { option } from './sampleData.js';
 import { configureLookupReadOnlyEnvironment, lookupBenchmarkOptions, withLookupSource, withLookupTrial } from './lookupBenchmarkSession.js';
 import type { LookupCacheModule } from './lookupBenchmarkSession.js';
+import { LookupResponseVerifier, LOOKUP_RESPONSE_VALIDATION_LIMITS } from './lookupResponseVerifier.js';
+import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
+import { lookupSourceIdentity } from './lookupSource.js';
 
 const args = process.argv.slice(2);
 const { source, output, samples, concurrency, trials, cache, budgetMs } = lookupBenchmarkOptions(args);
+const sourceIdentity = await lookupSourceIdentity(source, option(args, 'reference-revision') ?? null);
 configureLookupReadOnlyEnvironment(process.env['DATABASE_URL'] ?? '', process.env);
 
 await withLookupSource(source, async (load, runtime) => {
@@ -75,25 +79,22 @@ await withLookupSource(source, async (load, runtime) => {
     bytes: number; entries: number | null; digests: string[]; dataDigests: string[] };
   const report: LookupResult[] = [];
   let requestId = 0;
+  const verifier = new LookupResponseVerifier();
   async function request(port: number, testCase: Case) {
     const started = performance.now();
     return new Promise<{ ms: number; bytes: number; digest: string; dataDigest: string; entries: number | null }>((resolve, reject) => {
       const req = http.get({ hostname: '127.0.0.1', port, path: testCase.route,
         agent: agents[requestId++ % agents.length], headers: { Accept: 'application/json' } }, res => {
         const chunks: Buffer[] = []; let bytes = 0;
-        res.on('data', chunk => { bytes += chunk.length; if (bytes > 8 * 1024 * 1024) req.destroy(new Error('response budget exceeded')); else chunks.push(chunk); });
+        res.on('data', chunk => { bytes += chunk.length; if (bytes > LOOKUP_RESPONSE_MAX_BYTES) req.destroy(new Error('response budget exceeded')); else chunks.push(chunk); });
         res.on('error', reject);
         res.on('end', () => {
           try {
             if (res.statusCode !== (testCase.expected ?? 200)) throw new Error(`${testCase.name}: HTTP ${res.statusCode}`);
             const receivedAt = performance.now();
-            const body = Buffer.concat(chunks), value = JSON.parse(body.toString());
-            const entries = Array.isArray(value) ? value.length : Array.isArray(value.nodes) ? value.nodes.length : null;
-            if (testCase.populated && (entries === 0 || value === null)) throw new Error(`${testCase.name}: empty fixture`);
-            const data = value?.page?.snapshot ? { ...value, page: { ...value.page, snapshot: '[request snapshot]' } } : value;
-            resolve({ ms: receivedAt - started, bytes, entries,
-              digest: createHash('sha256').update(body).digest('hex'),
-              dataDigest: createHash('sha256').update(JSON.stringify(data)).digest('hex') });
+            void verifier.verify(Buffer.concat(chunks), { status: res.statusCode ?? 0,
+              expectedStatus: testCase.expected ?? 200, populated: testCase.populated ?? false })
+              .then(evidence => resolve({ ms: receivedAt - started, bytes, ...evidence }), reject);
           } catch (error) { reject(error); }
         });
       });
@@ -199,7 +200,7 @@ await withLookupSource(source, async (load, runtime) => {
       });
     }
     const resources = { wallMs: performance.now() - resourceStarted, cpuMicros: process.cpuUsage(cpuBefore),
-      memory: process.memoryUsage(), note: 'Handler and loopback load generator share this process; SQL plans exclude this overhead.' };
+      memory: process.memoryUsage(), note: 'Handler and loopback HTTP timing share this process; one bounded worker validates each completed response. SQL plans exclude this overhead.' };
     const plans = [];
     // Explain outside request timing. These are the real SQL strings and binds.
     if (args.includes('--plans')) for (const item of [...captured.values()].sort((a, b) => b.totalMs - a.totalMs)) {
@@ -207,8 +208,11 @@ await withLookupSource(source, async (load, runtime) => {
       plans.push({ workload: item.workload, sql: item.sql, calls: item.calls, totalMs: item.totalMs, plan: explained.rows[0]['QUERY PLAN'][0] });
     }
     await mkdir(output, { recursive: true });
+    const sourceIdentityAfter = await lookupSourceIdentity(source, sourceIdentity.revision);
+    const sourceStable = JSON.stringify(sourceIdentityAfter) === JSON.stringify(sourceIdentity);
+    const passed = sourceStable && (budgetMs === undefined || report.every(result => result.p95Ms <= budgetMs));
     await writeFile(path.join(output, 'lookups.json'), JSON.stringify({ version: 1,
-      at: new Date().toISOString(), snapshot, source,
+      at: new Date().toISOString(), snapshot, source, sourceIdentity, sourceIdentityAfter, sourceStable, passed,
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
       diffSha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'])).digest('hex'),
       hardware: { cpus: os.cpus().length, model: os.cpus()[0]?.model, memory: os.totalmem() },
@@ -216,13 +220,16 @@ await withLookupSource(source, async (load, runtime) => {
       databaseSettings: (await query(`SELECT name,setting,unit FROM pg_settings WHERE name IN
         ('shared_buffers','work_mem','max_connections','max_parallel_workers_per_gather','statement_timeout') ORDER BY name`)).rows,
       settings: { samples, trials, concurrency, cache, clients: agents.length, productionRateLimits: true, regionEnabled,
+        responseValidation: LOOKUP_RESPONSE_VALIDATION_LIMITS,
         scope: 'ukmesh', note: 'Actual public routers, pool size and privacy delivery gates; excludes unrelated background services. Cache-miss bursts may coalesce identical work.' },
       results: report, queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
     }, null, 2) + '\n');
+    if (!sourceStable) throw new Error('lookup source changed during the benchmark; see saved evidence');
     if (budgetMs !== undefined && report.some(result => result.p95Ms > budgetMs)) {
       throw new Error(`lookup p95 budget ${budgetMs}ms exceeded; see saved evidence`);
     }
   } finally {
-    for (const agent of agents) agent.destroy();
+    try { for (const agent of agents) agent.destroy(); }
+    finally { await verifier.close(); }
   }
 });

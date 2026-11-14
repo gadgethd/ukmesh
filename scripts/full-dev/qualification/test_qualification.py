@@ -27,6 +27,8 @@ import read_transport
 import recovery
 import soak
 import core_projection
+import source_identity
+import context
 from unittest.mock import Mock
 
 
@@ -161,6 +163,41 @@ class ActualTargetOwnership(unittest.TestCase):
         rows['ukmesh-full-backend-1']['Config']['Env'].pop()
         with self.assertRaisesRegex(ValueError,'required database'):
             targets.validate_consumers(rows,stores,Path('/owned/core'))
+
+    def test_exporter_fixture_name_is_normalized_after_actual_target_validation(self):
+        item={'Name':'/exporter','Image':'image','Config':{'Env':[],'Cmd':[],'Entrypoint':[]},'Mounts':[],
+              'HostConfig':{'Memory':1,'MemorySwap':1,'NanoCpus':1,'CpusetCpus':'','ShmSize':1}}
+        def profile(database):
+            item['Config']['Env']=['DATA_SOURCE_NAME=postgresql://meshcore_monitor:secret@ukmesh-sample-db:5432/'+database]
+            with patch.object(context,'service_manifest',return_value={'services':[{'name':'exporter','container':'exporter'}]}),\
+                    patch.object(context,'docker',return_value=subprocess.CompletedProcess([],0,json.dumps([item]).encode(),b'')),\
+                    patch.object(targets,'runtime_targets') as validate:
+                result=context.running_profile({'ukmesh':database,'owner':'owner','beacon':'beacon'})
+                validate.assert_called_once()
+                return result
+        self.assertEqual(profile('lean_1x_owned'),profile('lean_10x_owned'))
+
+
+class LookupSourceEvidence(unittest.TestCase):
+    def test_all_measurements_require_the_sealed_baseline_and_current_candidate(self):
+        expected={label:{'source_root':'/'+label,'sha256':label,'revision':'ref','files':2}
+                  for label in ('baseline','candidate')}
+        rows=[{'label':label,'measured_source':expected[label],
+               'modes':[{'source_identity':expected[label],'source_stable':True}]} for label in expected]
+        source_identity.validate_measurements(rows,expected)
+        for mutation in ('archive','candidate','drift','missing'):
+            changed=copy.deepcopy(rows)
+            if mutation=='archive':changed[0]['measured_source']['sha256']='edited'
+            elif mutation=='candidate':changed[1]['measured_source']['sha256']='stale'
+            elif mutation=='drift':changed[0]['modes'][0]['source_stable']=False
+            else:del changed[1]['measured_source']
+            with self.assertRaises(ValueError,msg=mutation):source_identity.validate_measurements(changed,expected)
+
+    def test_unverified_seal_is_rejected_before_spawning_source_loader(self):
+        with patch.object(source_identity,'read_json',return_value={'git_verified':False}),\
+                patch.object(source_identity,'identify') as loader:
+            with self.assertRaisesRegex(ValueError,'Git-verified'):source_identity.expected_sources()
+            loader.assert_not_called()
 
 
 class HTTPReaderOwnership(unittest.TestCase):

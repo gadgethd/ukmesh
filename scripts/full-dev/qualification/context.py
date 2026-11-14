@@ -108,7 +108,7 @@ def running_profile(targets: dict) -> dict:
     if not inspected_result.stdout:
         raise RuntimeError("runtime inspection returned no service evidence")
     inspected = json.loads(inspected_result.stdout)
-    from targets import runtime_targets
+    from targets import database_setting,runtime_targets
     runtime_targets({item["Name"].lstrip("/"): item for item in inspected}, allow_public_variant=True)
     present = {item["Name"].lstrip("/") for item in inspected}
     if inspected_result.returncode and present == set(names):
@@ -125,7 +125,7 @@ def running_profile(targets: dict) -> dict:
         environment = []
         for setting in item["Config"].get("Env", []):
             key, _, value = setting.partition("=")
-            if "DATABASE_URL" in key or key.endswith("_DSN"):
+            if database_setting(key):
                 parsed = urlsplit(value)
                 if parsed.path.lstrip("/") in target_names:
                     value = urlunsplit((parsed.scheme, parsed.netloc, "/selected-fixture", parsed.query, parsed.fragment))
