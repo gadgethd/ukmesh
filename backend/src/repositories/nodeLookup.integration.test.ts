@@ -1,11 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
 import { bootstrapBaseSchemaFixture } from '../db/fixtures/baseSchema.js';
 import { identityNodeSourceSql, publicIdentityNodeSourceSql, pagedIdentityNodeSourceSql } from '../nodes/identitySource.js';
-import { mapVisiblePredicate } from '../nodes/publicMap.js';
+import { mapVisiblePredicate, PUBLIC_MAP_ALLOWED_FIELDS } from '../nodes/publicMap.js';
 import { nodeEffectiveLastSeenSql, nodeEffectiveOnlineSql } from '../nodes/presence.js';
 import { networkFilters, nodeAliasArraySql, publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
@@ -169,4 +171,64 @@ test('indexed node projections and search retain canonical view results for alia
       }
     }
   }
+
+  // A private representative may be an alias outside the requested member
+  // list. Hydration must still aggregate the whole identity before filtering.
+  const privateAlias = 'DD' + 'D'.repeat(62);
+  await pool.query(`INSERT INTO core.nodes(node_id,name,network,advert_count,role,lat,lon,last_seen)
+    VALUES($1,'Private alias 🚫','ukmesh',100,2,51,-1,$2)`, [privateAlias,snapshot]);
+  await pool.query(`INSERT INTO core.node_identity_aliases(source_node_id,canonical_node_id,confidence,reason)
+    VALUES($1,$2,'high','owned private representative fixture')`, [privateAlias,key('1')]);
+  assert.equal((await query('SELECT name FROM core.node_identity_nodes WHERE node_id=$1',[key('1')])).rows[0]?.['name'],
+    'Private alias 🚫','the complete identity selects the private alias outside regional membership');
+  const baselineRoot = process.env['TEST_LOOKUP_BASELINE_SOURCE_ROOT'];
+  const baselineRepository = baselineRoot
+    ? (await import(pathToFileURL(path.join(baselineRoot,'repositories/nodes.ts')).href)).createNodeRepository(query)
+    : undefined;
+  // Region memberships accept normalized public keys; legacy Unicode IDs
+  // remain covered by the general identity/decoder cases above.
+  const ids = [...new Set([key('4'),key('1'),key('9'),key('B'),key('A'),key('7'),...boundaryIds])]
+    .filter(id=>/^[0-9A-F]{64}$/.test(id));
+  let regionalCases = 0;
+  for (const count of [0,1,127,128,129,500,ids.length]) {
+    const region = `lookup_size_${count}`;
+    const members = ids.slice(0,count).map(id => id===key('4') ? key('3') : id===key('1') ? key('2') : id===key('7') ? key('6') : id);
+    await pool.query('INSERT INTO core.region_scope_stats(region) VALUES($1)',[region]);
+    await pool.query(`INSERT INTO core.region_scope_members(region,node_id,packets)
+      SELECT $1,unnest($2::text[]),1`,[region,members]);
+    for (const network of ['ukmesh','northeast','test']) {
+      const filters = networkFilters(network,undefined,{region});
+      for (const requested of [fields,[...PUBLIC_MAP_ALLOWED_FIELDS]]) for (const cursor of [null,key('4')]) {
+        for (const limit of [3,1000]) {
+          const snapshotParameter=filters.params.length+1,cursorParameter=snapshotParameter+1,limitParameter=cursorParameter+1;
+          const projection=requested.map(field=>field==='last_seen' ? `${nodeEffectiveLastSeenSql('n')}::text AS last_seen`
+            : field==='is_online' ? `${nodeEffectiveOnlineSql('n',`$${snapshotParameter}::timestamptz`)} AS is_online` : `n.${field}`).join(',');
+          const expected = (await query(`SELECT ${projection} FROM core.node_identity_nodes n
+            WHERE ${mapVisiblePredicate('n',`$${snapshotParameter}::timestamptz`)}
+              AND NOT EXISTS(SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id=n.node_id)
+              ${filters.nodesAlias('n')}
+              AND ($${cursorParameter}::text IS NULL OR n.node_id>$${cursorParameter})
+            ORDER BY n.node_id LIMIT $${limitParameter}`,[...filters.params,snapshot,cursor,limit+1])).rows;
+          const actual = await repository.listPublicMapRows(requested,filters,snapshot,cursor,limit);
+          assert.deepEqual(actual,expected,`region${count}/${network}/${requested.length}fields/${cursor??'first'}/${limit}`);
+          assert.ok(actual.every(row=>row['node_id']!==key('1')),'a private alias cannot expose its canonical identity');
+          if (network==='ukmesh' && cursor===null && limit===1000) {
+            if (count===0) assert.equal(actual.length,0,'an empty region has no public nodes');
+            else {
+              assert.ok(actual.some(row=>row['node_id']===key('4')),'the public alias family without a canonical raw row remains visible');
+              if (count===1) assert.equal(actual.length,1,'the sparse positive control is populated');
+              else assert.ok(actual.length>=count-10,'boundary and dense cases retain their public population');
+            }
+          }
+          if (network==='northeast') assert.equal(actual.length,0,'the only northeast family has a private representative');
+          if (network==='test' && count<=1) assert.equal(actual.length,0,'a public-only region does not cross the test-network scope');
+          if (baselineRepository) assert.deepEqual(actual,
+            await baselineRepository.listPublicMapRows(requested,filters,snapshot,cursor,limit),
+            `sealed baseline region${count}/${network}/${requested.length}fields/${cursor??'first'}/${limit}`);
+          regionalCases++;
+        }
+      }
+    }
+  }
+  t.diagnostic(`regional candidate parity: ${regionalCases} complete-field/scope/page cases; sealed baseline ${baselineRepository?'included':'independent canonical-view oracle'}`);
 });

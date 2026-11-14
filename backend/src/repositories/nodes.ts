@@ -241,7 +241,9 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         limit: `$${limitParameter}`,
         candidates: candidateIds ? {
           idsSql: candidateIds,
-          projection: narrowSearch ? 'adaptive' : 'bulk',
+          // Indexed observer hydration already avoids a broad scan. Other
+          // candidate sets use their cardinality, including small regions.
+          projection: narrowSearch || scopedCandidates?.rowHydration !== 'indexed-points' ? 'adaptive' : 'bulk',
           rowHydration: scopedCandidates?.rowHydration ?? 'ordered-scan',
         } : undefined,
       });
