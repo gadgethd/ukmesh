@@ -49,7 +49,7 @@ export function configureLookupReadOnlyEnvironment(endpoint: string, env: NodeJS
   delete env['DATABASE_SCHEMA'];
 }
 
-type LookupRuntime = { pool: pg.Pool; query: DatabaseQueryFn; analyticsQuery: DatabaseQueryFn; closeDb: () => Promise<void> };
+type LookupRuntime = { pool: pg.Pool; analyticsPool: pg.Pool; ingestPool: pg.Pool; query: DatabaseQueryFn; analyticsQuery: DatabaseQueryFn; closeDb: () => Promise<void> };
 export type LookupSourceLoader = (file: string) => Promise<any>;
 
 /** Archived revisions also import their process-default runtime. Configure the

@@ -626,32 +626,41 @@ class EvidenceAcceptance(unittest.TestCase):
 
 class OperationSourceEvidence(unittest.TestCase):
     def records(self):
-        sources = {label: {"source_root": "/"+label, "revision": digit*40, "sha256": digit*64, "files": 20}
-                   for label, digit in (("baseline", "a"), ("candidate", "b"))}
-        runs = []
-        for scale in ("1x", "10x"):
+        sources={label:{'source_root':'/'+label,'revision':digit*40,'sha256':digit*64,'files':20}
+                 for label,digit in (('baseline','a'),('candidate','b'))}
+        runs=[]
+        for scale in ('1x','10x'):
             for label in sources:
-                pair='a'*32 if scale=='1x' else 'b'*32
-                records = [{"name": name, "trial": trial, "passed": True, "status": 200,
-                    "bytes": 100, "ms": 100, "digest": "c"*64, "dataDigest": "d"*64,
-                    "entries": 2 if name.startswith("nodes-") else None,
-                    "identityDigest": "e"*64 if name.startswith("nodes-") else None}
-                    for trial in range(3) for name in sorted(operations.NAMES)]
-                runs.append({"scale": scale, "label": label, "fixture_token": scale,
-                    "passed": True, "measured_source": sources[label], "source_identity": sources[label],
-                    'pair':{'token':pair,'label':label},'context_before':{},'context':{},'source_settings_fixture_stable':True,
-                    "source_identity_after": sources[label], "source_stable": True,
-                    "settings": {"trials": 3, "deadlineMs": 30000, "maxResponseBytes": 8*1024*1024,
-                        "exportSpacingMs": 13000, "readOnly": True, "httpConcurrency": 1},
-                    "chart_snapshot": {"generatedAt": "2026-11-14T00:00:00Z", "visibilityGeneration": 7, "maxAgeMs": 1800000},
-                    "records": records, "identity_checks": [{"trial": trial, "passed": True} for trial in range(3)]})
-                for item in records:
-                    started=dt.datetime(2026,11,14,0,10,tzinfo=dt.timezone.utc)+dt.timedelta(seconds=item['trial']*40+{'summary':0,'charts':1,'nodes-csv':2,'nodes-geojson':16}[item['name']])
-                    item.update(startedAt=started.isoformat(),finishedAt=(started+dt.timedelta(milliseconds=100)).isoformat(),
-                        paired={'token':pair,'readyAt':(started-dt.timedelta(milliseconds=10)).isoformat(),
-                                'releaseAt':(started-dt.timedelta(milliseconds=1)).isoformat()})
-                    if item["name"] == "charts": item["snapshot"] = {**runs[-1]["chart_snapshot"], "status": "complete", "scope": "ukmesh", "ageMs": 1000}
-        return runs, sources
+                token=('a' if scale=='1x' else 'b')*32
+                actors=[f"127.0.{6 if label=='baseline' else 7}.{index+1}" for index in range(8)]
+                snapshot={'generatedAt':'2026-11-14T00:00:00Z','visibilityGeneration':7,'maxAgeMs':1800000}
+                records=[]
+                for index,(trial,name,sample) in enumerate(operations.operation_steps()):
+                    started=dt.datetime(2026,11,14,0,10,tzinfo=dt.timezone.utc)+dt.timedelta(
+                        seconds=trial*40+{'summary':0,'charts':5,'nodes-csv':10,'nodes-geojson':24}[name]+sample*.2)
+                    export=name.startswith('nodes-')
+                    record={'name':name,'trial':trial,'sample':sample,'actor':actors[index%8],
+                        'passed':True,'status':200,'bytes':100,'ms':100,'digest':'c'*64,'dataDigest':'d'*64,
+                        'entries':2 if export else None,'identityDigest':'e'*64 if export else None,
+                        'startedAt':started.isoformat(),'finishedAt':(started+dt.timedelta(milliseconds=100)).isoformat(),
+                        'paired':{'token':token,'trial':trial,'name':name,'sample':sample,
+                            'readyAt':(started-dt.timedelta(milliseconds=10)).isoformat(),
+                            'releaseAt':(started-dt.timedelta(milliseconds=1)).isoformat()},
+                        'transport':{'localAddress':actors[index%8],'reusedSocket':True,'socketAssignedMs':0,'connectedMs':0,'headersMs':99,'endMs':100},
+                        'diagnostics':{'cpu':{'user':50,'system':10},'eventLoop':{'idle':90,'active':10,'utilization':.1},
+                            'database':[{'metric':family+suffix,'labels':{'pool':'oltp','outcome':'success'},'value':value}
+                                for family in ('meshcore_db_pool_wait_seconds','meshcore_db_execution_seconds','meshcore_db_query_duration_seconds')
+                                for suffix,value in (('_count',2),('_sum',.001))]}}
+                    if name=='charts':record['snapshot']={**snapshot,'status':'complete','scope':'ukmesh','ageMs':1000}
+                    records.append(record)
+                settings={key:operations.PAIR_POLICY[key] for key in ('trials','statsSamples','exportSamples','clients','exportSpacingMs','httpConcurrency')}
+                runs.append({'scale':scale,'label':label,'fixture_token':scale,'passed':True,
+                    'measured_source':sources[label],'source_identity':sources[label],'source_identity_after':sources[label],'source_stable':True,
+                    'pair':{'token':token,'label':label},'context_before':{},'context':{},'source_settings_fixture_stable':True,
+                    'settings':{**settings,'deadlineMs':30000,'maxResponseBytes':8388608,'readOnly':True},
+                    'actors':actors,'executor_profile':{name:{'max':maximum} for name,maximum in (('pool',8),('analyticsPool',2),('ingestPool',2))},
+                    'chart_snapshot':snapshot,'records':records,'identity_checks':[{'trial':trial,'passed':True} for trial in range(3)]})
+        return runs,sources
 
     def test_operations_require_actual_baseline_bytes_complete_trials_identity_and_data_parity(self):
         runs, sources = self.records()
@@ -662,17 +671,19 @@ class OperationSourceEvidence(unittest.TestCase):
             elif mutation == "drift": changed[0]["source_stable"] = False
             elif mutation == "incomplete": changed[0]["records"].pop()
             elif mutation == "duplicate": changed[0]["records"][-1] = changed[0]["records"][0]
-            elif mutation == "identity": changed[0]["records"][1]["identityDigest"] = "f"*64
+            elif mutation == "identity": next(item for item in changed[0]["records"] if item["name"]=="nodes-csv")["identityDigest"] = "f"*64
             elif mutation == "data": changed[1]["records"][0]["dataDigest"] = "f"*64
             elif mutation == "regression":
-                for item in changed[1]["records"]: item["ms"] = 111
+                for item in changed[1]["records"]:
+                    item['ms']=item['transport']['endMs']=111
+                    item['finishedAt']=(dt.datetime.fromisoformat(item['startedAt'])+dt.timedelta(milliseconds=111)).isoformat()
             elif mutation=='fixture':changed[1]["fixture_token"] = "other"
             elif mutation=='pair':changed[1]['pair']['token']='c'*32
             elif mutation=='skew':changed[1]['records'][0]['startedAt']='2026-11-14T00:10:01.101+00:00'
             elif mutation=='release':changed[1]['records'][0]['paired']['releaseAt']='2026-11-14T00:10:00.998+00:00'
             elif mutation=='context':changed[1]['context']={'changed':True}
             elif mutation=='snapshot':changed[1]['chart_snapshot']['generatedAt']='2026-11-14T00:00:01Z'
-            else:changed[1]['records'][2]['startedAt']='2026-11-14T00:10:03+00:00'
+            else:next(item for item in changed[1]['records'] if item['name']=='nodes-geojson')['startedAt']='2026-11-14T00:10:11+00:00'
             self.assertFalse(operations.comparison(changed, sources)["passed"], mutation)
 
     def test_report_cannot_accept_two_current_source_runs_relabelled_as_baseline(self):
@@ -700,12 +711,43 @@ class OperationSourceEvidence(unittest.TestCase):
         runs[1]['records'][0]['dataDigest']='f'*64
         self.assertFalse(operations.comparison(runs,sources)['passed'])
 
+    def test_all_twenty_samples_and_cold_response_remain_in_trial_medians(self):
+        runs,sources=self.records()
+        self.assertEqual(len(runs[0]['records']),126)
+        for row in runs:
+            for item in row['records']:
+                if item['name'] not in ('summary','charts'):continue
+                item['ms']=110 if item['trial']==0 and item['sample']==0 else (10 if row['label']=='baseline' else 10.5)
+                item['transport']['endMs']=item['ms']
+                item['transport']['headersMs']=min(9,item['ms'])
+                item['finishedAt']=(dt.datetime.fromisoformat(item['startedAt'])+dt.timedelta(milliseconds=item['ms'])).isoformat()
+        result=operations.comparison(runs,sources)
+        self.assertTrue(result['passed'])
+        summary=next(item for item in result['checks'] if item['name']=='1x:summary')
+        self.assertEqual(summary['baseline_trial_medians_ms'],[10,10,10])
+        self.assertEqual(summary['candidate_trial_medians_ms'],[10.5,10.5,10.5])
+        self.assertEqual(summary['baseline_ms'][0],110)
+        self.assertEqual(len(summary['paired_trials']),60)
+        for mutation in ('missing-sample','duplicate-sample','sample-hash','actor','one-actor','overlap','telemetry','nonfinite-cpu','pool-profile'):
+            changed=copy.deepcopy(runs)
+            if mutation=='missing-sample':changed[0]['records'].pop(19)
+            elif mutation=='duplicate-sample':changed[0]['records'][19]=changed[0]['records'][18]
+            elif mutation=='sample-hash':changed[1]['records'][19]['dataDigest']='f'*64
+            elif mutation=='actor':changed[1]['records'][19]['transport']['localAddress']='127.0.0.1'
+            elif mutation=='one-actor':
+                for item in changed[1]['records']:item['actor']=item['transport']['localAddress']='127.0.7.1'
+            elif mutation=='overlap':changed[1]['records'][19]['startedAt']=changed[1]['records'][18]['startedAt']
+            elif mutation=='telemetry':changed[1]['records'][19]['diagnostics']['database'].pop()
+            elif mutation=='nonfinite-cpu':changed[1]['records'][19]['diagnostics']['cpu']['user']=float('inf')
+            else:changed[1]['executor_profile']['pool']['max']=10
+            self.assertFalse(operations.comparison(changed,sources)['passed'],mutation)
+
     def test_pair_start_skew_keeps_the_exact_hundred_millisecond_boundary(self):
         for skew,allowed in ((100,True),(101,False)):
             runs,sources=self.records()
-            record=runs[1]['records'][0]
-            record['startedAt']=(dt.datetime.fromisoformat(record['startedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
-            record['finishedAt']=(dt.datetime.fromisoformat(record['finishedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
+            for record in runs[1]['records']:
+                record['startedAt']=(dt.datetime.fromisoformat(record['startedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
+                record['finishedAt']=(dt.datetime.fromisoformat(record['finishedAt'])+dt.timedelta(milliseconds=skew)).isoformat()
             self.assertEqual(operations.comparison(runs,sources)['passed'],allowed)
 
     def test_one_exited_process_aborts_its_waiting_peer_and_releases_shared_readers(self):
@@ -740,25 +782,24 @@ class OperationSourceEvidence(unittest.TestCase):
                 directory=Path(temporary)
                 generated=(dt.datetime.now(dt.timezone.utc)-dt.timedelta(minutes=1)).isoformat()
                 snapshot={'generatedAt':generated,'visibilityGeneration':7,'maxAgeMs':1800000}
-                for trial in range(3):
-                    for name in operations.ORDER:
-                        for label in sources:
-                            value={'token':token,'label':label,'trial':trial,'name':name,'source':sources[label],
-                                   'snapshot':copy.deepcopy(snapshot),'readyAt':dt.datetime.now(dt.timezone.utc).isoformat()}
-                            if trial==0 and name=='summary' and label=='candidate':
-                                if mutation=='source':value['source']=sources['baseline']
-                                elif mutation=='token':value['token']='b'*32
-                                elif mutation=='step':value['name']='charts'
-                                elif mutation=='snapshot':value['snapshot']['visibilityGeneration']=8
-                                elif mutation=='expiry':value['snapshot']['maxAgeMs']=1
-                                elif mutation=='short-ttl':value['snapshot']['maxAgeMs']=300000
-                            common.write_json(directory/f'{trial}-{name}-{label}.ready.json',value)
+                for trial,name,sample in operations.operation_steps():
+                    for label in sources:
+                        value={'token':token,'label':label,'trial':trial,'name':name,'sample':sample,'source':sources[label],
+                               'snapshot':copy.deepcopy(snapshot),'readyAt':dt.datetime.now(dt.timezone.utc).isoformat()}
+                        if trial==0 and name=='summary' and sample==0 and label=='candidate':
+                            if mutation=='source':value['source']=sources['baseline']
+                            elif mutation=='token':value['token']='b'*32
+                            elif mutation=='step':value['name']='charts'
+                            elif mutation=='snapshot':value['snapshot']['visibilityGeneration']=8
+                            elif mutation=='expiry':value['snapshot']['maxAgeMs']=1
+                            elif mutation=='short-ttl':value['snapshot']['maxAgeMs']=300000
+                        common.write_json(directory/f'{trial}-{name}-{sample}-{label}.ready.json',value)
                 futures={label:Mock() for label in sources}
                 for future in futures.values():future.done.return_value=False
                 if mutation=='none':
                     releases=operations.release_pair(directory,token,sources,futures)
-                    self.assertEqual(len(releases),12)
-                    self.assertEqual(len(list(directory.glob('*.release.json'))),12)
+                    self.assertEqual(len(releases),126)
+                    self.assertEqual(len(list(directory.glob('*.release.json'))),126)
                 else:
                     with self.assertRaises(ValueError):operations.release_pair(directory,token,sources,futures)
                     self.assertFalse(list(directory.glob('*.release.json')))

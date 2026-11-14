@@ -28,10 +28,10 @@ test('separate source owners wait for the same controller release before work', 
   const directory = await fixture(t), state = snapshot();
   const owners = await Promise.all(['baseline', 'candidate'].map(label => createOperationPair(directory, token, label, sources[label])));
   const pending = owners.map(owner => owner.wait(0, 'summary', state));
-  const records = await Promise.all(['baseline', 'candidate'].map(label => ready(path.join(directory, `0-summary-${label}.ready.json`))));
+  const records = await Promise.all(['baseline', 'candidate'].map(label => ready(path.join(directory, `0-summary-0-${label}.ready.json`))));
   assert.deepEqual(records.map(value => value.source), [sources.baseline, sources.candidate]);
   const releaseAt = new Date(Date.now() + 30).toISOString();
-  await writeFile(path.join(directory, '0-summary.release.json'), JSON.stringify({ token, trial: 0, name: 'summary', releaseAt }));
+  await writeFile(path.join(directory, '0-summary-0.release.json'), JSON.stringify({ token, trial: 0, name: 'summary', sample: 0, releaseAt }));
   const result = await Promise.all(pending);
   assert.ok(Date.now() >= Date.parse(releaseAt));
   assert.deepEqual(result.map(value => value.releaseAt), [releaseAt, releaseAt]);
@@ -44,15 +44,15 @@ test('silent, aborted and malformed controller releases fail within a bounded wa
     const owner = await createOperationPair(directory, token, 'baseline', sources.baseline, ['silent', 'late'].includes(fault) ? 25 : 1000);
     const waiting = owner.wait(0, 'summary', snapshot());
     const rejection = assert.rejects(waiting, /deadline|aborted|invalid operation pair release|ELOOP|invalid operation pair document/);
-    await ready(path.join(directory, '0-summary-baseline.ready.json'));
+    await ready(path.join(directory, '0-summary-0-baseline.ready.json'));
     if (fault === 'abort') await writeFile(path.join(directory, 'abort.json'), JSON.stringify({ token }));
-    else if (fault === 'fifo') execFileSync('mkfifo', [path.join(directory, '0-summary.release.json')]);
+    else if (fault === 'fifo') execFileSync('mkfifo', [path.join(directory, '0-summary-0.release.json')]);
     else if (fault !== 'silent') {
       const release = { token: fault === 'wrong-token' ? 'd'.repeat(32) : token,
-        trial: fault === 'wrong-step' ? 1 : 0, name: 'summary', releaseAt: new Date(Date.now() + (fault === 'late' ? 100 : 0)).toISOString() };
-      const destination = path.join(directory, fault === 'symlink' ? 'foreign.json' : '0-summary.release.json');
+        trial: fault === 'wrong-step' ? 1 : 0, name: 'summary', sample: 0, releaseAt: new Date(Date.now() + (fault === 'late' ? 100 : 0)).toISOString() };
+      const destination = path.join(directory, fault === 'symlink' ? 'foreign.json' : '0-summary-0.release.json');
       await writeFile(destination, JSON.stringify(release));
-      if (fault === 'symlink') await symlink(destination, path.join(directory, '0-summary.release.json'));
+      if (fault === 'symlink') await symlink(destination, path.join(directory, '0-summary-0.release.json'));
     }
     await rejection;
   }
@@ -65,5 +65,23 @@ test('wrong source, insufficient chart lifetime and invalid steps cannot join th
   await assert.rejects(owner.wait(0, 'summary', { ...snapshot(), maxAgeMs: 299000 }), /five minutes/);
   await assert.rejects(owner.wait(0, '../outside', snapshot()), /invalid operation pair step/);
   await assert.rejects(owner.wait(3, 'summary', snapshot()), /invalid operation pair step/);
-  await assert.rejects(access(path.join(directory, '0-summary-baseline.ready.json')));
+  await assert.rejects(access(path.join(directory, '0-summary-0-baseline.ready.json')));
+});
+
+test('an early scheduler wake cannot release work before its actual wall-clock boundary', async t => {
+  const directory = await fixture(t);
+  const owner = await createOperationPair(directory, token, 'baseline', sources.baseline, 1000);
+  const schedule = globalThis.setTimeout;
+  let early = false;
+  t.mock.method(globalThis, 'setTimeout', (callback, delay, ...args) => {
+    if (!early && delay > 100) { early = true; return schedule(callback, 0, ...args); }
+    return schedule(callback, delay, ...args);
+  });
+  const waiting = owner.wait(0, 'summary', snapshot());
+  await ready(path.join(directory, '0-summary-0-baseline.ready.json'));
+  const releaseAt = new Date(Date.now() + 500).toISOString();
+  await writeFile(path.join(directory, '0-summary-0.release.json'), JSON.stringify({ token, trial: 0, name: 'summary', sample: 0, releaseAt }));
+  await waiting;
+  assert.equal(early, true, 'test must actually deliver an early timer callback');
+  assert.ok(Date.now() >= Date.parse(releaseAt), 'actual work must still wait for the unchanged release boundary');
 });

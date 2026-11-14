@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { parseCsv } from './sampleData.js';
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import http from 'node:http';
+import policy from './operationPairPolicy.json' with { type: 'json' };
 
 export const OPERATION_CASES = [
   { name: 'summary', route: '/api/stats?network=ukmesh', format: 'summary' },
@@ -12,13 +13,17 @@ export const OPERATION_CASES = [
 export type OperationFormat = typeof OPERATION_CASES[number]['format'];
 export type OperationSnapshot = { generatedAt: string; visibilityGeneration: number; maxAgeMs: number };
 export function readOperation(port: number, route: typeof OPERATION_CASES[number]['route'], agent: http.Agent,
-  deadlineMs = 30_000): Promise<{ body: Buffer; status: number; type: string; ms: number }> {
-  if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > 30_000) throw new Error('invalid operation transport');
+  deadlineMs = policy.responseDeadlineMs): Promise<{ body: Buffer; status: number; type: string; ms: number;
+    transport: { localAddress: string | undefined; reusedSocket: boolean; socketAssignedMs: number; connectedMs: number; headersMs: number; endMs: number } }> {
+  if (!Number.isInteger(port) || port < 1 || port > 65535 || !Number.isFinite(deadlineMs) || deadlineMs <= 0 || deadlineMs > policy.responseDeadlineMs) throw new Error('invalid operation transport');
   const started = performance.now();
   return new Promise((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout>;
     const fail = (error: Error) => { clearTimeout(timer); reject(error); };
+    let socketAssignedMs = 0, connectedMs = 0;
     const request = http.get({ hostname: '127.0.0.1', port, path: route, agent }, response => {
+      const headersMs = performance.now() - started;
+      const localAddress = response.socket.localAddress;
       const chunks: Buffer[] = []; let bytes = 0;
       response.on('data', (chunk: Buffer) => {
         bytes += chunk.length;
@@ -28,11 +33,19 @@ export function readOperation(port: number, route: typeof OPERATION_CASES[number
       response.once('error', fail);
       response.once('end', () => {
         clearTimeout(timer);
-        resolve({ body: Buffer.concat(chunks), status: response.statusCode ?? 0,
-          type: response.headers['content-type'] ?? '', ms: performance.now() - started });
+        const body = Buffer.concat(chunks);
+        const endMs = performance.now() - started;
+        resolve({ body, status: response.statusCode ?? 0,
+          type: response.headers['content-type'] ?? '', ms: endMs,
+          transport: { localAddress, reusedSocket: request.reusedSocket, socketAssignedMs, connectedMs, headersMs, endMs } });
       });
     });
     request.once('error', fail);
+    request.once('socket', socket => {
+      socketAssignedMs = performance.now() - started;
+      if (socket.connecting) socket.once('connect', () => { connectedMs = performance.now() - started; });
+      else connectedMs = socketAssignedMs;
+    });
     timer = setTimeout(() => request.destroy(new Error('operation response deadline')), deadlineMs);
   });
 }

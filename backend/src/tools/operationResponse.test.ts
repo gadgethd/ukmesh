@@ -67,3 +67,39 @@ test('real operation transport bounds stalled/oversize bodies, releases sockets 
   assert.equal(result.status, 200); assert.ok(result.ms >= 0);
   assert.equal(validate(result.body, 'summary', result.status, result.type).entries, null);
 });
+
+test('eight real actors remain serial, reuse their own sockets and retain body assembly in HTTP timing', async t => {
+  const body = '{"totalNodes":2,"mapNodes":1,"packetsDay":3}';
+  const observed = new Set<string>(); let active = 0, peak = 0;
+  const server = http.createServer((request, response) => {
+    observed.add(request.socket.remoteAddress!); peak = Math.max(peak, ++active);
+    setTimeout(() => { active--; response.setHeader('Content-Type', 'application/json'); response.end(body); }, 2);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  const port = (server.address() as AddressInfo).port;
+  const actors = Array.from({ length: 8 }, (_, index) => `127.0.8.${index + 1}`);
+  const agents = actors.map(localAddress => new http.Agent({ keepAlive: true, maxSockets: 1, localAddress }));
+  t.after(async () => { for (const agent of agents) agent.destroy(); server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve())); });
+  for (let request = 0; request < 16; request++) {
+    const result = await readOperation(port, '/api/stats?network=ukmesh', agents[request % 8]);
+    assert.equal(result.transport.localAddress, actors[request % 8]);
+    assert.equal(result.transport.endMs, result.ms);
+    if (request >= 8) assert.equal(result.transport.reusedSocket, true);
+  }
+  assert.equal(peak, 1); assert.deepEqual([...observed].sort(), actors);
+  const concatenate = Buffer.concat; let assembledAt = 0;
+  t.mock.method(Buffer, 'concat', (parts, ...args) => {
+    const result = concatenate(parts, ...args);
+    if (result.toString() === body) {
+      const until = performance.now() + 20;
+      while (performance.now() < until) { /* deterministic bounded body-assembly work */ }
+      assembledAt = performance.now();
+    }
+    return result;
+  });
+  const started = performance.now();
+  const result = await readOperation(port, '/api/stats?network=ukmesh', agents[0]);
+  assert.ok(assembledAt > started);
+  assert.ok(result.ms >= assembledAt - started - 1, 'HTTP timing must include the original body assembly boundary');
+});

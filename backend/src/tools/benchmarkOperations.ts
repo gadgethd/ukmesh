@@ -2,6 +2,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import http from 'node:http';
+import { performance } from 'node:perf_hooks';
 import { option } from './sampleData.js';
 import { configureLookupReadOnlyEnvironment } from './lookupBenchmarkSession.js';
 import { withOperationServer } from './operationRoutes.js';
@@ -9,7 +10,8 @@ import { lookupSourceIdentity } from './lookupSource.js';
 import { LOOKUP_RESPONSE_MAX_BYTES } from './lookupResponseBody.js';
 import { OPERATION_CASES, readOperation, validateOperationResponse } from './operationResponse.js';
 import type { OperationSnapshot } from './operationResponse.js';
-import { createOperationPair } from './operationPair.js';
+import { createOperationPair, operationSamples, OPERATION_PAIR_POLICY as policy } from './operationPair.js';
+import { metricDifferences } from './operationDiagnostics.js';
 
 const args = process.argv.slice(2), source = path.resolve(option(args, 'source-root') ?? 'src');
 const output = path.resolve(option(args, 'output') ?? '../plans/database-lookups/operations');
@@ -22,28 +24,42 @@ configureLookupReadOnlyEnvironment(process.env['DATABASE_URL'] ?? '', process.en
 const records: Array<Record<string, unknown>> = [];
 let failure: unknown;
 let chartSnapshot: OperationSnapshot | undefined;
+let executorProfile: unknown;
+const actors = Array.from({ length: policy.clients }, (_, index) => `127.0.${pairLabel === 'baseline' ? 6 : pairLabel === 'candidate' ? 7 : 8}.${index + 1}`);
 try {
-  await withOperationServer(source, async (port, snapshot) => {
+  await withOperationServer(source, async (port, snapshot, diagnostics) => {
+      if (!diagnostics) throw new Error('selected-source operation diagnostics required');
       chartSnapshot = snapshot;
-      const agent = new http.Agent({ keepAlive: true, maxSockets: 1 });
-      let lastExport = -Infinity;
+      executorProfile = diagnostics.profile;
+      const agents = actors.map(localAddress => new http.Agent({ keepAlive: true, maxSockets: 1, localAddress }));
+      let lastExport = -Infinity, requestId = 0;
       try {
-        for (let trial = 0; trial < 3; trial++) {
+        for (let trial = 0; trial < policy.trials; trial++) {
           for (const definition of OPERATION_CASES) {
+           for (let sample = 0; sample < operationSamples(definition.name); sample++) {
             if (definition.format === 'csv' || definition.format === 'geojson') {
-              const delay = 13_000 - (performance.now() - lastExport);
+              const delay = policy.exportSpacingMs - (performance.now() - lastExport);
               if (delay > 0) await new Promise(resolve => setTimeout(resolve, delay));
             }
-            const paired = pair ? await pair.wait(trial, definition.name, snapshot) : undefined;
+            const metricsBefore = await diagnostics.metrics();
+            const poolsBefore = diagnostics.pools();
+            const paired = pair ? await pair.wait(trial, definition.name, snapshot, sample) : undefined;
+            const actor = requestId++ % actors.length;
+            const cpuBefore = process.cpuUsage(), loopBefore = performance.eventLoopUtilization();
             const started = performance.now();
-            const record: Record<string, unknown> = { name: definition.name, trial, passed: false,
+            const record: Record<string, unknown> = { name: definition.name, trial, sample, actor: actors[actor], passed: false,
               startedAt: new Date().toISOString(), ...(paired ? { paired } : {}) };
             try {
-              const result = await readOperation(port, definition.route, agent);
+              const result = await readOperation(port, definition.route, agents[actor]);
               record['finishedAt'] = new Date().toISOString();
-              Object.assign(record, { ms: result.ms, status: result.status, contentType: result.type },
+              const cpu = process.cpuUsage(cpuBefore), eventLoop = performance.eventLoopUtilization(loopBefore);
+              const metricsAfter = await diagnostics.metrics();
+              Object.assign(record, { ms: result.ms, status: result.status, contentType: result.type,
+                transport: result.transport, diagnostics: { cpu, eventLoop, database: metricDifferences(metricsBefore, metricsAfter),
+                  poolsBefore, poolsAfter: diagnostics.pools(),
+                  databaseScope: 'selected-source process; one HTTP request active; execution includes driver wall time' } },
                 validateOperationResponse(result.body, definition.format, result.status, result.type, snapshot));
-              record['passed'] = result.ms <= 30_000;
+              record['passed'] = result.ms <= policy.responseDeadlineMs && result.transport.localAddress === actors[actor];
             } catch (error) {
               record['finishedAt'] ??= new Date().toISOString();
               record['error'] = error instanceof Error ? error.message : String(error);
@@ -52,24 +68,26 @@ try {
             records.push(record);
             if (!record['passed']) throw new Error(`operation ${definition.name} failed; see retained response evidence`);
             if (definition.format === 'csv' || definition.format === 'geojson') lastExport = performance.now();
+           }
           }
         }
-      } finally { agent.destroy(); }
-  });
+      } finally { for (const agent of agents) agent.destroy(); }
+  }, { diagnostics: true });
 } catch (error) { failure = error; }
 const after = await lookupSourceIdentity(source, sourceIdentity.revision);
 const sourceStable = JSON.stringify(sourceIdentity) === JSON.stringify(after);
-const identityChecks = Array.from({ length: 3 }, (_, trial) => {
+const identityChecks = Array.from({ length: policy.trials }, (_, trial) => {
   const csv = records.find(row => row['trial'] === trial && row['name'] === 'nodes-csv');
   const geo = records.find(row => row['trial'] === trial && row['name'] === 'nodes-geojson');
   return { trial, passed: Boolean(csv?.['identityDigest']) && csv?.['identityDigest'] === geo?.['identityDigest'] };
 });
-const passed = !failure && sourceStable && records.length === 12 && records.every(row => row['passed'])
+const passed = !failure && sourceStable && records.length === policy.trials * OPERATION_CASES.reduce((total, item) => total + operationSamples(item.name), 0) && records.every(row => row['passed'])
   && identityChecks.every(row => row.passed);
 await mkdir(output, { recursive: true });
 await writeFile(path.join(output, 'operations.json'), JSON.stringify({ passed, at: new Date().toISOString(),
-  settings: { trials: 3, deadlineMs: 30_000, maxResponseBytes: LOOKUP_RESPONSE_MAX_BYTES, exportSpacingMs: 13_000,
-    readOnly: true, httpConcurrency: 1 }, pair: pair ? { token: pair.token, label: pair.label } : null,
-  chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
+  settings: { trials: policy.trials, statsSamples: policy.statsSamples, exportSamples: policy.exportSamples, clients: policy.clients,
+    deadlineMs: policy.responseDeadlineMs, maxResponseBytes: LOOKUP_RESPONSE_MAX_BYTES, exportSpacingMs: policy.exportSpacingMs,
+    readOnly: true, httpConcurrency: policy.httpConcurrency }, pair: pair ? { token: pair.token, label: pair.label } : null,
+  actors, executorProfile, chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
   error: failure instanceof Error ? failure.message : failure ? String(failure) : null }, null, 2) + '\n');
 if (!passed) throw new Error('statistics/export qualification failed; see saved evidence');

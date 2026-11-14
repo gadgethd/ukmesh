@@ -2,9 +2,12 @@ import express, { Router } from 'express';
 import { withLookupSource, withLookupTrial } from './lookupBenchmarkSession.js';
 import type { DatabaseQueryFn } from '../db/contracts.js';
 import type { OperationSnapshot } from './operationResponse.js';
+import { createOperationDiagnostics } from './operationDiagnostics.js';
+import type { OperationDiagnostics } from './operationDiagnostics.js';
 
 /** The selected revision owns all route, privacy, cache and admission policies. */
-export async function withOperationServer<T>(source: string, work: (port: number, snapshot: OperationSnapshot) => Promise<T>): Promise<T> {
+export async function withOperationServer<T>(source: string, work: (port: number, snapshot: OperationSnapshot, diagnostics?: OperationDiagnostics) => Promise<T>,
+  options: { diagnostics?: boolean } = {}): Promise<T> {
   return withLookupSource(source, async (load, runtime) => {
     const [cacheModule, { registerStatsRoutes }, { registerExportRoutes }, limiters,
       { networkFilters }, { readPublicResponseGeneration }, { readCurrentVisibilityGeneration },
@@ -24,6 +27,7 @@ export async function withOperationServer<T>(source: string, work: (port: number
       || Math.abs(Date.parse(stored.generated_at) - validated.generatedAtMs) > 1000) throw new Error('fresh persisted chart snapshot required before read-only comparison');
     const snapshot: OperationSnapshot = { generatedAt: stored.payload.snapshot.generatedAt,
       visibilityGeneration: generation, maxAgeMs: cacheModule.CHARTS_CACHE_TTL_MS };
+    const diagnostics = options.diagnostics ? await createOperationDiagnostics(load, runtime) : undefined;
     let attemptedWrite = false;
     const readOnly = (execute: DatabaseQueryFn): DatabaseQueryFn => async (sql, params, signal) => {
       try { return await execute(sql, params, signal); }
@@ -50,7 +54,7 @@ export async function withOperationServer<T>(source: string, work: (port: number
         exportLimiter: limiters.EXPORT_LIMITER, getPublicVisibilityGeneration: readCurrentVisibilityGeneration });
       wrapAsyncHandlers(router);
       const app = express(); app.use('/api', limiters.createGlobalApiLimiter(), router); app.use(apiErrorMiddleware);
-      return work(await listen(app), snapshot);
+      return work(await listen(app), snapshot, diagnostics);
     });
     if (attemptedWrite) throw new Error('read-only chart/export comparison attempted publication; prepare a fresh application snapshot');
     return result;
