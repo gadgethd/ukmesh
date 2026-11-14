@@ -41,19 +41,72 @@ def application_sessions(stores: dict) -> list[dict]:
 
 
 def session(container: str, database: str, role: str, statement: str,
-            *, host: str, password: str = FIXTURE_PASSWORD) -> dict:
+            *, host: str, password: str = FIXTURE_PASSWORD, capture_metadata: bool = False) -> dict:
     result = docker(["exec", "-i", "-e", "PGPASSWORD=" + password, container,
                      "psql", "-X", "-q", "-A", "-t", "-h", host, "-U", role,
                      "-d", database, "-v", "ON_ERROR_STOP=1", "-v", "VERBOSITY=sqlstate"],
                     data=("SET statement_timeout='10s'; BEGIN; " + statement + "; ROLLBACK;\n").encode(),
                     timeout=15, check=False)
     states = re.findall(rb"(?:ERROR|FATAL):\s+([0-9A-Z]{5})\b", result.stderr)
-    return {"exit_code": result.returncode,
+    evidence = {"exit_code": result.returncode,
             "authentication_rejected": result.returncode != 0 and b"password authentication failed" in result.stderr,
             "database_access_denied": result.returncode != 0 and b"permission denied for database" in result.stderr,
             "sqlstate": next((state.decode() for state in states if state in (b"42501", b"28P01", b"28000")),
                              states[0].decode() if states else None),
             "query_sha256": hashlib.sha256(statement.encode()).hexdigest()}
+    if capture_metadata:
+        try:
+            evidence['metadata'] = json.loads(result.stdout)
+        except (ValueError, UnicodeDecodeError):
+            evidence['metadata'] = None
+            evidence['metadata_error'] = 'authenticated permission metadata missing or malformed'
+    return evidence
+
+
+def reader_metadata_valid(metadata: object, *, role: str, database: str, schema: str) -> bool:
+    if not isinstance(metadata, dict) or any(metadata.get(k) != v for k, v in
+        {'current_user': role, 'session_user': role, 'database': database}.items()):
+        return False
+    relations = metadata.get('relations')
+    if not isinstance(relations, list) or len(relations) != 2:
+        return False
+    seen = {}
+    for relation in relations:
+        if not isinstance(relation, dict):
+            return False
+        oid = relation.get('oid')
+        if type(oid) is not int or not 0 < oid < 2**32:
+            return False
+        if not isinstance(relation.get('schema'), str) or not isinstance(relation.get('name'), str):
+            return False
+        key = (relation['schema'], relation['name'])
+        expected_kinds = {(schema, 'packets'): ('v',), ('mesh', 'packets'): ('r', 'p')}
+        if key in seen or relation.get('relkind') not in expected_kinds.get(key, ()):
+            return False
+        if relation.get('table_insert') is not False or relation.get('any_column_insert') is not False:
+            return False
+        seen[key] = oid
+    return set(seen) == {(schema, 'packets'), ('mesh', 'packets')} and len(set(seen.values())) == 2
+
+
+def reader_write_checks(container: str, database: str, role: str, schema: str, *, host: str) -> list[dict]:
+    # A whole-row INSERT targets the derived payload column and can fail before
+    # PostgreSQL checks privileges. DEFAULT VALUES reaches the permission gate.
+    statement = f"""SELECT json_build_object('current_user',current_user,'session_user',session_user,
+      'database',current_database(),'relations',(
+        SELECT json_agg(json_build_object('oid',c.oid::bigint,'schema',n.nspname,'name',c.relname,
+          'relkind',c.relkind,'table_insert',has_table_privilege(current_user,c.oid,'INSERT'),
+          'any_column_insert',has_any_column_privilege(current_user,c.oid,'INSERT')))
+        FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
+        WHERE (n.nspname,c.relname) IN (('{schema}','packets'),('mesh','packets'))));
+      INSERT INTO {schema}.packets DEFAULT VALUES"""
+    evidence = session(container, database, role, statement, host=host, capture_metadata=True)
+    valid = reader_metadata_valid(evidence.get('metadata'), role=role, database=database, schema=schema)
+    return [{'description': 'reader has no effective public or raw packet INSERT privileges',
+             'role': role, 'passed': valid, 'metadata': evidence.get('metadata'),
+             'query_sha256': evidence['query_sha256']},
+            {'description': 'reader cannot insert public packets', 'role': role, 'expected_allowed': False,
+             'passed': valid and evidence['exit_code'] != 0 and evidence['sqlstate'] == '42501', **evidence}]
 
 
 def access(run: Path, *, reader_role: str = "corescope_ro",
@@ -108,8 +161,6 @@ def access(run: Path, *, reader_role: str = "corescope_ro",
          f"SELECT * FROM {reader_schema}.packets LIMIT 0", True),
         ("reader cannot read raw packets", reader_role, main, "SELECT * FROM mesh.packets LIMIT 0", False),
         ("reader cannot read raw privacy policy", reader_role, main, "SELECT * FROM ops.node_privacy LIMIT 0", False),
-        ("reader cannot insert public packets", reader_role, main,
-         f"INSERT INTO {reader_schema}.packets SELECT * FROM {reader_schema}.packets WHERE false", False),
         ("worker can create temporary staging tables", "meshcore_worker", main,
          "CREATE TEMP TABLE qualification_allowed_stage(id integer)", True),
         ("Beacon runtime can read packets", "beacon_runtime", beacon, "SELECT * FROM public.packets LIMIT 0", True),
@@ -151,6 +202,8 @@ def access(run: Path, *, reader_role: str = "corescope_ro",
             evidence["sqlstate"] == "42501" or evidence["database_access_denied"])
         records.append({"description": description, "role": role, "expected_allowed": allowed,
                         "passed": passed, **evidence})
+    records += reader_write_checks(main['container'], main['database'], reader_role, reader_schema,
+                                   host=hosts[main['container']])
     records+=application_sessions(stores)
     result = {"at": utc_now(), "fixture_token": fixture["token"], "passed": all(row["passed"] for row in records),
               "authentication": "TCP password authentication; statements roll back", "checks": records,

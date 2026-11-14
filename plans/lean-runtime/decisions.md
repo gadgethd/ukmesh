@@ -402,3 +402,39 @@ a qualification report. Missing/duplicate pairs, wrong order/cadence, failures
 or source/runtime drift fail closed. One fresh same-source three-pair control
 with a fixed24-minute collection budget precedes any separately authorized
 baseline/current runs; no retries, cadence tuning, weighting or idle padding.
+
+## Permission probes must reach the permission check
+
+The real 10x reader session has no table or column INSERT privilege on the
+public packet view or its private source table. The whole-row INSERT probe
+nevertheless returns 0A000 because it targets the view's computed payload
+column before PostgreSQL checks INSERT permission. The view itself is
+insertable; treating it as wholly nonupdatable or accepting any 0A000 would
+hide the cause. Preserve the failed 62/63 result and all grants.
+
+Use the existing native reader test's rollback-only INSERT DEFAULT VALUES,
+still requiring exactly 42501. Independently require absent effective table
+and any-column INSERT privileges in the actual reader session, bound to its
+role, database and relation identity. The qualification owner owns this probe;
+the application repositories retain ownership of database and privacy rules.
+
+## Reuse deterministic response-validation evidence
+
+The benchmark validates identical response bytes repeatedly: all 7,200 responses
+in the current diagnostic and 95,040 inspected V3 responses have one raw digest
+per trial and case. Parsing and canonicalizing each copy couples local benchmark
+CPU and allocation work to API throughput. The validator is pure in the exact
+ArrayBuffer and status, expectedStatus and populated fields. Offline paired
+worker trials preserved every output and reduced median process CPU by 54%.
+Their higher whole-process RSS remains evidence, not an ignored result.
+
+The validation worker owns a bounded cache of at most eight successful derived
+results. Check bounds and status and hash all bytes for every response. Key on
+that raw digest, byte length and the complete validation contract; never key on
+the normalized digest. Retain no response buffer, string or parsed object, copy
+returned evidence, and never cache errors. Preserve worker, queue, timeout,
+sampling and request-timing limits. Expose cache counters honestly: repeated
+parsing is avoided, while every response is checked for byte identity.
+
+These changes require independent review and fresh qualification. They do not
+clear any previous performance, permission-oracle or diagnostic failure.
