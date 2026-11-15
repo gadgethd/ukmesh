@@ -85,6 +85,9 @@ def verify_typed(plan: dict, fixture: dict, *, timeout: float = 120) -> dict:
         time.sleep(1)
 
 
+from target_safety import managed_publisher
+
+@managed_publisher
 def traffic(run: Path, *, cycles: int = 1, interval_ms: int = 1000, health_code: str | None = None) -> dict:
     fixture = active_fixture()
     from health import create_session, verify_session

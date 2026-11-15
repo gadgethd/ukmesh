@@ -11,6 +11,9 @@ from common import REPO, command, owned_run, read_json, safe_error, write_json
 from context import phase_context
 
 
+from target_safety import managed_publisher
+
+@managed_publisher
 def interfaces(run: Path) -> dict:
     attempt = Path(tempfile.mkdtemp(prefix="interfaces-", dir=run))
     value = {"passed": False, "checks": [], "attempt": str(attempt)}

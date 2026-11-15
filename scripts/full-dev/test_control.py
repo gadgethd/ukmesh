@@ -15,6 +15,10 @@ class FullStartupCompletion(unittest.TestCase):
             tools.mkdir(parents=True)
             shutil.copyfile(Path(__file__).with_name('control.sh'), tools / 'control.sh')
             (tools / 'wiring.py').write_text('')
+            # This fixture isolates finite-job completion. Lease/entry behavior
+            # is exercised by qualification/test_target_entry.py with real FDs.
+            (tools/'qualification').mkdir()
+            (tools/'qualification/target_entry.py').write_text('import sys;sys.exit(0)\n')
             (tools / 'access.sh').write_text('#!/bin/sh\ntouch access-called\n')
             (tools / 'runtime.sh').write_text('''repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 compose=(docker compose)

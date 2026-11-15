@@ -50,6 +50,10 @@ def verify_backups(run: Path) -> dict:
     return manifest
 
 
+from target_safety import managed_publisher
+
+
+@managed_publisher
 def create_bundle(kind: str, backup_run: Path) -> dict:
     if kind not in ("sample", "1x", "10x"):
         raise ValueError("fixture kind must be sample, 1x or 10x")
@@ -154,35 +158,72 @@ def write_targets(values: dict[str, str]) -> None:
             for name in sorted(values):
                 # environment.sh reads literal data with IFS='=', never shell code.
                 output.write(name + "=" + values[name] + "\n")
+            output.flush();os.fsync(output.fileno())
         os.replace(temporary, TARGETS)
+        directory=os.open(TARGETS.parent,os.O_RDONLY|os.O_DIRECTORY)
+        try:os.fsync(directory)
+        finally:os.close(directory)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
 
 
+def selection_files():
+    """Literal file state, intentionally readable during an owned torn selection."""
+    parsed={}
+    if TARGETS.exists():
+        for line in TARGETS.read_text().splitlines():
+            if not line or line.startswith('#'):continue
+            key,separator,value=line.partition('=')
+            if not separator or key in parsed:raise ValueError('malformed target settings')
+            parsed[key]=value
+    else:parsed=original_values()
+    from target_safety import target_values
+    target_values(parsed)
+    selected=STATE/'runtime/selected-fixture.json'
+    value=read_json(selected) if selected.exists() else {'targets':'original'}
+    marker={'targets':value.get('targets')}
+    if marker['targets']!='original':marker['token']=value.get('token')
+    return {'values':parsed,'selection':marker}
+
+
+def original_values():
+    return {'UKMESH_DATABASE':'meshcore','OWNER_DATABASE':'meshcore_owner_auth',
+            'BEACON_DATABASE':'beacon_dev','CORESCOPE_DATA_DIR':str(SQLITE.parent)}
+
+
+def selection_values():
+    targets=current_targets()  # The authoritative owner validates selected DBs and directory.
+    state=selection_files()['values']
+    return state
+
+
+def publish_selection(values,result):
+    from target_safety import select,write_intent
+    marker={'targets':result['targets']}
+    if marker['targets']!='original':marker['token']=result['token']
+    def commit():
+        write_targets(values)
+        write_intent(STATE/'runtime/selected-fixture.json',result)
+    proof=select(values,selection_values,commit,selection_reader=selection_files,requested_selection=marker)
+    return {**result,'protection':proof}
+
+
 def switch(token: str) -> dict:
-    value = bundle(token)
-    databases = {item["label"]: item["database"] for item in value["databases"]}
-    write_targets({"UKMESH_DATABASE": databases["ukmesh"], "OWNER_DATABASE": databases["owner"],
-                   "BEACON_DATABASE": databases["beacon"], "CORESCOPE_DATA_DIR": value["corescope_data_dir"]})
-    result = {"at": utc_now(), "token": token, "targets": databases,
-              "services_restarted": False, "note": "run dev-all start to apply selected targets"}
-    write_json(STATE / "runtime/selected-fixture.json", result)
-    return result
+    value=bundle(token)
+    databases={item['label']:item['database'] for item in value['databases']}
+    values={'UKMESH_DATABASE':databases['ukmesh'],'OWNER_DATABASE':databases['owner'],
+            'BEACON_DATABASE':databases['beacon'],'CORESCOPE_DATA_DIR':value['corescope_data_dir']}
+    result={'at':utc_now(),'token':token,'targets':databases,'services_restarted':False,
+            'note':'run dev-all start to apply selected targets'}
+    return publish_selection(values,result)
 
 
 def restore_originals() -> dict:
-    selected = STATE / "runtime/selected-fixture.json"
-    if selected.exists():
-        value = read_json(selected)
-        if value.get("targets") != "original":
-            bundle(value["token"])
-    write_targets({"UKMESH_DATABASE": "meshcore", "OWNER_DATABASE": "meshcore_owner_auth",
-                   "BEACON_DATABASE": "beacon_dev", "CORESCOPE_DATA_DIR": str(SQLITE.parent)})
-    result = {"at": utc_now(), "targets": "original", "services_restarted": False,
-              "note": "run dev-all start to apply original targets"}
-    write_json(STATE / "runtime/selected-fixture.json", result)
-    return result
+    # Existing selected databases remain retained. The pending intent owns torn-file recovery.
+    result={'at':utc_now(),'targets':'original','services_restarted':False,
+            'note':'run dev-all start to apply original targets'}
+    return publish_selection(original_values(),result)
 
 
 def current_targets() -> dict[str, str]:

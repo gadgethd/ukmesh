@@ -5,6 +5,22 @@ defaults for the complete service set. Larger hosts can raise its documented
 environment overrides. Feature switches, history, visibility rules, query
 deadlines and public response limits retain their existing meanings.
 
+For a larger host, the main Compose file accepts `BACKEND_MEMORY_LIMIT`,
+`DATABASE_POOL_MAX`, `WORKER_DATABASE_POOL_MAX`, `HOPREACH_CPUS`,
+`HOPREACH_MEMORY_LIMIT`, and the paired `ALLOY_MEMORY_LIMIT` /
+`ALLOY_GOMEMLIMIT` settings. For example:
+
+```sh
+BACKEND_MEMORY_LIMIT=2g DATABASE_POOL_MAX=12 WORKER_DATABASE_POOL_MAX=3 \
+HOPREACH_CPUS=4 HOPREACH_MEMORY_LIMIT=1536m \
+ALLOY_MEMORY_LIMIT=256m ALLOY_GOMEMLIMIT=192MiB \
+docker compose --env-file /dev/null -f docker-compose.yml config --quiet
+```
+
+Use those overrides with the host's normal main-Compose launch configuration.
+The local `dev-all.sh` launcher clears caller environment settings and supplies
+fixed local qualification wiring; these examples do not change its profile.
+
 Local DEV starts the complete stack with built frontend assets:
 
 ```sh
@@ -73,3 +89,14 @@ memory in 95% of steady samples, ten reserved PostgreSQL connections and
 10 GiB free disk. Sustained qualification retains 72,000 ACKs at 30/second for
 40 minutes, with explicit native expectations for additional typed traffic.
 F2 and deployment to the VPS remain deferred.
+
+Target changes use a separate inherited publication lease and durable per-consumer
+intent. A mixed partial start can resume only that same known selection. Stopped
+consumers with unknown queues must first resume their retained previous stores;
+missing observations never mean empty. Before each changing subsystem applies,
+a fresh, bounded broker and application intake observation must pass. CoreScope
+reports pending plus active work from its own process; Beacon's existing admin
+metrics stay on container loopback. Same-store startup can bootstrap those
+observations. This protects managed local operations; it is not an atomic fence
+against an external MQTT publisher. Original and failed fixture stores remain
+retained.

@@ -169,6 +169,9 @@ def commit_check(directory: Path, fixture: dict, action: str='publish') -> tuple
     return {'passed':True,'native':native,'commits':result,'queue_drain':drain},plan,path
 
 
+from target_safety import managed_publisher
+
+@managed_publisher
 def recovery(run: Path) -> dict:
     fixture=active_fixture()
     if fixture['kind'] not in ('1x','10x') or not inventory(run)['passed']:

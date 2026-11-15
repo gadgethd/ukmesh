@@ -843,3 +843,56 @@ client/deadline/cleanup failure refuse the gate. The caller owns source, broker
 identity, target locks and independent application drain proofs. Test the owner
 with fake clients before Root coordinates an actual broker observation; neither
 this observer nor durable storage waives existing recovery/integrity criteria.
+
+## D2: target intent, intake observation and controller leases
+
+The protection failure exposed a metadata-only selection link: changing target
+files did not establish what stores the actual MQTT consumers still used, and
+broker drain alone did not include active Core/Beacon work. The prospective
+private API/decision was recorded before this batch; runtime remains unchanged.
+
+Keep role/ref decoding pure and shared with runtime validation. Each target
+intent pins old and requested refs per actual consumer. Fsync that intent before
+publishing either settings file; a torn publication resumes only the same owned
+request. Mixed known old/requested consumers remain distinct, foreign refs refuse,
+and only a complete healthy authoritative service inventory closes the intent.
+Unknown stopped changing consumers must resume their retained previous store;
+same-store starts can bootstrap missing observability without declaring it empty.
+
+A separate inherited FLOCK lease covers managed publication through drain and
+cleanup, and precedes the existing controller lock. Validate actual descriptor
+identity/mode, and bind shell re-entry to a live ancestor PID/startticks/argv;
+flags alone cannot bypass either owner. Detect known unmanaged native publishers
+using actual process cwd as well as absolute source/dist entrypoints. The fixture
+owner owns file publication; the controller applies targets, without adding
+fixture imports to the safety/observation owners.
+
+Before each changing main or companion subsystem applies, run one fresh combined
+45-second broker/application observation after its build work. Reuse the broker's
+existing observer; preserve its refusal output. Application adapters use their
+own intake statistics, not raw storage queries: Core pending+active/outstanding,
+monotonic generation, PID/startticks, freshness and drops; Beacon's existing
+loopback admin queue (including active work), process start and drops; UKMesh
+queues and a fresh normal delivery-probe success. The Core generation is a
+monotonic transition counter, superseding the early proposal's nonce wording.
+Concurrent observation waits for the existing normal probe inside the same bound;
+there is no forced probe, polling extension or cached proof across lengthy builds.
+
+Keep publisher/role/privacy/resource/response policies unchanged. This is local
+controlled quiescence, not an atomic fence against an external broker publisher.
+No failed qualification is reclassified; no app stores or targets change in the
+source/test stage. Larger-host main Compose overrides are documented separately
+from DEV's clean, fixed qualification environment.
+
+Review closure: external same-store controllers also retain a shared lease,
+including while an independent managed publisher is active. Inspect desired and
+actual refs under SH; if a scope really changes, release SH before acquiring EX
+and reread both authorities. Never upgrade a live shared descriptor. Restart
+scope follows only the recreated consumers, including both Core processes and
+Beacon's migration/DB dependencies; the pending intent still validates all
+consumer refs. This lets a stopped requested-side backend resume while another
+side remains old, without declaring the overall transition complete or empty.
+The public shell boundary also clears caller environment before Python verifies
+its entry frame. Preserve only PATH/HOME/LANG and the raw lease/frame strings;
+Python validates their descriptor and ancestry before use. A poisoned caller
+PYTHONPATH regression covers imports as well as the final controller child.

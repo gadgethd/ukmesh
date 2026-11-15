@@ -128,6 +128,9 @@ def reserve_ack_sequence(count: int) -> int:
     return value
 
 
+from target_safety import managed_publisher
+
+@managed_publisher
 def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> dict:
     if not isinstance(count, int) or not 30 <= count <= 108000:
         raise ValueError("soak count must be 30..108000; final qualification requires 72000")

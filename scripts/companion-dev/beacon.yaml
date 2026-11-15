@@ -1,5 +1,7 @@
 # Fixture broker only. Beacon owns its database; no UKMesh DSN or credentials.
 log: {level: info, format: text}
+# Local operator reads existing metrics inside this container; no host port.
+server: {admin_listen: "127.0.0.1:9091"}
 websocket:
   max_connections: 1000
   max_connections_per_ip: 50

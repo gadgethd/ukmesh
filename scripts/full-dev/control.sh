@@ -2,6 +2,18 @@
 set -euo pipefail
 export DOCKER_HOST=unix:///var/run/docker.sock
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+
+# Acquire the target lease before the independent controller lock. The live
+# owner frame and inherited FD are verified on every shell re-entry.
+entry_env=(env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8)
+for entry_key in UKMESH_TARGET_LEASE_FD UKMESH_TARGET_ENTRY; do
+  [[ ! -v $entry_key ]] || entry_env+=("$entry_key=${!entry_key}")
+done
+if "${entry_env[@]}" python3 "$repo/scripts/full-dev/qualification/target_entry.py" verify "$repo/scripts/full-dev/control.sh" "$@"; then :; else
+  entry_status=$?
+  [[ $entry_status == 1 ]] || exit "$entry_status"
+  exec "${entry_env[@]}" python3 "$repo/scripts/full-dev/qualification/target_entry.py" run "$repo/scripts/full-dev/control.sh" "$@"
+fi
 cd "$repo"
 source "$repo/scripts/full-dev/runtime.sh"
 source "$repo/scripts/lib/owned-processes.sh"
@@ -27,6 +39,7 @@ case "$action" in
     exit ;;
   restart)
     [[ -n $service ]] || { echo 'restart requires a service name' >&2; exit 2; }
+    python3 "$repo/scripts/full-dev/qualification/target_entry.py" guard main restart "$service"
     python3 "$repo/scripts/full-dev/wiring.py"
     refresh_wiring_revisions
     "${compose[@]}" up -d --no-deps --force-recreate "$service"; exit ;;
@@ -63,6 +76,8 @@ for image in "$BACKEND_IMAGE" "$APP_IMAGE" "$WEBSITE_IMAGE" "$WEBSITE_DEV_IMAGE"
   docker image inspect "$image" >/dev/null 2>&1 || images_ready=false
 done
 if [[ $images_ready != true ]]; then build_images; fi
+
+python3 "$repo/scripts/full-dev/qualification/target_entry.py" guard main
 
 # Schema owners run only in this bounded bootstrap step. Runtime containers
 # below receive their role DSNs, including on a newly selected fixture.

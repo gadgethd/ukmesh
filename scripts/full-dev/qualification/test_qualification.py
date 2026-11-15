@@ -116,7 +116,8 @@ class OriginalProtection(unittest.TestCase):
             directory = Path(temporary)
             with patch.object(fixtures, "STATE", directory), patch.object(fixtures, "TARGETS", directory / "runtime/targets.env"), \
                     patch.object(fixtures, "SQLITE", directory / "original store/analyzer.db"), \
-                    patch.object(fixtures, "bundle") as validate:
+                    patch.object(fixtures, "bundle") as validate, \
+                    patch('target_safety.select',side_effect=lambda values,previous,commit,**options: commit() or {'passed':True}):
                 fixtures.restore_originals()
                 fixtures.restore_originals()
                 self.assertEqual(fixtures.current_targets()["ukmesh"], "meshcore")

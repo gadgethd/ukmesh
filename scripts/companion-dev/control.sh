@@ -2,6 +2,18 @@
 # Local fixture stack plus three independently editable companion repositories.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
+
+# Acquire the target lease before the independent controller lock. The live
+# owner frame and inherited FD are verified on every shell re-entry.
+entry_env=(env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8)
+for entry_key in UKMESH_TARGET_LEASE_FD UKMESH_TARGET_ENTRY; do
+  [[ ! -v $entry_key ]] || entry_env+=("$entry_key=${!entry_key}")
+done
+if "${entry_env[@]}" python3 "$repo/scripts/full-dev/qualification/target_entry.py" verify "$repo/scripts/companion-dev/control.sh" "$@"; then :; else
+  entry_status=$?
+  [[ $entry_status == 1 ]] || exit "$entry_status"
+  exec "${entry_env[@]}" python3 "$repo/scripts/full-dev/qualification/target_entry.py" run "$repo/scripts/companion-dev/control.sh" "$@"
+fi
 if [[ ${UKMESH_COMPANION_ENV_CLEAN:-} != 1 ]]; then
   exec env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 UKMESH_COMPANION_ENV_CLEAN=1 bash "$repo/scripts/companion-dev/control.sh" "$@"
 fi
@@ -134,6 +146,8 @@ if [[ $action == build || $action == start || $action == companions || ( $action
   load_companion_revisions
 fi
 if [[ $action == build ]]; then exit 0; fi
+python3 "$repo/scripts/full-dev/qualification/target_entry.py" guard companions "$action" "$service"
+
 if [[ $action == start || $action == companions || ( $action == restart && $service == beacon* && $service != beacon-web ) ]]; then
   "${compose[@]}" up -d --wait beacon-db beacon-redis
   "${compose[@]}" up -d --no-deps --force-recreate beacon-migrate > "$state/migrate.log" 2>&1 || { tail -30 "$state/migrate.log" >&2; exit 1; }
