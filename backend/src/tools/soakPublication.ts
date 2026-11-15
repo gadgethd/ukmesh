@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { socketFailureDetails } from './soakSocket.js';
 
 /** Old standalone invocations work; only a caller's own nonce can be trusted. */
 export function soakInvocationToken(value: string | undefined): string {
@@ -25,6 +26,6 @@ export class SoakPublication {
       publicationStarted:this.publicationStarted,ackPublished:this.ackPublished,
       auxiliaryPublished:this.auxiliaryPublished,stage:this.stage,
       error:{name:error instanceof Error?error.name:'Error',message:error instanceof Error?error.message:String(error),
-        ...(error&&typeof error==='object'&&'code' in error?{code:String(error.code)}:{})}};
+        ...(error&&typeof error==='object'&&'code' in error?{code:String(error.code)}:{}),...socketFailureDetails(error)}};
   }
 }

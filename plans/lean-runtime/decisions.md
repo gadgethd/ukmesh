@@ -574,3 +574,33 @@ polls and record explicit failed/not-published snapshots; never turn those
 checks into successful skips. Unknown or started-publication failures retain
 normal bounded commit and recovery verification. Keep full preparation/privacy
 checks and all partial evidence; no timeout increase or passing retry.
+
+
+## Live ACK evidence uses its actual observer subscription
+
+The c5ef361 attempt completed preparation and its exact baseline counter, but
+failed before publication: the network-wide WebSocket snapshot contained34,179
+nodes and20,000 links and exceeded the existing4MiB guard. The retained server
+branch implies1013; the old helper did not capture that wire code. Zero ACKs
+or auxiliary events were sent, no warmup completed, and RF never launched.
+The new confirmed-prepublication cleanup correctly retained failed snapshots
+without padding a resource window. Keep that failure and the global10x
+snapshot limitation explicit; do not report global network WS readiness.
+
+The live-delivery proof depends unnecessarily on all unrelated map history.
+All72,000 generated ACK rows have network ukmesh and one valid64hex receiver.
+Independent prospective review accepts the existing observer scope for that
+owned workload. A single read-only real subscription received its initial
+state in691ms/430bytes, then closed normally; it published no traffic.
+
+Own observer derivation and initial-state diagnostics in the existing socket
+helper. Before connecting, require every full-stack ACK row to have the same
+valid receiver and ukmesh network; retain every distinct expected ACK hash.
+Record the exact subscription in evidence and capture actual close code/reason
+when available. Preserve standalone unscoped commands. Keep the real15second
+initial-state barrier,4MiB limit, all72,000 SQL/live checks, global eight-request
+HTTP workload, auxiliary persistence/Health checks and every resource gate.
+Bind the socket helper in trusted failure receipts. No retry, skipped initial
+state, application/configuration change or raised response cap is introduced.
+Validate mismatch rejection, real socket readiness and source-bound cleanup
+within this batch, then obtain independent review before another full attempt.

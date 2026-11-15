@@ -21,7 +21,8 @@ class PrepublicationCleanup(unittest.TestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);self.root=Path(temp.name)
         self.addCleanup(patch.stopall);patch.object(soak,'REPO',self.root).start()
         self.tool=self.root/'backend/src/tools/soakDatabaseLookups.ts';self.tool.parent.mkdir(parents=True);self.tool.write_text('reviewed native tool')
-        self.helpers={key:self.tool.parent/name for key,name in (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'))}
+        self.helpers={key:self.tool.parent/name for key,name in
+            (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'),('socket','soakSocket.ts'))}
         for key,path in self.helpers.items():path.write_text('reviewed '+key+' helper')
         self.source=self.root/'soak-source';self.aux=self.root/'auxiliary-source';self.output=self.root/'native-soak'
         for path in (self.source,self.aux,self.output):path.mkdir()
@@ -71,6 +72,22 @@ class PrepublicationCleanup(unittest.TestCase):
             with self.subTest(fault=fault):self.assertIsNone(self.trusted())
         common.write_json(self.path,self.receipt)
         self.assertIsNone(self.trusted(0));self.assertIsNone(self.trusted(None))
+
+    def test_socket_helper_must_be_present_exact_and_unchanged_before_shortened_cleanup(self):
+        self.assertIsNotNone(self.trusted())
+        for fault in ('missing', 'wrong', 'extra'):
+            value=copy.deepcopy(self.receipt)
+            if fault=='missing':del value['helperSha256']['socket']
+            elif fault=='wrong':value['helperSha256']['socket']='0'*64
+            else:value['helperSha256']['unexpected']='0'*64
+            common.write_json(self.path,value)
+            with self.subTest(fault=fault):self.assertIsNone(self.trusted())
+        common.write_json(self.path,self.receipt)
+        path=self.helpers['socket'];original=path.read_text()
+        path.write_text('changed socket scope or readiness owner')
+        self.assertIsNone(self.trusted())
+        path.write_text(original)
+        self.assertIsNotNone(self.trusted())
 
     def test_missing_malformed_symlink_and_fifo_receipts_retain_unknown_failure_path(self):
         for content in (b'{',b'[]',b'null'):
@@ -124,7 +141,7 @@ class PrepublicationCleanup(unittest.TestCase):
         context=copy.deepcopy(self.receipt)
         context['toolSha256']=common.digest(common.REPO/'backend/src/tools/soakDatabaseLookups.ts')
         context['helperSha256']={key:common.digest(common.REPO/'backend/src/tools'/name) for key,name in
-            (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'))}
+            (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'),('socket','soakSocket.ts'))}
         script.write_text("import {SoakPublication} from "+repr(module)+";\nimport {writeFile} from 'node:fs/promises';\n"
             "const context="+json.dumps(context,separators=(',',':'))+"; const owner=new SoakPublication();\n"
             "const before=owner.failure(context,new Error('synthetic setup failure')); owner.begin();\n"

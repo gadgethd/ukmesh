@@ -14,7 +14,7 @@ import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
 import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
-import { waitForInitialState } from './soakSocket.js';
+import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
 import { waitForSoakDrain } from './soakDrain.js';
 import { auditSoakWorksetHashes, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
 import { SoakPublication, soakInvocationToken } from './soakPublication.js';
@@ -82,14 +82,16 @@ const hashes = table.rows.map(row => rowObject(table.headers,row)['packet_hash']
 const expected = new Set(hashes);
 if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
 const workset=soakWorkset(hashes,auxiliaryTraffic?.ukmeshHashes);
+const socketScope=soakSocketScope(table.headers,table.rows,count,auxiliaryTraffic!==undefined);
 if(auxiliaryTraffic){
   const invocationToken=soakInvocationToken(option(args,'invocation-token'));
   const checksum=async(file:string)=>createHash('sha256').update(await readFile(file)).digest('hex');
   failureContext={guardCompleted,invocationToken,database:decodeURIComponent(new URL(endpoint).pathname.slice(1)),
-    dataDirectory:directory,outputDirectory:output,settings:{count,rate},countsScope:workset.countsScope,
+    dataDirectory:directory,outputDirectory:output,settings:{count,rate},countsScope:workset.countsScope,socketScope,
     toolSha256:await checksum(fileURLToPath(import.meta.url)),helperSha256:{
       publication:await checksum(fileURLToPath(new URL('./soakPublication'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
-      counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
+      counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
       fixture:await checksum(path.join(directory,'fixture.json')),packets:await checksum(path.join(directory,'packets.csv.gz')),
       raw:await checksum(path.join(directory,'raw_packets.csv.gz')),auxiliary:await checksum(auxiliaryFile!)}};
   failureOutput=output;
@@ -147,11 +149,11 @@ try {
   const before = await counts(), beforeMetrics = await metrics();
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
   publication.stage='websocket-readiness';
-  const socket = new URL('/ws?network=ukmesh',base); socket.protocol='ws:';
+  const socket = soakSocketUrl(base,socketScope);
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
-  let wsErrors = 0, wsUnexpectedCloses=0, wsCloseCode: number|null=null, wsOpened=false;
+  let wsErrors = 0, wsUnexpectedCloses=0, wsCloseCode: number|null=null, wsCloseReason='', wsOpened=false;
   ws.on('open',()=>{wsOpened=true;});
-  ws.on('close',code=>{wsUnexpectedCloses++;wsCloseCode=code;});
+  ws.on('close',(code,reason)=>{wsUnexpectedCloses++;wsCloseCode=code;wsCloseReason=socketCloseDetails(code,reason).reason;});
   ws.on('error',()=>{ wsErrors++; });
   ws.on('message',bytes=>{
     try {
@@ -198,7 +200,7 @@ try {
   if (httpWarmup) {
     await mkdir(output,{recursive:true});
     await writeFile(path.join(output,'warmup.json'),JSON.stringify({at:new Date().toISOString(),
-      passed:warmupPassed,measured:false,concurrency:8,elapsedMs:warmupMs,checks:warmupReads},null,2)+'\n');
+      passed:warmupPassed,measured:false,concurrency:8,elapsedMs:warmupMs,socketScope,checks:warmupReads},null,2)+'\n');
     if (!warmupPassed) throw new Error('full-stack route warmup failed; see warmup.json');
   }
   started=performance.now();
@@ -275,7 +277,7 @@ try {
     && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
   await mkdir(output,{recursive:true});
   await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,phase:'complete',
-    publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,independentAudit,
+    publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,socketScope,independentAudit,
     ...(failureContext?{invocationToken:failureContext.invocationToken,inputSha256:failureContext.inputSha256,
       toolSha256:failureContext.toolSha256,helperSha256:failureContext.helperSha256}:{}),
     commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
@@ -288,7 +290,7 @@ try {
     walBytes,walBytesPerPacket:walBytes/count,
     wsPackets:seen.size,wsMissingCount:count-seen.size,
     wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
-    wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode},
+    wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode,closeReason:wsCloseReason},
     metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');

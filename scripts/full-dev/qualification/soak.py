@@ -51,7 +51,7 @@ def prepublication_failure(output, source, auxiliary, fixture, count, invocation
                 or value.get('inputSha256') != expected_inputs or value.get('settings') != {'count': count, 'rate': 30} \
                 or value.get('toolSha256') != digest(REPO/'backend/src/tools/soakDatabaseLookups.ts') \
                 or value.get('helperSha256') != {key: digest(REPO/'backend/src/tools'/name) for key, name in
-                    (('publication', 'soakPublication.ts'), ('counts', 'soakWorksetCounts.ts'))}:
+                    (('publication', 'soakPublication.ts'), ('counts', 'soakWorksetCounts.ts'), ('socket', 'soakSocket.ts'))}:
             return None
         with gzip.open(source/'packets.csv.gz', 'rt', newline='') as stream:
             inputs = [row['packet_hash'] for row in csv.DictReader(stream)]
