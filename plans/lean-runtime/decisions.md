@@ -670,6 +670,34 @@ which pressure caused the delay. Preserve that failed run and uncertainty.
   preserve the returned client/error, SQL order and release behavior. Obtain
   independent review before commit or another measured runtime.
 
+## Owned soak counters own set membership instead of per-hash chunk traversal
+
+The failed f55 full40 retained a populated counter read timeout; its empty-key
+proof was not evidence for populated/load cost. A read-only inactive owned10x
+profile of the same72,120 hashes now returns40,852 observations: the first hot
+counter takes19.646s and its warm actual plan4.285s. The30s failure does not
+reproduce while idle. The plan still visits every packet chunk72,120 times,
+spending3.628s and2,709,279 shared-buffer hits in observation lookup alone;
+`wanted` is estimated at200 rows but actually contains72,120.
+
+- Hidden link: expressing owned-hash membership as a forced per-hash lateral
+  query couples a single exact workset count to workset size multiplied by all
+  packet partitions. Empty observations conceal the populated downstream work.
+- Fix ownership: let the packet observation query express membership with
+  `packet_hash = ANY($1::text[])`, so the existing planner/indexes can scan the
+  set together. Keep every matching parent observation, distinct natural path
+  keys and distinct UUID/hash/network child keys exactly as before.
+- The independent final four-table hash audit uses its own hash membership on
+  each table. It must still see child rows without parents; no parent-derived
+  shortcut, time restriction, index/DDL, changed multiplicity or missing-row
+  allowance is introduced.
+- Preserve pool1, statement/query/logical30s, the shared120s drain, input scope,
+  privacy, and every qualification gate. Validate old/new exact counts and
+  populated EXPLAIN row work after the serialized build slot, plus real
+  read-only relational fixtures for duplicates, auxiliary rows, missing/mismatched
+  children, nullable observers, shared path keys and repeated observation IDs.
+  This is a source-local efficiency fix, not a retrospective full40 pass.
+
 ## Effective memory and swap limits come from the cgroup
 
 The failed full-stack soak exposed a collection gap: Docker HostConfig recorded
@@ -691,6 +719,18 @@ mismatch despite correct HostConfig, missing/malformed data and cgroup path
 escape. Runtime recreation, missing Compose pairs and broker storage belong to
 separate reviewed batches after this collection boundary closes.
 
+## Owned counter negative candidate and semijoin follow-up
+
+The first direct-array candidate is retained as negative evidence. It preserves
+all counts but plans in1.797s and executes in9.676s versus the old4.7ms planning
+and3.981s warm execution: it estimates1,470,830 parent rows instead of the actual
+40,852 and broadens child reads. Do not accept or commit that slower candidate.
+Restore baseline production SQL while testing a raw materialized workset with
+an EXISTS semijoin, which preserves duplicate-input membership without array
+constant selectivity or forced per-hash partition traversal. Retain the same
+pool/30s/120s and independent orphan audit; accept only with actual populated
+counts/row-work evidence. No temporary/public schema or planner-setting change.
+
 ## Every local consumer inherits the same memory/swap ceiling
 
 The first effective cgroup capture identified21 mismatches:11 historical main
@@ -706,6 +746,24 @@ journal overhead; it is not an RSS guarantee. Its GC, memory and actual delivery
 must be characterized after Root's coordinated recreation. Explicitly recreate
 the11 unchanged monitor consumers too: Compose will not infer that their actual
 old cgroups differ. Kernel memory.max/swap.max assertions close the rollout.
+
+## Owned counter final bounded batch prototype
+
+The raw-workset EXISTS trial also retains exact counts without improving the
+parent counter:14.352s first read and7.107s warm execution versus the retained
+3.981s baseline warm plan. Its planner still estimates809,076 observations for
+40,852 actual rows and broadens child work. Preserve that negative trial too.
+
+Root prospectively authorizes one final fixed1024-hash array-batch prototype:
+DISTINCT the complete input, deterministically order and partition every hash,
+and use an indexed lateral ANY lookup for each batch in the same statement.
+This separates index-vector width from total workset size without a row cap,
+skipped hashes or per-call deadline changes. Existing parent/child identity
+scope and the independent four-table orphan audit remain identical; keep the
+old audit SQL because no audit rewrite has a demonstrated margin win. There
+is no runtime knob, adaptive size search, temporary/public DDL or timer change.
+If this is not a clear causal winner, stop shape tuning and retain baseline
+SQL while Root addresses measured system pressure before another live trial.
 
 ## Alloy checks the running server without starting another collector binary
 
@@ -728,3 +786,16 @@ load and503 before readiness. Source: https://grafana.com/docs/alloy/latest/refe
   responses, connection refusal and a stalled status line. Independently review
   this batch before rollout; final full-stack resources still decide acceptance.
 
+## Counter investigation outcome: retain baseline SQL
+
+None of the three prospective rewrites has a demonstrated overall win. Direct
+array membership increases planning/selectivity costs; the raw EXISTS trial
+broadens child work; fixed1024 reduces the parent custom-scan loops from72,120
+to71 and parent time from3.358s to2.118s, but changes cardinality estimates and
+causes broader child reads/spill. Its total5.265s warm execution is worse than
+the baseline3.981s. Keep all trials as negative evidence and leave production
+`soakWorksetCounts.ts` byte-exact at1d2ad9db; pool1/30s/120s and mandatory orphan
+audit remain unchanged. Stop SQL-shape tuning until Root's pressure fixes and
+new metrics support a controlled load reproduction. Preserve two independent
+relational coverage additions for shared UUIDs across times and same-hash orphan
+children. These constant-JSON tests cover semantics, not a performance fix.

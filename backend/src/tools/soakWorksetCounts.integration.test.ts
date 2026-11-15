@@ -43,6 +43,10 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
       {name:'wrong child hash or network fails parent-key identity',wanted:[hash('A')],tables:[[a],[a],[{...a,network:'other'}],[{...a,packet_hash:hash('Z')}]]},
       {name:'independent audit retains orphan children excluded from parent scope',wanted:[hash('A'),hash('B')],tables:[[a],[a,orphan],[a,orphan],[a,orphan]]},
       {name:'shared natural path is counted once across observation IDs',wanted:[hash('A')],tables:[[a,{...a,observation_id:b.observation_id}],[a],[a,{...a,observation_id:b.observation_id}],[a,{...a,observation_id:b.observation_id}]]},
+      {name:'one observation identity shared by different parent times counts its children once',wanted:[hash('A')],tables:[
+        [a,{...a,time:'2026-11-15T00:00:01.000Z'}],[a,{...a,time:'2026-11-15T00:00:01.000Z'}],[a],[a]]},
+      {name:'same-hash orphan observations remain visible to the independent audit',wanted:[hash('A'),hash('A')],tables:[
+        [a],[a,{...orphan,packet_hash:hash('A')}],[a,{...orphan,packet_hash:hash('A')}],[a,{...orphan,packet_hash:hash('A')}]]},
       {name:'nullable observer path identity remains stable',wanted:[hash('A')],tables:[[{...a,rx_node_id:null}],[{...a,rx_node_id:''}],[a],[a]]},
     ] as {name:string;wanted:string[];tables:Row[][]}[];
     for(const fixture of cases){
