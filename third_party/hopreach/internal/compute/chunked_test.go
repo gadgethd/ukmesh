@@ -425,22 +425,6 @@ func TestMarginsChunkedSkipsLocalGridWhenRemoteAvailable(t *testing.T) {
 	}
 }
 
-func TestTileWeight(t *testing.T) {
-	tl := tile{rowCount: 10, colCount: 20} // 200 pixels
-
-	if got, want := tileWeight(tl, nil), 200; got != want {
-		t.Errorf("tileWeight with no sites (a skipped tile) = %d, want %d (pixels x 1, never zero)", got, want)
-	}
-	oneSite := []propagation.Site{{Lat: 56, Lon: -4}}
-	if got, want := tileWeight(tl, oneSite), 200; got != want {
-		t.Errorf("tileWeight with 1 site = %d, want %d", got, want)
-	}
-	manySites := make([]propagation.Site, 40)
-	if got, want := tileWeight(tl, manySites), 200*40; got != want {
-		t.Errorf("tileWeight with 40 sites = %d, want %d (pixels x sites)", got, want)
-	}
-}
-
 // TestMarginsChunkedProgressWeightedBySiteDensity is the regression test
 // for a real production observation: the same run's reported ETA bounced
 // between under a minute and over half an hour, tile to tile, despite

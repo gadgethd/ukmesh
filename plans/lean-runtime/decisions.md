@@ -604,3 +604,25 @@ Bind the socket helper in trusted failure receipts. No retry, skipped initial
 state, application/configuration change or raised response cap is introduced.
 Validate mismatch rejection, real socket readiness and source-bound cleanup
 within this batch, then obtain independent review before another full attempt.
+
+## RF chunk work owns only the current chunk's transmitter data
+
+The actual 72,000-ACK run failed; its RF child exited137 with a cgroup OOM
+increment on entering Precision. Its archived metadata records31,540 selected
+repeaters and its log records3,936 planned chunks. The pre-pass retains a
+`sitesNear` slice for every chunk; each reserves the entire input length even
+when no transmitter is nearby. That alone requests about3.97GB of site backing
+arrays (32bytes/site), independently of the128MB terrain budget.
+
+- Hidden link: a terrain-only chunk budget does not bound transmitter planning
+  allocations, which scale as all transmitters multiplied by all chunks.
+- Needless link: computing progress weights retains the same transmitter copies
+  until the entire publication tile completes, though each is consumed once.
+- Fix: retain scalar work weights in the chunk plan; derive and release only the
+  current chunk's transmitter subset when it is computed. Share the geographic
+  predicate between counting and selecting so the two cannot drift.
+- Preserve range padding, RF equations, output dimensions, supersampling,
+  progressive publication, remote/local fallback and weighted progress. A bounded
+  offline memory regression must fail against the current implementation before
+  changing it; existing numerical/PNG parity remains required. Terrain padding
+  and loading remain separate concerns, with no speculative sampler rewrite.

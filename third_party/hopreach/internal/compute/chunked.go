@@ -425,13 +425,23 @@ func clampTileProduct(rowTiles, colTiles, maxProduct int) (int, int) {
 // entirely (left as no-coverage), which for a repeater network sparse
 // relative to a whole-region pass often skips most of the region's area.
 func sitesNear(sites []propagation.Site, bounds propagation.Bounds, rangeKm float64) []propagation.Site {
-	out := make([]propagation.Site, 0, len(sites))
+	var out []propagation.Site
 	for _, s := range sites {
 		if siteMayReachBounds(s, bounds, rangeKm) {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+func countSitesNear(sites []propagation.Site, bounds propagation.Bounds, rangeKm float64) int {
+	count := 0
+	for _, site := range sites {
+		if siteMayReachBounds(site, bounds, rangeKm) {
+			count++
+		}
+	}
+	return count
 }
 
 // siteMayReachBounds is a conservative spherical-cap/rectangle test. It can
@@ -499,12 +509,8 @@ func clampF(v, lo, hi float64) float64 {
 	return v
 }
 
-// weightedTile pairs a tile with the sites relevant to it and an estimated
-// compute-cost weight — see the "Progress is weighted..." comment in
-// MarginsChunked for why this exists.
 type weightedTile struct {
 	tl     tile
-	sites  []propagation.Site
 	weight int
 }
 
@@ -514,8 +520,7 @@ type weightedTile struct {
 // entirely). This mirrors the real cost driver: both the GPU shader and
 // propagation.ComputeMarginsCPU loop over every site for every pixel, so
 // wall-clock cost scales with both dimensions, not pixel count alone.
-func tileWeight(tl tile, tileSites []propagation.Site) int {
-	sitesForWeight := len(tileSites)
+func tileWeight(tl tile, sitesForWeight int) int {
 	if sitesForWeight < 1 {
 		sitesForWeight = 1
 	}
@@ -754,32 +759,20 @@ func (e *Engine) MarginsChunked(bounds propagation.Bounds, zoom int, cacheDir, t
 		out[i] = float32(math.NaN())
 	}
 
-	// Progress is weighted by estimated compute cost (pixels x
-	// sites-in-range), not raw pixel count: a skipped tile (no sites)
-	// completes near-instantly regardless of its pixel count, while a
-	// dense tile (many nearby sites — a real repeater cluster) can take
-	// well over a minute for the same pixel count, since both the GPU
-	// shader and the CPU fallback loop over every site for every pixel.
-	// Reporting raw pixels made the ETA (internal/progress's exponential
-	// rate estimate) swing wildly depending on the local mix of skipped
-	// vs. dense tiles in the most recent sampling window — confirmed in
-	// production: the same run's reported ETA bounced between under a
-	// minute and over half an hour, tile to tile, despite steady real
-	// progress underneath. Sites are looked up once here (not repeated
-	// per-tile below) since this pre-pass already needs them to compute
-	// each tile's weight.
+	// Density-weighted progress avoids ETA swings between sparse and dense
+	// terrain. Retain counts here; only the current chunk owns a site slice.
 	weighted := make([]weightedTile, len(tiles))
 	totalWork := 0
 	for i, tl := range tiles {
-		tileSites := sitesNear(sites, tl.outputBounds, rangeKm)
-		weighted[i] = weightedTile{tl: tl, sites: tileSites, weight: tileWeight(tl, tileSites)}
+		count := countSitesNear(sites, tl.outputBounds, rangeKm)
+		weighted[i] = weightedTile{tl: tl, weight: tileWeight(tl, count)}
 		totalWork += weighted[i].weight
 	}
 
 	doneWork := 0
 	for i, wt := range weighted {
 		tl := wt.tl
-		tileSites := wt.sites
+		tileSites := sitesNear(sites, tl.outputBounds, rangeKm)
 		if len(tileSites) == 0 {
 			doneWork += wt.weight
 			if progress != nil {
