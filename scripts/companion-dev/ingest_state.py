@@ -1,7 +1,10 @@
 """App-owned intake observations, never a database or public API adapter."""
 import datetime as dt
 import json
+import hashlib
 import math
+import os
+import stat
 from pathlib import Path,PurePosixPath
 import re
 import sys
@@ -66,7 +69,7 @@ def namespace_process(raw,pid):
     return {'pid':int(stat.split(b' ',1)[0]),'start_ticks':int(fields[19]),'argv':[x.decode() for x in argv.split(b'\0') if x]}
 
 
-def read_core(item,*,execute=docker,now=time.time,timeout=2):
+def _read_core_document(item,*,execute=docker,now=time.time,timeout=2):
     actual=identity(item,'corescope-ingestor')
     env=dict(v.split('=',1) for v in item['Config'].get('Env',[]))
     path=env.get('CORESCOPE_INGESTOR_STATS','/tmp/corescope-ingestor-stats.json')
@@ -83,7 +86,38 @@ def read_core(item,*,execute=docker,now=time.time,timeout=2):
     result=execute(['exec',item['Id'],'sh','-ceu',command,'core-owner-pid',str(pid)],timeout=timeout)
     if result.returncode:raise RuntimeError('Core process transport failed')
     proc=result.stdout
-    return core_evidence(document,namespace_process(proc,pid),actual,now())
+    return core_evidence(document,namespace_process(proc,pid),actual,now()),document
+
+
+def read_core(item,*,execute=docker,now=time.time,timeout=2):
+    return _read_core_document(item,execute=execute,now=now,timeout=timeout)[0]
+
+
+def read_core_connection(item,*,execute=docker,now=time.time,timeout=2):
+    """Actual app-owned process/source state; backlog is not readiness."""
+    evidence,document=_read_core_document(item,execute=execute,now=now,timeout=timeout)
+    configs=[row for row in item['Mounts']if row['Destination']=='/config/config.json' and row['Type']=='bind']
+    if len(configs)!=1:raise ValueError('Core configured source identity unavailable')
+    descriptor=os.open(configs[0]['Source'],os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK)
+    with os.fdopen(descriptor,'rb')as source:
+        info=os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode)or info.st_size>LIMIT:raise ValueError('Core source configuration unsupported')
+        raw=source.read(LIMIT+1)
+        if len(raw)>LIMIT:raise ValueError('Core source configuration exceeds bound')
+        config=json.loads(raw)
+    expected=[(row['name'],row['broker'])for row in config.get('mqttSources',[])]
+    # Core omitempty legitimately omits statuses in configured zero-MQTT modes.
+    statuses=document.get('source_statuses',[]if not expected else None)
+    if not isinstance(statuses,list)or len(statuses)!=len(expected):raise ValueError('Core configured source status missing')
+    actual=[]
+    for row in statuses:
+        if not isinstance(row,dict)or type(row.get('connected'))is not bool:raise ValueError('Core source connection malformed')
+        actual.append((row['name'],row['broker']))
+    if len(set(expected))!=len(expected)or sorted(expected)!=sorted(actual):raise ValueError('Core source status identity differs')
+    return {'app':'corescope','ready':evidence['state']['ready'], 'process':evidence['process'],
+            'sampled_at':evidence['sampled_at'],'mqtt_source_count':len(expected),
+            'mqtt_connected':all(row['connected']for row in statuses)if expected else None,
+            'source_configuration_sha256':hashlib.sha256(raw).hexdigest()}
 
 
 def metric(text,name):

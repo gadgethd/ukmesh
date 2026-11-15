@@ -53,11 +53,11 @@ def read_intent(path=INTENT):
     return value
 
 
-def inspect_snapshot(deadline=None):
+def inspect_snapshot(deadline=None,*,execute_fn=None):
     def execute(args,**options):
         remaining=deadline-time.monotonic() if deadline is not None else 10
         if remaining<=0:raise TimeoutError('target inspection deadline')
-        return docker(args,timeout=min(10,remaining),**options)
+        return (execute_fn or docker)(args,timeout=min(10,remaining),**options)
     ids=execute(['ps','-aq']).stdout.decode().split()
     items=json.loads(execute(['inspect',*ids]).stdout) if ids else []
     containers={item['Name'].lstrip('/'):item for item in items}
@@ -109,7 +109,7 @@ def changing(snapshot,targets,scope=None):
             and row['refs']!=requested_refs(row,targets)}
 
 
-def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe,path=INTENT):
+def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe,path=INTENT,prepare_fn=None):
     requested=target_values(values);intent=read_intent(path)
     actual=snapshot()
     moved=changing(actual,requested,scope)
@@ -122,9 +122,13 @@ def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe
     if not assessed['may_observe']:raise ValueError('changing inactive consumer; resume previous retained store')
     assert_no_publishers()
     if actual['broker'].get('running') is not True:raise ValueError('broker observation unavailable')
+    prepared=prepare_fn(snapshot,actual)if prepare_fn is not None else None
+    if prepare_fn is not None and(not isinstance(prepared,dict)or prepared.get('passed')is not True):
+        raise ValueError('startup readiness preparation refused')
     proof=observe_fn(snapshot)
     if proof.get('passed') is not True:raise ValueError('target protection observation refused')
-    return {'passed':True,'kind':'known-intent-protection','intent_token':intent['token'],'assessment':assessed,'protection':proof}
+    return {'passed':True,'kind':'known-intent-protection','intent_token':intent['token'],'assessment':assessed,'protection':proof,
+            **({'startup_readiness':prepared}if prepared is not None else {})}
 
 
 def select(values,previous_values,commit,*,snapshot=inspect_snapshot,observe_fn=observe,path=INTENT,lock_path=None,

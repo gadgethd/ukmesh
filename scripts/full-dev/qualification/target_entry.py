@@ -85,7 +85,11 @@ def guard(scope,action='start',service=''):
     actual=inspect_snapshot();names=scope_names(actual,script,[action,service])
     values=selection_values()
     if changing(actual,target_values(values),names):validate_fd(int(os.environ[ENV]),exclusive=True)
-    return check_start(values,scope=names)
+    prepare=None
+    if scope=='main' and action=='start':
+        from startup_readiness import wait_running_consumers
+        prepare=wait_running_consumers
+    return check_start(values,scope=names,prepare_fn=prepare)
 
 
 @contextmanager

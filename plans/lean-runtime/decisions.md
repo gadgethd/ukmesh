@@ -1229,3 +1229,39 @@ boundary only for the new exact broker build command. Add failure injection that
 proves a failed broker build prevents infrastructure/application startup and
 preserves retained fixture data. Do not replace behavior checks with source-text
 or helper-name assertions. Keep comments explaining external constraints.
+
+## Prepare native connections before target protection
+
+Record these links before changing the startup boundary:
+
+- A healthy broker container does not establish that its existing application
+  clients have reconnected. Infrastructure reconciliation can therefore leave a
+  valid pending fixture switch stopped at the first application readiness read.
+  The target entry point supplies a preparation callback only after the existing
+  intent, reference and observation eligibility checks.
+- A new service readiness owner observes native process and connection state for
+  running consumers. It permits backlog and changing CoreScope generations; the
+  existing observation owner remains responsible for drain and protection.
+  Preparation has a 60-second maximum, followed by the unchanged 45-second
+  protection window. Resident service health retains its 240-second wait. The
+  selector's existing 1,200-second command wait is not a new global manual-start
+  deadline or proof that every pre-existing subprocess is reaped.
+- Probe lifecycle belongs to that readiness owner. Hold its session leader
+  unreaped with Linux waitid(WNOWAIT) until descendants settle, establish identity
+  while cancellation is blocked, and defer the first cancellation through cleanup
+  and receipt writing. A cancellation must not produce an authorizing return.
+- Native contracts remain with their adapters. Beacon's actual OnConnect logs
+  include stderr and supplement its reconnecting-capable SDK status. CoreScope's
+  same-document/process adapter preserves its existing intake result, and permits
+  an omitted source-status list only when no MQTT source is configured. Schema
+  errors are fatal; temporary unavailability is distinct from an empty queue.
+- Compose adds three image configuration labels and provenance to the direct
+  broker build. Its running platform manifest f09cafc5 has the same four layers
+  and executable 79ea71b5 as the privately tested 96f6be4a artifact. Keep those
+  identities and their proof scopes explicit; the older direct-build statement
+  above does not establish a full Compose image identity.
+
+The existing cold-start, stopped-consumer, partial-transition and fixture guards
+remain authoritative. This batch changes no application API, database rule,
+resource setting or workload deadline. Validation is recorded with the reviewed
+24-case startup batch and the existing target, intake and launcher regressions.
