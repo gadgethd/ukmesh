@@ -924,3 +924,55 @@ Test production defaults, configured coverage, invalid prefixes, actual MQTT wir
 SUBACK/echo behavior, denied subscriptions and ordinary business dispatch before
 review/build. Root will separately verify a fresh normal probe with stable Core
 generation after the reviewed local runtime change; no source-stage rollout.
+
+## Compose producers must enter the existing journal pipeline
+
+The actual Core PostgreSQL proof timed out and restored its fixture safely, but
+its container was removed before its default json-file logs were archived. The
+retained Loki query is empty. Do not infer the missing historical exception or
+claim that log history can be recovered. Alloy already reads labelled journal
+entries across projects; the missing link belongs to each Compose producer.
+
+Before editing producers, the private decision/proposal recorded the source
+hashes and lost-log limitation. Use the existing journald driver, container Name
+tag and Compose service/project label options in each owning configuration:
+all companion services/tools, the four local-sample services, the local reloader
+and alert bootstrap, and the main Health Check data-init job. Keep main Alloy's
+bounded10m x3 json-file self logs; feeding the collector's own logs back into
+its input is unnecessary. Keep journal inputs, relabels, cursor storage, Loki
+retention, every resource cap and the host's existing journal policy unchanged.
+No Docker API mount, collector, log vacuum or host policy change is introduced.
+
+Resolve normal, hot and Core-proof Compose merges without daemon access and
+assert all required43 service producers have this policy or Alloy's explicit
+self-log exception. Check the existing service/project/container relabel path
+has no project restriction. Root will later inspect actual driver metadata and
+retention after coordinated protected recreation; source-only tests do not
+claim actual end-to-end delivery or a measured numeric host journal quota.
+
+## Distinguish projection ownership from an active SQL transaction
+
+The current-source SAMPLE PostgreSQL proof timed out before projection commits.
+Retained source/data showed the correct reader policy and unchanged source cursor;
+failed application logs were unavailable after the existing cleanup recreated the
+pair, so no exact historical application error is claimed. Private reproduction
+uses production's root Store projection assignment and deterministically fails
+with the new transaction guard. Earlier fixtures held a projection variable but
+did not assign that root ownership pointer as main does.
+
+`publicProjection` denotes the policy/provenance owner, not an active transaction.
+Steady Batch checks current policy, FULL-journals records and fences ready=0 before
+calling its decoder on the root Store. Only `replayTx` denotes a scoped executor
+with the writer mutex already held. Remove the mode-pointer nesting rejection;
+retain the real transaction guard and FULL/WAL check. Preserve policy, retention,
+private revocation, journal, final ready publication and source cursor rules.
+Replay pages retain their existing reconstructible NORMAL owner and FULL restore;
+public mode still forbids MQTT sources. Correct prototype comments to explain
+this actual capability rather than a future refactor.
+
+Before promotion, rooted steady Batch/dedup/privacy/replay/failure/cursor fixtures
+failed on current2719 and passed the minimal candidate (18 top-level+11 subcases).
+Full CGO ingestor/server suites and independent review precede commit. The failed
+actual receipt stays failed; Root must separately rebuild and rerun its unchanged
+PG gate before further qualification. D1, queues, limits, deadlines and RF helpers
+remain unchanged.

@@ -1,6 +1,12 @@
 name: ukmesh-sample
+x-service-journal: &service-journal
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    labels: "com.docker.compose.service,com.docker.compose.project"
 services:
   db:
+    logging: *service-journal
     image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
     container_name: ukmesh-sample-db
     environment:
@@ -24,6 +30,7 @@ services:
     memswap_limit: *sample-db-memory
     shm_size: "1g"
   redis:
+    logging: *service-journal
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     container_name: ukmesh-sample-redis
     ports: ["127.0.0.1:6380:6379"]
@@ -37,6 +44,7 @@ services:
     mem_limit: &sample-redis-memory 256m
     memswap_limit: *sample-redis-memory
   mqtt-log-init:
+    logging: *service-journal
     image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
     user: "0:0"
     entrypoint: ["/bin/sh", "-ec"]
@@ -56,6 +64,7 @@ services:
     memswap_limit: *sample-mqtt-log-init-memory
     volumes: [sample-mqtt-log:/mosquitto/log, sample-mqtt-control:/mosquitto/control, sample-mqtt-data:/mosquitto/data]
   mqtt:
+    logging: *service-journal
     image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
     container_name: ukmesh-sample-mqtt
     user: "1883:1883"

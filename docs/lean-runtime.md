@@ -100,3 +100,12 @@ metrics stay on container loopback. Same-store startup can bootstrap those
 observations. This protects managed local operations; it is not an atomic fence
 against an external MQTT publisher. Original and failed fixture stores remain
 retained.
+
+Main, companion and local infrastructure producers use Docker journald logging,
+with the existing container name and Compose service/project labels. This keeps
+logs available to the existing Alloy/Loki path after a short-lived proof container
+is removed. Alloy's own logs retain the bounded `10m` × `3` json-file policy.
+Journal allocation remains the host's existing policy; Loki retains its configured
+14-day history. No per-container driver change can recover previously removed
+json-file logs or guarantee delivery through a collector outage. Qualification
+checks actual logging delivery separately from a resolved Compose policy.

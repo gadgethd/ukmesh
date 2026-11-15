@@ -1,5 +1,11 @@
 name: ${COMPOSE_PROJECT_NAME:-meshcore-analytics}
 
+x-service-journal: &service-journal
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    labels: "com.docker.compose.service,com.docker.compose.project"
+
 x-anubis-base: &anubis-base
   image: ghcr.io/techarohq/anubis@sha256:5cf4c0d6c7ea01a356c6685a779971bdd28d6a5a4a6719201f73a9c4ae108db0
   restart: always
@@ -11,11 +17,7 @@ x-anubis-base: &anubis-base
     - no-new-privileges:true
   tmpfs:
     - /tmp:rw,noexec,nosuid,size=16m,mode=1777
-  logging: &json-log-limits
-    driver: journald
-    options:
-      tag: "{{.Name}}"
-      labels: "com.docker.compose.service,com.docker.compose.project"
+  logging: *service-journal
   volumes:
     - ./anubis/botPolicy.yaml:/data/botPolicy.yaml:ro
 
@@ -54,7 +56,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: "no"
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &db-migrate-memory "${MIGRATE_MEMORY_LIMIT:-256m}"
     memswap_limit: *db-migrate-memory
     command: ["node", "dist/tools/migrate.js"]
@@ -78,7 +80,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &backend-memory "${BACKEND_MEMORY_LIMIT:-1g}"
     memswap_limit: *backend-memory
     environment:
@@ -267,7 +269,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &path-learning-worker-memory "${PATH_LEARNING_MEMORY_LIMIT:-512m}"
     memswap_limit: *path-learning-worker-memory
     command: ["node", "dist/workers/path-learning.js"]
@@ -299,7 +301,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &health-worker-memory "${HEALTH_WORKER_MEMORY_LIMIT:-192m}"
     memswap_limit: *health-worker-memory
     command: ["node", "dist/workers/health.js"]
@@ -344,7 +346,7 @@ services:
       context: ./tagger-worker
       dockerfile: Dockerfile
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &tagger-worker-memory "${TAGGER_MEMORY_LIMIT:-128m}"
     memswap_limit: *tagger-worker-memory
     cpus: 1.0
@@ -367,7 +369,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     cpus: 1.0
     mem_limit: &region-snapshot-worker-memory "${REGION_SNAPSHOT_MEMORY_LIMIT:-1g}"
     memswap_limit: *region-snapshot-worker-memory
@@ -399,7 +401,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &privacy-remat-worker-memory "${PRIVACY_REMAT_MEMORY_LIMIT:-192m}"
     memswap_limit: *privacy-remat-worker-memory
     command: ["node", "dist/workers/privacy-rematerialization.js"]
@@ -425,7 +427,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &synthetic-monitor-memory "${SYNTHETIC_MEMORY_LIMIT:-128m}"
     memswap_limit: *synthetic-monitor-memory
     command: ["node", "dist/workers/synthetic-monitor.js"]
@@ -462,7 +464,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: "no"
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &link-backfill-worker-memory "${LINK_BACKFILL_MEMORY_LIMIT:-192m}"
     memswap_limit: *link-backfill-worker-memory
     command: ["node", "dist/workers/link-backfill.js"]
@@ -491,7 +493,7 @@ services:
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &link-worker-memory "${LINK_WORKER_MEMORY_LIMIT:-768m}"
     memswap_limit: *link-worker-memory
     cpus: 2.0
@@ -539,7 +541,7 @@ services:
         VERSION: v0.1.32-ukmesh.4
         SOURCE_REVISION: ${HOPREACH_SOURCE_REVISION:-58b2eb9ccdadd2e1b5e54c7548e48f92cc526119}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     cpus: ${HOPREACH_CPUS:-2.0}
     mem_limit: &hopreach-memory "${HOPREACH_MEMORY_LIMIT:-768m}"
     memswap_limit: *hopreach-memory
@@ -568,7 +570,7 @@ services:
         VITE_SITE: ukmesh
         VITE_RF_COVERAGE_ENABLED: ${RF_COVERAGE_ENABLED:-true}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &app-ukmesh-memory "${APP_MEMORY_LIMIT:-48m}"
     memswap_limit: *app-ukmesh-memory
     depends_on:
@@ -605,7 +607,7 @@ services:
         VITE_BUILD_TARGET: public-website
         VITE_SITE: ukmesh
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &website-ukmesh-memory "${WEBSITE_MEMORY_LIMIT:-48m}"
     memswap_limit: *website-ukmesh-memory
     ports:
@@ -631,6 +633,7 @@ services:
 
   mesh-health-check-data-init:
     <<: *application-hardening
+    logging: *service-journal
     image: ${HEALTHCHECK_IMAGE:-meshcore-analytics-health-check:local}
     user: "0:0"
     entrypoint: ["/bin/sh", "-ec"]
@@ -661,7 +664,7 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
         MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:?HEALTHCHECK_SOURCE_REF full commit required}
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &mesh-health-check-memory "${HEALTHCHECK_MEMORY_LIMIT:-128m}"
     memswap_limit: *mesh-health-check-memory
     environment:
@@ -740,7 +743,7 @@ services:
         VITE_SITE_HOME_URL: ${VITE_DEV_SITE_HOME_URL:-https://test.ukmesh.com}
     restart: always
     profiles: [dev]
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &website-dev-memory "${WEBSITE_DEV_MEMORY_LIMIT:-48m}"
     memswap_limit: *website-dev-memory
     ports:
@@ -844,7 +847,7 @@ services:
   cloudflared:
     image: cloudflare/cloudflared@sha256:e39ee8da81ad5e05d77f38d2f51c60ca51bf2a8450ac3abab50c17fdb91d91bf
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &cloudflared-memory "${TUNNEL_MEMORY_LIMIT:-128m}"
     memswap_limit: *cloudflared-memory
     user: "65532:65532"
@@ -877,7 +880,7 @@ services:
     <<: *internal-hosts
     image: grafana/loki@sha256:5fe9fa99e9a747297cdf0239a5b25d192d8f668bd6505b09beef4dffcab5aac2
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &loki-memory "${LOKI_MEMORY_LIMIT:-192m}"
     memswap_limit: *loki-memory
     command: -config.file=/etc/loki/loki.yaml
@@ -953,7 +956,7 @@ services:
     <<: *internal-hosts
     image: prom/prometheus@sha256:63805ebb8d2b3920190daf1cb14a60871b16fd38bed42b857a3182bc621f4996
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &prometheus-memory "${PROMETHEUS_MEMORY_LIMIT:-192m}"
     memswap_limit: *prometheus-memory
     command:
@@ -997,7 +1000,7 @@ services:
     <<: *internal-hosts
     image: grafana/grafana@sha256:0a2874cf39c6487093c682215f7c7903ed8646d78ae5f911af945d2dfcc0a447
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &grafana-memory "${GRAFANA_MEMORY_LIMIT:-192m}"
     memswap_limit: *grafana-memory
     read_only: true
@@ -1039,7 +1042,7 @@ services:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
     command: ["node", "dist/workers/alert-receiver.js"]
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &alert-receiver-memory "${ALERT_RECEIVER_MEMORY_LIMIT:-96m}"
     memswap_limit: *alert-receiver-memory
     read_only: true
@@ -1069,7 +1072,7 @@ services:
     <<: *internal-hosts
     image: prom/alertmanager@sha256:27c475db5fb156cab31d5c18a4251ac7ed567746a2483ff264516437a39b15ba
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &alertmanager-memory "${ALERTMANAGER_MEMORY_LIMIT:-64m}"
     memswap_limit: *alertmanager-memory
     command:
@@ -1101,7 +1104,7 @@ services:
     <<: *internal-hosts
     image: quay.io/prometheuscommunity/postgres-exporter@sha256:fb96c4413985d4b23ab02b19022b3d70a86c8e0a62f41ab15ebb6f4673781a5d
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &postgres-exporter-memory "${POSTGRES_EXPORTER_MEMORY_LIMIT:-32m}"
     memswap_limit: *postgres-exporter-memory
     read_only: true
@@ -1120,7 +1123,7 @@ services:
     <<: *internal-hosts
     image: oliver006/redis_exporter@sha256:4c8000eb3525e0f6ed1327499861e272fcce358a9e7a87dd9db74c44607e6d8e
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &redis-exporter-memory "${REDIS_EXPORTER_MEMORY_LIMIT:-32m}"
     memswap_limit: *redis-exporter-memory
     read_only: true
@@ -1141,7 +1144,7 @@ services:
     <<: *internal-hosts
     image: prom/node-exporter@sha256:d00a542e409ee618a4edc67da14dd48c5da66726bbd5537ab2af9c1dfc442c8a
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &node-exporter-memory "${NODE_EXPORTER_MEMORY_LIMIT:-32m}"
     memswap_limit: *node-exporter-memory
     pid: host
@@ -1167,7 +1170,7 @@ services:
     <<: *internal-hosts
     image: prom/blackbox-exporter@sha256:a50c4c0eda297baa1678cd4dc4712a67fdea713b832d43ce7fcc5f9bea05094d
     restart: always
-    logging: *json-log-limits
+    logging: *service-journal
     mem_limit: &blackbox-exporter-memory "${BLACKBOX_EXPORTER_MEMORY_LIMIT:-32m}"
     memswap_limit: *blackbox-exporter-memory
     command: ["--config.file=/etc/blackbox_exporter/config.yml"]

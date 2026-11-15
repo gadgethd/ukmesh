@@ -1,5 +1,11 @@
 name: ukmesh-companions
+x-service-journal: &service-journal
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    labels: "com.docker.compose.service,com.docker.compose.project"
 x-go: &go
+  logging: *service-journal
   image: golang@sha256:4fa7c968ba93f1635670522dbb01a2c78150443e1385746924566079f36570ea # 1.27-bookworm, native cgo
   user: "${COMPANION_UID:-1000}:${COMPANION_GID:-1000}"
   environment: &go-env
@@ -28,6 +34,7 @@ services:
     mem_limit: &companion-build-memory 1200m
     memswap_limit: *companion-build-memory
   beacon-db:
+    logging: *service-journal
     image: postgres@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca # 16-bookworm
     environment:
       POSTGRES_USER: beacon_dev
@@ -44,6 +51,7 @@ services:
     memswap_limit: *companion-beacon-db-memory
     shm_size: 128m
   beacon-redis:
+    logging: *service-journal
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     command: [redis-server, --save, "", --appendonly, "no"]
     healthcheck:
@@ -148,6 +156,7 @@ services:
     memswap_limit: *companion-beacon-memory
     stop_grace_period: 30s
   web-build:
+    logging: *service-journal
     image: node@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
     profiles: [tools]
     user: "${COMPANION_UID:-1000}:${COMPANION_GID:-1000}"
@@ -166,6 +175,7 @@ services:
     mem_limit: &companion-web-build-memory 1200m
     memswap_limit: *companion-web-build-memory
   beacon-web:
+    logging: *service-journal
     image: ${APP_IMAGE:-ukmesh-full-app:local}
     environment:
       COMPANION_SOURCE_REVISION: ${COMPANION_WEB_SOURCE:-unknown}
