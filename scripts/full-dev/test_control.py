@@ -1,4 +1,4 @@
-"""A finite backfill failure must fail startup even when Compose wait returns zero."""
+"""Broker builds and finite jobs fail startup without touching retained fixtures."""
 import os
 from pathlib import Path
 import shutil
@@ -29,7 +29,7 @@ refresh_wiring_revisions() { :; }
 ''')
             library = root / 'scripts/lib'
             library.mkdir()
-            (library / 'owned-processes.sh').write_text('owned_stop_process() { :; }\n')
+            (library / 'owned-processes.sh').write_text("owned_stop_process() { printf 'APP_STOP\\n' >> calls; }\n")
             executables = root / 'tools'
             executables.mkdir()
             docker = executables / 'docker'
@@ -37,6 +37,17 @@ refresh_wiring_revisions() { :; }
 from pathlib import Path
 import sys
 args=sys.argv[1:]
+def called(value):
+    with (Path.cwd()/'calls').open('a') as output: output.write(value+'\\n')
+if args[:1]==['compose']:
+    sample='--project-name' in args and args[args.index('--project-name')+1]=='ukmesh-sample'
+    if sample and 'build' in args:
+        if args[-2:]!=['build','mqtt']: sys.exit(92)
+        called('BROKER_IMAGE')
+        if (Path.cwd()/'fail-broker-image').exists():
+            print('fixture broker image build failed',file=sys.stderr);sys.exit(43)
+    elif sample and 'up' in args: called('INFRA_UP')
+    elif not sample and 'up' in args: called('MAIN_UP:'+args[-1])
 if 'config' in args and '--services' in args: print('backend\\nlink-backfill-worker\\ndb-migrate')
 if 'ps' in args: print('owned-'+args[-1]+'-container')
 if 'logs' in args: print(args[-1]+' retained output')
@@ -52,8 +63,12 @@ if args and args[0]=='inspect':
                     (root / 'migration-result').write_text(state if stage=='migration' else 'exited:0')
                     (root / 'backfill-result').write_text(state if stage=='backfill' else 'exited:0')
                     (root / 'access-called').unlink(missing_ok=True)
+                    (root / 'calls').write_text('')
                     result = subprocess.run(['bash', str(tools / 'control.sh'), 'start'], cwd=root,
                                             env=environment, capture_output=True, text=True, timeout=20)
+                    calls = (root / 'calls').read_text().splitlines()
+                    self.assertEqual(calls[:3], ['BROKER_IMAGE', 'INFRA_UP', 'MAIN_UP:db-migrate'])
+                    self.assertEqual(calls.count('BROKER_IMAGE'), 1)
                     if state == 'exited:0':
                         self.assertEqual(result.returncode, 0, result.stderr)
                         self.assertIn('UKMesh http://', result.stdout)
@@ -64,6 +79,28 @@ if args and args[0]=='inspect':
                         self.assertNotIn('UKMesh http://', result.stdout)
                     self.assertEqual((root / 'access-called').exists(), stage!='migration' or state=='exited:0')
                     self.assertIn('db-migrate retained output', (root / 'plans/lean-runtime/runtime/migrate.log').read_text())
+
+            # Broker failure precedes infrastructure, migration, process retirement and apps.
+            state = root / 'plans/dev-stack'
+            state.mkdir(parents=True)
+            (state / 'fixture-ready').write_text('retained snapshot\n')
+            (state / 'backend.pid').write_text('retained PID authority\n')
+            data = root / 'retained-data'
+            data.mkdir()
+            (data / 'marker').write_bytes(b'owned fixture bytes\x00unchanged')
+            protected = [state / 'fixture-ready', state / 'backend.pid', data / 'marker']
+            before = {path: path.read_bytes() for path in protected}
+            (root / 'fail-broker-image').touch()
+            (root / 'calls').write_text('')
+            (root / 'access-called').unlink(missing_ok=True)
+            result = subprocess.run(['bash', str(tools / 'control.sh'), 'start'], cwd=root,
+                                    env=environment, capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0, result.stderr)
+            self.assertIn('fixture broker image build failed', result.stderr)
+            self.assertEqual((root / 'calls').read_text().splitlines(), ['BROKER_IMAGE'])
+            self.assertFalse((root / 'access-called').exists())
+            self.assertNotIn('UKMesh http://', result.stdout)
+            self.assertEqual({path: path.read_bytes() for path in protected}, before)
 
 
 if __name__ == '__main__':

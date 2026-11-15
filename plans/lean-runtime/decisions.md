@@ -1182,3 +1182,50 @@ delay is still counted. This is a production scheduling choice, not a cache TTL.
 
 Independent prospective review accepts the fresh-point contract; performance
 is unproven until the unchanged full checks and cold/warm C8stage close.
+
+
+## Keep local broker fixes and builds in the broker component
+
+Record these links before applying the reviewed local runtime changes:
+
+- Transport sockets can exist before MQTT CONNECT creates an identified session.
+  Subtracting socket count from identified-session count can underflow or hide an
+  offline session. The broker owns both gauges and now partitions the identified
+  contexts with its existing connected-state predicate.
+- MQTT 5 Clean Start discards the previous session; Session Expiry controls the
+  new session's lifetime. Separate client and subscription persistence filters
+  used Clean Start as a lifetime rule, losing positive-expiry sessions and
+  disagreeing about bridge policy. One broker-owned eligibility predicate serves
+  client/message and subscription saves, with the bridge's local policy retained.
+- A global UKMesh revision is unrelated to the broker executable. Its narrow
+  build context pins the upstream image, source archive, patch and resulting C
+  files. Only the broker executable enters the final image. Application builds
+  and the broker build keep separate artifact identities.
+- The existing launchers must build that component before starting infrastructure
+  even when a local tag exists. They orchestrate the build; the component recipe
+  owns compiler flags, patches and upstream constraints. Existing URLs, runtime
+  settings, volumes, resource caps and finite initialization jobs remain intact.
+- Changing a broker executable on the same store differs from changing consumer
+  database targets. Preserve the closed store and require fresh connection
+  evidence before any maintenance; the strict target protection gate is unchanged.
+  The old writer can omit MQTT 5 sessions, so a closed-store backup alone cannot
+  establish that arbitrary old in-memory sessions were preserved.
+
+Private evidence is closed: 26 counter/setup phases, 12 restart/replay phases,
+three observer epochs, and 18 real persistence cases with 379 assertions pass.
+The original writer fails exactly the MQTT 5 fresh-session case and two bridge
+policy cases. Original fixture tests still pass byte for byte. Earlier failed
+attempts, including test harness setup failures, remain recorded. The canonical
+recipe produces the exact private-tested image 96f6be4a and binary 79ea71b5.
+Independent reviews d420744a, 35ab1043 and c4b39dad bind the actual results.
+These are component proofs; full-stack qualification and shared-broker promotion
+remain separate pending work. No service restart or target change occurs here.
+
+## Verify launcher behavior through its commands
+
+Before changing launcher test fixtures, retain their existing migration, backfill,
+foreign-process, rollback and interruption coverage. Extend their fake command
+boundary only for the new exact broker build command. Add failure injection that
+proves a failed broker build prevents infrastructure/application startup and
+preserves retained fixture data. Do not replace behavior checks with source-text
+or helper-name assertions. Keep comments explaining external constraints.

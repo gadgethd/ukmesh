@@ -16,6 +16,8 @@ if "${entry_env[@]}" python3 "$repo/scripts/full-dev/qualification/target_entry.
 fi
 cd "$repo"
 source "$repo/scripts/full-dev/runtime.sh"
+sample_compose=(docker compose --project-name ukmesh-sample --env-file /dev/null \
+  -f "$repo/scripts/local-sample/compose.yml")
 source "$repo/scripts/lib/owned-processes.sh"
 state="$repo/plans/lean-runtime/runtime"
 mkdir -p "$state"
@@ -50,8 +52,16 @@ prepare_wiring() {
   refresh_wiring_revisions
 }
 
+build_sample_broker() {
+  echo "Building sample MQTT broker (component sources only)"
+  "${sample_compose[@]}" build mqtt > "$state/build-sample-mqtt.log" 2>&1 || {
+    tail -40 "$state/build-sample-mqtt.log" >&2; return 1;
+  }
+}
+
 build_images() {
   prepare_wiring
+  build_sample_broker
   for component in backend app-ukmesh website-ukmesh website-dev tagger-worker link-worker hopreach mesh-health-check mosquitto-reloader; do
     echo "Building $component (one image at a time)"
     "${compose[@]}" build "$component" > "$state/build-$component.log" 2>&1 || { tail -40 "$state/build-$component.log" >&2; return 1; }
@@ -70,7 +80,8 @@ prepare_wiring
 if ! docker network inspect ukmesh-sample_default >/dev/null 2>&1; then
   if [[ -f $repo/plans/dev-stack/fixture-ready ]]; then bash "$repo/scripts/dev-stack.sh" start; else bash "$repo/scripts/dev-stack.sh" up; fi
 fi
-docker compose --project-name ukmesh-sample --env-file /dev/null -f "$repo/scripts/local-sample/compose.yml" up -d --wait db redis mqtt
+build_sample_broker
+"${sample_compose[@]}" up -d --wait db redis mqtt
 images_ready=true
 for image in "$BACKEND_IMAGE" "$APP_IMAGE" "$WEBSITE_IMAGE" "$WEBSITE_DEV_IMAGE" "$TAGGER_WORKER_IMAGE" "$RF_WORKER_IMAGE" "$HOPREACH_IMAGE" "$HEALTHCHECK_IMAGE" "$MOSQUITTO_RELOADER_IMAGE"; do
   docker image inspect "$image" >/dev/null 2>&1 || images_ready=false
