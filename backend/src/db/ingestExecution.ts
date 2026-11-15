@@ -4,6 +4,7 @@ import { loadDatabaseConfig, databaseUrlForRole } from '../platform/config/datab
 import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import type { DatabaseQueryFn, FixedPreparedStatementName } from './contracts.js';
 import { fixedPreparedStatement } from './preparedStatements.js';
+import { checkoutDatabaseClient } from './poolCheckout.js';
 
 export function ingestPoolOptions(env: NodeJS.ProcessEnv): pg.PoolConfig {
   const databaseConfig = loadDatabaseConfig(env);
@@ -55,7 +56,7 @@ export function createIngestDatabase(pool: pg.Pool) {
 
   const query: DatabaseQueryFn = (text, params, _signal, statement) => execute(pool, text, params, statement);
   async function withTransaction<T>(work: (query: DatabaseQueryFn) => Promise<T>): Promise<T> {
-    const client = await pool.connect();
+    const client = await checkoutDatabaseClient(pool, 'ingest');
     let discard = false;
     try {
       await execute(client, 'BEGIN');

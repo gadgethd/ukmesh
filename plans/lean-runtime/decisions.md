@@ -646,6 +646,30 @@ The strict original comparison and failure evidence remain intact. Any repair of
 the single historical timestamp is a separate, guarded operation requiring exact
 backup identity and equality of all other columns; it is not part of this patch.
 
+## Database checkout owns one pool-wait clock across execution paths
+
+The failed full-stack run recorded an average45.8ms for the persistence CTE
+in one30-second window, but quiet owned10x rollback profiles measured11–29ms
+after warming. The prepared statement's generic transition was14.7ms; neither
+a generic-plan regression nor an intrinsic45.8ms SQL floor was reproduced.
+Retained I/O shows concurrent database and Alloy reads, but does not establish
+which pressure caused the delay. Preserve that failed run and uncertainty.
+
+- Hidden link: ingest transactions call pool.connect() outside their execution
+  timer and never publish the shared pool-wait metric. A missing series could
+  be mistaken for zero wait when comparing SQL and processor latency.
+- Needless link: acquisition timing and outcome labels would drift if copied
+  independently into each execution path.
+- Fix: one database checkout owner measures acquisition success/failure and
+  updates the existing bounded pool metrics. General/analytics calls retain
+  their existing semantics; ingest transactions use the same acquisition owner.
+- Keep lease release/discard, rollback, SQL, privacy locks, transaction order,
+  retries, pool sizes and deadlines with their current owners. No per-topic
+  concurrency or batching change is justified before the next controlled test.
+- Verify delayed acquisition and failed acquisition with behavioral tests that
+  preserve the returned client/error, SQL order and release behavior. Obtain
+  independent review before commit or another measured runtime.
+
 ## Effective memory and swap limits come from the cgroup
 
 The failed full-stack soak exposed a collection gap: Docker HostConfig recorded
@@ -666,3 +690,4 @@ Temporary-file and mocked-inspection tests must demonstrate an effective limit
 mismatch despite correct HostConfig, missing/malformed data and cgroup path
 escape. Runtime recreation, missing Compose pairs and broker storage belong to
 separate reviewed batches after this collection boundary closes.
+

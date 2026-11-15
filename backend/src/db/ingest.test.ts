@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type pg from 'pg';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
-import { dbQueriesTotal } from '../metrics/database.js';
+import { dbPoolWaitDuration, dbQueriesTotal, dbQueryDuration } from '../metrics/database.js';
 import type { FixedPreparedStatementName } from './contracts.js';
 
 test('ingest has a nonzero timeout independent of the general/analytics pool', () => {
@@ -70,6 +70,80 @@ test('successful work commits and returns the client to the pool', async () => {
   assert.equal(await db.withTransaction(async (query) => { await query('fast'); return 42; }), 42);
   assert.deepEqual(db.calls, ['BEGIN', 'fast', 'COMMIT']);
   assert.deepEqual(db.releases, [false]);
+});
+
+async function ingestDuration(metric: typeof dbPoolWaitDuration, outcome: string) {
+  const values = (await metric.get()).values.filter(
+    row => row.labels['pool'] === 'ingest' && row.labels['outcome'] === outcome,
+  );
+  return {
+    count: values.find(row => row.metricName.endsWith('_count'))?.value ?? 0,
+    sum: values.find(row => row.metricName.endsWith('_sum'))?.value ?? 0,
+  };
+}
+
+test('a contended ingest checkout measures only acquisition and preserves the transaction lease', async t => {
+  let clock = 0n;
+  t.mock.method(process.hrtime, 'bigint', () => clock);
+  let admit!: (client: pg.PoolClient) => void;
+  const waiting = new Promise<pg.PoolClient>(resolve => { admit = resolve; });
+  const calls: string[] = [], releases: boolean[] = [];
+  const client = {
+    async query(sql: string) {
+      calls.push(sql);
+      if (sql === 'COMMIT') clock += 200_000_000n;
+      return { rows: [] };
+    },
+    release(discard: boolean) { releases.push(discard); },
+  } as unknown as pg.PoolClient;
+  const pool = {
+    options: {}, totalCount: 1, idleCount: 0, waitingCount: 1, connect: () => waiting,
+  } as unknown as pg.Pool;
+  const before = await ingestDuration(dbPoolWaitDuration, 'success');
+  const executionBefore = await ingestDuration(dbQueryDuration, 'success');
+  const work = createIngestDatabase(pool).withTransaction(async query => {
+    const acquired = await ingestDuration(dbPoolWaitDuration, 'success');
+    assert.equal(acquired.count - before.count, 1, 'checkout is observed before the work callback');
+    assert.ok(Math.abs(acquired.sum - before.sum - .075) < 1e-9);
+    clock += 200_000_000n;
+    await query('owned work');
+    return 42;
+  });
+  assert.deepEqual(calls, []);
+  assert.deepEqual(await ingestDuration(dbPoolWaitDuration, 'success'), before);
+  clock = 75_000_000n;
+  admit(client);
+  assert.equal(await work, 42);
+  assert.deepEqual(calls, ['BEGIN', 'owned work', 'COMMIT']);
+  assert.deepEqual(releases, [false]);
+  const after = await ingestDuration(dbPoolWaitDuration, 'success');
+  assert.equal(after.count - before.count, 1);
+  assert.ok(Math.abs(after.sum - before.sum - .075) < 1e-9, 'work and COMMIT do not extend pool wait');
+  const executionAfter = await ingestDuration(dbQueryDuration, 'success');
+  assert.equal(executionAfter.count - executionBefore.count, 3);
+  assert.ok(Math.abs(executionAfter.sum - executionBefore.sum - .2) < 1e-9, 'COMMIT remains SQL execution time');
+});
+
+test('failed ingest acquisition records its bounded failure label without SQL, callback or lease release', async t => {
+  let clock = 0n;
+  t.mock.method(process.hrtime, 'bigint', () => clock);
+  let refuse!: (error: Error) => void;
+  const waiting = new Promise<pg.PoolClient>((_resolve, reject) => { refuse = reject; });
+  const pool = {
+    options: {}, totalCount: 0, idleCount: 0, waitingCount: 1, connect: () => waiting,
+  } as unknown as pg.Pool;
+  const before = await ingestDuration(dbPoolWaitDuration, 'failure');
+  let called = false;
+  const work = createIngestDatabase(pool).withTransaction(async () => { called = true; });
+  const failure = new Error('owned connection unavailable');
+  const rejected = assert.rejects(work, error => error === failure);
+  clock = 25_000_000n;
+  refuse(failure);
+  await rejected;
+  assert.equal(called, false);
+  const after = await ingestDuration(dbPoolWaitDuration, 'failure');
+  assert.equal(after.count - before.count, 1);
+  assert.ok(Math.abs(after.sum - before.sum - .025) < 1e-9);
 });
 
 test('singleton preparation uses fixed names and fresh values on the same transaction client', async () => {
