@@ -17,6 +17,53 @@ regexes = [
   # in channelRegistry.meshos.test.ts as PUBLIC2_SECRET, which the
   # generic-api-key rule flags purely on the constant's name.
   '''8b4b705b080c0d943b1c80f6b3ef6b6d''',
+  # ── Hashtag channel keys ───────────────────────────────────────────────
+  # Every value below is sha256("#<channel name>")[:32]: knowing the
+  # channel name alone reproduces the key, so these are public by
+  # construction, not credentials. Listed verbatim (rather than derived at
+  # runtime) so renaming a constant to something like FOO_SECRET cannot
+  # re-break the secret scan; the trailing comment is the channel name that
+  # reproduces each key.
+  '''eb50a1bcb3e4e5d7bf69a57c9dada211''',  # #bot
+  '''b4e5450da06c21e5338b91b3b18206ad''',  # #brentwood
+  '''88b113ee8130e832d0bf15a5c7be0ddd''',  # #cornwall
+  '''adee277d04fe73f1bfc43ce8a19f351e''',  # #crawley
+  '''ec3be8009f600059d6cd1dca32c74e1c''',  # #cumbria
+  '''848469a776c39f8bf2b774def5cd697b''',  # #dartford
+  '''84eed36f62c7b22527dbf8883585ad14''',  # #denhaag
+  '''4c3e09555ad74fde17f3a82febb610c4''',  # #derbyshire
+  '''cbd7337937131f7db971cfdb24431ae3''',  # #devon
+  '''d2de225d13760cf2e13aa368ef9e5b6b''',  # #dorset
+  '''8792638977132bc05a1f72d6bb913694''',  # #dublin
+  '''5d25cf40b1f5b4a7eb0cf9703634a948''',  # #echo
+  '''f4624be48a6c80309b4c2f6f3eb36e99''',  # #g8py
+  '''ea6b521f794e7a0e4ff41fe5d0e3f838''',  # #glasgow
+  '''83c8b01997654265938da8765cbc7db9''',  # #hamradio
+  '''549a4cd97d96c130d359748c72f0e321''',  # #huddersfield
+  '''1b2a12acc5db1517d9d407946756b1da''',  # #ireland
+  '''dea8bb392991eeee26806e4d2cdf8dd4''',  # #kent
+  '''2ca4f626387ca26ec7c2ae45641f9628''',  # #leicester
+  '''2db23106132a517f0b9ea47b4d822c4f''',  # #lincolnshire
+  '''2a223c8f7b4190b329f46d54d3a9c350''',  # #liverpool
+  '''9881d2b7ab9105a41a8d0f6ba449447e''',  # #london
+  '''3238ea75dcefd77a31ce907037901f61''',  # #marple
+  '''5b664cde0b08b220612113db980650f3''',  # #mesh
+  '''ba3707a0760d156169aea2a6c82e2d6a''',  # #midlands
+  '''3b1ca0ae6003193eb9f91984eefef5dc''',  # #northeast
+  '''90f554aa06b30c705e7ed3bdd59b38e2''',  # #nottingham
+  '''89db441e2814dccf0dbd2e8cc5f501a3''',  # #repeaters
+  '''eb9ca9764bd08712f596a054e32e336c''',  # #scilly
+  '''5e12bb2d2b8f660ab179676cbc663cd1''',  # #surrey
+  '''9cd8fcf22a47333b591d96a2b848b73f''',  # #test
+  '''1f19cc976112b77f623ec970e4805e87''',  # #thenorf
+  '''15ab8ecee7b54d18adffd4b83be33682''',  # #uckfield
+  '''22b2eed34b5cc429ce1dc5e88635ff84''',  # #uk
+  '''809573d8134fa262d284400a788f63d9''',  # #wales
+  '''d90a1f4941a7892855e473c8f9a10195''',  # #york
+  '''81eb980a4884e5859bb42b135261200e''',  # #yorks
+  '''ea19e9567eec1b148c174f0cb9d04dd7''',  # #yorkshire
+  # Local fixture: sha256("test")[:32], public well-known test material.
+  '''9f86d081884c7d659a2feaa0c55ad015''',  # test2
   # MeshCore node public keys used as fixtures in the backend/src/mqtt test
   # suite (commit c0eac55). A node public key is the node's advertised
   # identity in meshcore/<IATA>/<KEY>/packets topics, published by design --
