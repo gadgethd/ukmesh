@@ -1,0 +1,25 @@
+{
+ "docker/mosquitto-reloader.py": {
+  "H002": 1
+ },
+ "scripts/restore-drill.sh": {
+  "H103": 1
+ },
+ "scripts/test-alloy-cutover.sh": {
+  "H103": 1
+ },
+ "tagger-worker/tagger_worker.py": {
+  "H001": 1,
+  "H002": 5
+ },
+ "viewshed-worker/link_queue_v3.py": {
+  "H001": 1
+ },
+ "viewshed-worker/viewshed_queue_v2.py": {
+  "H001": 1
+ },
+ "viewshed-worker/worker.py": {
+  "H001": 5,
+  "H002": 2
+ }
+}
