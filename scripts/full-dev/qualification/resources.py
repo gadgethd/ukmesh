@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import threading
 import time
@@ -15,6 +16,62 @@ from fixtures import current_targets
 
 
 MIB = 1024 * 1024
+
+
+def nonnegative(value: str) -> int:
+    if not re.fullmatch(r"0|[1-9][0-9]*", value):
+        raise ValueError("cgroup counter must be a nonnegative integer")
+    return int(value)
+
+
+def container_cgroup(pid: int, *, proc_root: Path = Path('/proc'),
+                     cgroup_root: Path = Path('/sys/fs/cgroup')) -> Path:
+    if type(pid) is not int or pid <= 0:
+        raise ValueError("running container PID is required")
+    entries = [line.removeprefix('0::') for line in (proc_root / str(pid) / 'cgroup').read_text().splitlines()
+               if line.startswith('0::')]
+    if len(entries) != 1 or not entries[0].startswith('/'):
+        raise RuntimeError("resource qualification requires one cgroup v2 membership")
+    root = cgroup_root.resolve()
+    group = (root / entries[0].lstrip('/')).resolve()
+    if not group.is_relative_to(root):
+        raise ValueError("container cgroup path is invalid")
+    return group
+
+
+def memory_limit_evidence(group: Path, host: dict) -> dict:
+    """Kernel limits prove enforcement; Docker settings retain separate intent."""
+    def limit(name):
+        value = (group / name).read_text().strip()
+        return 'max' if value == 'max' else nonnegative(value)
+
+    memory, swap = host['Memory'], host['MemorySwap']
+    if type(memory) is not int or memory < 0 or type(swap) is not int or swap < -1:
+        raise ValueError("Docker memory settings are malformed")
+    events = {}
+    for line in (group / 'memory.swap.events').read_text().splitlines():
+        fields = line.split()
+        if len(fields) != 2 or fields[0] in events:
+            raise ValueError("cgroup swap events are malformed")
+        events[fields[0]] = nonnegative(fields[1])
+    if not events:
+        raise ValueError("cgroup swap events are missing")
+    return {'memory_limit_bytes': memory, 'memory_swap_limit_bytes': swap,
+            'effective_memory_max': limit('memory.max'), 'effective_swap_max': limit('memory.swap.max'),
+            'swap_current_bytes': nonnegative((group / 'memory.swap.current').read_text().strip()),
+            'swap_events': events}
+
+
+def memory_limits_match(item: dict) -> bool:
+    """The lean policy requests finite RAM and no additional container swap."""
+    memory = item.get('memory_limit_bytes')
+    events, current = item.get('swap_events'), item.get('swap_current_bytes')
+    return type(memory) is int and memory > 0 \
+        and type(item.get('memory_swap_limit_bytes')) is int and item['memory_swap_limit_bytes'] == memory \
+        and type(item.get('effective_memory_max')) is int and item['effective_memory_max'] == memory \
+        and type(item.get('effective_swap_max')) is int and item['effective_swap_max'] == 0 \
+        and type(current) is int and current >= 0 and isinstance(events, dict) and bool(events) \
+        and all(type(value) is int and value >= 0 for value in events.values())
 
 
 def key_values(path: Path) -> dict[str, int]:
@@ -72,13 +129,22 @@ def native_pss(manifest: dict) -> dict:
         if descendants.issubset(selected):
             break
         selected.update(descendants)
-    result = {}
+    return process_memory(selected)
+
+
+def process_memory(selected: set[int], *, proc_root: Path = Path('/proc')) -> dict:
+    result, swapped = {}, {}
     for pid in selected:
         try:
-            result[str(pid)] = key_values(Path(f"/proc/{pid}/smaps_rollup"))["Pss"]
+            values = key_values(proc_root / str(pid) / 'smaps_rollup')
+            result[str(pid)] = values["Pss"]
+            swapped[str(pid)] = values.get("SwapPss")
         except FileNotFoundError:
             continue
-    return {"processes": result, "total_bytes": sum(result.values())}
+    return {"processes": result, "total_bytes": sum(result.values()),
+            "swap_processes": swapped,
+            "swap_total_bytes": sum(value for value in swapped.values() if value is not None),
+            "swap_coverage_complete": all(value is not None for value in swapped.values())}
 
 
 def container_samples() -> list[dict]:
@@ -89,13 +155,7 @@ def container_samples() -> list[dict]:
     result = []
     for item in inspected:
         pid = item["State"]["Pid"]
-        cgroup = Path(f"/proc/{pid}/cgroup").read_text().splitlines()
-        unified = next((line.split(":", 2)[2] for line in cgroup if line.startswith("0::")), None)
-        if unified is None:
-            raise RuntimeError("resource qualification requires cgroup v2 working-set accounting")
-        group = (Path("/sys/fs/cgroup") / unified.lstrip("/")).resolve()
-        if not group.is_relative_to(Path("/sys/fs/cgroup")):
-            raise ValueError("container cgroup path is invalid")
+        group = container_cgroup(pid)
         current = int((group / "memory.current").read_text())
         stat = key_values(group / "memory.stat")
         events = key_values(group / "memory.events")
@@ -114,7 +174,7 @@ def container_samples() -> list[dict]:
                        "started_at": item["State"]["StartedAt"],
                        "health": item["State"].get("Health", {}).get("Status"),
                        "cpu": key_values(group / "cpu.stat"), "io": io,
-                       "memory_limit_bytes": item["HostConfig"]["Memory"]})
+                       **memory_limit_evidence(group, item["HostConfig"])})
     return result
 
 
@@ -163,6 +223,8 @@ def evaluate(samples: list[dict], *, duration: float, warmup: float,
     complete_coverage = bool(required) and all(required.issubset({item["name"] for item in row["containers"]}) for row in samples)
     healthy_coverage = all(item.get("health") in (None, "healthy") for row in samples
                            for item in row["containers"] if item["name"] in required)
+    limit_mismatches = sorted({item['name'] for row in samples for item in row['containers']
+                               if item['name'] in required and not memory_limits_match(item)})
     unstable = set()
     for row in samples:
         unstable.update(set(first) - {item["name"] for item in row["containers"]})
@@ -188,13 +250,15 @@ def evaluate(samples: list[dict], *, duration: float, warmup: float,
               "complete_duration": actual_duration >= duration * .98,
               "complete_resident_coverage": complete_coverage,
               "healthy_resident_services": healthy_coverage,
+              "effective_container_memory_limits": not limit_mismatches,
               "database_connection_reserve": connection_reserve,
               "database_durability": durable, "no_new_deadlocks": not deadlocks}
     return {"passed": all(checks.values()), "checks": checks, "sample_count": len(samples),
             "steady_samples": len(steady), "duration_seconds": actual_duration,
             "warmup_seconds": warmup, "headroom_fraction": headroom,
             "runtime_peak_bytes": memory_peak, "swap_growth_bytes": max(0, swap_growth),
-            "disk_min_bytes": disk_min, "unstable_containers": sorted(unstable)}
+            "disk_min_bytes": disk_min, "unstable_containers": sorted(unstable),
+            "effective_limit_mismatches": limit_mismatches}
 
 
 def sample(run: Path, *, seconds: int, interval: float, warmup: int,

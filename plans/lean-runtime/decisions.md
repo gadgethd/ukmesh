@@ -645,3 +645,24 @@ null transitions and imported takeover with native PostgreSQL behavior checks.
 The strict original comparison and failure evidence remain intact. Any repair of
 the single historical timestamp is a separate, guarded operation requiring exact
 backup identity and equality of all other columns; it is not part of this patch.
+
+## Effective memory and swap limits come from the cgroup
+
+The failed full-stack soak exposed a collection gap: Docker HostConfig recorded
+the intended memory-plus-swap limit, while the sampler never read the effective
+`memory.max`, `memory.swap.max`, swap charges or swap events. Local infrastructure
+and companion Compose definitions also omit the main stack's no-swap pairing.
+Configuration intent alone cannot establish kernel enforcement or attribute the
+whole-host swap growth.
+
+Keep cgroup parsing, process accounting and resource acceptance with the existing
+resource sampler. Read strict cgroup-v2 values, retain explicit unlimited values,
+and check required containers' actual finite memory and zero-swap limits against
+Docker intent. Record native SwapPss separately from resident PSS and mark missing
+coverage explicitly. Preserve the whole-host growth/churn thresholds and the RAM
+working-set calculation; swap attribution never replaces those acceptance gates.
+
+Temporary-file and mocked-inspection tests must demonstrate an effective limit
+mismatch despite correct HostConfig, missing/malformed data and cgroup path
+escape. Runtime recreation, missing Compose pairs and broker storage belong to
+separate reviewed batches after this collection boundary closes.

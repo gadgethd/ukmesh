@@ -48,7 +48,10 @@ def resource_rows(*, seconds=2400, interval=5) -> list[dict]:
              "databases": [{"name": "ukmesh", "connections": 50, "max_connections": 100,
                             "fsync": "on", "synchronous_commit": "on", "deadlocks": 0}],
              "containers": [{"name": "api", "id": "same-container", "restarts": 0,
-                              "oom_kills": 0, "oom_killed": False}]}
+                              "oom_kills": 0, "oom_killed": False,
+                              "memory_limit_bytes": 1024*MIB, "memory_swap_limit_bytes": 1024*MIB,
+                              "effective_memory_max": 1024*MIB, "effective_swap_max": 0,
+                              "swap_current_bytes": 0, "swap_events": {"max": 0, "fail": 0}}]}
             for index in range(0, seconds + 1, interval)]
 
 
