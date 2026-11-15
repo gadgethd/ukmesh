@@ -547,3 +547,54 @@ tests:
               summary: Durable packet path growth exceeds 60,000 rows per day
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#packetpathscapacity
+
+  - name: observer registration webhook failures page after the holdoff
+    interval: 1m
+    input_series:
+      - series: 'meshcore_observer_registration_webhook_deliveries_total{outcome="failure"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: ObserverRegistrationWebhookFailing
+        exp_alerts: []
+      - eval_time: 9m
+        alertname: ObserverRegistrationWebhookFailing
+        exp_alerts:
+          - exp_labels:
+              outcome: failure
+              severity: warning
+            exp_annotations:
+              summary: Observer registration webhook deliveries are failing
+              description: New observer registration notifications are not reaching the operator webhook. Check OBSERVER_REGISTRATION_WEBHOOK_URL and outbound HTTPS from the backend.
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#observerregistrationwebhookfailing
+
+  - name: accepted observer registrations without any successful delivery page
+    interval: 1m
+    input_series:
+      - series: 'meshcore_observer_registration_submissions_total{outcome="accepted"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ObserverRegistrationWebhookSilent
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: ObserverRegistrationWebhookSilent
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: Observer registrations were accepted but no webhook delivery succeeded
+              description: At least one submission was accepted in the last six hours while no delivery succeeded. The webhook may be unset, misconfigured, or unreachable.
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#observerregistrationwebhooksilent
+
+  - name: successful observer registration deliveries keep the silent alert clear
+    interval: 1m
+    input_series:
+      - series: 'meshcore_observer_registration_submissions_total{outcome="accepted"}'
+        values: '0+1x25'
+      - series: 'meshcore_observer_registration_webhook_deliveries_total{outcome="success"}'
+        values: '0+1x25'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ObserverRegistrationWebhookSilent
+        exp_alerts: []
