@@ -896,3 +896,31 @@ The public shell boundary also clears caller environment before Python verifies
 its entry frame. Preserve only PATH/HOME/LANG and the raw lease/frame strings;
 Python validates their descriptor and ancestry before use. A poisoned caller
 PYTHONPATH regression covers imports as well as the final controller child.
+
+## Separate delivery-control topics from local business subscriptions
+
+The first strict target-selection gate refused safely because the ordinary
+UKMesh QoS1 delivery probe shares its first business topic prefix with Core's
+`meshcore/#` subscription. The probe carries a random UUID, not packet JSON.
+Core correctly accounts for its accepted callback, advancing generation by3
+even though no storage counter changes. The actual read-only correlation at
+`probe-noop-correlation-20261115T064733Z/result.json` (SHA
+`d149671bce9acb72f19b4b56f8d4705dc0d8cdc6abd89955ebd362193f7096b7`)
+binds one normal probe, unchanged original stores/processes and zero writes.
+
+There is no existing independently configurable probe namespace. Add an optional
+backend-owned `MQTT_DELIVERY_PROBE_TOPIC_PREFIX`; its unset/blank default remains
+the first business prefix, preserving existing topic bytes, ACLs and filters.
+DEV selects `ukmesh-local-control`, outside every local business subscription.
+When that probe topic is not covered by the existing business filters, subscribe
+to that exact topic at QoS1 on the same persistent ingest client. Await every
+business/control SUBACK before starting the existing probe; denial cannot
+certify delivery. Do not broaden the business subscription or mutate its prefixes.
+
+Keep the nonce, QoS1/nonretained behavior, normal30-second interval,60-second
+deadline, recovery cooldown, durable intake and all strict generation/quiescence
+checks unchanged. Do not teach Core about UKMesh probes or add a no-op exception.
+Test production defaults, configured coverage, invalid prefixes, actual MQTT wire
+SUBACK/echo behavior, denied subscriptions and ordinary business dispatch before
+review/build. Root will separately verify a fresh normal probe with stable Core
+generation after the reviewed local runtime change; no source-stage rollout.
