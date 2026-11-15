@@ -908,6 +908,9 @@ services:
         max-file: "3"
     mem_limit: &alloy-memory "${ALLOY_MEMORY_LIMIT:-128m}"
     memswap_limit: *alloy-memory
+    environment:
+      # Soft Go runtime budget; keep native/journal overhead below the hard cap.
+      GOMEMLIMIT: ${ALLOY_GOMEMLIMIT:-96MiB}
     user: "473:473"
     group_add:
       - "${JOURNAL_GID:-999}"

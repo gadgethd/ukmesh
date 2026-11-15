@@ -25,7 +25,8 @@ services:
       - ../../plans/companion-dev/go-cache:/cache/build
       - ../../plans/companion-dev/go-mod:/cache/go
       - .:/dev-tools:ro
-    mem_limit: 1200m
+    mem_limit: &companion-build-memory 1200m
+    memswap_limit: *companion-build-memory
   beacon-db:
     image: postgres@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca # 16-bookworm
     environment:
@@ -39,7 +40,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 60
-    mem_limit: 512m
+    mem_limit: &companion-beacon-db-memory 512m
+    memswap_limit: *companion-beacon-db-memory
     shm_size: 128m
   beacon-redis:
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
@@ -49,7 +51,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 30
-    mem_limit: 128m
+    mem_limit: &companion-beacon-redis-memory 128m
+    memswap_limit: *companion-beacon-redis-memory
   corescope-ingestor:
     <<: *go
     environment:
@@ -70,7 +73,8 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: 384m
+    mem_limit: &companion-corescope-ingestor-memory 384m
+    memswap_limit: *companion-corescope-ingestor-memory
     stop_grace_period: 30s
   corescope:
     <<: *go
@@ -94,7 +98,8 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: 384m
+    mem_limit: &companion-corescope-memory 384m
+    memswap_limit: *companion-corescope-memory
   beacon-migrate:
     <<: *go
     entrypoint: [/bin/companions/beacon, --migrate-only, --attest-migrations]
@@ -107,7 +112,8 @@ services:
     depends_on:
       beacon-db: {condition: service_healthy}
     restart: "no"
-    mem_limit: 256m
+    mem_limit: &companion-beacon-migrate-memory 256m
+    memswap_limit: *companion-beacon-migrate-memory
   beacon:
     <<: *go
     entrypoint: [/bin/companions/beacon]
@@ -138,7 +144,8 @@ services:
       interval: 3s
       timeout: 3s
       retries: 60
-    mem_limit: 384m
+    mem_limit: &companion-beacon-memory 384m
+    memswap_limit: *companion-beacon-memory
     stop_grace_period: 30s
   web-build:
     image: node@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
@@ -156,7 +163,8 @@ services:
       - ../../plans/companion-dev/runtime/beacon-web.next:/out
       - .:/dev-tools:ro
     entrypoint: [sh, /dev-tools/web-build.sh]
-    mem_limit: 1200m
+    mem_limit: &companion-web-build-memory 1200m
+    memswap_limit: *companion-web-build-memory
   beacon-web:
     image: ${APP_IMAGE:-ukmesh-full-app:local}
     environment:
@@ -181,7 +189,8 @@ services:
       interval: 5s
       timeout: 3s
       retries: 30
-    mem_limit: 48m
+    mem_limit: &companion-beacon-web-memory 48m
+    memswap_limit: *companion-beacon-web-memory
 
 volumes:
   beacon-db:

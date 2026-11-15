@@ -691,3 +691,19 @@ mismatch despite correct HostConfig, missing/malformed data and cgroup path
 escape. Runtime recreation, missing Compose pairs and broker storage belong to
 separate reviewed batches after this collection boundary closes.
 
+## Every local consumer inherits the same memory/swap ceiling
+
+The first effective cgroup capture identified21 mismatches:11 historical main
+monitor containers retained unlimited kernel limits despite the current Compose
+intent, and10 running local/companion consumers lacked paired swap settings.
+Give each formerly unpaired service one YAML memory anchor used for both its RAM
+and total RAM-plus-swap limit. Preserve all existing RAM and CPU values, including
+finite build/init jobs. Configuration checks cover every resolved service.
+
+Alloy keeps its128MiB hard cap, journal inputs, labels, cursor storage and Loki
+forwarding. An overrideable96MiB Go soft runtime budget leaves room for native
+journal overhead; it is not an RSS guarantee. Its GC, memory and actual delivery
+must be characterized after Root's coordinated recreation. Explicitly recreate
+the11 unchanged monitor consumers too: Compose will not infer that their actual
+old cgroups differ. Kernel memory.max/swap.max assertions close the rollout.
+

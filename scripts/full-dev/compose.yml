@@ -174,7 +174,8 @@ services:
     ports: ["127.0.0.1:3107:8080"]
     read_only: true
     cap_drop: [ALL]
-    mem_limit: 64m
+    mem_limit: &full-dev-external-test-memory 64m
+    memswap_limit: *full-dev-external-test-memory
     logging: {driver: journald, options: {tag: "{{.Name}}", labels: "com.docker.compose.service,com.docker.compose.project"}}
     healthcheck:
       test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
@@ -184,7 +185,8 @@ services:
   alert-bootstrap:
     image: ${BACKEND_IMAGE}
     restart: "no"
-    mem_limit: 64m
+    mem_limit: &full-dev-alert-bootstrap-memory 64m
+    memswap_limit: *full-dev-alert-bootstrap-memory
     environment:
       ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN}
     command: [node, /dev-tools/alert-bootstrap.mjs]
