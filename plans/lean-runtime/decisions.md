@@ -816,3 +816,30 @@ audit remain unchanged. Stop SQL-shape tuning until Root's pressure fixes and
 new metrics support a controlled load reproduction. Preserve two independent
 relational coverage additions for shared UUIDs across times and same-hash orphan
 children. These constant-JSON tests cover semantics, not a performance fix.
+
+
+## Broker quiescence has one read-only observation owner
+
+The failed full run left durable subscriber backlog. Broker health and database
+selection cannot prove that backlog is safe to hand off; persistence protects
+queued messages but does not drain them. Copying ad hoc SYS subscriptions into
+rollout and target selection would create separate interpretations of the same
+broker state.
+
+Keep a broker-only observer under `scripts/local-sample`: one unique clean MQTT
+session reads a fixed set of SYS metrics and watches `#` for retained application
+data. It never publishes, changes other sessions, clears data, restarts services
+or imports database/target/persistence-proof orchestration. Require all metrics,
+zero current packet-out queue and store equal to retained count, with three
+strictly advancing live uptime epochs inside one45-second bound. Retained uptime
+alone is not liveness; unchanged retained SYS values are cached observations,
+not fabricated new metric messages. Preserve every observed unsafe condition.
+Require zero disconnected durable sessions even when their queues are empty:
+Root's protection policy rejects sessions that could later accumulate fixture
+traffic and reconnect against an old store. Record bounded counts/digests
+instead of topics or payloads.
+Missing, malformed, stale/nonadvancing, inconsistent or unsafe evidence and any
+client/deadline/cleanup failure refuse the gate. The caller owns source, broker
+identity, target locks and independent application drain proofs. Test the owner
+with fake clients before Root coordinates an actual broker observation; neither
+this observer nor durable storage waives existing recovery/integrity criteria.
