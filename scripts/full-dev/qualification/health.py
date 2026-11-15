@@ -39,12 +39,16 @@ def create_session(run: Path, fixture: dict, explicit_code: str | None = None) -
     return result
 
 
-def verify_session(session: dict, *, timeout: float = 120) -> dict:
+def verify_session(session: dict, *, timeout: float = 120, stop_event=None) -> dict:
     deadline = time.monotonic() + timeout
     last_error = None
     value = {}
     checks = []
+    cancelled = False
     while True:
+        if stop_event is not None and stop_event.is_set():
+            cancelled = True
+            break
         try:
             body, _ = http_get("http://127.0.0.1:3090/api/sessions/" + session["sessionId"])
             value = json.loads(body)
@@ -59,18 +63,25 @@ def verify_session(session: dict, *, timeout: float = 120) -> dict:
                  and isinstance(value.get("receipts"), list) and len(value["receipts"]) >= 2},
                 {"name": "Health Check ignored duplicate use", "passed": value.get("useCount") == 1},
             ]
-            if all(check["passed"] for check in checks):
+            if all(check["passed"] for check in checks) and not (stop_event is not None and stop_event.is_set()):
                 break
         except Exception as error:
             from common import safe_error
             last_error = safe_error(error)
         if time.monotonic() >= deadline:
             break
-        time.sleep(.5)
+        if stop_event is None: time.sleep(.5)
+        elif stop_event.wait(.5):
+            cancelled = True
+            break
+    cancelled = cancelled or (stop_event is not None and stop_event.is_set())
+    if cancelled:
+        last_error = 'native workload failed before publication; owned Health poll cancelled'
+        checks.append({'name': 'native workload was published for this Health proof', 'passed': False, 'not_published': True})
     result = {"at": utc_now(), "sessionId": session["sessionId"], "fixtureToken": session["fixtureToken"],
-              "runId": session["runId"], "passed": bool(checks) and all(check["passed"] for check in checks),
+              "runId": session["runId"], "passed": not cancelled and bool(checks) and all(check["passed"] for check in checks),
               "matchedAt": value.get("matchedAt"), "observedCount": value.get("observedCount", 0),
               "receiptCount": len(value.get("receipts", [])), "useCount": value.get("useCount"),
-              "checks": checks, "error": last_error}
+              "checks": checks, "error": last_error, 'cancelled': cancelled}
     write_json(PROOF, result)
     return result

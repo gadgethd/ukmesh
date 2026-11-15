@@ -537,3 +537,40 @@ role checks; do not insert the ledger or substitute idle health for useful work.
 Record that input/admission/worker commit independently before repeating the
 full work proof under the final source context. Root authorized this narrow
 manifest repair and native owned-job preparation before these edits.
+
+## Soak evidence counts the owned workload rather than unrelated history
+
+The first full72,000 attempt stopped before WebSocket setup, HTTP warmup or
+publication. Its baseline SELECT combines four full-table counts under the
+existing30-second timeout. This couples an exact owned-workload proof to all
+retained history; repeated drain polls would repeat that unnecessary work.
+The retained failure sent0 ACKs and launched no RF calculation. Original
+stores are restored and all43 services pass their guard; the unchanged RF
+cache still matches its verified archive.
+
+Count the exact ACK and auxiliary workload keysets using indexed relational
+joins, retaining every observation/path/fact/ledger expectation. Declare the
+scope and keyset digest; do not substitute estimates or silently call scoped
+numbers global totals. Include duplicate hashes/multiple observations correctly
+and exclude unrelated writes that could previously mask a missing owned row.
+Keep the pool at1, the30-second counter deadline,120-second drain deadline,
+72,000 distinct ACK/live-delivery and all other integrity/resource limits.
+Validate equivalence and actual owned10x execution plans outside HTTP trials.
+
+Repeated polls use packet-derived observation keys and explicitly exclude
+independent orphan UUID rows. Whole qualification still requires a separate,
+once-only final audit of all four tables filtered by the complete owned hash
+set. This audit includes orphan or mismatched children and must agree with the
+parent-derived totals; it is mandatory for native success. It retains the same
+30-second statement/logical bound, one connection and exact row multiplicity.
+The actual read-only empty72k+aux workset completed in8.429seconds for the
+indexed poll and7.215seconds for the independent final audit. This does not
+claim a populated or loaded execution bound; no index or DDL was added.
+
+The failure also exposed a teardown dependency: Health/typed/ACK checks each
+wait for delivery after a confirmed failure before any publisher can start.
+A native phase receipt must conservatively attest that state. Cancel impossible
+polls and record explicit failed/not-published snapshots; never turn those
+checks into successful skips. Unknown or started-publication failures retain
+normal bounded commit and recovery verification. Keep full preparation/privacy
+checks and all partial evidence; no timeout increase or passing retry.

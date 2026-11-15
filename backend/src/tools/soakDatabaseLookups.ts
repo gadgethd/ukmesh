@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { realpath, stat } from 'node:fs/promises';
 import pg from 'pg';
@@ -15,10 +16,18 @@ import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
 import { waitForInitialState } from './soakSocket.js';
 import { waitForSoakDrain } from './soakDrain.js';
+import { auditSoakWorksetHashes, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
+import { SoakPublication, soakInvocationToken } from './soakPublication.js';
 
+const publication = new SoakPublication();
+let failureContext: Record<string, unknown> | undefined;
+let failureOutput: string | undefined;
+
+async function main() {
 const args = process.argv.slice(2), endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
-if (!new URL(endpoint).pathname.startsWith('/lookup_')) await assertOwnedLeanFixture(endpoint);
+let guardCompleted=false;
+if (!new URL(endpoint).pathname.startsWith('/lookup_')) { await assertOwnedLeanFixture(endpoint); guardCompleted=true; }
 const directory = path.resolve(requiredOption(args, 'data-dir'));
 const output = path.resolve(requiredOption(args, 'output'));
 const base = new URL(option(args, 'base-url') ?? 'http://127.0.0.1:3101');
@@ -58,7 +67,7 @@ async function readHttp(route: string, slot: number): Promise<{status: number; b
   });
 }
 if (auxiliaryTraffic) {
-  await assertOwnedLeanFixture(endpoint);
+  await assertOwnedLeanFixture(endpoint); guardCompleted=true;
   if (envelopeFormat !== 'observer') throw new Error('full-stack auxiliary traffic requires observer envelopes');
   if (auxiliaryTraffic.events.at(-1)!.offsetMs > count / rate * 1000) throw new Error('auxiliary traffic must fit the ACK replay window');
 }
@@ -72,6 +81,19 @@ const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
 const hashes = table.rows.map(row => rowObject(table.headers,row)['packet_hash']!);
 const expected = new Set(hashes);
 if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
+const workset=soakWorkset(hashes,auxiliaryTraffic?.ukmeshHashes);
+if(auxiliaryTraffic){
+  const invocationToken=soakInvocationToken(option(args,'invocation-token'));
+  const checksum=async(file:string)=>createHash('sha256').update(await readFile(file)).digest('hex');
+  failureContext={guardCompleted,invocationToken,database:decodeURIComponent(new URL(endpoint).pathname.slice(1)),
+    dataDirectory:directory,outputDirectory:output,settings:{count,rate},countsScope:workset.countsScope,
+    toolSha256:await checksum(fileURLToPath(import.meta.url)),helperSha256:{
+      publication:await checksum(fileURLToPath(new URL('./soakPublication'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
+      fixture:await checksum(path.join(directory,'fixture.json')),packets:await checksum(path.join(directory,'packets.csv.gz')),
+      raw:await checksum(path.join(directory,'raw_packets.csv.gz')),auxiliary:await checksum(auxiliaryFile!)}};
+  failureOutput=output;
+}
 const receiver = '0102' + '11'.repeat(30);
 const pool = new pg.Pool({ connectionString: endpoint, max: 1, statement_timeout: 30_000 });
 const percentile = (values: number[], q: number) => [...values].sort((a,b) => a-b)[Math.ceil(values.length*q)-1] ?? null;
@@ -86,11 +108,13 @@ async function metrics() {
   }));
 }
 async function counts() {
-  return (await pool.query(`SELECT (SELECT count(*)::integer FROM mesh.packets) packets,
-    (SELECT count(*)::integer FROM mesh.packet_paths) paths,
-    (SELECT count(*)::integer FROM mesh.multibyte_path_facts) facts,
-    (SELECT count(*)::integer FROM mesh.ingest_observation_ledger) ledger`)).rows[0]!;
+  return countSoakWorkset(queryCounts,workset.hashes);
 }
+function queryCounts(text:string,values:unknown[]) {
+  const config:pg.QueryConfig & {query_timeout:number}={text,values,query_timeout:SOAK_COUNTER_DEADLINE_MS};
+  return pool.query(config);
+}
+
 const samples: {elapsedMs: number; values: Record<string,number>}[] = [];
 const reads: {name: string; ms: number; status: number; bytes: number; entries: number|null}[] = [];
 const seen = new Set<string>();
@@ -119,8 +143,10 @@ try {
     ['feed','/api/packets/recent?network=ukmesh&fields=slim&limit=200'],
     ['links',`/api/nodes/${node.node_id}/links?network=ukmesh`],
   ];
+  publication.stage='baseline-counts';
   const before = await counts(), beforeMetrics = await metrics();
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
+  publication.stage='websocket-readiness';
   const socket = new URL('/ws?network=ukmesh',base); socket.protocol='ws:';
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
   let wsErrors = 0, wsUnexpectedCloses=0, wsCloseCode: number|null=null, wsOpened=false;
@@ -165,6 +191,7 @@ try {
         /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key)))});
     } catch { metricsFailures++; }
   };
+  publication.stage='http-warmup';
   if (httpWarmup) await readBurst(warmupReads,false);
   const warmupMs=httpWarmup?performance.now()-started:0;
   const warmupPassed=!httpWarmup || (warmupReads.length===8 && warmupReads.every(row=>row.status===200));
@@ -180,22 +207,29 @@ try {
   const auxiliaryController = new AbortController();
   let auxiliaryWork: Promise<void> | undefined;
   try {
+    publication.begin(); // BEFORE either publisher can send, even if its promise later rejects.
     auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
-      .then(sent => { auxiliaryAcknowledgements = sent; }) : undefined;
+      .then(sent => { auxiliaryAcknowledgements = sent; publication.auxiliaryPublished=sent; }) : undefined;
     await Promise.all([auxiliaryWork,
       replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
-        '--envelope-format',envelopeFormat])]);
+        '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
     acknowledgedMs=performance.now()-started;
+    publication.stage='drain';
     ({drained,drainElapsedMs}=await waitForSoakDrain({before,expectedDeltas,count,metrics,counts,seenCount:()=>seen.size}));
   } catch (error) {
     failure=error; auxiliaryController.abort();
     if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
   }
   finally { clearInterval(timer);timer=undefined;await readWork; }
+  publication.stage='final-verification';
   const after=await counts(), afterMetrics=await metrics();
+  publication.stage='independent-final-hash-audit';
+  const independentTotals=await auditSoakWorksetHashes(queryCounts,workset.hashes);
+  const independentAudit={kind:'independent-owned-packet-hash-workset-v1',sha256:workset.countsScope.sha256,
+    totals:independentTotals,passed:(Object.keys(after) as (keyof typeof after)[]).every(key=>after[key]===independentTotals[key])};
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
-  const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,Number(value)-Number(before[key])]));
+  const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));
   const failures=reads.filter(row=>row.status!==200);
   const latency=[...new Set(reads.map(row=>row.name))].map(name=>{
     const rows=reads.filter(row=>row.name===name);
@@ -233,14 +267,17 @@ try {
     return {key,maximum,middleLow,finalLow,growth,plateau,withinBound:maximum<=1024*1024*1024};
   });
   const memoryPassed=memory.length===2&&memory.every(value=>value.plateau&&value.withinBound);
-  const passed=!failure&&drained&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
+  const passed=!failure&&drained&&independentAudit.passed&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
     && (!auxiliaryTraffic || auxiliaryAcknowledgements===auxiliaryTraffic.events.length)
     && failures.length===0 && metricsFailures===0 && wsErrors===0 && wsUnexpectedCloses===0 && wsOpened && seen.size===count
     && badOutcomes.length===0 && dropped.length===0 && dedupMaximum<=50_000
     && cacheViolations.length===0 && memoryPassed
     && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
   await mkdir(output,{recursive:true});
-  await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,
+  await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,phase:'complete',
+    publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,independentAudit,
+    ...(failureContext?{invocationToken:failureContext.invocationToken,inputSha256:failureContext.inputSha256,
+      toolSha256:failureContext.toolSha256,helperSha256:failureContext.helperSha256}:{}),
     commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
     settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
@@ -258,3 +295,15 @@ try {
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));
   if (!passed) throw new Error('mixed lookup/ingest qualification failed; see saved evidence');
 } finally { if(timer)clearInterval(timer);await readWork;ws?.terminate();await pool.end(); }
+
+}
+
+main().catch(async(error:unknown)=>{
+  if(failureContext&&failureOutput){
+    try{
+      await mkdir(failureOutput,{recursive:true});
+      await writeFile(path.join(failureOutput,'failure.json'),JSON.stringify(publication.failure(failureContext,error),null,2)+'\n',{flag:'wx',mode:0o600});
+    }catch(receiptError){console.error('[soak] failure receipt unavailable',receiptError instanceof Error?receiptError.message:String(receiptError));}
+  }
+  console.error(error instanceof Error?error.message:String(error));process.exitCode=1;
+});
