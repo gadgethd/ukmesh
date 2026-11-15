@@ -12,6 +12,7 @@ import { nodeEffectiveLastSeenSql, nodeEffectiveOnlineSql } from '../nodes/prese
 import { networkFilters, nodeAliasArraySql, publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
 import { createNodeRepository } from './nodes.js';
+import { createDatabaseRuntime } from '../db/databaseRuntime.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 
@@ -22,7 +23,9 @@ test('indexed node projections and search retain canonical view results for alia
   const pool = new pg.Pool({ connectionString: fixture.url, max: 2 });
   fixture.addCleanup(() => pool.end());
   await bootstrapBaseSchemaFixture(pool);
-  const query = <T extends pg.QueryResultRow>(sql: string, params?: unknown[]) => pool.query<T>(sql, params);
+  const runtime = createDatabaseRuntime({ DATABASE_URL: fixture.url, DATABASE_POOL_MAX: '1' });
+  fixture.addCleanup(() => runtime.close());
+  const query = runtime.query;
   const key = (hex: string) => hex.repeat(64);
   const snapshot = new Date().toISOString();
   for (const [id, nodeName, network, adverts, role, lat, lon] of [
@@ -231,4 +234,8 @@ test('indexed node projections and search retain canonical view results for alia
     }
   }
   t.diagnostic(`regional candidate parity: ${regionalCases} complete-field/scope/page cases; sealed baseline ${baselineRepository?'included':'independent canonical-view oracle'}`);
+  const prepared = (await query(`SELECT name,(generic_plans+custom_plans)::int AS executions
+    FROM pg_prepared_statements WHERE starts_with(name,'read_v1_')`)).rows;
+  assert.ok(prepared.length > 0 && prepared.length <= 32, 'canonical-view parity exercises actual bounded runtime preparation');
+  assert.ok(prepared.some(row => row['executions'] > 5), 'the same prepared shape observes subsequent privacy/identity changes');
 });

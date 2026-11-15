@@ -4,6 +4,7 @@ import type pg from 'pg';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import { dbPoolWaitDuration, dbQueriesTotal, dbQueryDuration } from '../metrics/database.js';
 import type { FixedPreparedStatementName } from './contracts.js';
+import { BOUNDED_READ_PREPARATION } from './preparedStatements.js';
 
 test('ingest has a nonzero timeout independent of the general/analytics pool', () => {
   const defaults = ingestPoolOptions({ DATABASE_STATEMENT_TIMEOUT_MS: '900000' });
@@ -170,4 +171,16 @@ test('unregistered statement names roll back without allocating a prepared state
     'unbounded-node-identity' as FixedPreparedStatementName)), /INVALID_FIXED_PREPARED_STATEMENT/);
   assert.deepEqual(db.calls, ['BEGIN', 'ROLLBACK']);
   assert.deepEqual(db.releases, [false]);
+});
+
+test('ingest refuses read preparation before dispatch and still rolls back an owned transaction', async () => {
+  const standalone = fixture(new Error('unused'));
+  await assert.rejects(standalone.query('SELECT 1', [], undefined, BOUNDED_READ_PREPARATION),
+    /UNSUPPORTED_INGEST_STATEMENT_HINT/);
+  assert.deepEqual(standalone.calls, []);
+  const transaction = fixture(new Error('unused'));
+  await assert.rejects(transaction.withTransaction(query =>
+    query('SELECT 1', [], undefined, BOUNDED_READ_PREPARATION)), /UNSUPPORTED_INGEST_STATEMENT_HINT/);
+  assert.deepEqual(transaction.calls, ['BEGIN', 'ROLLBACK']);
+  assert.deepEqual(transaction.releases, [false]);
 });

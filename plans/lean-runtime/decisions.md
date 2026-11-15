@@ -1010,3 +1010,175 @@ explicit conditional skips. The earlier full-suite cancellation failure remains
 retained. Buffer-test cleanup is bounded and a duplicate assertion was removed.
 Independent review binds the exact four files. New binary integration, recovery
 and full-stack load proofs remain required after the guarded rollout.
+
+## Reusable read plans belong to their physical connection
+
+The current9521/b655 full-stack1x matrix failed the unchanged100ms gate:
+observer-map113.029/109.003/116.930ms, plus isolated paging/region over100ms.
+The failed matrix, its immutable native windows and the passing operations
+trials remain retained. Actual API-role read-only plans identify5.874–8.538ms
+planning against8.394–9.669ms execution; no disk reads or expensive legacy scan.
+The two-CPU100ms setting remains unchanged: a controlled same-allowance10ms
+comparison was slower and was restored/rejected.
+
+Fix: opt in to bounded read preparation through the existing query contract.
+The prepared-statement owner resolves names only after checkout, reserving at
+most32 SQL fingerprints per actual client, retaining no values, and falling
+back to unnamed execution when full. Preserve fixed ingest statements and
+current transactions, cancellation, session settings and pool sizes.
+- Hidden link: unchanged parameterized map shapes are replanned on every read.
+- Hidden link: names live on physical connections; unbounded request-global
+  naming hides retained client/server memory from its pool owner.
+- Needless link: a global pg.query monkeypatch would couple unrelated executors
+  to map behavior. Use an explicit frozen bounded-read hint instead.
+- Special case retained: ingest owns two fixed write statements; it refuses the
+  read hint before dispatch. Named path-beta execution retains its own contract.
+
+A private read-only prototype reused real generic plans for observer/region
+reads and reduced observer p95to70.664–90.523ms, but first page105.679ms and
+next page106.208ms remained failures. Existing normalized data digests, entry
+counts and recorded response lengths matched; raw HTTP bodies differed because
+snapshots differ. A separate nullable-cursor split produced much worse generic
+plans (308–497ms tails) and is rejected. Keep the original nullable-cursor SQL.
+No generic-plan forcing, result cache, response-limit or latency-gate change.
+
+## The response representation owns its already-encoded row bytes
+
+The main-thread CPU profile sampled byte-budget fitting at~7% of non-idle
+sampled time and Express stringify at~5.4%; this is sampled attribution, not
+whole-process or worker CPU measurement. The current fitter encodes every row
+to enforce its exact byte limit, then Express encodes those same rows again.
+
+Fix: preserve the original per-row budget loop, early truncation and error
+order; retain the accepted encoded rows as a bounded JSON-array representation.
+The map HTTP owner pairs that representation with its unchanged data/page object.
+The shared public JSON delivery owner may send the encoded body only after both
+existing successful generation reads. Express still owns send, ETag and304.
+- Hidden link: budget accounting discards bytes the HTTP serializer needs.
+- Needless link avoided: a whole-array speculative fast path could visit later
+  invalid rows and allocate beyond the old stopping point. Keep the exact loop.
+- External constraint: custom Express JSON replacer/spacing/escaping changes
+  encoding. Retain the original value and use res.json when those settings apply.
+- Preserve ordinary flat PostgreSQL map rows, coordinates, Unicode, fields,
+  pagination,512-byte reserve and1.5MB cap. No serialization shortcut for received
+  message content or a different endpoint is implied.
+
+Independent source review and meaningful tests must close this batch before
+promotion: bounded names/lifetime/overflow/no captured values; fixed-ingest
+refusal and existing cancellation/transaction ownership; real HTTP byte/ETag
+parity, privacy failures, custom-format fallback and exact budget boundaries.
+Then rebuild the backend and repeat relevant native/performance qualification.
+
+## Batch identical reads only before their SQL starts
+
+The bounded-preparation/encoded-response batch passed type checking,1,022unit
+tests (14existing optional skips),8nativeSQL tests with168canonical map cases,
+HTTP/SQL privacy fences and all36cold C8results. The warm C8gate still failed
+7of36results, up to161.530ms. Cleanup retained exact43/profile/source/backups.
+A guarded pool2counterfactual was slower and introduced long-lease capacity
+risks; retain HTTP8. A guarded PG2→3→2CPU comparison improved throttling but
+still failed100ms. It restored exactly2CPUs; no resource change is promoted.
+All failures and source/measurement scopes remain retained.
+
+Fix the duplicate body work at the request owner: group equal public map/history
+reads queued in the same dispatch turn. Remove the group BEFORE invoking its
+loader, so every joiner arrives before the shared statement snapshot. A later
+request, including one arriving during the first SQL, starts a new read. This
+keeps read freshness rather than introducing a completed-result cache.
+- Hidden link: simultaneous equal reads repeat SQL and row decoding despite
+  using the same normalized arguments and visibility generation.
+- Hidden link: sharing a body across generations could expose a previous privacy
+  projection. Keys include the exact successful initial generation and every
+  normalized argument; both authority reads remain separate per HTTP request.
+- Hidden link: sharing mutable rows could let a custom JSON formatter affect
+  another caller. Clone the raw result for EVERY caller before fitting/encoding.
+- Needless link avoided: batch instances belong to each registered map/history
+  route runtime, never a module-global DB or source owner.
+- Bound at64pending keys per feature; overflow executes normally. No new503,
+  TTL, query timeout, HTTP concurrency change or request-snapshot normalization.
+
+A small shared queue owns pending dispatch and closure. Closing settles queued
+callers and cancels handles; dispatched work retains existing DB ownership.
+No response authority query, active SQL result or completed result is coalesced.
+Independent design review3cae0e3b confirms the snapshot/key/lifetime requirements.
+Meaningful tests must prove separate scopes/generations, after-dispatch fresh
+reads, isolated nested/Date values, failures, overflow and close behavior, plus
+actual SQL visibility. Then repeat relevant checks and the unchanged C8gate.
+
+The first dispatch-turn implementation passed1,037unit tests (14existing
+optional skips) and9nativeSQL tests, including the held-snapshot/external-commit
+oracle. Its cold C8gate passed35of36results; map-page trial1was102.223ms, so
+warm was not run. Observed body work remained444map reads per609HTTP reads
+(including warmups), rather than full equal-request cohorts. PostgreSQL authority
+completions often arrive in different poll turns, before/after an immediate
+flush. All failures, exactSource23/backups/43 and cleanup are retained.
+
+Use a fixed nominal1ms asynchronous admission window to collect those arrivals
+BEFORE startingSQL. This deliberately adds measured queue time; it is not a
+guaranteed wall-time bound under event-loop load and remains inside every
+unchanged100/250ms measurement. It introduces no result/active-read cache.
+Keep exact key deletion-before-load, clones,64pending/ordinaryoverflow and
+privacy reads; clear the matching timer on close. Replace test assumptions
+about a particular immediate turn with loader-start barriers, while retaining
+the existing real SQL snapshot proof. Independent prospective review8c33a7fc
+confirms this scheduling amendment preserves the fresh-point contract.
+
+## Give each queued read one immutable response representation
+
+The nominal1ms batch passed all1,037unit and9nativeSQL tests, all36cold
+C8results and34of36warm results. Warm map-page167.751ms and short search
+111.468ms still fail100ms. All43/profile/backups stayed exact. Keep this
+failure and its independent actual audit; no resource or gate change follows.
+
+Fix response ownership at the existing queued-body boundary: the cohort loader
+owns SQL, exact byte fitting, page metadata and encoding once. Share only an
+opaque PreparedJson marker and primitive snapshot/complete metadata. No raw
+rows or mutable page object escape the shared representation.
+- Hidden link: the raw-result batch reduces SQL but each caller still deep-clones,
+  byte-fits and encodes equivalent PostgreSQL rows, multiplying allocation and GC.
+- Hidden link: a shallow-frozen DTO still exposes nested rows through the marker;
+  private fields must own both raw value and immutable encoded body.
+- Needless link: ordinary default Express delivery needs only encoded bytes;
+  eager deep cloning ties every delivery to mutable custom-format behavior.
+- Required special case: custom Express JSON settings can mutate their argument.
+  Supply an optional per-delivery clone callback, invoked separately after EACH
+  caller's final successful privacy fence. Default delivery uses the wire body.
+  Existing two-argument PreparedJson semantics for arbitrary classes/toJSON stay
+  unchanged; map/history are the actual cloneable PostgreSQL value domain.
+- Keep nominal1ms/64pending/key-before-loader deletion, exact scope/generation
+  keys, ordinary overflow, later fresh SQL, per-router ownership and close rules.
+  Both privacy reads remain independent for every caller. No result cache.
+
+Independent prospective reviewf219fedf accepts this explicit immutable-projection
+amendment. Cover wire/ETag304/headers/privacy/custom mutation/Date isolation,
+zero default clones and one encoding per cohort before changing coupled tests.
+Then independently review and repeat full source/native/C8checks unchanged.
+
+## Keep SQL admission bounded while collecting more equal callers
+
+The immutable-wire stage passed1,042unit tests (14existing optional skips),
+9nativeSQL tests and all36cold results (maxp9589.989ms). Warm results still
+failed map-page104.031ms and short-search109.961ms. The independent actual
+audit3782f158 closes source/profile/43/backups and helper cleanup; retain all
+raw failures. This is not qualification or proof of one cause for the tails.
+
+The current1ms window still dispatched303map and266short-search body reads for
+609HTTP callers in each case (three trials plus warmups), about two callers per
+cohort. Driver completion times include PostgreSQL, wire, parsing and scheduling;
+these aggregates cannot isolate database execution or prove a GC explanation.
+
+Change the single admission owner to a fixed nominal4ms window, before measuring
+once with all existing gates. This tests whether collecting more independently
+fenced equal requests avoids duplicate body SQL/encoding and their downstream
+scheduling work. It adds nominal3ms inside the measured HTTP deadline; event-loop
+delay is still counted. This is a production scheduling choice, not a cache TTL.
+- Hidden link: independent authority completions and HTTP arrivals can span the
+  existing1ms queue window, multiplying identical body work before dispatch.
+- Keep the same64pending bound, no timer reset on joins, no active/completed
+  result reuse, exact keys, per-request fences and remove-before-loader rule.
+- Existing loader-start behavior oracles and real held-SQL/external-commit tests
+  cover freshness without coupling tests to one nominal timer duration.
+- No pool, CPU quota, SQL, response, fixture, warmup, sample or latency-gate change.
+
+Independent prospective review accepts the fresh-point contract; performance
+is unproven until the unchanged full checks and cold/warm C8stage close.

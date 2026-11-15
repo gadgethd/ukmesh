@@ -164,21 +164,24 @@ export function fitPublicMapRowsToByteBudget<T>(
   rows: readonly T[],
   maxRows: number,
   maxBytes = PUBLIC_MAP_MAX_PAGE_BYTES,
-): { rows: T[]; truncatedByBytes: boolean } {
+): { rows: T[]; truncatedByBytes: boolean; jsonRows: string } {
   const accepted: T[] = [];
+  const encodedRows: string[] = [];
   // Account for the response envelope and page metadata with a conservative
   // fixed reserve; every row is then measured as encoded JSON.
   let bytes = 512;
   for (const row of rows.slice(0, maxRows)) {
-    const rowBytes = Buffer.byteLength(JSON.stringify(row), 'utf8') + 1;
+    const encoded = JSON.stringify(row);
+    const rowBytes = Buffer.byteLength(encoded, 'utf8') + 1;
     if (accepted.length > 0 && bytes + rowBytes > maxBytes) {
-      return { rows: accepted, truncatedByBytes: true };
+      return { rows: accepted, truncatedByBytes: true, jsonRows: `[${encodedRows.join(',')}]` };
     }
     if (rowBytes + 512 > maxBytes) {
       throw new Error('one public map row exceeds the response byte budget');
     }
     accepted.push(row);
+    encodedRows.push(encoded);
     bytes += rowBytes;
   }
-  return { rows: accepted, truncatedByBytes: false };
+  return { rows: accepted, truncatedByBytes: false, jsonRows: `[${encodedRows.join(',')}]` };
 }

@@ -3,6 +3,7 @@ import test from 'node:test';
 import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import { createDatabaseRuntime, type DatabaseRuntime } from './databaseRuntime.js';
 import { dbExecutionDuration, dbPoolWaitDuration } from '../metrics/database.js';
+import { BOUNDED_READ_PREPARATION } from './preparedStatements.js';
 
 const endpoint = process.env['TEST_INGEST_DATABASE_URL'];
 
@@ -66,22 +67,24 @@ test('database telemetry separates pool wait, execution, failure and cancellatio
     .reduce((total, row) => total + row.value, 0);
   const before = await sum(), executed = await count('success');
   const held = await runtime.pool.connect();
-  const waiting = runtime.query('/* ukmesh:node-map */ SELECT 1');
+  const waiting = runtime.query('/* ukmesh:node-map */ SELECT 1', [], undefined, BOUNDED_READ_PREPARATION);
   await new Promise(resolve => setTimeout(resolve, 40)); held.release();
   await waiting;
   assert.ok(await sum() - before >= .025, 'queued checkout time is measured');
   assert.equal(await count('success'), executed + 1, 'one SQL execution excludes queue wait');
   const queuedHolder = await runtime.pool.connect();
   const controller = new AbortController();
-  const queued = runtime.query('/* ukmesh:node-map */ SELECT 2', [], controller.signal);
+  const queued = runtime.query('/* ukmesh:node-map */ SELECT 2', [], controller.signal, BOUNDED_READ_PREPARATION);
   controller.abort(new Error('queued cancellation')); queuedHolder.release();
   await assert.rejects(queued, /queued cancellation/);
   assert.equal(await count('success'), executed + 1, 'cancelled queued work executes no SQL');
   const aborted = await count('aborted');
-  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT pg_sleep(5)', [], AbortSignal.timeout(25)));
+  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT pg_sleep(5)', [], AbortSignal.timeout(25),
+    BOUNDED_READ_PREPARATION));
   assert.equal(await count('aborted'), aborted + 1);
   const failed = await count('failure');
-  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT * FROM nonexistent_lookup_fixture'));
+  await assert.rejects(runtime.query('/* ukmesh:node-map */ SELECT * FROM nonexistent_lookup_fixture', [], undefined,
+    BOUNDED_READ_PREPARATION));
   assert.equal(await count('failure'), failed + 1);
   assert.equal((await runtime.query('SELECT 7 AS value')).rows[0].value, 7);
   assert.equal(runtime.pool.waitingCount, 0);

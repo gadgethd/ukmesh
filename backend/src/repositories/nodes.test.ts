@@ -3,15 +3,21 @@ import test from 'node:test';
 import { networkFilters } from '../platform/query/networkFilters.js';
 import type { QueryResultRow } from 'pg';
 import { createNodeRepository, type NodeLinkRow } from './nodes.js';
+import type { DatabaseQueryFn, StatementHint } from '../db/contracts.js';
+import { BOUNDED_READ_PREPARATION } from '../db/preparedStatements.js';
 
 test('public map projects path evidence as the effective seen and online state', async () => {
   let capturedSql = '';
   let capturedParams: unknown[] | undefined;
-  const repository = createNodeRepository(async (sql, params) => {
+  let capturedHint: StatementHint | undefined;
+  const query: DatabaseQueryFn = async (sql, params, signal, hint) => {
     capturedSql = sql;
     capturedParams = params;
+    capturedHint = hint;
+    assert.equal(signal, undefined);
     return { rows: [] };
-  });
+  };
+  const repository = createNodeRepository(query);
   const snapshot = '2026-08-03T12:00:00.000Z';
 
   await repository.listPublicMapRows(
@@ -29,6 +35,7 @@ test('public map projects path evidence as the effective seen and online state',
   );
   assert.doesNotMatch(capturedSql, /n\.last_seen::text AS last_seen/);
   assert.match(capturedSql, /NOT EXISTS \(SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id = n.node_id\)/);
+  assert.match(capturedSql, /AND \(\$3::text IS NULL OR n\.node_id>\$3\)/);
   assert.match(capturedSql, /INTERVAL '28 days'/);
   assert.deepEqual(capturedParams, [
     ['ukmesh', 'northeast', 'teesside'],
@@ -36,6 +43,15 @@ test('public map projects path evidence as the effective seen and online state',
     null,
     101,
   ]);
+  assert.equal(capturedHint, BOUNDED_READ_PREPARATION);
+
+  const firstSql = capturedSql;
+  await repository.listPublicMapRows(['node_id', 'last_seen', 'is_online'], networkFilters('ukmesh'),
+    snapshot, 'A'.repeat(64), 100);
+  assert.equal(capturedSql, firstSql, 'nullable-cursor OR remains the identical SQL shape');
+  assert.deepEqual(capturedParams, [['ukmesh', 'northeast', 'teesside'], snapshot, 'A'.repeat(64), 101]);
+  await repository.listAllNodeIds();
+  assert.equal(capturedHint, undefined, 'other repository reads do not opt in');
 });
 
 test('node links preserve metrics and fetch one scoped aggregate for the entire peer set', async () => {

@@ -2,7 +2,7 @@ import pg from 'pg';
 import { boundedIntegerSetting } from '../platform/config/boundedNumber.js';
 import { loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
-import type { DatabaseQueryFn, FixedPreparedStatementName } from './contracts.js';
+import type { DatabaseQueryFn, StatementHint } from './contracts.js';
 import { fixedPreparedStatement } from './preparedStatements.js';
 import { checkoutDatabaseClient } from './poolCheckout.js';
 
@@ -31,11 +31,14 @@ function clientReadTimedOut(error: unknown): boolean {
 
 export function createIngestDatabase(pool: pg.Pool) {
   async function execute<T extends pg.QueryResultRow = pg.QueryResultRow>(
-    target: pg.Pool | pg.PoolClient, text: string, params?: unknown[], statement?: FixedPreparedStatementName,
+    target: pg.Pool | pg.PoolClient, text: string, params?: unknown[], statement?: StatementHint,
   ): Promise<pg.QueryResult<T>> {
     const startedAt = process.hrtime.bigint();
     let outcome = 'success';
     try {
+      if (statement !== undefined && typeof statement !== 'string') {
+        throw new Error('UNSUPPORTED_INGEST_STATEMENT_HINT');
+      }
       return statement
         ? await target.query<T>(fixedPreparedStatement(statement, text, params))
         : await target.query<T>(text, params);
