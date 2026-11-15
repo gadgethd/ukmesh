@@ -9,6 +9,14 @@ regexes = [
   # Fixed CI-only health-check channel fixture, with no production authority.
   '''0123456789abcdef0123456789abcdef''',
   '''8b3387e9c5cdea6ac9e5edbaa115cd72''',
+  # MeshCore Public 2 channel PSK (the protocol's second built-in public
+  # channel, alongside Public above). It ships as an app default and appears
+  # verbatim in several unrelated public MeshCore projects, so it is published
+  # by construction, not a credential. It lives in
+  # backend/src/mqtt/channelRegistry.ts as the built-in 'public2' channel and
+  # in channelRegistry.meshos.test.ts as PUBLIC2_SECRET, which the
+  # generic-api-key rule flags purely on the constant's name.
+  '''8b4b705b080c0d943b1c80f6b3ef6b6d''',
   # MeshCore node public keys used as fixtures in the backend/src/mqtt test
   # suite (commit c0eac55). A node public key is the node's advertised
   # identity in meshcore/<IATA>/<KEY>/packets topics, published by design --
