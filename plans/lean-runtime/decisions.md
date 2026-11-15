@@ -626,3 +626,22 @@ arrays (32bytes/site), independently of the128MB terrain budget.
   offline memory regression must fail against the current implementation before
   changing it; existing numerical/PNG parity remains required. Terrain padding
   and loading remain separate concerns, with no speculative sampler rewrite.
+
+## Beacon startup owns region changes, not timestamp-only rewrites
+
+The original-store check found one protected row mismatch after restoration:
+Beacon's `public.regions.updated_at`. The verified backup reproduces the sealed
+baseline row exactly, and read-only per-column comparison proves every other
+region field remains equal. Startup `config.Seed` calls the region upsert, whose
+unconditional conflict UPDATE rewrites that timestamp even for identical input.
+This hidden lifecycle link belongs to Beacon's query/store owner, not the root
+fixture controller or a retrospective protection-policy exception.
+
+Use a null-safe changed-field predicate for config-owned region values, including
+imported-region takeover. An unchanged upsert deliberately returns no row; the
+existing slug reader supplies its ID without writing. Keep actual changes and
+errors visible, and cover unchanged tuple/timestamp identity, each field change,
+null transitions and imported takeover with native PostgreSQL behavior checks.
+The strict original comparison and failure evidence remain intact. Any repair of
+the single historical timestamp is a separate, guarded operation requiring exact
+backup identity and equality of all other columns; it is not part of this patch.
