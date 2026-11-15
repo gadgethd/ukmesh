@@ -1,0 +1,72 @@
+{
+  "id": "/",
+  "name": "UKMesh — MeshCore Analytics",
+  "short_name": "UKMesh",
+  "description": "Live MeshCore mesh telemetry for the UK: packet feed, repeater tree, topology, coverage and node health.",
+  "lang": "en-GB",
+  "dir": "ltr",
+  "start_url": "/?source=pwa",
+  "scope": "/",
+  "display": "standalone",
+  "display_override": ["window-controls-overlay", "minimal-ui", "standalone"],
+  "orientation": "any",
+  "theme_color": "#0a0f1a",
+  "background_color": "#0a0f1a",
+  "categories": ["utilities", "productivity"],
+  "prefer_related_applications": false,
+  "icons": [
+    {
+      "src": "/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/icons/maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/icons/maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    },
+    {
+      "src": "/favicon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "Packet feed",
+      "short_name": "Feed",
+      "description": "Live packet feed across the mesh",
+      "url": "/feed",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Repeaters",
+      "short_name": "Repeaters",
+      "description": "Repeater tree and node health",
+      "url": "/repeater",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    },
+    {
+      "name": "Topology",
+      "short_name": "Topology",
+      "description": "Mesh topology view",
+      "url": "/topology",
+      "icons": [{ "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png" }]
+    }
+  ]
+}
