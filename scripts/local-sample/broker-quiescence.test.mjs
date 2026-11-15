@@ -41,17 +41,18 @@ function baseline(send,override={}) {
   for(const [key,value] of Object.entries({store:50,retained:50,queued:0,disconnected:0,...override}))send(key,value);
   send('uptime','100 seconds');
 }
-function live(send,epochs=[101,111,121]) {for(const seconds of epochs)send('uptime',`${seconds} seconds`,false);}
+function live(send,epochs=[101,111,121,131]) {for(const seconds of epochs)send('uptime',`${seconds} seconds`,false);}
 async function expire(t,promise) {
   await turn();t.mock.timers.tick(45001);await turn();t.mock.timers.tick(45001);
   return promise;
 }
 
-test('three new live epochs accept cached unchanged metrics and close only their clean session',async()=>{
+test('three completed live epochs accept cached unchanged metrics and close only their clean session',async()=>{
   const f=fixture(send=>{baseline(send);live(send);});
   const result=await observeBrokerQuiescence(endpoint,f.factory);
   assert.equal(result.passed,true);assert.equal(result.epochs.length,3);
   assert.deepEqual(result.epochs.map(row=>row.uptimeSeconds),[101,111,121]);
+  assert.deepEqual(result.epochs.map(row=>row.closedBy.uptimeSeconds),[111,121,131]);
   assert.equal(f.settings.clean,true);assert.equal(f.settings.reconnectPeriod,0);assert.equal(f.settings.resubscribe,false);
   assert.match(f.settings.clientId,/^ukmesh-quiescence-[a-f0-9-]{36}$/);
   assert.equal(result.cleanup.closed,true);assert.equal(result.cleanup.forced,false);
@@ -61,12 +62,21 @@ test('three new live epochs accept cached unchanged metrics and close only their
 });
 
 test('queue, store mismatch and even empty disconnected durable sessions refuse permanently',async()=>{
-  for(const [override,error] of [[{queued:1},'queued-packets'],[{store:51},'stored-nonretained-messages'],
-    [{disconnected:1},'disconnected-durable-sessions']]) {
+  for(const [override,error] of [[{queued:1},'queued-packets'],[{disconnected:1},'disconnected-durable-sessions']]) {
     const f=fixture(send=>{baseline(send,override);baseline(send);live(send);});
     const result=await observeBrokerQuiescence(endpoint,f.factory);
     assert.equal(result.passed,false);assert.ok(result.errors.includes(error));assert.equal(result.cleanup.closed,true);
   }
+  // A relational predicate is evaluated at a complete producer boundary. Later
+  // equality cannot erase that unsafe epoch; intermediate paired fields can.
+  const f=fixture(send=>{
+    baseline(send,{store:51});live(send,[101,111]);
+    send('store',50,false);live(send,[121,131]);
+  });
+  const result=await observeBrokerQuiescence(endpoint,f.factory);
+  assert.equal(result.passed,false);assert.ok(result.errors.includes('stored-nonretained-messages'));
+  assert.equal(result.latestMetrics.store,result.latestMetrics.retained);
+  assert.equal(result.cleanup.closed,true);
 });
 
 test('malformed, nonadvancing and backward system metrics fail closed',async()=>{

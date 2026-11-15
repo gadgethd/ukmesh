@@ -29,7 +29,7 @@ export async function observeBrokerQuiescence(endpoint,clientFactory=connect) {
   const traffic={messages:0,bytes:0,retainedNonSys:0};
   const clientId=`ukmesh-quiescence-${randomUUID()}`;
   let address,client,connected=false,subscribed=false,closing=false,closed=false,forced=false;
-  let initialized=false,previousUptime=null,timer,finish;
+  let initialized=false,previousUptime=null,pendingEpoch=null,finalSnapshot=null,timer,finish;
   const completed=new Promise(resolve=>{finish=resolve;});
   const elapsed=()=>performance.now()-started;
   const remaining=()=>Math.max(0,MAX_MS-elapsed());
@@ -41,6 +41,12 @@ export async function observeBrokerQuiescence(endpoint,clientFactory=connect) {
     if(values.store!==values.retained)fail('stored-nonretained-messages');
     if(values.disconnected!==0)fail('disconnected-durable-sessions');
     return true;
+  }
+  function snapshot() {
+    const now=elapsed();
+    return {metrics:{store:values.store,retained:values.retained,queued:values.queued,disconnected:values.disconnected},
+      metricAgesMs:Object.fromEntries(Object.entries(observed).map(([name,row])=>[name,now-row.offsetMs])),
+      metricObservations:Object.fromEntries(Object.entries(observed).map(([name,row])=>[name,{...row}]))};
   }
   function receive(topic,payload,packet={}) {
     try {
@@ -62,17 +68,30 @@ export async function observeBrokerQuiescence(endpoint,clientFactory=connect) {
       if(!match)return fail('malformed-system-metric');
       const value=Number(match[1]);if(!Number.isSafeInteger(value))return fail('malformed-system-metric');
       if(key==='uptime'&&Object.hasOwn(values,key)&&value<values[key])return fail('backward-uptime');
+      // Initial retained delivery cannot replace a newer live producer update.
+      if(packet.retain&&previousUptime!==null)return fail('out-of-phase-retained-metric');
       values[key]=value;observed[key]={offsetMs:elapsed(),retained:packet.retain===true};
+      if(Object.keys(TOPICS).every(name=>Object.hasOwn(values,name)))initialized=true;
+      // These predicates concern one metric and are unsafe even before a full tuple.
+      if(key==='queued'&&value!==0)fail('queued-packets');
+      if(key==='disconnected'&&value!==0)fail('disconnected-durable-sessions');
       if(key==='uptime'&&packet.retain!==true) {
         if(previousUptime!==null&&value<=previousUptime)return fail('nonadvancing-uptime');
         previousUptime=value;
-        if(subscribed&&inspect()&&epochs.length<3) {
-          epochs.push({at:new Date().toISOString(),offsetMs:elapsed(),uptimeSeconds:value,
-            metrics:{store:values.store,retained:values.retained,queued:values.queued,disconnected:values.disconnected},
-            metricAgesMs:Object.fromEntries(Object.entries(observed).map(([name,row])=>[name,elapsed()-row.offsetMs]))});
-          if(epochs.length===3)finish();
+        if(subscribed) {
+          const marker={at:new Date().toISOString(),offsetMs:elapsed(),uptimeSeconds:value,messageIndex:traffic.messages};
+          // sys_tree__update queues uptime BEFORE its changed metric publications.
+          // The next live marker closes that complete producer update, in FIFO order.
+          if(pendingEpoch) {
+            if(!inspect())fail('missing-system-metrics');
+            else if(epochs.length<3) {
+              epochs.push({...pendingEpoch,closedBy:{...marker},...snapshot()});
+              if(epochs.length===3)finish();
+            }
+          }
+          pendingEpoch=marker;
         }
-      } else if(initialized||Object.keys(TOPICS).every(name=>Object.hasOwn(values,name)))inspect();
+      }
     } catch {fail('observation-error');}
   }
   async function bounded(promise,code) {
@@ -107,7 +126,12 @@ export async function observeBrokerQuiescence(endpoint,clientFactory=connect) {
     if(!initialized)fail('missing-system-metrics');
     if(epochs.length!==3)fail('missing-live-epochs');
     // Own UNSUBACK is a wire barrier, retaining every earlier observation.
-    if(subscribed&&remaining()>0)await bounded(client.unsubscribeAsync(FILTERS),'unsubscribe-deadline');
+    if(subscribed&&remaining()>0) {
+      await bounded(client.unsubscribeAsync(FILTERS),'unsubscribe-deadline');
+      // This final partial producer update is validated, never counted as an epoch.
+      finalSnapshot={at:new Date().toISOString(),offsetMs:elapsed(),afterOwnUnsuback:true,...snapshot()};
+      if(!inspect())fail('missing-system-metrics');
+    }
   } catch(error) {fail(error instanceof Error&&['invalid-loopback-endpoint','connect-deadline','subscribe-deadline','unsubscribe-deadline','client-error','unexpected-close'].includes(error.message)?error.message:'observer-error');}
   finally {
     closing=true;
@@ -125,10 +149,10 @@ export async function observeBrokerQuiescence(endpoint,clientFactory=connect) {
   if(!closed)fail('client-not-closed');
   return {version:1,passed:errors.length===0,startedAt,finishedAt:new Date().toISOString(),
     durationMs:elapsed(),maxWindowMs:MAX_MS,endpoint:address??null,clientId,
-    requiredTopics:TOPICS,initialized,epochs,latestMetrics:values,metricObservations:observed,
+    requiredTopics:TOPICS,initialized,epochs,finalSnapshot,latestMetrics:values,metricObservations:observed,
     traffic:{...traffic,sha256:digest.digest('hex')},errors,
     cleanup:{connected,subscribed,closed,forced},
-    interpretation:'Observed broker aggregate quiescence only; unchanged retained SYS values are cached, not fresh per-epoch messages. Caller must bind broker identity, target lock and application drain.'};
+    interpretation:'Observed broker aggregate quiescence only; each of three completed live epochs is closed by the next advancing uptime (four live markers). Unchanged SYS gauges remain cached. Final partial update is checked after own UNSUBACK. Caller must bind broker identity, target lock and application drain.'};
 }
 
 if(process.argv[1]&&import.meta.url===pathToFileURL(process.argv[1]).href) {

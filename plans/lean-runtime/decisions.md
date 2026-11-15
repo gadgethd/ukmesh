@@ -1265,3 +1265,35 @@ The existing cold-start, stopped-consumer, partial-transition and fixture guards
 remain authoritative. This batch changes no application API, database rule,
 resource setting or workload deadline. Validation is recorded with the reviewed
 24-case startup batch and the existing target, intake and launcher regressions.
+
+## Compare complete broker statistics updates
+
+Record this observation-owner link before changing the predicate timing:
+
+- Mosquitto publishes uptime first, followed by changed gauges. A fresh stored
+  count and an earlier retained count are not a coherent tuple. The controlled
+  reconnect correctly recovered all four consumers, but the old observer latched
+  store52 versus cached retained2, 78 microseconds before retained52 arrived.
+  The failed real attempt and exact eight-packet replay remain recorded.
+- The next live uptime closes the preceding producer update. Validate every
+  completed tuple, retain three immutable epoch records, and require four live
+  markers inside the existing 45-second maximum. Check tail updates through the
+  existing own-UNSUBACK barrier, including after the third recorded epoch.
+- Positive queued/disconnected counts and retained application data remain
+  immediately sticky, including before initialization. Malformed or reordered
+  metrics, message/byte bounds, session, subscription and cleanup failures still
+  refuse protection. No counter normalization, arbitrary sleep, publisher, reset
+  or extra readiness barrier is introduced.
+- Preserve the legacy safety/lifecycle tests. Once equivalent behavior coverage
+  exists, adapt only their marker schedules. Keep the exact mixed-batch replay,
+  split updates, genuine closed mismatch, late retained replay, incomplete epochs
+  and final-barrier negatives as a permanent production-path regression file.
+
+This fixes measurement coherence at its owner; it changes no application data,
+API, database policy, resource budget, broker binary or workload deadline. Native
+reconnect55516 remains failed at its original postcheck. Later protection-only
+recovery is separate evidence; a new real controlled check is still required.
+
+Run these observer cases and the existing DEV startup/target/intake regressions
+in the backend CI job after its MQTT dependency is installed. This keeps behavior
+coverage with the owning code without provisioning or contacting a DEV stack.
