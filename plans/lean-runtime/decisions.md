@@ -976,3 +976,37 @@ Full CGO ingestor/server suites and independent review precede commit. The faile
 actual receipt stays failed; Root must separately rebuild and rerun its unchanged
 PG gate before further qualification. D1, queues, limits, deadlines and RF helpers
 remain unchanged.
+
+## Reserve the SQLite writer before reading a packet transaction
+
+The current 1x recovery run passed fourteen faults but lost CoreScope packet
+observations during the owned SQLite contention fault. Five packet insert errors
+returned immediately while a later status write succeeded. The native failure,
+journal logs and cleanup proof are retained. The explicit one-second delay in
+that fault is not its entire lock duration: publication and count reads also run
+before the holder rolls back. Do not relabel the failure or extend its deadline.
+
+The packet transaction reads before writing. A deferred SQLite transaction can
+fail that upgrade immediately instead of waiting through the existing busy
+handler. Configure `BEGIN IMMEDIATE` in the authoritative writer DSN shared by
+the ingestor and migration CLI. Keep the server's separate read-only connection,
+FULL/WAL, five-second busy timeout, single writer pool and replay's explicit
+durability and privacy fences. This changes lock admission, with no additional
+packet pass, retry queue or dummy write.
+
+Admission errors occur before scoped write statistics exist. Count and wrap
+them at the observation owner; the buffered MQTT boundary reports its returned
+error without counting downstream SQL failures again. The pinned driver can
+also return a successful BEGIN after context cancellation, before asynchronous
+rollback is observed. Check the context after BEGIN and immediately before the
+packet callback, retaining rollback and the original cancellation assertion.
+
+Separate-connection tests first reproduced the packet loss and missing error
+reporting. Corrected raw, channel and direct handlers wait for release, keep WAL
+readers available and reopen exact durable observations. A fixed twenty-trial
+cancellation run and the full affected CGO suites passed before local promotion:
+schema 30, migration 1, ingestor 1016 and server 2963 pass events, with nine
+explicit conditional skips. The earlier full-suite cancellation failure remains
+retained. Buffer-test cleanup is bounded and a duplicate assertion was removed.
+Independent review binds the exact four files. New binary integration, recovery
+and full-stack load proofs remain required after the guarded rollout.
