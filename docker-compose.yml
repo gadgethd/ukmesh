@@ -931,7 +931,15 @@ services:
       - /etc/machine-id:/etc/machine-id:ro
       - alloy_data:/var/lib/alloy
     healthcheck:
-      test: ["CMD", "/bin/alloy", "validate", "/etc/alloy/config.alloy"]
+      test:
+        - CMD
+        - /bin/bash
+        - -ec
+        - >-
+          exec 3<>/dev/tcp/127.0.0.1/12345;
+          printf 'GET /-/ready HTTP/1.0\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3;
+          IFS=' ' read -r -t 2 protocol status rest <&3;
+          [[ "$$protocol" == HTTP/1.[01] && "$$status" == 200 ]]
       interval: 30s
       timeout: 10s
       retries: 5

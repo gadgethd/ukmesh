@@ -707,3 +707,24 @@ must be characterized after Root's coordinated recreation. Explicitly recreate
 the11 unchanged monitor consumers too: Compose will not infer that their actual
 old cgroups differ. Kernel memory.max/swap.max assertions close the rollout.
 
+## Alloy checks the running server without starting another collector binary
+
+Actual inspection shows `/bin/alloy` is450MiB and the pinned image has Bash but
+no curl or wget. The health check launches that complete Go executable every
+30seconds solely to validate the config file. The existing running HTTP server
+answered `HTTP/1.0 200` for `/-/ready`; Grafana documents200 after initial config
+load and503 before readiness. Source: https://grafana.com/docs/alloy/latest/reference/http/.
+
+- Needless link: routine runtime readiness depends on a second collector-sized
+  process loading configuration; startup already loads the same config.
+- Fix: the service's own health check uses existing Bash TCP support to GET the
+  local readiness endpoint and require a valid HTTP200 status. Keep the existing
+  Docker interval, timeout, retry and start-period settings. Bound status reads;
+  refuse malformed/failed/closed/stalled responses.
+- No replacement image, dependency, listener, component, journal input or cursor
+  is added. Actual log-delivery work proofs remain independent of readiness.
+  There is no claim that this alone caused the previously measured I/O or swap.
+- Native local HTTP behavior checks must cover success,503, malformed/closed
+  responses, connection refusal and a stalled status line. Independently review
+  this batch before rollout; final full-stack resources still decide acceptance.
+
