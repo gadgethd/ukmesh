@@ -48,11 +48,13 @@ services:
         chmod 0640 /mosquitto/log/mosquitto.log
         chown 1883:1883 /mosquitto/control
         chmod 0700 /mosquitto/control
+        chown 1883:1883 /mosquitto/data
+        chmod 0750 /mosquitto/data
     network_mode: none
     restart: "no"
     mem_limit: &sample-mqtt-log-init-memory 16m
     memswap_limit: *sample-mqtt-log-init-memory
-    volumes: [sample-mqtt-log:/mosquitto/log, sample-mqtt-control:/mosquitto/control]
+    volumes: [sample-mqtt-log:/mosquitto/log, sample-mqtt-control:/mosquitto/control, sample-mqtt-data:/mosquitto/data]
   mqtt:
     image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
     container_name: ukmesh-sample-mqtt
@@ -67,6 +69,7 @@ services:
       - ./mosquitto-test.conf:/mosquitto/config/mosquitto.conf:ro
       - sample-mqtt-log:/mosquitto/log
       - sample-mqtt-control:/mosquitto/control
+      - sample-mqtt-data:/mosquitto/data
       - ./mosquitto-lifecycle.sh:/dev-tools/mosquitto-lifecycle.sh:ro
     depends_on:
       mqtt-log-init: {condition: service_completed_successfully}
@@ -82,3 +85,4 @@ volumes:
   sample-db:
   sample-mqtt-log:
   sample-mqtt-control:
+  sample-mqtt-data:

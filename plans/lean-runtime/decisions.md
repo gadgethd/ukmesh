@@ -765,6 +765,23 @@ is no runtime knob, adaptive size search, temporary/public DDL or timer change.
 If this is not a clear causal winner, stop shape tuning and retain baseline
 SQL while Root addresses measured system pressure before another live trial.
 
+## The local broker owns durable session storage
+
+The shared DEV Mosquitto config also serves legacy lookup tooling. Its previous
+`persistence false` meant a broker restart could discard durable subscriber
+queues. The canonical broker had no explicit data volume. Keep one shared
+configuration, enable persistence in `/mosquitto/data`, and have the existing
+finite initialization job prepare a dedicated1883-owned0750 volume directory
+without replacing saved data. Preserve queue caps, listeners and reload transport.
+
+The30-second periodic save policy is explicit: PUBACK does not certify per-message
+disk fsync or power-loss preservation. An isolated owned-broker test must verify
+offline QoS1 sessions and retained data across graceful restart, initialization
+byte preservation, and the base image's writable data-volume legacy contract.
+Atomic source publication keeps the active broker's old bind inode until Root's
+reviewed empty-queue recreation. Generic target transition checks remain separate;
+neither persistence nor broker health alone proves fixture backlog is drained.
+
 ## Alloy checks the running server without starting another collector binary
 
 Actual inspection shows `/bin/alloy` is450MiB and the pinned image has Bash but
