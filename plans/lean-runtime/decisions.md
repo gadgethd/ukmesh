@@ -1655,3 +1655,62 @@ qualification. Do not change workloads, timing or acceptance limits.
   while the expected set used lowercase hex. Preserve the 8-pass/2-fail native
   result and correct only that expected set to the established identity rule.
   The new encoder, identity views, caps and privacy policy are unchanged.
+
+## Weigh WebSocket snapshots without a monolithic serialization pause
+
+- Fix: the WebSocket owner prepares the complete legacy JSON byte weight in
+  cooperative row slices. A weak map supplies that number to the existing
+  bounded cache; an entry without a prepared weight is refused with Infinity.
+  - Hidden link: generic cache admission synchronously stringified a 19 MB
+    snapshot during a background warmup, despite that snapshot not being sent.
+    The retained history miss aligned with a 199 ms event-loop maximum and
+    the broad cache insertion. This was a measurement lead, not proof of cause.
+  - Shared cause: the raw viable-link cache also serialized its complete value
+    before refusing it at its existing 16,777,216-byte bound. Apply the same
+    owner-specific counter to both caches; do not change generic cache policy.
+  - Surplus removed: neither admission needs a retained full JSON string or
+    another encoded cache. The counter keeps ordinary row values and yields
+    between rows, targeting 4 ms slices without claiming a hard row bound.
+- Twelve same-object real-PG comparisons returned identical full weights for
+  both caches, including the overweight raw link value. Initial snapshot
+  heartbeat gaps fell from 125–135 ms to 4–6 ms. Raw link gaps also fell, while
+  that isolated kernel used more CPU; end-to-end operations remain subject
+  to their unchanged deadlines and matched regression limits. Six pure tests
+  cover ordinary JSON semantics, full overweight counts, yielding and aborts.
+- Preserve the 50,331,648-byte/128-entry/60-second initial cache,
+  16,777,216-byte/50-entry/300-second viable cache, row contents, timestamps,
+  generation keys and singleflight ownership. Await counting within the
+  original fetch signal and before the final fresh privacy-generation check.
+  Serialization failure retains Infinity refusal; cancellation reaches the
+  fetch owner. Stop the existing warm timers when their server closes.
+- The b034 preflight remains failed: history 278.577 ms and sustained host swap
+  traffic exceeded unchanged limits. Correctness, logs, companion delivery and
+  store preservation passed. A private counterfactual is not C8 qualification.
+
+## Give PostgreSQL a whole-stack memory policy
+
+- Fix: one root PostgreSQL service policy supplies the main defaults. The
+  existing local DB extends it and keeps its deployment bindings; no additional
+  service is launched. Larger deployments can override the documented GUCs.
+  - Hidden link: the image tuned this 2 GiB container in isolation, reserving
+    512 MiB shared buffers and 256 MiB maintenance memory while dozens of
+    other services share this VM. Container swap is disabled, but that does not
+    prevent host daemons from paging during overall pressure.
+  - Ownership: the main application resolves an independently managed live
+    data plane. Its resolver and external project remain unchanged. CI keeps
+    its explicit 4 GiB/300-connection/24-worker settings; Beacon keeps its own
+    database rules. Local overrides retain credentials, ports and fixture storage.
+- Candidate defaults are shared_buffers=256MB, maintenance_work_mem=64MB and
+  autovacuum_work_mem=32MB. Preserve max_connections=100, parallel-read policy,
+  work_mem, worker capacity, durability and the existing 2 CPU/2 GiB/no-swap
+  limits. No host swappiness, daemon configuration or stored PostgreSQL config
+  is changed. CLI GUCs also apply to retained stores without reinitializing data.
+- A read-only collector probe increased daemon major faults and host paging,
+  but did not reproduce the failed traffic window. It is not proof of cause.
+  Smaller shared buffers can shift memory into the kernel file cache and
+  increase reads; smaller maintenance budgets can increase spill. Configured
+  savings are not claimed as measured resident-memory savings.
+- Independent source review preserves all existing config-test assertions and
+  adds resolved service-set/default/override/CI-isolation coverage. Require actual
+  settings, read/maintenance behavior, whole-VM resources and unchanged acceptance
+  gates before qualification. Keep the failed b034 trial and its raw evidence.

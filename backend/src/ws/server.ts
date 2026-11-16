@@ -33,6 +33,7 @@ import { loadInitialMapNodes } from './initialStateNodes.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
 import { ApiInputError } from '../platform/apiInputError.js';
+import { measureSnapshotWeight } from './cacheWeight.js';
 import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, encodeInitialStateColumns } from '../contracts/initialStateColumns.generated.js';
 
 const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
@@ -182,15 +183,17 @@ function publishLiveMessage(message: WSMessage): void {
 // Keep the scoped link snapshot off the connect path for five minutes per
 // network/observer combination.
 const VIABLE_LINK_CACHE_TTL_MS = WS_CACHE_POLICIES.viableLinksCache.ttlMs;
+const snapshotWeights = new WeakMap<object, number>();
+const preparedSnapshotWeight = (_key: string, value: object): number =>
+  snapshotWeights.get(value) ?? Number.POSITIVE_INFINITY;
 const viableLinksCache = new BoundedTtlMap<string, {
   ts: number;
   data: Awaited<ReturnType<typeof getViableLinks>>;
-}>(WS_CACHE_POLICIES.viableLinksCache);
+}>(WS_CACHE_POLICIES.viableLinksCache, { weightOf: preparedSnapshotWeight });
 
 /**
- * Initial-state cache — all connecting clients share one cached snapshot per
- * network/observer key, refreshed every 30 seconds in the background.
- * Eliminates the DB pool spike caused by N clients each firing 3 queries on connect.
+ * Connecting clients share one snapshot per network/observer/region and privacy
+ * generation. The cache policy owns its age; singleflight shares cold reads.
  */
 const INITIAL_STATE_TTL_MS = WS_CACHE_POLICIES.initialStateCache.ttlMs; // 60 s — live WS updates keep clients current
 type InitialStateEntry = {
@@ -201,7 +204,9 @@ type InitialStateEntry = {
   messages: InitialStateRow[];
   viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
 };
-const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>(WS_CACHE_POLICIES.initialStateCache);
+const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>(
+  WS_CACHE_POLICIES.initialStateCache, { weightOf: preparedSnapshotWeight },
+);
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
 const publicPrivacy = new PublicWsPrivacyIndex();
 let privacyRefreshInFlight: Promise<void> | null = null;
@@ -238,9 +243,8 @@ async function fetchInitialState(network: string | undefined, observer: string |
 
   const promise = (async () => {
     try {
-      // The public synthetic check allows 10 seconds. Abort every database read
-      // before that deadline so a pathological cold query cannot retain an
-      // initial-state gate slot (and a pool connection) for minutes.
+      // Keep the configured read deadline so cold work cannot retain an
+      // initial-state gate slot and a pool connection for minutes.
       const signal = AbortSignal.timeout(WS_INITIAL_STATE_DB_TIMEOUT_MS);
       // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
       // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
@@ -282,7 +286,9 @@ async function fetchInitialState(network: string | undefined, observer: string |
         messages: slimMessages,
         viableLinks,
       };
+      snapshotWeights.set(entry, await measureSnapshotWeight(entry, signal));
       const current = await loadCurrentPublicPrivacyPolicy();
+      signal.throwIfAborted();
       if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
       initialStateCache.set(key, entry);
       return entry;
@@ -312,9 +318,9 @@ function cacheKey(network?: string, observer?: string): string {
 }
 
 async function getCachedViableLinks(
-  network?: string,
-  observer?: string,
-  signal?: AbortSignal,
+  network: string | undefined,
+  observer: string | undefined,
+  signal: AbortSignal,
   generation = 0,
   region?: string,
 ) {
@@ -322,7 +328,10 @@ async function getCachedViableLinks(
   const cached = viableLinksCache.get(key);
   if (cached && (Date.now() - cached.ts) < VIABLE_LINK_CACHE_TTL_MS) return cached.data;
   const data = await getViableLinks(network, observer, signal, region);
-  viableLinksCache.set(key, { ts: Date.now(), data });
+  const entry = { ts: Date.now(), data };
+  snapshotWeights.set(entry, await measureSnapshotWeight(entry, signal));
+  signal.throwIfAborted();
+  viableLinksCache.set(key, entry);
   return data;
 }
 
@@ -457,11 +466,6 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     }
   };
 
-  if (WARMUP_NETWORKS.length > 0) {
-    setTimeout(warmInitialState, 10_000).unref();
-    setInterval(warmInitialState, INITIAL_STATE_TTL_MS).unref();
-  }
-
   const wss = new WebSocketServer({
     server: httpServer,
     path: '/ws',
@@ -529,6 +533,15 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
       done(true);
     },
   });
+
+  if (WARMUP_NETWORKS.length > 0) {
+    const warmup = setTimeout(warmInitialState, 10_000).unref();
+    const refresh = setInterval(warmInitialState, INITIAL_STATE_TTL_MS).unref();
+    wss.once('close', () => {
+      clearTimeout(warmup);
+      clearInterval(refresh);
+    });
+  }
 
   const clientScopes = new Map<WebSocket, ClientScope>();
   const disconnectSlowClient = (client: WebSocket, reason: string) => {
