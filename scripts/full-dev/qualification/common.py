@@ -13,7 +13,7 @@ import stat
 import subprocess
 import tempfile
 from typing import Any, BinaryIO
-from target_lease import child_context
+from target_lease import child_context, ENV as TARGET_LEASE_ENV
 
 
 REPO = Path(__file__).resolve().parents[3]
@@ -37,9 +37,13 @@ def command(args: list[str], *, data: bytes | None = None,
             timeout: float = 120, check: bool = True,
             input_stream: BinaryIO | None = None,
             output_stream: BinaryIO | None = None,
-            merge_stderr: bool = False) -> subprocess.CompletedProcess[bytes]:
+            merge_stderr: bool = False,
+            environment_overrides: dict[str, str] | None = None) -> subprocess.CompletedProcess[bytes]:
+    overrides = environment_overrides or {}
+    if TARGET_LEASE_ENV in overrides or any(not isinstance(k, str) or not isinstance(v, str) for k, v in overrides.items()):
+        raise ValueError("invalid child environment or attempted target lease override")
     inherited,descriptors=child_context()
-    environment={**clean_environment(),**inherited}
+    environment={**clean_environment(),**overrides,**inherited}
     return subprocess.run(args, input=data, stdin=input_stream,
                           stdout=output_stream if output_stream is not None else subprocess.PIPE,
                           stderr=subprocess.STDOUT if merge_stderr else subprocess.PIPE, env=environment, pass_fds=descriptors,

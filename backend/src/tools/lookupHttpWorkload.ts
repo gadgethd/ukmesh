@@ -1,5 +1,5 @@
 import express, { Router } from 'express';
-import { withLookupTrial } from './lookupBenchmarkSession.js';
+import { withLookupTrial, readLookupSessionIdentity } from './lookupBenchmarkSession.js';
 import type { LookupRuntime, LookupSourceLoader, LookupCacheModule } from './lookupBenchmarkSession.js';
 import type { LookupHttpCase } from './lookupHttpRequests.js';
 
@@ -20,9 +20,7 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
   const query = runtime.pool.query.bind(runtime.pool);
   return {
     async prepare(snapshotOverride?: string) {
-    if ((await query("SELECT current_setting('transaction_read_only') AS value")).rows[0]?.value !== 'on') {
-      throw new Error('benchmark connections must enforce read-only transactions');
-    }
+    const databaseSetup = { http: await readLookupSessionIdentity(runtime.query, 'http') };
     const counts = (await query(`SELECT (SELECT count(*)::text FROM core.nodes) nodes,
       (SELECT count(*)::text FROM mesh.packets) observations,
       (SELECT count(DISTINCT packet_hash)::text FROM mesh.packets) packets,
@@ -67,7 +65,7 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
       const cursor = Buffer.from(JSON.stringify({ version: 1, nodeId: visible[999].node_id })).toString('base64url');
       cases.push({ name: 'map-next-page', route: map + '&cursor=' + cursor, populated: true });
     }
-      return { counts, snapshot, cases, regionEnabled };
+      return { counts, snapshot, cases, regionEnabled, databaseSetup };
     },
     withTrial<T>(work: (port: number, caches: Caches) => Promise<T>): Promise<T> {
       return withLookupTrial(cacheModule, async ({ caches, ownRoutes, listen }) => {

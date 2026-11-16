@@ -2,6 +2,7 @@
 import datetime as dt
 import math
 import heapq
+from role_evidence import validate_database_identity
 from pathlib import Path
 import re
 import time
@@ -26,6 +27,7 @@ def native_demand(record):
             or value['sourceIdentity'] != record['measured_source'] or value['sourceIdentityAfter'] != record['measured_source'] \
             or value.get('sourceStable') is not True or value.get('timeline') != 'timeline.json':
         raise ValueError('fixed-demand source/settings/native completion differs')
+    validate_database_identity(value.get('databaseIdentity'), record['context'])
     clock_value = owned_document(path.parent/'timeline.json', pointer['timeline_sha256'])
     clock = clock_intersection(clock_value)
     if clock_value.get('passed') is not True:

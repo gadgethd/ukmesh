@@ -21,6 +21,7 @@ import benchmarks
 import matched_demand
 import source_identity
 from test_matched_demand import cohorts
+from test_role_evidence import database_identity, role_context
 
 
 class ReadPairs(unittest.TestCase):
@@ -64,7 +65,7 @@ class ReadPairs(unittest.TestCase):
         for scale in scales:
             batch = uuid.uuid4().hex
             context = {'run_id': self.root.name, 'source': {'root_content_sha256': 'source', 'submodules_sha256': 'sub'},
-                       'profile_sha256': 'profile', 'targets': {'ukmesh': scale}, 'runtime': {}}
+                       'profile_sha256': 'profile', **role_context(scale), 'runtime': {}}
             for step in STEPS:
                 index = count; count += 1; base = self.base + dt.timedelta(seconds=index*10)
                 at = lambda n: (base + dt.timedelta(seconds=n)).isoformat()
@@ -101,7 +102,8 @@ class ReadPairs(unittest.TestCase):
                     results = [{'trial': trial, 'name': 'map', 'samples': settings['samples'], 'p95Ms': 500 if label == 'baseline' else 40} for trial in (1, 2, 3)]
                     mode_base = base + dt.timedelta(seconds=next(n for name,n in scopes if name == f'c{c}-{cache}') + .01)
                     native = {'at': (mode_base+dt.timedelta(milliseconds=20)).isoformat(), 'timeline': 'timeline.json', 'passed': True, 'sourceIdentity': self.sources[label], 'sourceIdentityAfter': self.sources[label],
-                              'sourceStable': True, 'settings': settings, 'results': results}
+                              'sourceStable': True, 'settings': settings, 'results': results,
+                              'databaseIdentity': database_identity(context)}
                     common.write_json(directory/'lookups.json', native)
                     common.write_json(directory/'timeline.json', self.native_timeline(mode_base, settings))
                     record['modes'].append({**mode, 'passed': True, 'exit_code': 0, 'source_identity': self.sources[label],
@@ -132,6 +134,32 @@ class ReadPairs(unittest.TestCase):
         self.assertTrue(all(row['nine_trials'] and len(row['candidate_trials_ms']) == 9 for row in value['comparisons']))
         self.assertTrue(report.phase_check('reads', self.complete_summary(runs))[0])
         source_identity.validate_measurements(runs, self.sources)
+
+    def test_rehashed_native_role_proof_is_required_for_baseline_and_candidate(self):
+        runs = self.windows(scales=('1x',))
+        self.assertTrue(measured.native_read_comparison(runs, scales=('1x',))['passed'])
+        for row in runs[:2]:
+            mode = row['modes'][0]
+            path = Path(mode['source']); original = path.read_bytes()
+            for fault in ('missing', 'legacy', 'consistent-admin', 'after-store'):
+                value = json.loads(original)
+                if fault == 'missing': value.pop('databaseIdentity')
+                elif fault == 'legacy': value['databaseIdentity']['scope'] = 'legacy-inspector-readonly'
+                elif fault == 'consistent-admin':
+                    value['databaseIdentity']['expected']['http']['user'] = 'meshcore'
+                    for phase in ('setup', 'after'):
+                        value['databaseIdentity'][phase]['http']['current_user'] = 'meshcore'
+                        value['databaseIdentity'][phase]['http']['session_user'] = 'meshcore'
+                else: value['databaseIdentity']['after']['http']['database'] = 'meshcore'
+                try:
+                    common.write_json(path, value); mode['evidence_sha256'] = common.digest(path)
+                    result = measured.native_read_comparison(runs, scales=('1x',))
+                    with self.subTest(label=row['label'], fault=fault):
+                        self.assertFalse(result['valid'])
+                        self.assertIn('application-role', result['missing'][0])
+                finally:
+                    path.write_bytes(original); mode['evidence_sha256'] = common.digest(path)
+        self.assertTrue(measured.native_read_comparison(runs, scales=('1x',))['passed'])
 
     def test_all_raw_pooling_is_primary_and_never_median_of_window_p95(self):
         runs = self.windows(scales=('10x',), companion_values=lambda side, pair: 100 if side == 'A' and pair == 3 else 10 if side == 'A' else 20)

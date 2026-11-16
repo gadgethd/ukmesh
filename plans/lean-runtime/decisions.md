@@ -1297,3 +1297,34 @@ recovery is separate evidence; a new real controlled check is still required.
 Run these observer cases and the existing DEV startup/target/intake regressions
 in the backend CI job after its MQTT dependency is installed. This keeps behavior
 coverage with the owning code without provisioning or contacting a DEV stack.
+
+## Keep qualification credentials with their capability owner
+
+Record these links before applying the credential-repair batch:
+
+- The common native-tool launcher gives fixture-administrator credentials to
+  preparation, semantic oracles and timed route benchmarks. Its read-only helper
+  then copies that one URL into every logical pool, hiding HTTP, analytics,
+  ingest and owner ownership. Existing service sessions and live HTTP soaks use
+  their intended roles; the defect concerns the three native read benchmarks.
+- The invocation boundary will distinguish administrative fixture work from
+  application read measurement. Read measurements derive credentials and pool
+  settings from the actual selected backend consumer, validate the owned target
+  and published loopback port, and pass secrets through the child environment.
+  Shared subprocess code continues to own inherited target-lease descriptors.
+- The existing application role resolver remains authoritative. Apply read-only
+  mode independently to each resolved URL, validate all updates before changing
+  the environment, and keep the separate owner database. Standalone commands
+  accepting only DATABASE_URL retain an explicitly labelled inspector scope;
+  that scope cannot qualify application-role performance.
+- Replace existing setup read-only checks with authenticated identity checks,
+  then collect representative identities and pool metadata after timing. Do not
+  pre-open clients, add warmup, query unused pools, expose credentials or claim
+  every historical physical connection was observed. Validate these native
+  proofs when admitting canonical evidence.
+
+Keep prior native results, their administrator-read-only limitation and the
+failed companion comparison. Fresh matched measurements must use the corrected
+method for both source trees, with unchanged timing, workloads and acceptance
+limits. This tooling change does not itself change the running application or
+RF binaries; record actual image provenance separately from the new tool source.

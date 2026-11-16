@@ -1,6 +1,7 @@
 """Sealed-source statistics/export measurements with the complete stack resident."""
 from __future__ import annotations
 
+from role_evidence import validate_database_identity
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import datetime as dt
@@ -46,6 +47,7 @@ def validate_operations(runs: list[dict], expected: dict) -> None:
         if not identity or row.get("measured_source") != identity or row.get("source_identity") != identity \
                 or row.get("source_identity_after") != identity or row.get("source_stable") is not True:
             raise ValueError("operations measured an unsealed or stale source tree")
+        validate_database_identity(row.get("database_identity"), row.get("context"), operations=True)
         settings = row.get("settings", {})
         if settings != {key:PAIR_POLICY[key] for key in ('trials','statsSamples','exportSamples','clients','exportSpacingMs','httpConcurrency')} | \
                 {'deadlineMs':PAIR_POLICY['responseDeadlineMs'],'maxResponseBytes':8*1024*1024,'readOnly':True}:
@@ -242,6 +244,7 @@ def operations_pair(run: Path) -> dict:
             'source_identity_after':native.get('sourceIdentityAfter'),'source_stable':native.get('sourceStable'),
             'settings':native.get('settings',{}),'records':native.get('records',[]),'pair':native.get('pair',{}),
             'actors':native.get('actors',[]),'executor_profile':native.get('executorProfile',{}),
+            'database_identity':native.get('databaseIdentity'),
             'chart_snapshot':native.get('chartSnapshot',{}),'identity_checks':native.get('identityChecks',[]),
             'companions':companion_results,'attempt':str(directory)}
         record['passed'] &= all(item['requests']>0 and item['failures']==0 for item in companion_results.values())
@@ -288,6 +291,7 @@ def operations(run: Path, *, label: str, source_root: Path | None = None) -> dic
               "exit_code": code, "measured_source": source, "source_identity": native.get("sourceIdentity"),
               "source_identity_after": native.get("sourceIdentityAfter"), "source_stable": native.get("sourceStable"),
               "settings": native.get("settings", {}), "records": native.get("records", []),
+              "database_identity": native.get("databaseIdentity"),
               "chart_snapshot": native.get("chartSnapshot", {}),
               "identity_checks": native.get("identityChecks", []), "companions": companion_results}
     record["passed"] &= all(row["requests"] > 0 and row["failures"] == 0 for row in companion_results.values())

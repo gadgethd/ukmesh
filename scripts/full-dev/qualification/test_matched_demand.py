@@ -1,6 +1,7 @@
 """Synthetic full-count schedule/evidence tests; no HTTP, stores or runtime calls."""
 import copy
 import datetime as dt
+import json
 from pathlib import Path
 import tempfile
 import subprocess
@@ -13,6 +14,7 @@ import common
 import companion_reads
 import matched_demand as demand
 from read_protocol import PROFILE, IDENTITY, STEPS
+from test_role_evidence import database_identity, role_context
 
 
 def cohort(root, source, context, scale, step, batch, *, ms=10, position=0):
@@ -34,6 +36,7 @@ def cohort(root, source, context, scale, step, batch, *, ms=10, position=0):
             'ms': 3, 'status': 404 if policy['case_order'][index%12]=='packet-missing' else 200, 'passed': True, 'bytes': 100,
             'entries': None if policy['case_order'][index%12] in ('packet-detail','packet-missing') else 1, 'digest': 'a'*64, 'dataDigest': 'b'*64})
     native = {'passed': True, 'sourceIdentity': source, 'sourceIdentityAfter': source, 'sourceStable': True,
+        'databaseIdentity': database_identity(context),
         'settings': copy.deepcopy(policy), 'window': {'startMs': 10, 'endMs': 120010}, 'timeline': 'timeline.json', 'samples': samples,
         'admission': {'planned': 9600, 'attempted': 9600, 'admitted': 9600, 'completed': 9600, 'errors': 0, 'undelivered': 0,
                       'maxActive': 1, 'maxQueue': 0, 'maxLatenessMs': 2, 'dispatchSpanMs': 119987.5}}
@@ -88,7 +91,7 @@ class MatchedDemand(unittest.TestCase):
     def setUp(self):
         temporary=tempfile.TemporaryDirectory();self.addCleanup(temporary.cleanup);self.root=Path(temporary.name)
         self.addCleanup(patch.stopall);patch.object(common,'EVIDENCE',self.root).start();patch.object(companion_reads,'EVIDENCE',self.root).start()
-        self.row=cohort(self.root,{'sha256':'source'},{'run_id':'run'},'10x',STEPS[0],uuid.uuid4().hex)
+        self.row=cohort(self.root,{'sha256':'source'},{'run_id':'run',**role_context('10x')},'10x',STEPS[0],uuid.uuid4().hex)
 
     def test_complete9600_schedule_and_uncertain_boundary_observations_are_retained(self):
         value,_,_=demand.native_demand(self.row);self.assertEqual(len(value['samples']),9600)
@@ -98,6 +101,24 @@ class MatchedDemand(unittest.TestCase):
         missing=next(row for row in value['samples'] if row['name']=='packet-missing')
         detail=next(row for row in value['samples'] if row['name']=='packet-detail')
         self.assertEqual(missing['status'],404);self.assertIsNone(missing['entries']);self.assertIsNone(detail['entries'])
+
+    def test_rehashed_full_demand_ledger_cannot_hide_missing_or_unsafe_role_proof(self):
+        path = Path(self.row['native_evidence']['path']); original = path.read_bytes()
+        demand.native_demand(self.row)
+        for fault in ('missing', 'legacy', 'administrator', 'writable', 'wrong-store'):
+            value = json.loads(original)
+            if fault == 'missing': value.pop('databaseIdentity')
+            elif fault == 'legacy': value['databaseIdentity']['scope'] = 'legacy-inspector-readonly'
+            elif fault == 'administrator': value['databaseIdentity']['setup']['http']['session_user'] = 'meshcore'
+            elif fault == 'writable': value['databaseIdentity']['after']['http']['transaction_read_only'] = 'off'
+            else: value['databaseIdentity']['after']['http']['database'] = 'meshcore'
+            try:
+                common.write_json(path, value); self.row['native_evidence']['sha256'] = common.digest(path)
+                with self.subTest(fault=fault), self.assertRaisesRegex(ValueError, 'application-role'):
+                    demand.native_demand(self.row)
+            finally:
+                path.write_bytes(original); self.row['native_evidence']['sha256'] = common.digest(path)
+        demand.native_demand(self.row)
 
     def test_missing_late_socket_catchup_queue_wrong_case_and_wrong_source_are_invalid(self):
         path=Path(self.row['native_evidence']['path']);original=path.read_bytes()
@@ -149,7 +170,7 @@ class MatchedDemand(unittest.TestCase):
         native=[];batch=uuid.uuid4().hex
         for step in STEPS:
             native.append({'scale':'10x','label':PROFILE['source_labels'][step['side']], 'measured_source':{'sha256':step['side']},
-                'context':{'run_id':'run'},'read_window':{'batch_id':batch}})
+                'context':{'run_id':'run', **role_context('10x')},'read_window':{'batch_id':batch}})
         rows=cohorts(self.root,native,current_ms=10)
         value=demand.demand_comparison(rows,scales=('10x',))
         self.assertTrue(value['passed'],value['missing'])

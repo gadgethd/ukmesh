@@ -8,7 +8,7 @@ import os from 'node:os';
 import path from 'node:path';
 import pg from 'pg';
 import { option } from './sampleData.js';
-import { configureLookupReadOnlyEnvironment, lookupBenchmarkOptions, withLookupSource } from './lookupBenchmarkSession.js';
+import { configureLookupReadOnlyEnvironment, lookupBenchmarkOptions, withLookupSource, collectLookupDatabaseIdentity } from './lookupBenchmarkSession.js';
 import { LOOKUP_RESPONSE_VALIDATION_LIMITS } from './lookupResponseVerifier.js';
 import { lookupSourceIdentity } from './lookupSource.js';
 import { LookupTimeline } from './lookupTimeline.js';
@@ -71,7 +71,7 @@ await withLookupSource(source, async (load, runtime) => {
   const report: LookupResult[] = [];
 
   try {
-    const { counts, snapshot, cases, regionEnabled } = await workloadRoutes.prepare(option(args, 'snapshot'));
+    const { counts, snapshot, cases, regionEnabled, databaseSetup } = await workloadRoutes.prepare(option(args, 'snapshot'));
     const selected = option(args, 'cases')?.split(',');
     if (selected?.some(name => !cases.some(item => item.name === name))) throw new Error('unknown lookup case');
     const cpuBefore = process.cpuUsage(), resourceStarted = performance.now();
@@ -116,6 +116,7 @@ await withLookupSource(source, async (load, runtime) => {
       const explained = await query(`EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) ${item.sql}`, item.params);
       plans.push({ workload: item.workload, sql: item.sql, calls: item.calls, totalMs: item.totalMs, plan: explained.rows[0]['QUERY PLAN'][0] });
     }
+    const databaseIdentity = await collectLookupDatabaseIdentity(runtime, databaseSetup);
     await mkdir(output, { recursive: true });
     const sourceIdentityAfter = await lookupSourceIdentity(source, sourceIdentity.revision);
     const sourceStable = JSON.stringify(sourceIdentityAfter) === JSON.stringify(sourceIdentity);
@@ -125,7 +126,7 @@ await withLookupSource(source, async (load, runtime) => {
       commit: execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim(),
       diffSha256: createHash('sha256').update(execFileSync('git', ['diff', 'HEAD'])).digest('hex'),
       hardware: { cpus: os.cpus().length, model: os.cpus()[0]?.model, memory: os.totalmem() },
-      database: (await query('SELECT version() version')).rows[0], counts, resources,
+      database: (await query('SELECT version() version')).rows[0], databaseIdentity, counts, resources,
       databaseSettings: (await query(`SELECT name,setting,unit FROM pg_settings WHERE name IN
         ('shared_buffers','work_mem','max_connections','max_parallel_workers_per_gather','statement_timeout') ORDER BY name`)).rows,
       settings: { samples, trials, concurrency, cache, clients: fleet.clientCount, productionRateLimits: true, regionEnabled,

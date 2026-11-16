@@ -4,8 +4,24 @@ import path from 'node:path';
 import os from 'node:os';
 import test from 'node:test';
 import { withOperationServer } from './operationRoutes.js';
+import { configureLookupReadOnlyEnvironment } from './lookupBenchmarkSession.js';
 
 test('statistics and exports use the selected revision and close all owners after partial failure', async t => {
+  const keys = ['DATABASE_URL', 'DATABASE_ROLE_ENFORCEMENT', 'DATABASE_SCHEMA',
+    'MESHCORE_HTTP_DATABASE_URL', 'MESHCORE_WORKER_DATABASE_URL',
+    'MESHCORE_INGEST_DATABASE_URL', 'OWNER_DATABASE_URL'];
+  const previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
+  t.after(() => {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  });
+  for (const key of keys) delete process.env[key];
+  configureLookupReadOnlyEnvironment('postgresql://fixture@127.0.0.1/lookup_fixture', process.env);
+  const identity = { current_user: 'fixture', session_user: 'fixture', database: 'lookup_fixture',
+    backend_pid: 123, transaction_read_only: 'on', default_transaction_read_only: 'on',
+    superuser: false, bypass_rls: false };
   const directory = await mkdtemp(path.join(os.tmpdir(), 'operations-source-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   for (const label of ['baseline', 'candidate', 'broken', 'writing', 'writable', 'stale']) {
@@ -13,8 +29,8 @@ test('statistics and exports use the selected revision and close all owners afte
     const append = `import {appendFileSync} from 'node:fs'; const record = value => appendFileSync(${JSON.stringify(evidence)}, value+'\\n');`;
     const files: Record<string, string> = {
       'db/runtime.ts': `${append} export const pool={};
-        export const query=async(sql)=>{if(sql.startsWith('INSERT'))throw Object.assign(new Error('read-only'),{code:'25006'});return {rows:[{value:'on'}]}};
-        export const analyticsQuery=${label === 'writable' ? "async()=>({rows:[{value:'off'}]})" : 'query'};
+        export const query=async(sql)=>{if(sql.startsWith('INSERT'))throw Object.assign(new Error('read-only'),{code:'25006'});return {rows:[${JSON.stringify(identity)}]}};
+        export const analyticsQuery=${label === 'writable' ? `async()=>({rows:[${JSON.stringify({ ...identity, transaction_read_only: 'off' })}]})` : 'query'};
         export async function closeDb(){record('runtime')}`,
       'api/bootstrap/caches.ts': `${append}
         export const STATS_CACHE_TTL_MS=${label === 'baseline' ? 100 : 200};
@@ -48,7 +64,7 @@ test('statistics and exports use the selected revision and close all owners afte
     if (label === 'stale') {
       await assert.rejects(withOperationServer(source, async () => assert.fail('stale chart authority cannot listen')), /fresh persisted chart snapshot/);
     } else if (label === 'writable') {
-      await assert.rejects(withOperationServer(source, async () => assert.fail('writable analytics cannot listen')), /read-only operation pools/);
+      await assert.rejects(withOperationServer(source, async () => assert.fail('writable analytics cannot listen')), /read-only benchmark session identity differs/);
     } else if (label === 'writing') {
       await assert.rejects(withOperationServer(source, async port => {
         const response = await fetch(`http://127.0.0.1:${port}/api/stats`);

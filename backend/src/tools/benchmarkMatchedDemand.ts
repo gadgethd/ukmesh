@@ -2,7 +2,7 @@
 import { mkdir,writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { option } from './sampleData.js';
-import { configureLookupReadOnlyEnvironment,withLookupSource } from './lookupBenchmarkSession.js';
+import { configureLookupReadOnlyEnvironment,withLookupSource,collectLookupDatabaseIdentity } from './lookupBenchmarkSession.js';
 import { lookupSourceIdentity } from './lookupSource.js';
 import { LookupTimeline } from './lookupTimeline.js';
 import { loadLookupHttpWorkload } from './lookupHttpWorkload.js';
@@ -44,6 +44,7 @@ try {
           result.resources={wallMs:performance.now()-started,cpuMicros:process.cpuUsage(cpu),memory:process.memoryUsage(),
             responseValidation:await fleet.readStatistics()};
         });
+        result.databaseIdentity = await collectLookupDatabaseIdentity(runtime, prepared.databaseSetup);
       }finally{await fleet.close();}
     });
     result.sourceIdentityAfter=await lookupSourceIdentity(source,identity.revision);

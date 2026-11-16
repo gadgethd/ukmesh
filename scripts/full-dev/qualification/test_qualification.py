@@ -35,6 +35,7 @@ import source_identity
 import context
 import operations
 from unittest.mock import Mock
+from test_role_evidence import database_identity, role_context
 
 
 MIB = resources.MIB
@@ -770,6 +771,7 @@ class OperationSourceEvidence(unittest.TestCase):
                  for label,digit in (('baseline','a'),('candidate','b'))}
         runs=[]
         for scale in ('1x','10x'):
+            role_scope = role_context(scale)
             for label in sources:
                 token=('a' if scale=='1x' else 'b')*32
                 actors=[f"127.0.{6 if label=='baseline' else 7}.{index+1}" for index in range(8)]
@@ -799,12 +801,35 @@ class OperationSourceEvidence(unittest.TestCase):
                 settings={key:operations.PAIR_POLICY[key] for key in ('trials','statsSamples','exportSamples','clients','exportSpacingMs','httpConcurrency')}
                 runs.append({'scale':scale,'label':label,'fixture_token':scale,'passed':True,
                     'measured_source':sources[label],'source_identity':sources[label],'source_identity_after':sources[label],'source_stable':True,
-                    'pair':{'token':token,'label':label},'context_before':{},'context':{},'source_settings_fixture_stable':True,
+                    'pair':{'token':token,'label':label},'context_before':role_scope,'context':role_scope,'source_settings_fixture_stable':True,
+                    'database_identity':database_identity(role_scope, operations=True),
                     'settings':{**settings,'deadlineMs':30000,'maxResponseBytes':8388608,'readOnly':True},
                     'actors':actors,'executor_profile':{name:{'max':maximum} for name,maximum in (('pool',8),('analyticsPool',2),('ingestPool',2))},
                     'chart_snapshot':snapshot,'records':records,'identity_checks':[{'trial':trial,'passed':True,
                         'csvSamples':operations.PAIR_POLICY['exportSamples'],'geojsonSamples':operations.PAIR_POLICY['exportSamples']} for trial in range(3)]})
         return runs,sources
+
+    def test_operations_reject_role_metadata_without_both_actual_readonly_sessions(self):
+        runs, sources = self.records()
+        operations.validate_operations(runs, sources)
+        for row in runs:
+            for fault in ('missing', 'legacy', 'missing-worker', 'consistent-admin-worker', 'writable-worker', 'wrong-owner'):
+                changed = copy.deepcopy(row)
+                if fault == 'missing': changed.pop('database_identity')
+                elif fault == 'legacy': changed['database_identity']['scope'] = 'legacy-inspector-readonly'
+                elif fault == 'missing-worker': changed['database_identity']['after'].pop('worker')
+                elif fault == 'consistent-admin-worker':
+                    changed['database_identity']['expected']['worker']['user'] = 'meshcore'
+                    for phase in ('setup', 'after'):
+                        changed['database_identity'][phase]['worker']['current_user'] = 'meshcore'
+                        changed['database_identity'][phase]['worker']['session_user'] = 'meshcore'
+                elif fault == 'writable-worker':
+                    changed['database_identity']['after']['worker']['default_transaction_read_only'] = 'off'
+                else: changed['database_identity']['expected']['owner']['database'] = 'meshcore'
+                with self.subTest(scale=row['scale'], label=row['label'], fault=fault):
+                    with self.assertRaisesRegex(ValueError, 'application-role'):
+                        operations.validate_operations([changed], sources)
+                    self.assertFalse(operations.comparison([changed], sources)['passed'])
 
     def test_operations_require_actual_baseline_bytes_complete_trials_identity_and_data_parity(self):
         runs, sources = self.records()
@@ -834,7 +859,7 @@ class OperationSourceEvidence(unittest.TestCase):
         runs, sources = self.records()
         current = {"run_id": "run", "profile_sha256": "profile", "source": {
             "root_content_sha256": "current", "submodules_sha256": "same"}}
-        for row in runs: row["context"] = row['context_before'] = current
+        for row in runs: row["context"] = row['context_before'] = {**current, **role_context(row['scale'])}
         with tempfile.TemporaryDirectory() as temporary:
             directory = Path(temporary)/"run"
             value = {"passed": True, "context": current, "runs": runs, **operations.comparison(runs, sources)}

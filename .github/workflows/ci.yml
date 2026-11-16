@@ -70,6 +70,8 @@ jobs:
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_startup_readiness.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p 'test_target_*.py' -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_companion_ingest_state.py -v
+          python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_node_invocation.py -v
+          python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_role_evidence.py -v
           python3 -B scripts/full-dev/test_control.py -v
           node --test scripts/local-sample/broker-quiescence.test.mjs scripts/local-sample/broker-quiescence-coherent.test.mjs
       - name: Check package and local image release identity

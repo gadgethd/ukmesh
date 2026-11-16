@@ -5,11 +5,17 @@ import { loadLookupHttpWorkload } from './lookupHttpWorkload.js';
 import { createLookupRequestFleet } from './lookupHttpRequests.js';
 import type { LookupRuntime } from './lookupBenchmarkSession.js';
 
-test('shared fixture cases and selected routes retain identities, scopes, content and cleanup for either source',async()=>{
+test('shared fixture cases and selected routes retain identities, scopes, content and cleanup for either source',async t=>{
+  const keys=['DATABASE_URL','MESHCORE_HTTP_DATABASE_URL','DATABASE_ROLE_ENFORCEMENT'] as const;
+  const previous=Object.fromEntries(keys.map(key=>[key,process.env[key]]));
+  t.after(()=>{for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}});
+  process.env['DATABASE_URL']=process.env['MESHCORE_HTTP_DATABASE_URL']='postgresql://fixture@127.0.0.1/lookup_fixture';
+  process.env['DATABASE_ROLE_ENFORCEMENT']='false';
   for(const selected of ['baseline','candidate']){
     const id='1'.repeat(64),packet='2'.repeat(64),observer='3'.repeat(64),events:string[]=[];
     const visible=Array.from({length:1001},()=>({node_id:id}));
-    const query=async(text:string)=>({rows:text.includes('current_setting')?[{value:'on'}]:
+    const query=async(text:string)=>({rows:text.includes('current_setting')?[{current_user:'fixture',session_user:'fixture',database:'lookup_fixture',backend_pid:123,
+        transaction_read_only:'on',default_transaction_read_only:'on',statement_timeout:'30s',search_path:'public',superuser:false,bypass_rls:false}]:
       text.includes('SELECT count(*)::text FROM core.nodes')?[{nodes:'3',observations:'20'}]:
       text.includes('FROM core.node_identity_nodes')?[{node_id:id,name:'Visible Name'}]:
       text.includes('SELECT packet_hash FROM mesh.packets')?[{packet_hash:packet}]:
@@ -34,6 +40,8 @@ test('shared fixture cases and selected routes retain identities, scopes, conten
     try{
       const workload=await loadLookupHttpWorkload(async file=>modules[file],{pool:{query},query} as unknown as LookupRuntime);
       const prepared=await workload.prepare('2026-11-14T00:00:00Z');
+      assert.equal(prepared.databaseSetup.http.current_user,'fixture');
+      assert.equal(prepared.databaseSetup.http.transaction_read_only,'on');
       assert.equal(prepared.cases.length,12);assert.equal(prepared.cases[9]!.expected,404);
       assert.ok(prepared.cases[1]!.route.includes('q=Visible%20Name'));
       assert.ok(prepared.cases[5]!.route.includes('observer='+observer));

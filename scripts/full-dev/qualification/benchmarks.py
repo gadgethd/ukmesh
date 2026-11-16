@@ -16,6 +16,7 @@ from loopback_http import http_get
 from source_identity import expected_sources, identify, validate_measurements
 from read_protocol import IDENTITY, PROFILE, STEPS
 from read_measurements import native_evidence, native_read_comparison, read_comparison, validate_read_batches
+from node_invocation import tool_category, tool_environment
 
 
 def active_fixture() -> dict:
@@ -28,19 +29,25 @@ def active_fixture() -> dict:
 
 
 def node_tool(tool: str, args: list[str], database: str, log: Path, *, timeout: int = 1800) -> int:
-    if tool not in ("benchmarkLookups", "benchmarkMatchedDemand", "benchmarkOperations", "generateSampleDataset", "loadSampleDataset", "prepareSampleDataset",
-                    "soakDatabaseLookups", "checkLookupParity", "checkPathContext", "fullStackTraffic", "dataLifecycle"):
-        raise ValueError("unknown existing qualification tool")
-    endpoint = "postgresql://meshcore:meshcore@127.0.0.1:5433/" + database
-    settings = ["env", "DATABASE_URL=" + endpoint, "DATABASE_POOL_MAX=8",
-                "DATABASE_STATEMENT_TIMEOUT_MS=30000", "PUBLIC_FEATURE_REGION_SCOPING_ENABLED=true"]
-    invocation = [*settings, "node", "--max-old-space-size=512", "--import",
+    category = tool_category(tool)
+    fixture = active_fixture()
+    if category == 'application-read':
+        from probes import inspected_containers
+        settings, configuration = tool_environment(tool, database, fixture, containers=inspected_containers())
+    else:
+        # Existing owned fixture administrator definition; no second password
+        # registry and no fallback from an application permission failure.
+        endpoint = "postgresql://meshcore:meshcore@127.0.0.1:5433/" + database
+        settings, configuration = tool_environment(tool, database, fixture, admin_endpoint=endpoint)
+    invocation = ["node", "--max-old-space-size=512", "--import",
                   str(REPO / "backend/node_modules/tsx/dist/loader.mjs"),
                   str(REPO / f"backend/src/tools/{tool}.ts"), *args]
     log.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    write_json(log.with_suffix(log.suffix + ".invocation.json"), configuration)
     with log.open("xb") as output:
         log.chmod(0o600)
-        result = command(invocation, output_stream=output, timeout=timeout, check=False)
+        result = command(invocation, output_stream=output, timeout=timeout, check=False,
+                         environment_overrides=settings)
     if result.stderr:
         error = log.with_suffix(log.suffix + ".stderr")
         error.write_bytes(result.stderr)

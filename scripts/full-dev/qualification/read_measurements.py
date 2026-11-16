@@ -3,6 +3,7 @@ import datetime as dt
 import hashlib
 import json
 import math
+from role_evidence import validate_database_identity
 from pathlib import Path
 import re
 import statistics
@@ -22,6 +23,7 @@ def native_evidence(mode, record, collector=None):
             or mode['source_identity'] != source or mode['source_stable'] is not True \
             or value['results'] != mode['results'] or value['settings'] != mode['settings']:
         raise ValueError('native read result/source differs from its sealed evidence')
+    validate_database_identity(value.get('databaseIdentity'), record['context'])
     settings = value['settings']
     wanted = {'samples': PROFILE['samples'][str(mode['concurrency'])], 'trials': PROFILE['native_trials'],
               'concurrency': mode['concurrency'], 'cache': mode['cache']}

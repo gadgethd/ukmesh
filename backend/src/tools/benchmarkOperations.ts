@@ -26,6 +26,7 @@ const records: Array<Record<string, unknown>> = [];
 let failure: unknown;
 let chartSnapshot: OperationSnapshot | undefined;
 let executorProfile: unknown;
+let databaseIdentity: unknown;
 const actors = Array.from({ length: policy.clients }, (_, index) => `127.0.${pairLabel === 'baseline' ? 6 : pairLabel === 'candidate' ? 7 : 8}.${index + 1}`);
 try {
   await withOperationServer(source, async (port, snapshot, diagnostics) => {
@@ -72,7 +73,7 @@ try {
           }
         }
       } finally { for (const agent of agents) agent.destroy(); }
-  }, { diagnostics: true });
+  }, { diagnostics: true, onDatabaseIdentity: value => { databaseIdentity = value; } });
 } catch (error) { failure = error; }
 const after = await lookupSourceIdentity(source, sourceIdentity.revision);
 const sourceStable = JSON.stringify(sourceIdentity) === JSON.stringify(after);
@@ -84,6 +85,6 @@ await writeFile(path.join(output, 'operations.json'), JSON.stringify({ passed, a
   settings: { trials: policy.trials, statsSamples: policy.statsSamples, exportSamples: policy.exportSamples, clients: policy.clients,
     deadlineMs: policy.responseDeadlineMs, maxResponseBytes: LOOKUP_RESPONSE_MAX_BYTES, exportSpacingMs: policy.exportSpacingMs,
     readOnly: true, httpConcurrency: policy.httpConcurrency }, pair: pair ? { token: pair.token, label: pair.label } : null,
-  actors, executorProfile, chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
+  actors, executorProfile, databaseIdentity, chartSnapshot, sourceIdentity, sourceIdentityAfter: after, sourceStable, records, identityChecks,
   error: failure instanceof Error ? failure.message : failure ? String(failure) : null }, null, 2) + '\n');
 if (!passed) throw new Error('statistics/export qualification failed; see saved evidence');
