@@ -1714,3 +1714,56 @@ qualification. Do not change workloads, timing or acceptance limits.
   adds resolved service-set/default/override/CI-isolation coverage. Require actual
   settings, read/maintenance behavior, whole-VM resources and unchanged acceptance
   gates before qualification. Keep the failed b034 trial and its raw evidence.
+
+
+## Price PostgreSQL scans for the shared VM
+
+- Fix: the existing root PostgreSQL policy owns random_page_cost=4 and
+  effective_cache_size=512MB, with explicit environment overrides. Keep the
+  256MB/64MB/32MB memory defaults and every connection, worker, durability and
+  resource bound. CI retains its independent database command.
+  - Hidden link: the image's isolated-container initializer left random_page_cost
+    at 1.1 and effective_cache_size at 1536MB. That cache estimate does not fit
+    the same assumptions as the adopted 256MB shared buffers on this shared VM.
+    The q18 index scan read 309,907 blocks and spent 44.5 seconds in the scan;
+    the rematerialization side was empty and no hash or sort spill occurred.
+  - Ownership: declare the planner estimates with the existing main database
+    policy, rather than rewrite chart SQL, force a scan, or tune one caller.
+    effective_cache_size is a planner estimate, not a memory allocation.
+- The bounded same-worker, read-only repeatable-read comparison retained exact
+  SQL, binds, generation20 and all eight ordered result rows (684 bytes). The
+  direct old-cost call took 52.894 seconds; transaction-local 4/512MB took
+  1.616 seconds. Subsequent actual plans chose the existing index at the old
+  costs (32.297 seconds) and a sequential scan at 4/512MB (2.619 seconds).
+  Fixed A/B order and the bundled settings limit attribution; this is not a
+  chart-factory, HTTP or qualification pass. The earlier admission-unavailable
+  attempt and all failed preflights remain preserved.
+- Do not change SQL, privacy, chart freshness/history, queue budgets or any
+  latency criterion. Require the existing config tests, actual adopted settings
+  and full required qualification. Larger VPS deployments may explicitly
+  override both estimates with the documented variables; no VPS action is part
+  of this local change.
+
+
+## Retain learning winners within each edge group
+
+- The worker exhausted its 256MiB JavaScript heap at 21:29 on the retained
+  10x fixture. Runs are serial and their heartbeat timers close; source inspection
+  found no global model cache. The concrete surplus was keeping every scored
+  adjacency candidate for every edge group until a later publication pass.
+- Move the existing stable score sort and eight-choice slice to each group's
+  insertion, then emit its stored winners. Every candidate is still scored;
+  the Map's insertion/overwrite behavior, ties, equations, limits, privacy checks,
+  dataset order, calibration, model hash and publication fences stay identical.
+  The existing aggregate-key bound does not account for this temporary expansion.
+- Five original-code oracle tests passed. One real all-scope, worker-read-only
+  fixture snapshot produced identical 72,488,162-byte ordered outputs and model
+  hashes for original512, changed512 and changed256 processes. Matched512 peak
+  RSS fell from 444,152 to 412,024KiB; aggregation took 5.200 versus 5.576s
+  (7.22% slower in this single diagnostic). Changed256 completed at 374,168KiB
+  peak RSS. Heap allowance and RSS are different measurements.
+- This proves output parity and current-heap completion for that input. It does
+  not reproduce the native crash or certify the complete publication loop.
+  Keep the native crash, Lighthouse failures and failed preflights in evidence;
+  require successful resident learning publication and integrated qualification.
+  No heap/container allowance or input limit is increased.

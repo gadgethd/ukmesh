@@ -553,14 +553,14 @@ export function aggregateLearningEvidence(input: LearningEvidenceInput): { datas
       });
     }
 
-    groupedEdges.set(`${region}|${bucket}|${fromNodeId}`, rows);
+    groupedEdges.set(`${region}|${bucket}|${fromNodeId}`, rows.sort((a, b) => b.score - a.score).slice(0, MAX_EDGE_CHOICES_PER_GROUP));
   }
 
   const edgeRows: EdgePriorWriteRow[] = [];
   for (const [groupKey, rows] of groupedEdges) {
     const [region, bucketText, fromNodeId] = groupKey.split('|');
     const bucket = Number(bucketText);
-    for (const row of rows.sort((a, b) => b.score - a.score).slice(0, MAX_EDGE_CHOICES_PER_GROUP)) {
+    for (const row of rows) {
       edgeRows.push({
         from_node_id: fromNodeId!,
         to_node_id: row.toNodeId,

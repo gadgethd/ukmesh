@@ -60,6 +60,7 @@ class LocalMemoryPolicy(unittest.TestCase):
             'max_parallel_workers_per_gather': '0', 'max_connections': '100',
             'shared_buffers': '256MB', 'maintenance_work_mem': '64MB',
             'autovacuum_work_mem': '32MB',
+            'random_page_cost': '4', 'effective_cache_size': '512MB',
         })
         self.assertEqual(database['image'], 'timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509')
         self.assertEqual(float(database['cpus']), 2)
@@ -96,11 +97,29 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertEqual(int(after['db']['mem_limit']), 2048 * MIB)
         self.assertEqual(int(after['db']['memswap_limit']), 2048 * MIB)
 
+    def test_postgres_planner_overrides_change_only_two_settings_without_changing_resources(self):
+        before = compose('scripts/local-sample/compose.yml')
+        after = compose('scripts/local-sample/compose.yml', POSTGRES_RANDOM_PAGE_COST='2.5',
+                        POSTGRES_EFFECTIVE_CACHE_SIZE='1GB')
+        self.assertEqual(set(after), set(before))
+        expected = self.postgres_settings(before['db'])
+        expected.update(random_page_cost='2.5', effective_cache_size='1GB')
+        self.assertEqual(self.postgres_settings(after['db']), expected)
+        for service in before:
+            if service != 'db':
+                self.assertEqual(after[service], before[service])
+        expected_database = dict(before['db'])
+        expected_database['command'] = after['db']['command']
+        self.assertEqual(after['db'], expected_database)
+        self.assertEqual(int(after['db']['mem_limit']), 2048 * MIB)
+        self.assertEqual(int(after['db']['memswap_limit']), 2048 * MIB)
+
     def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_memory_overrides(self):
         files = ('docker-compose.yml', 'docker-compose.ci.yml')
         before = compose(*files)['timescaledb']
         after = compose(*files, POSTGRES_SHARED_BUFFERS='512MB',
-                        POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB')['timescaledb']
+                        POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB',
+                        POSTGRES_RANDOM_PAGE_COST='2.5', POSTGRES_EFFECTIVE_CACHE_SIZE='1GB')['timescaledb']
         self.assertEqual(after, before)
         self.assertEqual(int(before['mem_limit']), 4096 * MIB)
         self.assertEqual(int(before['memswap_limit']), 4096 * MIB)
