@@ -1,4 +1,5 @@
 import { query } from '../db/runtime.js';
+import { BOUNDED_READ_PREPARATION } from '../db/preparedStatements.js';
 import { nodeAliasArraySql } from '../platform/query/networkFilters.js';
 import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
 import { nodeEffectiveOnlineSql } from '../nodes/presence.js';
@@ -118,7 +119,9 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
        (${packetsFor('src_node_id')})
      ) recent
      ORDER BY time DESC LIMIT 500`,
-    [nodeId, hours, ...scope.params]
+    [nodeId, hours, ...scope.params],
+    undefined,
+    BOUNDED_READ_PREPARATION,
   );
   return res.rows;
 }

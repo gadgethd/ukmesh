@@ -118,7 +118,7 @@ function queryCounts(text:string,values:unknown[]) {
 }
 
 const samples: {elapsedMs: number; values: Record<string,number>}[] = [];
-const reads: {name: string; ms: number; status: number; bytes: number; entries: number|null}[] = [];
+const reads: {name: string; ms: number; startElapsedMs: number; slot: number; burstOrdinal: number; status: number; bytes: number; entries: number|null}[] = [];
 const seen = new Set<string>();
 let ws: WebSocket | undefined, readWork: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 let failure: unknown;
@@ -165,9 +165,10 @@ try {
   });
   await waitForInitialState(ws);
   let started=performance.now();
-  let lastBackground=0, metricsFailures=0;
+  let lastBackground=0, metricsFailures=0, measuredBurstOrdinal=0;
   const warmupReads: typeof reads = [];
   const readBurst=async(target=reads,measureMetrics=true)=>{
+    const burstOrdinal=measureMetrics?++measuredBurstOrdinal:0;
     const selected=routes.map(route=>[...route]);
     if (performance.now()-started-lastBackground>=60_000) {
       selected[selected.length-1]=['background-charts','/api/stats/charts?network=ukmesh'];
@@ -184,7 +185,8 @@ try {
         const value=JSON.parse(Buffer.from(body).toString());
         entries=Array.isArray(value)?value.length:Array.isArray(value?.nodes)?value.nodes.length:null;
       } catch { status=0; }
-      target.push({name:name!,ms:performance.now()-at,status,bytes,entries});
+      const ended=performance.now();
+      target.push({name:name!,ms:ended-at,startElapsedMs:at-started,slot,burstOrdinal,status,bytes,entries});
     }));
     if (!measureMetrics) return;
     try {
@@ -291,7 +293,7 @@ try {
     wsPackets:seen.size,wsMissingCount:count-seen.size,
     wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
     wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode,closeReason:wsCloseReason},
-    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
+    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,reads,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));

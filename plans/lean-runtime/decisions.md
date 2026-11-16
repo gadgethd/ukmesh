@@ -1547,3 +1547,36 @@ qualification. Do not change workloads, timing or acceptance limits.
     workflow-specific policy or duplicated lock/protocol constants are added.
 - Preserve PostgreSQL's session/crash-release constraint. Independent source
   review passed; focused, real-PostgreSQL and fresh stack checks remain required.
+
+## Reuse bounded preparation for unchanged node history
+
+- Fix: opt the history read into the existing connection-owned, 32-definition
+  bounded statement registry. It caches SQL definitions, never response rows.
+  - Surplus: the exact history SQL repeatedly incurred planning work even for
+    repeated values. A fixed read-only AB/BA/AB diagnostic returned identical
+    ordered500-row bytes in all48 calls; prepared wall time fell60.9%, while
+    Node CPU rose1.1%. This is diagnostic evidence, not a C8-tail cure.
+  - Hidden link: PostgreSQL may reuse a generic plan while aliases and privacy
+    generations change. Real disposable-database behavior coverage must prove
+    current data and fail-closed fences after actual generic executions.
+  - Ownership: retain the existing runtime checkout, per-client preparation
+    bound, overflow fallback and connection disposal. SQL, binds, history
+    windows, limits, DTO, privacy fences and automatic plan choice stay exact.
+- Promote the production hint and new native behavior test first. Keep the old
+  mock assertions unchanged until that native coverage passes; then normalize
+  QueryConfig at the test boundary and retain every assertion. No test-only
+  product factory, injection argument, alias rewrite or second registry.
+- Preserve genuine5adc latency failure and all earlier failures. Native tests
+  use effective API-role privileges on one real read-only client in a uniquely
+  owned database, not an authenticated application-session permission proof.
+
+## Retain existing measured reads for latency diagnosis
+
+- Fix: persist the already collected successful read records with their
+  existing start offset, slot and burst ordinal, after timed work finishes.
+  - Surplus: records were retained in memory for quantiles but omitted from
+    evidence; only failures survived, preventing precise burst attribution.
+  - Ownership: the existing workload owns every request and clock. Retain all
+    actual measured and drain-tail rows; no sampling, timer, warmup, request,
+    acceptance or response change. Fatal failures before final output can
+    still lack those rows; do not invent missing observations.
