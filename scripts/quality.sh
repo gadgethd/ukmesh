@@ -68,50 +68,53 @@ BASE_REF="${BASE_REF:-}"
 MODE="${1:-all}"
 
 lint() {
-  local files=""
   if [ "$MODE" = "--all" ]; then
     echo "== ruff (all files — legacy debt may appear) =="
     "$RUFF" check .
     return
   fi
+
+  # Read paths NUL-separated into an array: a file called "my module.py" must not
+  # be passed to ruff as two paths.
+  local -a files=()
   if [ -n "$BASE_REF" ] && git rev-parse --verify --quiet "$BASE_REF" >/dev/null; then
-    files=$(git diff --name-only --diff-filter=ACMR "$BASE_REF"...HEAD -- '*.py' | tr '\n' ' ')
     echo "== ruff (changed vs $BASE_REF) =="
+    while IFS= read -r -d '' f; do files+=("$f"); done \
+      < <(git diff -z --name-only --diff-filter=ACMR "$BASE_REF"...HEAD -- '*.py')
   else
-    # Untracked files are part of the change: a new module that is not staged yet
-    # must still be linted, or the first commit of a broken file passes the gate.
-    files=$( { git diff --name-only --diff-filter=ACMR HEAD -- '*.py'; \
-               git diff --name-only --diff-filter=ACMR --cached -- '*.py'; \
-               git ls-files --others --exclude-standard -- '*.py'; } | sort -u | tr '\n' ' ')
     echo "== ruff (uncommitted + untracked changes) =="
+    while IFS= read -r -d '' f; do files+=("$f"); done < <(
+      { git diff -z --name-only --diff-filter=ACMR HEAD -- '*.py'
+        git diff -z --name-only --diff-filter=ACMR --cached -- '*.py'
+        git ls-files -z --others --exclude-standard -- '*.py'; } )
   fi
-  # A clean tree has no uncommitted changes, so falling back to the last commit
-  # keeps this from being a gate that passes having checked nothing.
-  if [ -z "${files// /}" ]; then
+
+  # A clean tree has no uncommitted changes; falling back to the last commit keeps
+  # this from being a gate that passes having checked nothing.
+  if [ "${#files[@]}" -eq 0 ]; then
     if git rev-parse --verify --quiet HEAD~1 >/dev/null; then
-      files=$(git diff --name-only --diff-filter=ACMR HEAD~1 HEAD -- '*.py' | tr '\n' ' ')
-      if [ -n "${files// /}" ]; then
-        echo "== ruff (tree clean; files changed by HEAD $(git rev-parse --short HEAD)) =="
-      else
-        echo "== ruff (tree clean; HEAD $(git rev-parse --short HEAD) changed no python files) =="
-      fi
+      while IFS= read -r -d '' f; do files+=("$f"); done \
+        < <(git diff -z --name-only --diff-filter=ACMR HEAD~1 HEAD -- '*.py')
+      echo "== ruff (tree clean; files changed by HEAD $(git rev-parse --short HEAD)) =="
     else
-      files=$(git ls-files '*.py' | tr '\n' ' ')
+      while IFS= read -r -d '' f; do files+=("$f"); done < <(git ls-files -z -- '*.py')
       echo "== ruff (tree clean, no parent commit; all tracked python files) =="
     fi
   fi
-  if [ -z "${files// /}" ]; then
-    echo "no python files in scope; nothing to lint"
-    return 0
+
+  if [ "${#files[@]}" -eq 0 ]; then
+    # Nothing to lint is not a pass: say it and fail, so a repository cannot earn a
+    # green lint check from an empty scope.
+    echo "quality: no python files in scope" >&2
+    return 2
   fi
-  # shellcheck disable=SC2086
-  "$RUFF" check $files
+  "$RUFF" check "${files[@]}"
 }
 
 patterns() {
   if [ -z "$HCHECK" ]; then
-    echo "== hcheck (not installed; pattern rules skipped) =="
-    return 0
+    echo "quality: hcheck not installed; the pattern gate cannot run" >&2
+    return 2
   fi
   echo "== hcheck (patterns ruff cannot express) =="
   "$HCHECK" run .
@@ -121,10 +124,28 @@ tests() {
   # A repository may own its test entry point (unittest, cargo, npm …). The file
   # holds one argv line; it is executed directly, never through a shell.
   if [ -f scripts/test-cmd.txt ]; then
-    local -a argv=()
-    read -r -a argv < <(grep -v '^[[:space:]]*#' scripts/test-cmd.txt | head -1)
-    if [ "${#argv[@]}" -eq 0 ]; then
+    # shlex semantics, not `read -a`: quoting must work, and a leading `python`
+    # must become the interpreter that actually has the dependencies.
+    local line py
+    line=$(grep -v '^[[:space:]]*#' scripts/test-cmd.txt | grep -v '^[[:space:]]*$' | head -1)
+    if [ -z "$line" ]; then
       echo "quality: scripts/test-cmd.txt is empty" >&2
+      return 2
+    fi
+    py=$(pick_python) || true
+    local -a argv=()
+    while IFS= read -r -d '' tok; do argv+=("$tok"); done \
+      < <(PYTHON_ARG="$py" python3 - "$line" <<'PY'
+import os, shlex, sys
+toks = shlex.split(sys.argv[1])
+py = os.environ.get("PYTHON_ARG") or ""
+if py and toks and toks[0] in ("python", "python3"):
+    toks[0] = py
+sys.stdout.write("".join(t + "\0" for t in toks))
+PY
+)
+    if [ "${#argv[@]}" -eq 0 ]; then
+      echo "quality: scripts/test-cmd.txt did not parse" >&2
       return 2
     fi
     echo "== test command (${argv[*]}) =="
