@@ -89,3 +89,4 @@ terrain-tiles/
 
 # worktree symlink
 backend/node_modules
+verification/
