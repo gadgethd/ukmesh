@@ -510,8 +510,6 @@ export function createStatsService(deps: StatsServiceDeps) {
   function beginCanonicalChartRefresh(
     network: string | undefined,
     scope: string,
-    key: string,
-    visibilityGeneration: number,
   ): Promise<unknown> {
     const existing = chartsInflight.get(scope);
     if (existing) return existing;
@@ -519,7 +517,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       throw new StatsWorkOverloadedError();
     }
     const refreshStartedAt = Date.now();
-    console.log(`[stats] chart refresh started scope=${scope} visibilityGeneration=${visibilityGeneration}`);
+    let refreshGeneration: number | undefined;
     let refresh!: Promise<unknown>;
     refresh = (async () => {
       if (initialStatsWarmup) {
@@ -527,46 +525,51 @@ export function createStatsService(deps: StatsServiceDeps) {
           // Chart refresh can still proceed if the lightweight warmup failed.
         });
       }
-      const data = await runHeavyWork(
-        `chart-refresh:${scope}`,
-        () => computeChartsData(network, undefined, visibilityGeneration),
-      );
-      const validated = validateChartSnapshotPayload(
-        data,
-        scope,
-        chartsSnapshotStaleTtlMs,
-        Date.now(),
-        visibilityGeneration,
-      );
-      if (!validated) {
-        throw new Error('computed chart snapshot failed completeness validation');
-      }
-      const published = await repository.saveChartSnapshot(
-        scope,
-        validated.payload,
-        visibilityGeneration,
-        chartsSnapshotStaleTtlMs,
-      ).catch((error: unknown) => {
-        // A transient persistence failure must not discard a newly completed
-        // in-memory response, but it is visible for operators and retried on
-        // the next successful refresh.
-        console.warn(
-          `[stats] chart snapshot persistence failed scope=${scope}:`,
-          error instanceof Error ? error.message : 'unknown error',
+      return runHeavyWork(`chart-refresh:${scope}`, async () => {
+        // Admission may wait behind fixture preparation or another process.
+        // Resolve authority only once this task owns the analytical boundary.
+        const visibilityGeneration = await getPublicVisibilityGeneration();
+        refreshGeneration = visibilityGeneration;
+        const key = `${scope}:v${visibilityGeneration}`;
+        console.log(`[stats] chart refresh started scope=${scope} visibilityGeneration=${visibilityGeneration}`);
+        const data = await computeChartsData(network, undefined, visibilityGeneration);
+        const validated = validateChartSnapshotPayload(
+          data,
+          scope,
+          chartsSnapshotStaleTtlMs,
+          Date.now(),
+          visibilityGeneration,
         );
-        return false;
+        if (!validated) {
+          throw new Error('computed chart snapshot failed completeness validation');
+        }
+        const published = await repository.saveChartSnapshot(
+          scope,
+          validated.payload,
+          visibilityGeneration,
+          chartsSnapshotStaleTtlMs,
+        ).catch((error: unknown) => {
+          // A transient persistence failure must not discard a newly completed
+          // in-memory response, but it is visible for operators and retried on
+          // the next successful refresh.
+          console.warn(
+            `[stats] chart snapshot persistence failed scope=${scope}:`,
+            error instanceof Error ? error.message : 'unknown error',
+          );
+          return false;
+        });
+        if (!published) {
+          throw new Error('chart snapshot privacy generation changed before publication');
+        }
+        if (!closed) chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
+        console.log(
+          `[stats] chart refresh published scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}`,
+        );
+        return validated.payload;
       });
-      if (!published) {
-        throw new Error('chart snapshot privacy generation changed before publication');
-      }
-      if (!closed) chartsCache.set(key, { ts: validated.generatedAtMs, data: validated.payload });
-      console.log(
-        `[stats] chart refresh published scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}`,
-      );
-      return validated.payload;
     })().catch((error: unknown) => {
       console.warn(
-        `[stats] chart refresh failed scope=${scope} visibilityGeneration=${visibilityGeneration} durationMs=${Date.now() - refreshStartedAt}:`,
+        `[stats] chart refresh failed scope=${scope} visibilityGeneration=${refreshGeneration ?? 'unavailable'} durationMs=${Date.now() - refreshStartedAt}:`,
         error instanceof Error ? error.message : 'unknown error',
       );
       throw error;
@@ -620,12 +623,7 @@ export function createStatsService(deps: StatsServiceDeps) {
 
     let promise: Promise<unknown>;
     try {
-      promise = beginCanonicalChartRefresh(
-        network,
-        scope,
-        key,
-        visibilityGeneration,
-      );
+      promise = beginCanonicalChartRefresh(network, scope);
     } catch (error) {
       if (cached) return refreshCachedRegionHealth(cached.data);
       throw error;

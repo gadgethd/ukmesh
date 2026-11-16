@@ -560,3 +560,66 @@ test('observer activity cache is fenced by privacy generation, including in-flig
   generation = 3;
   await assert.rejects(service.getObserverActivity('ukmesh'), /privacy generation changed/);
 });
+
+
+test('a queued chart refresh resolves generation after admission and publishes only its actual key', async t => {
+  let generation = 1;
+  let admit!: () => void;
+  let queued!: () => void;
+  const gate = new Promise<void>(resolve => { admit = resolve; });
+  const enqueued = new Promise<void>(resolve => { queued = resolve; });
+  const computed: number[] = [];
+  const published: number[] = [];
+  let admissions = 0;
+  const chartsCache = new Map<string, { ts: number; data: unknown }>();
+  const chartsInflight = new Map<string, Promise<unknown>>();
+  const service = createStatsService({
+    statsCache: new Map(), statsCacheTtlMs: 60_000,
+    chartsCache, chartsCacheTtlMs: 60_000, chartsInflight,
+    repository: {
+      loadChartSnapshot: async () => null,
+      fetchChartsData: async (_network: unknown, _observer: unknown, actualGeneration: number) => {
+        computed.push(actualGeneration);
+        return emptyChartsData();
+      },
+      fetchChannelTraffic: async () => ({ rows: [] }),
+      saveChartSnapshot: async (_scope: unknown, payload: { snapshot: { visibilityGeneration: number } }, actualGeneration: number) => {
+        assert.equal(payload.snapshot.visibilityGeneration, actualGeneration);
+        published.push(actualGeneration);
+        return actualGeneration === generation;
+      },
+    } as unknown as StatsRepository,
+    getPublicVisibilityGeneration: async () => generation,
+    maskDecodedPathNodes: () => [],
+    runHeavyWork: async (workload, task) => {
+      assert.equal(workload, 'chart-refresh:ukmesh');
+      admissions++;
+      queued();
+      await gate;
+      return task();
+    },
+  });
+  t.after(service.close);
+  const first = service.getCharts('ukmesh', undefined, 1);
+  let second: Promise<unknown> | undefined;
+  try {
+    await enqueued;
+    generation = 2; // Another admitted owner completed privacy preparation.
+    second = service.getCharts('ukmesh', undefined, 2);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(computed, [], 'queued work must not rebuild either generation');
+    assert.deepEqual(published, []);
+    assert.equal(admissions, 1, 'one scope must retain a single in-flight refresh across generations');
+    assert.equal(chartsInflight.size, 1);
+    admit();
+    const [left, right] = await Promise.all([first, second]);
+    assert.strictEqual(left, right);
+    assert.deepEqual(computed, [2], 'the obsolete pre-admission generation must never reach fact reconstruction');
+    assert.deepEqual(published, [2]);
+    assert.deepEqual([...chartsCache.keys()], ['ukmesh:v2']);
+    assert.equal(chartsInflight.size, 0);
+  } finally {
+    admit();
+    await Promise.allSettled([first, ...(second ? [second] : [])]);
+  }
+});

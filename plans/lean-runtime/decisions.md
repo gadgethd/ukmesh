@@ -1400,3 +1400,31 @@ qualification. Do not change workloads, timing or acceptance limits.
   optional dispositions (`41263fec`). Both existing real-PostgreSQL ordinary
   and prepared privacy-fence tests then passed without skips (`87ed1abc`), with
   their temporary databases and instance removed; independent audit `ac6ed9a8`.
+
+## Bulk fixture preparation and chart refresh share one admitted boundary
+
+- Fix: explicit fixture preparation joins the existing database heavy-work
+  admission before its first mutation and retains the claim through derived
+  publication. It keeps two connections: one admission session and one sequential
+  work session. SQL, history windows, durability and all timeouts stay unchanged.
+  - Hidden link: preparation publishes a visibility generation before its
+    path facts finish, while normal chart warmup can independently rebuild the
+    same facts. The 0eee949 10x rehearsal recorded overlapping work and an
+    82.139-second query against the existing 60-second budget.
+  - Needless link: separate setup and runtime owners compete for the same
+    analytical resources despite an existing shared admission mechanism.
+- Fix: a canonical chart job obtains its current privacy generation after
+  admission, and derives its cache key there. Computation, validation, SQL
+  publication and caching use that generation under the same claim.
+  - Hidden link: caller-supplied generation and cache key can become obsolete
+    while a job waits behind another process. Scope single-flight and final
+    privacy publication fences remain in force.
+- Remove the obsolete count in the admission comment; retain PostgreSQL's
+  session ownership and crash-release constraint.
+- Regression coverage uses the existing migrated 25-packet fixture, real
+  independent chart/preparation owners, exact owned cancellation, whole-window
+  coverage, and a privacy change during deferred chart admission. Native waits
+  observe live lock relationships rather than SQL formatting.
+- The failed 10x rehearsal remains failed (map p95 253.084ms, sustained swap
+  65.763s, chart budget failure). Coordination fixes have independent source
+  review; native checks and fresh qualification must demonstrate their effect.

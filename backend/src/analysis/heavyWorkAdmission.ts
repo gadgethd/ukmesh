@@ -1,7 +1,7 @@
 import type { Pool, PoolClient, QueryResultRow } from 'pg';
 
-// One cluster-wide session advisory lock serialises the three analytical jobs
-// that have the highest database hold time. PostgreSQL owns the claim, so a
+// One database-scoped session advisory lock serialises analytical and fixture
+// preparation work across processes. PostgreSQL owns the claim, so a
 // crashed process or severed connection releases it without a stale lock row.
 const HEAVY_WORK_LOCK_CLASS = 1_433_214_840;
 const HEAVY_WORK_LOCK_KEY = 1_463_235_684;
