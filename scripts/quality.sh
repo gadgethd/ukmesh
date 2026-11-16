@@ -24,13 +24,24 @@ has_pytest() { [ -n "${1:-}" ] && "$1" -c 'import pytest' >/dev/null 2>&1; }
 # its virtualenv beside the package (gpu-lab-mcp: gateway/.venv) rather than at
 # the root, and the dependencies live in that interpreter.
 pick_python() {
-  if [ -n "${PYTHON:-}" ]; then echo "$PYTHON"; return 0; fi
+  # An exported PYTHON= silently overrode resolution and made a healthy repo look
+  # broken (it has to satisfy the check, not just exist). Say so and keep going.
+  if [ -n "${PYTHON:-}" ]; then
+    if has_pytest "$PYTHON"; then
+      echo "quality: using PYTHON=$PYTHON (from the environment)" >&2
+      echo "$PYTHON"; return 0
+    fi
+    echo "quality: warning: PYTHON=$PYTHON cannot run the tests (no pytest or not executable); ignoring it" >&2
+  fi
   local candidates=(.venv/bin/python venv/bin/python
                     "$REPO_ROOT/.venv/bin/python" "$REPO_ROOT/venv/bin/python"
                     python3 "$HOME/harness/.venv/bin/python")
   local candidate
   for candidate in "${candidates[@]}"; do
-    if has_pytest "$candidate"; then echo "$candidate"; return 0; fi
+    if has_pytest "$candidate"; then
+      [ -n "${PYTHON:-}" ] && echo "quality: falling back to $candidate" >&2
+      echo "$candidate"; return 0
+    fi
   done
   return 1
 }

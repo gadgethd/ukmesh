@@ -14,6 +14,7 @@
 # Tightening this file is the next step once lint/patterns are baselined.
 
 [verify]
+default_task = "quality-floor"
 required = ["test"]
 
 [[check]]
