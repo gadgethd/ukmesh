@@ -1328,3 +1328,17 @@ failed companion comparison. Fresh matched measurements must use the corrected
 method for both source trees, with unchanged timing, workloads and acceptance
 limits. This tooling change does not itself change the running application or
 RF binaries; record actual image provenance separately from the new tool source.
+
+## Pass fixture context at the read-window validation boundary
+
+The read evidence validator serves both in-progress mode checks and complete
+window checks. Adding authenticated role validation exposed a hidden link: the
+in-progress caller supplied a smaller record without fixture context. Its first
+native mode completed, then the Python owner failed with KeyError before the
+remaining modes or demand cohorts. Retain that failed attempt.
+
+Pass the already captured context explicitly at the owning call. Keep the
+validator free of target discovery and fallback credentials. Add positive
+orchestration coverage through the real validator, then exercise a complete
+single window on the selected fixture before committing and restarting matched
+qualification. Do not change workloads, timing or acceptance limits.

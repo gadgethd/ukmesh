@@ -98,7 +98,8 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
                 'timeline_sha256': digest(output/'timeline.json') if (output/'timeline.json').exists() else None})
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
             if not modes[-1]['passed']: raise RuntimeError('native read window failed; exact partial evidence retained')
-            native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured},
+            native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured,
+                            'context': context_before},
                             {'boundaries': companions.boundaries})
     except BaseException as caught:
         error = caught

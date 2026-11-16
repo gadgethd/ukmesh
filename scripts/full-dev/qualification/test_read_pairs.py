@@ -291,6 +291,97 @@ class ReadPairs(unittest.TestCase):
         for captures in ([(0,0,0),(1,1,2),(2,2,3)], [(0,100,0),(101,101,2),(102,102,4)], [(0,0,0),(2,2,2),(3,3,1)]):
             with self.assertRaises(ValueError): read_timeline.clock_intersection(evidence(captures))
 
+    def test_read_once_hands_owned_context_to_real_native_evidence_for_all_modes(self):
+        context = {'run_id': self.root.name, **role_context('1x')}
+        fixture = {'kind': '1x', 'token': 'owned-synthetic-1x', 'databases': [
+            {'label': label, 'database': database} for label, database in context['targets'].items()]}
+        for label in ('baseline', 'candidate'):
+            with self.subTest(label=label):
+                base = self.base
+                collectors, invocations = [], []
+
+                class Collector:
+                    def __init__(self, request, *, cadence_seconds):
+                        self.origin = None
+                        self.collector_id = uuid.uuid4().hex
+                        self.boundaries, self.records = [], []
+                        self.finished = False
+                        collectors.append(self)
+
+                    def set_scope(self, scope):
+                        offset = len(self.boundaries)
+                        self.boundaries.append({'id': offset, 'scope': scope, 'offset_seconds': offset,
+                            'at': (base + dt.timedelta(seconds=offset)).isoformat()})
+
+                    def start(self):
+                        self.origin = 100
+                        self.set_scope('setup')
+                        self.records = [{'actor': actor, 'name': name, 'passed': True, 'ms': 1,
+                            'sequence': 0, 'start_offset_seconds': .05, 'end_offset_seconds': .051,
+                            'started_at': (base + dt.timedelta(seconds=.05)).isoformat(),
+                            'finished_at': (base + dt.timedelta(seconds=.051)).isoformat(),
+                            'scope_at_start': 0, 'scope_at_finish': 0}
+                            for actor, name in companion_reads.COMPANION_ACTORS.items()]
+
+                    def finish(self):
+                        self.finished = True
+                        return companion_reads.companion_summary(self.records)
+
+                    def evidence(self):
+                        return {'collector_id': self.collector_id, 'boundaries': self.boundaries,
+                                'records': self.records}
+
+                def native(tool, args, database, log, *, timeout):
+                    self.assertEqual(tool, 'benchmarkLookups')
+                    self.assertEqual(database, context['targets']['ukmesh'])
+                    setting = lambda name: args[args.index('--' + name) + 1]
+                    concurrency, cache = int(setting('concurrency')), setting('cache')
+                    self.assertEqual((concurrency, cache),
+                        tuple(PROFILE['modes'][len(invocations)][key] for key in ('concurrency', 'cache')))
+                    invocations.append((concurrency, cache))
+                    settings = {'samples': int(setting('samples')), 'trials': int(setting('trials')),
+                                'concurrency': concurrency, 'cache': cache}
+                    self.assertEqual(settings['samples'], PROFILE['samples'][str(concurrency)])
+                    self.assertEqual(settings['trials'], PROFILE['native_trials'])
+                    output = Path(setting('output')); output.mkdir()
+                    opening = dt.datetime.fromisoformat(collectors[-1].boundaries[-1]['at'])
+                    native_base = opening + dt.timedelta(milliseconds=10)
+                    value = {'at': (native_base + dt.timedelta(milliseconds=20)).isoformat(),
+                        'timeline': 'timeline.json', 'passed': True,
+                        'sourceIdentity': self.sources[label], 'sourceIdentityAfter': self.sources[label],
+                        'sourceStable': True, 'databaseIdentity': database_identity(context), 'settings': settings,
+                        'results': [{'trial': trial, 'name': 'map', 'samples': settings['samples'], 'p95Ms': 40}
+                                    for trial in range(1, settings['trials'] + 1)]}
+                    common.write_json(output / 'lookups.json', value)
+                    common.write_json(output / 'timeline.json', self.native_timeline(native_base, settings))
+                    return 0
+
+                with patch.object(benchmarks, 'active_fixture', return_value=fixture), \
+                     patch.object(benchmarks, 'expected_sources', return_value=self.sources), \
+                     patch.object(benchmarks, 'inventory', return_value={'passed': True}), \
+                     patch.object(benchmarks, 'phase_context', return_value=context), \
+                     patch.object(benchmarks, 'CompanionReads', Collector), \
+                     patch.object(benchmarks, 'node_tool', side_effect=native):
+                    record = benchmarks.read_once(self.root, label=label,
+                        source_root=Path(self.sources[label]['source_root']))
+                self.assertEqual(invocations, [(mode['concurrency'], mode['cache']) for mode in PROFILE['modes']])
+                self.assertEqual(len(collectors), 1)
+                self.assertTrue(collectors[0].finished)
+                self.assertTrue(record['passed'])
+                self.assertEqual(record['context_before'], context)
+                self.assertEqual(record['context'], context)
+                self.assertEqual(len(record['modes']), 4)
+                summary = common.read_json(self.root / f'reads-1x-{label}/summary.json')
+                self.assertTrue(summary['passed'])
+                self.assertEqual(summary['errors'], [])
+                for mode in record['modes']:
+                    native_value = common.read_json(Path(mode['source']))
+                    self.assertEqual(native_value['databaseIdentity']['expected']['http']['database'],
+                                     context['targets']['ukmesh'])
+                    self.assertEqual(native_value['databaseIdentity']['setup']['http']['current_user'], 'meshcore_api')
+                    proof = measured.native_evidence(mode, record, {'boundaries': collectors[0].boundaries})
+                    self.assertGreater(proof['events'], 0)
+
     def test_final_context_failure_or_late_completion_cannot_publish_green(self):
         for fault in ('context', 'deadline'):
             with tempfile.TemporaryDirectory() as temporary:
