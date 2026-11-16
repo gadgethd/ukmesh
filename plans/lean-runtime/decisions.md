@@ -1342,3 +1342,25 @@ validator free of target discovery and fallback credentials. Add positive
 orchestration coverage through the real validator, then exercise a complete
 single window on the selected fixture before committing and restarting matched
 qualification. Do not change workloads, timing or acceptance limits.
+
+
+## A test fixture owns its Redis client through cleanup
+
+- Hidden link: F08 registered stream deletion with `t.Cleanup` but closed its
+  Redis client in a function defer, which runs first. The ignored deletion
+  error left a fixture stream after otherwise passing crash-recovery tests.
+- Fix: keep deletion and close under one cleanup owner. Delete with a fresh,
+  bounded context, check its error, and close the client afterwards. Keep the
+  strict zero-schema/zero-key and exact container-removal checks.
+- The first isolated run remains failed (`74eb43a7`); all eight assertions
+  passed, but one stream remained. The repaired isolated run (`14d9fc00`) and
+  full worktree run (`8faba0f9`) passed with no remaining schemas or keys.
+- Full native validation exercised both Go packages: 1,022 ingestor and 2,965
+  server passing events. Three standalone worker helpers remain disclosed
+  skips and are exercised by passing parents. The original distance-array
+  test's exact HTTP 202 skip is covered by the completed-index overlay. Other
+  skip reasons are rejected. Independent actual audit: `295cdeb2`.
+- CoreScope commit `ec65f8b12e8343b924314ac391be3697bd2a5ebe` contains only the
+  reviewed fixture repair; its test bytes match the validated worktree. Its
+  application implementation is unchanged. This component evidence does not
+  replace full-stack performance or recovery qualification.
