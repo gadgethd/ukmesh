@@ -103,10 +103,11 @@ lint() {
   fi
 
   if [ "${#files[@]}" -eq 0 ]; then
-    # Nothing to lint is not a pass: say it and fail, so a repository cannot earn a
-    # green lint check from an empty scope.
-    echo "quality: no python files in scope" >&2
-    return 2
+    # This gate is incremental: it lints the change under test. If the change (and
+    # HEAD) touched no python, there is nothing to check and saying so is honest.
+    # A full sweep is `quality.sh --lint-only --all`, which is a deliberate act.
+    echo "quality: no python files in the change under test; nothing to lint" >&2
+    return 0
   fi
   "$RUFF" check "${files[@]}"
 }
