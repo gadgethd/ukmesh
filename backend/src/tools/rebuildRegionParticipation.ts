@@ -50,7 +50,9 @@ import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
 import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
 import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
-import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
+import { withHeavyWorkAdmission, tryWithHeavyWorkAdmission,
+  type HeavyWorkAdmissionOptions, type HeavyWorkAdmissionResult } from '../analysis/heavyWorkAdmission.js';
+import { REGION_SNAPSHOT_DEFERRED_EXIT_CODE, REGION_SNAPSHOT_TRY_ADMISSION_ARG } from '../regions/snapshotOutcome.js';
 
 const { Pool } = pg;
 
@@ -100,6 +102,16 @@ function resolveElement(prefixIndex: Map<string, string[]>, element: string): st
 }
 
 export async function rebuildRegionParticipation(): Promise<void> {
+  await rebuildWithAdmission(async options => ({ acquired: true, value: await withHeavyWorkAdmission(options) }));
+}
+
+export function tryRebuildRegionParticipation(): Promise<HeavyWorkAdmissionResult<void>> {
+  return rebuildWithAdmission(tryWithHeavyWorkAdmission);
+}
+
+async function rebuildWithAdmission(
+  admit: (options: HeavyWorkAdmissionOptions<void>) => Promise<HeavyWorkAdmissionResult<void>>,
+): Promise<HeavyWorkAdmissionResult<void>> {
   const databaseUrl = databaseUrlForRole('worker');
   if (!databaseUrl) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const settings = regionRebuildSettings();
@@ -118,7 +130,7 @@ export async function rebuildRegionParticipation(): Promise<void> {
   });
 
   try {
-    await withHeavyWorkAdmission({ pool, workload: 'region-snapshot', task: async publisher => {
+    return await admit({ pool, workload: 'region-snapshot', task: async publisher => {
     let ownsLock = false;
     let taskError: { value: unknown } | undefined;
     try {
@@ -525,7 +537,15 @@ export async function rebuildRegionParticipation(): Promise<void> {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  rebuildRegionParticipation().catch((error: unknown) => {
+  const run = async () => {
+    if (process.argv.includes(REGION_SNAPSHOT_TRY_ADMISSION_ARG)) {
+      const result = await tryRebuildRegionParticipation();
+      if (!result.acquired) process.exitCode = REGION_SNAPSHOT_DEFERRED_EXIT_CODE;
+    } else {
+      await rebuildRegionParticipation();
+    }
+  };
+  run().catch((error: unknown) => {
     console.error('[regions] failed:', error instanceof Error ? error.message : error);
     process.exitCode = 1;
   });

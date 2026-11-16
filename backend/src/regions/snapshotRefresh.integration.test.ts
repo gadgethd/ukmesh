@@ -56,7 +56,7 @@ test('region repair follows real privacy convergence, certifies complete empty r
     UNION ALL SELECT to_jsonb(r)::text FROM core.region_scope_unattributed r
     UNION ALL SELECT to_jsonb(r)::text FROM core.region_scope_run r) rows`)).rows[0].value;
   let runs = 0;
-  const refresher = new RegionSnapshotRefresher({ query, settings: regionRebuildSettings(), run: async () => { runs++; await rebuildRegionParticipation(); } });
+  const refresher = new RegionSnapshotRefresher({ query, settings: regionRebuildSettings(), run: async () => { runs++; await rebuildRegionParticipation(); return 'completed'; } });
   const signal = new AbortController().signal;
   assert.equal(await refresher.runOnce(signal), 'rebuilt');
   const firstGeneration = await readPublicResponseGeneration(query);
@@ -154,6 +154,12 @@ await rebuildRegionParticipation();
 `);
   const childOptions = { script: pathToFileURL(childScript), timeoutMs: 30_000,
     env: { DATABASE_URL: url.href, MESHCORE_WORKER_DATABASE_URL: url.href } };
+  // Run the actual source CLI entrypoint and its fixed background argument,
+  // rather than relying on a dist build from a different candidate.
+  const backgroundOptions = { ...childOptions,
+    script: new URL('../tools/rebuildRegionParticipation.ts', import.meta.url),
+    env: { ...childOptions.env, NODE_OPTIONS: `${process.env['NODE_OPTIONS'] ?? ''} --import=${new URL('../../node_modules/tsx/dist/loader.mjs', import.meta.url).href}`.trim() },
+  };
 
   await t.test('the actual region export waits for shared admission and reads the new generation after admission', async () => {
     const before = await fingerprint();
@@ -207,6 +213,62 @@ await rebuildRegionParticipation();
     } });
   });
 
+  await t.test('a busy background child defers without publication and the next poll publishes the fresh generation', async () => {
+    const before = await fingerprint();
+    const beforeGeneration = await readPublicResponseGeneration(query);
+    let release!: () => void, entered = false, holderPid = 0;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const held = withHeavyWorkAdmission({ pool, workload: 'fixture-prepare', task: async session => {
+      holderPid = Number((await session.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+      entered = true; await gate;
+    } }).then(() => undefined, error => error);
+    const shutdown = new AbortController();
+    const refresh = new RegionSnapshotRefresher({ query, settings: regionRebuildSettings(),
+      run: signal => runRegionSnapshotChild(signal, backgroundOptions) });
+    let running: Promise<unknown> | undefined;
+    try {
+      await waitFor(async () => entered, 'the real fixture owner holds admission');
+      // Two real privacy transitions guarantee a new ready generation while
+      // leaving the final corpus private/empty, including the earlier bad raw.
+      await pool.query("UPDATE core.nodes SET name='Synthetic west' WHERE node_id LIKE 'AABB%'");
+      await pool.query("UPDATE core.nodes SET name='Synthetic private 🚫' WHERE node_id LIKE 'AABB%'");
+      const desired = (await pool.query('SELECT generation::text FROM ops.public_visibility_state WHERE singleton')).rows[0].generation;
+      await convergePacketVisibility(pool, { apply: true, expectedGeneration: desired });
+      const current = await readPublicResponseGeneration(query);
+      assert.ok(current > beforeGeneration);
+      running = refresh.runOnce(shutdown.signal);
+      assert.equal(await running, 'deferred', 'busy child closes before the external owner releases');
+      assert.equal(await fingerprint(), before, 'deferral preserves every published table and certificate');
+      assert.equal((await regionActivity()).length, 0, 'the deferred child leaves no owned session');
+      assert.equal(Number((await pool.query("SELECT COUNT(*)::int AS n FROM pg_locks WHERE pid=$1 AND locktype='advisory' AND granted", [holderPid])).rows[0].n), 1,
+        'the external owner still owns the shared claim');
+      release();
+      assert.equal(await held, undefined);
+      running = refresh.runOnce(shutdown.signal);
+      assert.equal(await running, 'rebuilt');
+      assert.equal((await certificate()).visibility_generation, String(current));
+      assert.equal(Number((await certificate()).scoped_packets), 0);
+      assert.equal(await refresh.runOnce(shutdown.signal), 'fresh');
+      assert.equal((await regionActivity()).length, 0);
+    } finally {
+      shutdown.abort(new Error('owned background deferral cleanup')); release(); await held; await running;
+    }
+  });
+
+  await t.test('a private publisher refusal remains a real background failure', async () => {
+    const before = await fingerprint();
+    const publisher = await pool.connect();
+    try {
+      await publisher.query("SELECT pg_advisory_lock(hashtext('meshcore-region-snapshot-publish'))");
+      await assert.rejects(runRegionSnapshotChild(new AbortController().signal, backgroundOptions), /REGION_SNAPSHOT_CHILD_FAILED.*PUBLISHER_BUSY/s);
+      assert.equal(await fingerprint(), before);
+      assert.equal((await regionActivity()).length, 0);
+    } finally {
+      try { assert.equal((await publisher.query("SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish')) AS unlocked")).rows[0].unlocked, true); }
+      finally { publisher.release(); }
+    }
+  });
+
   await t.test('cancelling the actual child at publication releases both same-session claims and rolls back', async () => {
     const before = await fingerprint();
     const blocker = await pool.connect();
@@ -227,7 +289,7 @@ await rebuildRegionParticipation();
           AND waiting.locktype = 'relation' AND NOT waiting.granted AND waiting.relation = $2::oid
           AND $1::integer = ANY(pg_blocking_pids(activity.pid))
       `, [blockerPid, relationOid])).rows;
-      running = runRegionSnapshotChild(shutdown.signal, childOptions).then(() => undefined, error => error);
+      running = runRegionSnapshotChild(shutdown.signal, backgroundOptions).then(() => undefined, error => error);
       await waitFor(async () => (await blockedPublishers()).length === 1,
         'one actual child session reaches its owned publication relation barrier');
       const activity = await regionActivity();
@@ -250,7 +312,38 @@ await rebuildRegionParticipation();
     }
   });
 
-  await t.test('the child deadline includes shared admission wait without dispatching region work', async () => {
+  await t.test('an admitted background child keeps its deadline and rolls back both claims', async () => {
+    const before = await fingerprint();
+    const blocker = await pool.connect();
+    let running: Promise<unknown> | undefined;
+    try {
+      await blocker.query('BEGIN');
+      await blocker.query('LOCK core.region_scope_stats IN SHARE MODE');
+      const blockerPid = Number((await blocker.query('SELECT pg_backend_pid() AS pid')).rows[0].pid);
+      const relationOid = Number((await pool.query("SELECT 'core.region_scope_stats'::regclass::oid AS oid")).rows[0].oid);
+      running = runRegionSnapshotChild(new AbortController().signal, { ...backgroundOptions, timeoutMs: 5_000 }).then(() => undefined, error => error);
+      await waitFor(async () => (await pool.query(`SELECT EXISTS (
+        SELECT 1 FROM pg_stat_activity activity JOIN pg_locks waiting ON waiting.pid=activity.pid
+        WHERE activity.datname=current_database() AND activity.application_name='meshcore-regions-rebuild'
+          AND waiting.locktype='relation' AND NOT waiting.granted AND waiting.relation=$2::oid
+          AND $1::integer=ANY(pg_blocking_pids(activity.pid))) AS blocked`, [blockerPid, relationOid])).rows[0].blocked,
+      'the admitted background child reaches the real publication barrier');
+      const activity = await regionActivity();
+      assert.ok(activity.length <= 2);
+      assert.equal(activity.filter(row => row.claims === 2).length, 1);
+      assert.match(String(await running), /REGION_SNAPSHOT_DEADLINE/);
+      await blocker.query('ROLLBACK');
+      assert.equal((await regionActivity()).length, 0, 'the deadline settles the actual child and both claims');
+      assert.equal(await fingerprint(), before);
+    } finally {
+      try { await blocker.query('ROLLBACK'); }
+      finally { blocker.release(); await running; }
+    }
+    await rebuildRegionParticipation();
+    assert.equal((await certificate()).visibility_generation, String(await readPublicResponseGeneration(query)));
+  });
+
+  await t.test('the child deadline still bounds an explicitly blocking manual rebuild', async () => {
     const before = await fingerprint();
     let entered = false, release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });

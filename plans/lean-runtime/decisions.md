@@ -1509,3 +1509,41 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Independent source review passed both changes. The original thirteen warmer
   behavior cases plus two structured-progress cases passed privately without
   skips. Full regression checks and the new runtime trial remain required.
+
+## Scheduled regional rebuilds defer before doing work when admission is busy
+
+- Fix: one shared session owner implements blocking admission and a one-shot
+  try operation. Only an explicit false lock result means busy. Query, task,
+  cancellation and cleanup errors remain failures; malformed results fail closed.
+  - Hidden link: a region child's wall deadline includes admission wait, while
+    fixture preparation legitimately holds admission much longer. Starting a
+    waiting child can leave too little budget for its unchanged SQL work.
+  - Needless link: scheduled polling was coupled to blocking manual-command
+    behavior. A busy scheduled attempt now ends promptly and the existing poll
+    reads the latest generation before its next attempt.
+- The background child owns the claim. A fixed internal protocol argument and
+  reserved busy exit share one pure protocol module; the parent receives a typed
+  deferred outcome. It does not certify publication, report success or alter
+  same-generation failure history. The existing next 30-second poll remains.
+- Keep the 180-second child timer armed at spawn, including all work. Direct
+  manual rebuilds retain blocking admission; the manual CLI itself has no such
+  wall timer. Preserve its two-connection pool, private publisher ownership,
+  all SQL and history windows, math and final privacy-generation fence.
+- The a13 replay passed native delivery/latency and every resource gate but
+  failed its logs on a genuine regional deadline and PostgreSQL disconnect.
+  Retained timing permits an admission-wait explanation, not an exact acquired
+  timestamp or SQL duration. A later certificate (92-day window, generation16,
+  finished13:38:52) confirms later publication, not clean prior qualification.
+
+## The admission owner reports cleanup failures explicitly
+
+- Fix: both admission interfaces use the same acquire/task/unlock/reclaim owner.
+  Failed tasks or unlocks destroy that session exactly once. A task error plus
+  unlock error retains both causes. A successful task cannot conceal an unlock
+  failure behind a successful return value.
+  - Special case removed: the previous helper logged a shared unlock failure
+    and destroyed its session but still returned the task's successful value.
+  - Surplus removed: one-shot options omit the blocking retry setting. No
+    workflow-specific policy or duplicated lock/protocol constants are added.
+- Preserve PostgreSQL's session/crash-release constraint. Independent source
+  review passed; focused, real-PostgreSQL and fresh stack checks remain required.

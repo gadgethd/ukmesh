@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { REGION_SNAPSHOT_DEFERRED_EXIT_CODE, REGION_SNAPSHOT_TRY_ADMISSION_ARG,
+  type RegionSnapshotChildOutcome } from './snapshotOutcome.js';
 
 /** Deadline/abort applies to SQL, decode and publication, including a stuck child. */
 export function runRegionSnapshotChild(signal: AbortSignal, options: {
@@ -7,11 +9,12 @@ export function runRegionSnapshotChild(signal: AbortSignal, options: {
   script?: URL;
   env?: NodeJS.ProcessEnv;
   killGraceMs?: number;
-}): Promise<void> {
+}): Promise<RegionSnapshotChildOutcome> {
   signal.throwIfAborted();
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, ['--max-old-space-size=640',
-      fileURLToPath(options.script ?? new URL('../tools/rebuildRegionParticipation.js', import.meta.url))], {
+      fileURLToPath(options.script ?? new URL('../tools/rebuildRegionParticipation.js', import.meta.url)),
+      REGION_SNAPSHOT_TRY_ADMISSION_ARG], {
       env: { ...process.env, ...options.env, REGION_SCOPE_ALLOW_EMPTY: '1' },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -36,8 +39,9 @@ export function runRegionSnapshotChild(signal: AbortSignal, options: {
       cleanup();
       if (signal.aborted) { reject(signal.reason ?? new Error('region snapshot aborted')); return; }
       if (timedOut) { reject(new Error('REGION_SNAPSHOT_DEADLINE')); return; }
+      if (code === REGION_SNAPSHOT_DEFERRED_EXIT_CODE) { resolve('deferred'); return; }
       if (code !== 0) { reject(new Error(`REGION_SNAPSHOT_CHILD_FAILED (${code ?? exitSignal}): ${output}`)); return; }
-      resolve();
+      resolve('completed');
     });
   });
 }

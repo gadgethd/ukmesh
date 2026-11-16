@@ -3,9 +3,10 @@ import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { observeWorkerOutcome } from '../metrics/workers.js';
 import { regionSnapshotHealthy, regionSnapshotPublishedSeconds, regionSnapshotRunning } from '../metrics/regions.js';
 import type { regionRebuildSettings } from './rebuildSettings.js';
+import type { RegionSnapshotChildOutcome } from './snapshotOutcome.js';
 
 type Settings = ReturnType<typeof regionRebuildSettings>;
-export type RegionRefreshOutcome = 'fresh' | 'rebuilt' | 'unavailable' | 'backoff' | 'failed';
+export type RegionRefreshOutcome = 'fresh' | 'rebuilt' | 'deferred' | 'unavailable' | 'backoff' | 'failed';
 
 /** One background operation; SQL remains authoritative for publication/serving. */
 export class RegionSnapshotRefresher {
@@ -16,7 +17,7 @@ export class RegionSnapshotRefresher {
 
   constructor(private readonly options: {
     query: DatabaseQueryFn;
-    run: (signal: AbortSignal) => Promise<void>;
+    run: (signal: AbortSignal) => Promise<RegionSnapshotChildOutcome>;
     settings: Settings;
     now?: () => number;
   }) {}
@@ -69,7 +70,12 @@ export class RegionSnapshotRefresher {
     this.attemptedGeneration = state.generation;
     regionSnapshotRunning.set(1);
     try {
-      await this.options.run(signal);
+      const outcome = await this.options.run(signal);
+      signal.throwIfAborted();
+      if (outcome === 'deferred') {
+        observeWorkerOutcome('region_scope', 'rebuild', 'skipped');
+        return 'deferred';
+      }
       // The child may have observed a newer ready generation than this poll.
       const published = await this.state();
       if (!published.fresh) throw new Error('REGION_SNAPSHOT_NOT_CERTIFIED');
