@@ -1469,3 +1469,43 @@ qualification. Do not change workloads, timing or acceptance limits.
   SQL-text cancellation probe with actual blocker relationships. Five private
   helper tests passed without skips. Disposable PostgreSQL behavior checks and
   renewed 10x qualification remain required; both prior failed runs stay failed.
+
+## Path CPU capacity follows the lean runtime budget
+
+- Fix: set the existing path-resolve worker default to one in the application,
+  main Compose configuration and example environment. Keep the generic worker
+  pool independent of the application's runtime policy. Larger hosts can set
+  the existing override; its one-to-eight bounds remain unchanged.
+  - Hidden link: worker count selects both CPU concurrency and the possible
+    number of independently retained worker contexts. A CPU-based default alone
+    does not account for this VM's memory budget.
+  - Hidden link: an absent environment value must select the same application
+    capacity as the main configuration. DEV's clean launcher and larger-host
+    main Compose overrides are documented with their actual scopes.
+- The 29b replay passed delivery, deadlines, foreground latency and log checks,
+  but failed headroom (11/12 steady samples) and swap growth (169,590,784 bytes).
+  At the low-headroom sample, backend anonymous memory rose from 162,750,464 to
+  550,903,808 bytes near slow-path completion activity. Worker context allocation
+  is a candidate cause, not a measured attribution: hydration is lazy and LIFO
+  dispatch can leave a second worker unused. No per-worker heap/CPU trace exists.
+- This is a prospective capacity change. Preserve algorithms, complete graphs,
+  history, caches, queues and deadlines. The unchanged full-stack 1,800-packet
+  trial must establish throughput and resource behavior before advancing. The
+  failed 29b evidence stays failed; no resource threshold or warmup changes.
+
+## Progress serialization belongs to its producer
+
+- Fix: the owner last-hop warmer emits each progress record as one JSON line,
+  keeping its existing message and numerical fields together. The existing log
+  collector already interprets structured zero counters correctly.
+  - Needless link: Node's multiline object display exposed its formatting to
+    the strict failure detector. Two recorded `failed: 0,` lines were benign
+    counters, while the same older run also contained real timeout failures.
+  - Surplus: format-specific exceptions in the collector would couple it to
+    one producer. Keep the collector and its criteria unchanged.
+- Preserve all warnings, scheduling, concurrency, cache policy and individual
+  failure handling. Keep the external owner-dashboard/cache rationale and
+  remove comments that restate the implementation.
+- Independent source review passed both changes. The original thirteen warmer
+  behavior cases plus two structured-progress cases passed privately without
+  skips. Full regression checks and the new runtime trial remain required.

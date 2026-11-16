@@ -6,12 +6,13 @@ environment overrides. Feature switches, history, visibility rules, query
 deadlines and public response limits retain their existing meanings.
 
 For a larger host, the main Compose file accepts `BACKEND_MEMORY_LIMIT`,
-`DATABASE_POOL_MAX`, `WORKER_DATABASE_POOL_MAX`, `HOPREACH_CPUS`,
+`DATABASE_POOL_MAX`, `WORKER_DATABASE_POOL_MAX`, `PATH_RESOLVE_WORKERS`, `HOPREACH_CPUS`,
 `HOPREACH_MEMORY_LIMIT`, and the paired `ALLOY_MEMORY_LIMIT` /
 `ALLOY_GOMEMLIMIT` settings. For example:
 
 ```sh
 BACKEND_MEMORY_LIMIT=2g DATABASE_POOL_MAX=12 WORKER_DATABASE_POOL_MAX=3 \
+PATH_RESOLVE_WORKERS=2 \
 HOPREACH_CPUS=4 HOPREACH_MEMORY_LIMIT=1536m \
 ALLOY_MEMORY_LIMIT=256m ALLOY_GOMEMLIMIT=192MiB \
 docker compose --env-file /dev/null -f docker-compose.yml config --quiet
@@ -20,6 +21,10 @@ docker compose --env-file /dev/null -f docker-compose.yml config --quiet
 Use those overrides with the host's normal main-Compose launch configuration.
 The local `dev-all.sh` launcher clears caller environment settings and supplies
 fixed local qualification wiring; these examples do not change its profile.
+
+The lean API default is one path-resolution worker. Larger hosts can raise
+`PATH_RESOLVE_WORKERS` up to eight; each worker retains its own full path context.
+Review memory use and queue latency when changing this concurrency setting.
 
 Local DEV starts the complete stack with built frontend assets:
 
