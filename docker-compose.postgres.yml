@@ -19,11 +19,6 @@ services:
       - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
       - -c
       - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-32MB}
-      # Planner costs describe the whole-stack cache; they allocate no memory.
-      - -c
-      - random_page_cost=${POSTGRES_RANDOM_PAGE_COST:-4}
-      - -c
-      - effective_cache_size=${POSTGRES_EFFECTIVE_CACHE_SIZE:-512MB}
     cpus: 2
     mem_limit: &postgres-memory 2g
     memswap_limit: *postgres-memory

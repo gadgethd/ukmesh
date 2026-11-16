@@ -76,6 +76,26 @@ class ApplicationBoundary(unittest.TestCase):
             _, proof = owner.tool_environment(tool, MAIN, fixture, containers=containers)
             self.assertEqual(proof["category"], "application-read")
 
+    def test_explicit_analytics_estimates_follow_read_consumers_without_leaking_into_admin_tools(self):
+        fixture, containers = inputs()
+        settings = {"DATABASE_ANALYTICS_RANDOM_PAGE_COST": "4",
+                    "DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE": "512MB"}
+        for key, value in settings.items(): setting(containers, key, value)
+        before = copy.deepcopy(containers)
+        for tool in owner.READ_TOOLS:
+            env, proof = owner.tool_environment(tool, MAIN, fixture, containers=containers)
+            self.assertEqual({key: env[key] for key in settings}, settings)
+            self.assertEqual({key: proof["pool_settings"][key] for key in settings}, settings)
+            self.assertNotIn(SECRET, json.dumps(proof))
+        for tool in owner.ADMIN_TOOLS:
+            env, _ = owner.tool_environment(tool, MAIN, fixture,
+                admin_endpoint=f"postgresql://meshcore:{SECRET}@127.0.0.1:5433/{MAIN}")
+            self.assertTrue(set(settings).isdisjoint(env))
+        self.assertEqual(containers, before)
+        fixture, containers = inputs()
+        env, _ = owner.tool_environment("benchmarkOperations", MAIN, fixture, containers=containers)
+        self.assertTrue(set(settings).isdisjoint(env), 'absent consumer settings must remain absent')
+
     def test_read_capability_never_accepts_admin_fallback(self):
         fixture, containers = inputs()
         with self.assertRaises(ValueError):

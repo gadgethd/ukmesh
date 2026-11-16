@@ -41,6 +41,26 @@ export function analyticsStatementTimeoutMs(configuredTimeoutMs: number): number
   return configuredTimeoutMs === 0 ? 0 : Math.max(900_000, configuredTimeoutMs);
 }
 
+/** Optional per-analytics-session estimates; absent settings keep server defaults. */
+export function analyticsPlannerOptions(env: NodeJS.ProcessEnv): string | undefined {
+  const random = String(env['DATABASE_ANALYTICS_RANDOM_PAGE_COST'] ?? '').trim();
+  const cache = String(env['DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE'] ?? '').trim();
+  if (random && (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(random)
+    || !Number.isFinite(Number(random)))) {
+    throw new Error('DATABASE_ANALYTICS_RANDOM_PAGE_COST must be a nonnegative decimal');
+  }
+  if (cache) {
+    const match = /^([1-9][0-9]*)(kB|MB|GB|TB)$/.exec(cache);
+    const units: Record<string, bigint> = { kB: 1024n, MB: 1024n ** 2n, GB: 1024n ** 3n, TB: 1024n ** 4n };
+    const bytes = match ? BigInt(match[1]!) * units[match[2]!]! : 0n;
+    if (bytes < 8192n || bytes > 2_147_483_647n * 8192n) {
+      throw new Error('DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE must be a PostgreSQL cache estimate from 8kB to 2147483647 blocks');
+    }
+  }
+  return [random && `-c random_page_cost=${random}`, cache && `-c effective_cache_size=${cache}`]
+    .filter(Boolean).join(' ') || undefined;
+}
+
 export type DatabaseRole = 'http' | 'ingest' | 'worker' | 'owner' | 'migrate';
 
 const roleDatabaseUrlEnv: Record<DatabaseRole, string> = {

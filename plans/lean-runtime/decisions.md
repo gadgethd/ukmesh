@@ -1767,3 +1767,42 @@ qualification. Do not change workloads, timing or acceptance limits.
   Keep the native crash, Lighthouse failures and failed preflights in evidence;
   require successful resident learning publication and integrated qualification.
   No heap/container allowance or input limit is increased.
+
+
+## Finish fixture preparation with current planner statistics
+
+- Keep the early path/identity analysis that supports the facts backfill. After
+  convergence and both backfills finish, analyze packets, packet paths and
+  multibyte facts before releasing the existing heavy-work admission claim.
+  Convergence can rewrite visibility and advance its generation; facts upsert
+  that generation and packet identity backfill modifies packet rows afterward.
+  The earlier analysis therefore does not describe the final bulk state.
+- The existing real-PG fixture/chart handoff test checks that fact-generation
+  statistics describe its fresh ready generation. Preserve all data, privacy,
+  coverage, pool2, cancellation, chart SQL and timing assertions.
+- This closes a fixture ownership gap. The failed22ddb99 preflight, chart-budget
+  error and incomplete ingestion remain failed; fresh statistics alone are not
+  claimed to explain every tail or replace required qualification.
+
+
+## Keep scan estimates with the analytics pool that was measured
+
+- Remove the two database-wide planner overrides. Main backend Compose explicitly
+  supplies DATABASE_ANALYTICS_RANDOM_PAGE_COST=4 and
+  DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE=512MB to its analytics pool only.
+  Without those explicit settings, standalone callers retain server defaults;
+  application names do not choose policy. HTTP, ingest and other workers keep
+  their existing planner settings, pool counts, deadlines, credentials and schema.
+- Validate the two estimates before constructing pools. PostgreSQL connection URL
+  options override pg Pool.options, so preserve existing worker URL read-only and
+  schema options while adding the explicit analytics estimates. Qualification
+  forwards the same actual-consumer keys through its existing invocation owner;
+  administrative fixture/oracle tools receive no new estimates from that owner.
+- The q18 counterfactual proved identical rows and a faster analytical scan, not
+  a safe global policy for ingest or OLTP. The failed22ddb99 run still had late
+  ingest around eight packets/second after statistics caught up; global GUC
+  causality is unproved. Preserve that failed run and all unchanged acceptance
+  limits. Final fixture analysis and pool isolation need their existing native
+  tests and fresh qualification; neither is a claimed cure for every tail.
+- Keep the adopted256MiB learning bound unchanged. No new SQL, index, scan-force,
+  pool, timeout, configuration selector or validation harness is introduced.

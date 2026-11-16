@@ -1,5 +1,5 @@
 import pg from 'pg';
-import { analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
+import { analyticsPlannerOptions, analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
 import { databaseOperation, dbExecutionDuration, dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
 import type { DatabaseQueryFn, StatementHint } from './contracts.js';
@@ -9,6 +9,22 @@ import { checkoutDatabaseClient } from './poolCheckout.js';
 /** Independent HTTP, analytics and ingest execution. Importing this definition reads no process configuration. */
 export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   const databaseConfig = loadDatabaseConfig(env);
+  const plannerOptions = analyticsPlannerOptions(env);
+  const analyticsOptions = [databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : '', plannerOptions]
+    .filter(Boolean).join(' ') || undefined;
+  let analyticsConnectionString = databaseUrlForRole('worker', env);
+  if (plannerOptions && analyticsConnectionString) {
+    // pg gives URL options precedence over Pool.options. Preserve existing RO
+    // and schema options while adding only the explicit analytics estimates.
+    let endpoint: URL;
+    try { endpoint = new URL(analyticsConnectionString); }
+    catch { throw new Error('Invalid worker database URL for analytics planner options'); }
+    if (endpoint.searchParams.has('options')) {
+      const previous = endpoint.searchParams.getAll('options').at(-1);
+      endpoint.searchParams.set('options', [previous, plannerOptions].filter(Boolean).join(' '));
+      analyticsConnectionString = endpoint.href;
+    }
+  }
   const { Pool } = pg;
   const pool = new Pool({
     connectionString: databaseUrlForRole('http', env),
@@ -28,9 +44,9 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   // Dedicated pool for long-running analytical queries.
   // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
   const analyticsPool = new Pool({
-    connectionString: databaseUrlForRole('worker', env),
+    connectionString: analyticsConnectionString,
     application_name: `${databaseConfig.applicationName}-analytics`,
-    options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
+    options: analyticsOptions,
     max: 2,
     idleTimeoutMillis: databaseConfig.idleTimeoutMs,
     connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,

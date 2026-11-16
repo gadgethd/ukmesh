@@ -81,6 +81,15 @@ test('synthetic loader and derived-state preparation work on the complete migrat
       FROM mesh.multibyte_path_fact_state WHERE singleton
     `)).rows[0];
     assert.equal(state.generation, ready);
+    const statistics = (await pool.query(`
+      SELECT most_common_vals::text AS generations, most_common_freqs
+      FROM pg_stats WHERE schemaname = 'mesh' AND tablename = 'multibyte_path_facts'
+        AND attname = 'visibility_generation'
+    `)).rows;
+    assert.equal(statistics.length, 1, 'chart handoff requires analyzed fact-generation statistics');
+    assert.equal(statistics[0].generations, `{${ready}}`,
+      'fact statistics must describe the final published generation, not the pre-convergence generation');
+    assert.deepEqual(statistics[0].most_common_freqs, [1]);
     assert.ok(new Date(state.covered_through).getTime() >= cutoffLowerBound,
       'coverage must include the independently recorded pre-call cutoff');
     const first = (await pool.query('SELECT MIN(time) AS first FROM mesh.packets')).rows[0].first as Date;

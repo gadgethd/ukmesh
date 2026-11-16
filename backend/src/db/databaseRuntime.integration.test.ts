@@ -15,14 +15,24 @@ test('two database runtimes own independent role pools, transactions and shutdow
   for (let index = 0; index < 2; index++) {
     const fixture = await createDisposableDatabase(t, endpoint!, 'runtime_factory');
     names.push(fixture.name);
+    const analyticsUrl = new URL(fixture.url);
+    analyticsUrl.searchParams.set('options', [analyticsUrl.searchParams.get('options'),
+      '-c default_transaction_read_only=on'].filter(Boolean).join(' '));
     const runtime = createDatabaseRuntime({ DATABASE_URL: fixture.url,
       DATABASE_APPLICATION_NAME: fixture.name, DATABASE_POOL_MAX: '1', DATABASE_SCHEMA: 'public',
-      DATABASE_STATEMENT_TIMEOUT_MS: String(2_000 + index * 1_000), MQTT_INGEST_STATEMENT_TIMEOUT_MS: '200' });
+      DATABASE_STATEMENT_TIMEOUT_MS: String(2_000 + index * 1_000), MQTT_INGEST_STATEMENT_TIMEOUT_MS: '200',
+      ...(index === 0 ? { MESHCORE_WORKER_DATABASE_URL: analyticsUrl.href,
+        DATABASE_ANALYTICS_RANDOM_PAGE_COST: '2.5', DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: '1GB' } : {}) });
     fixture.addCleanup(() => runtime.close());
     runtimes.push(runtime);
   }
   const [first, second] = runtimes as [DatabaseRuntime, DatabaseRuntime];
   const pids = new Set<number>();
+  const plannerSql = `SELECT current_setting('random_page_cost') AS random_page_cost,
+    current_setting('effective_cache_size') AS effective_cache_size`;
+  const serverPlanner = (await first.query(plannerSql)).rows[0];
+  assert.notEqual(serverPlanner!.random_page_cost, '2.5', 'native planner oracle needs a distinct server cost');
+  assert.notEqual(serverPlanner!.effective_cache_size, '1GB', 'native planner oracle needs a distinct server cache estimate');
   for (const [index, runtime] of runtimes.entries()) {
     await runtime.query('CREATE TABLE owned (value integer)');
     await runtime.withTransaction(async query => { await query('INSERT INTO owned VALUES ($1)', [index + 1]); });
@@ -40,6 +50,12 @@ test('two database runtimes own independent role pools, transactions and shutdow
     assert.deepEqual(roleRows.map(result => result.rows[0]!.application),
       [names[index], `${names[index]}-analytics`, `${names[index]}-ingest`]);
     assert.deepEqual(roleRows.map(result => result.rows[0]!.timeout), [`${2 + index}s`, '15min', '200ms']);
+    const plannerRows = await Promise.all([runtime.query, runtime.analyticsQuery, runtime.ingestQuery]
+      .map(query => query(plannerSql)));
+    assert.deepEqual(plannerRows.map(result => result.rows[0]), index === 0
+      ? [serverPlanner, { random_page_cost: '2.5', effective_cache_size: '1GB' }, serverPlanner]
+      : [serverPlanner, serverPlanner, serverPlanner]);
+    if (index === 0) assert.equal((await runtime.analyticsQuery("SHOW default_transaction_read_only")).rows[0]!.default_transaction_read_only, 'on');
     for (const result of roleRows) pids.add(result.rows[0]!.pid);
   }
   assert.equal(pids.size, 6, 'all three role pools belong to their individual runtime');
@@ -50,6 +66,7 @@ test('two database runtimes own independent role pools, transactions and shutdow
   assert.deepEqual((await second.query('SELECT value FROM owned ORDER BY value')).rows, [{ value: 2 }, { value: 10 }]);
   await second.analyticsQuery('SELECT 1');
   await second.ingestQuery('SELECT 1');
+  assert.deepEqual((await second.analyticsQuery(plannerSql)).rows[0], serverPlanner);
 });
 
 test('database telemetry separates pool wait, execution, failure and cancellation without leaking connections', {

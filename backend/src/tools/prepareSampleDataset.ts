@@ -65,6 +65,10 @@ export async function prepareSampleDataset(databaseUrl: string): Promise<void> {
         const identity = await backfillPackets(pool, 5000, false, 0, null);
         if (identity.status !== 'packets_complete') throw new Error('fixture packet identity backfill is incomplete');
       }
+      // Convergence and both backfills change the packet/fact distributions after
+      // the earlier join statistics. Refresh them before releasing chart admission.
+      await pool.query(`ANALYZE mesh.packets; ANALYZE mesh.packet_paths;
+        ANALYZE mesh.multibyte_path_facts`);
       const counts = await pool.query(`SELECT 'nodes' AS relation, COUNT(*)::text AS rows FROM core.nodes
         UNION ALL SELECT 'packets', COUNT(*)::text FROM mesh.packets
         UNION ALL SELECT 'paths', COUNT(*)::text FROM mesh.packet_paths
