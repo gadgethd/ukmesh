@@ -1428,3 +1428,44 @@ qualification. Do not change workloads, timing or acceptance limits.
 - The failed 10x rehearsal remains failed (map p95 253.084ms, sustained swap
   65.763s, chart budget failure). Coordination fixes have independent source
   review; native checks and fresh qualification must demonstrate their effect.
+
+## Map suppression owns an exact candidate index
+
+- Fix: build a per-network latitude index inside the existing pure suppression
+  function. Use the same Haversine calculation at equal longitude as a
+  conservative lower bound, then apply the unchanged full-distance predicate.
+  Select the original freshness/node-id rank and preserve stale input order.
+  - Surplus: the old stale-by-fresh scan evaluates same-network nodes whose
+    latitude alone rules out a match. The actual 34,195-node diagnostic measured
+    22.079 seconds of pure computation versus 539 milliseconds selecting input.
+  - Hidden link: latitude traversal order must not become winner order. Original
+    stable freshness ranks remain the authority, including duplicate IDs.
+- Keep coordinate/time filters, networks, configuration, exact radius tolerance,
+  privacy SQL and the refresh transaction unchanged. No cache, pool or setting is
+  added. Dense latitude bands can still require many comparisons.
+- Independent original-loop oracle tests cover order, ties, invalid inputs,
+  radius boundaries, poles, antimeridian and custom policies. Private focused
+  checks passed 19 tests with no skips; full runtime qualification remains open.
+
+## The region child owns its shared admission and publication session
+
+- Fix: the existing heavy-work owner passes a query-only session capability to
+  its task. Regional rebuilds use that same session for shared admission,
+  private publisher ownership and the final publication transaction. The second
+  connection remains available for sequential reads; the pool stays at two.
+  - Hidden link: the region child previously bypassed the shared analytical
+    claim and could overlap the same large packet scans as charts and fixture
+    preparation. Parent ownership would also disappear before an orphaned child.
+  - Needless dependency: a separate publisher checkout plus another admission
+    checkout would exhaust the existing pool before publication.
+- Keep SQL, history, privacy generation fences and the parent's 180-second child
+  deadline unchanged. Acquire the fresh generation after admission. Admission
+  wait is included in the existing deadline.
+- The admission owner alone releases its session. Failed tasks destroy it, and
+  a failed private unlock propagates, preventing nested locks or failed
+  transactions from returning to the pool. Cancellation after acquisition is
+  checked before dispatch.
+- Independent review corrected a stale release expectation and replaced a new
+  SQL-text cancellation probe with actual blocker relationships. Five private
+  helper tests passed without skips. Disposable PostgreSQL behavior checks and
+  renewed 10x qualification remain required; both prior failed runs stay failed.

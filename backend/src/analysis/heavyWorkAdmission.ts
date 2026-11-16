@@ -13,7 +13,7 @@ type AdmissionPool = Pick<Pool, 'connect'>;
 type HeavyWorkAdmissionOptions<T> = {
   pool: AdmissionPool;
   workload: string;
-  task: () => Promise<T>;
+  task: (session: Pick<PoolClient, 'query'>) => Promise<T>;
   signal?: AbortSignal;
   retryMs?: number;
   log?: Pick<Console, 'log' | 'warn'>;
@@ -55,6 +55,7 @@ export async function withHeavyWorkAdmission<T>(
   const waitingStartedAt = Date.now();
   let acquired = false;
   let waitingLogged = false;
+  let taskFailed = false;
   try {
     while (!acquired) {
       options.signal?.throwIfAborted();
@@ -71,7 +72,11 @@ export async function withHeavyWorkAdmission<T>(
       `[db-admission] workload=${options.workload} acquired waitMs=${acquiredAt - waitingStartedAt}`,
     );
     try {
-      return await options.task();
+      options.signal?.throwIfAborted();
+      return await options.task(client);
+    } catch (error) {
+      taskFailed = true;
+      throw error;
     } finally {
       const unlock = await client.query<QueryResultRow>(
         'SELECT pg_advisory_unlock($1, $2) AS unlocked',
@@ -89,8 +94,8 @@ export async function withHeavyWorkAdmission<T>(
       acquired = !unlocked;
     }
   } finally {
-    // If explicit unlock failed, closing this dedicated session is the
-    // authoritative stale-claim reclamation path.
-    client.release(acquired ? new Error('HEAVY_WORK_ADMISSION_RELEASE') : undefined);
+    // A failed task may retain transaction or nested session-lock state even
+    // after our explicit unlock. This owner alone reclaims that session.
+    client.release(acquired || taskFailed ? new Error('HEAVY_WORK_ADMISSION_RELEASE') : undefined);
   }
 }

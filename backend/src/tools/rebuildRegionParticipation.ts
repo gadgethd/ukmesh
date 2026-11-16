@@ -50,6 +50,7 @@ import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
 import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
 import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
+import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 const { Pool } = pg;
 
@@ -116,15 +117,16 @@ export async function rebuildRegionParticipation(): Promise<void> {
     query_timeout: settings.statementTimeoutMs + 1_000,
   });
 
-  let publisher: pg.PoolClient | undefined;
-  let ownsLock = false;
   try {
-    publisher = await pool.connect();
+    await withHeavyWorkAdmission({ pool, workload: 'region-snapshot', task: async publisher => {
+    let ownsLock = false;
+    let taskError: { value: unknown } | undefined;
+    try {
     ownsLock = (await publisher.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_lock(hashtext('meshcore-region-snapshot-publish')) AS locked",
     )).rows[0]?.locked === true;
     if (!ownsLock) throw new Error('REGION_SNAPSHOT_PUBLISHER_BUSY');
-    const visibilityGeneration = await readPublicResponseGeneration((sql) => pool.query(sql));
+    const visibilityGeneration = await readPublicResponseGeneration((sql) => publisher.query(sql));
     const startedAt = Date.now();
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
 
@@ -391,7 +393,7 @@ export async function rebuildRegionParticipation(): Promise<void> {
       return;
     }
 
-    const client = await pool.connect();
+    const client = publisher;
     try {
       await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
@@ -487,8 +489,6 @@ export async function rebuildRegionParticipation(): Promise<void> {
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;
-    } finally {
-      client.release();
     }
 
     console.log(JSON.stringify({
@@ -502,11 +502,24 @@ export async function rebuildRegionParticipation(): Promise<void> {
       unattributedClusters: unattributedClusters.clusters.length,
       elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
     }));
-  } finally {
-    if (publisher) {
-      if (ownsLock) await publisher.query("SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish'))").catch(() => undefined);
-      publisher.release();
+    } catch (error) {
+      taskError = { value: error };
+      throw error;
+    } finally {
+      if (ownsLock) {
+        try {
+          const released = await publisher.query<{ pg_advisory_unlock: boolean }>(
+            "SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish'))",
+          );
+          if (released.rows[0]?.pg_advisory_unlock !== true) throw new Error('REGION_SNAPSHOT_PUBLISHER_RELEASE');
+        } catch (error) {
+          if (taskError) throw new AggregateError([taskError.value, error], 'REGION_SNAPSHOT_TASK_AND_RELEASE_FAILED');
+          throw error;
+        }
+      }
     }
+    } });
+  } finally {
     await pool.end();
   }
 }

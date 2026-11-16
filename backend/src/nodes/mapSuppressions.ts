@@ -81,26 +81,60 @@ export function computeNodeMapSuppressions(
   });
   const fresh = positioned.filter(({ age }) => age <= config.activeWithinDays)
     .sort((a, b) => a.age - b.age || a.node.node_id.localeCompare(b.node.node_id));
+  // Keep the original freshness/node-id winner order even though latitude
+  // lookup visits nearby candidates in a different order.
+  type RankedFresh = (typeof fresh)[number] & { rank: number };
+  const byNetwork = new Map<string, RankedFresh[]>();
+  for (const [rank, entry] of fresh.entries()) {
+    const network = entry.node.network!;
+    const indexed = byNetwork.get(network) ?? [];
+    indexed.push({ ...entry, rank });
+    byNetwork.set(network, indexed);
+  }
+  for (const indexed of byNetwork.values()) {
+    indexed.sort((a, b) => a.node.lat! - b.node.lat! || a.rank - b.rank);
+  }
+
   const suppressions: NodeMapSuppression[] = [];
   for (const stale of positioned) {
     if (stale.age < config.staleAfterDays) continue;
-    for (const active of fresh) {
-      if (stale.node.node_id === active.node.node_id
-          || stale.node.network !== active.node.network) continue;
-      const distance = distanceMeters(stale.node, active.node);
-      // Coordinate subtraction can put an exact 30 m boundary a few
-      // nanometres above it. Allow only floating-point noise at that edge.
-      if (distance - config.radiusM > 1e-8) continue;
-      suppressions.push({
-        node_id: stale.node.node_id,
-        suppressed_by_node_id: active.node.node_id,
-        reason: 'stale-colocated',
-        distance_m: distance,
-        stale_age_days: stale.age,
-        freshest_age_days: active.age,
-      });
-      break;
+    const indexed = byNetwork.get(stale.node.network!);
+    if (!indexed) continue;
+    // At equal longitude this same Haversine is a lower bound for any
+    // longitude pair, and monotonic with latitude separation. Search with the
+    // existing subtraction/epsilon so even radius-boundary noise is retained.
+    const latitudeOutside = (latitude: number) =>
+      haversineKm(stale.node.lat!, 0, latitude, 0) * 1_000 - config.radiusM > 1e-8;
+    let low = 0, high = indexed.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (indexed[middle]!.node.lat! < stale.node.lat! && latitudeOutside(indexed[middle]!.node.lat!)) low = middle + 1;
+      else high = middle;
     }
+    const first = low;
+    high = indexed.length;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      if (indexed[middle]!.node.lat! > stale.node.lat! && latitudeOutside(indexed[middle]!.node.lat!)) high = middle;
+      else low = middle + 1;
+    }
+    let winner: { active: RankedFresh; distance: number } | undefined;
+    for (let index = first; index < low; index++) {
+      const active = indexed[index]!;
+      if (stale.node.node_id === active.node.node_id || (winner && active.rank >= winner.active.rank)) continue;
+      const distance = distanceMeters(stale.node, active.node);
+      if (distance - config.radiusM > 1e-8) continue;
+      winner = { active, distance };
+    }
+    if (!winner) continue;
+    suppressions.push({
+      node_id: stale.node.node_id,
+      suppressed_by_node_id: winner.active.node.node_id,
+      reason: 'stale-colocated',
+      distance_m: winner.distance,
+      stale_age_days: stale.age,
+      freshest_age_days: winner.active.age,
+    });
   }
   return suppressions;
 }
