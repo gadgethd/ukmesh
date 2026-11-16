@@ -1364,3 +1364,39 @@ qualification. Do not change workloads, timing or acceptance limits.
   reviewed fixture repair; its test bytes match the validated worktree. Its
   application implementation is unchanged. This component evidence does not
   replace full-stack performance or recovery qualification.
+
+
+## The prepared representation owns its reusable HTTP validator
+
+- Hidden link: equal queued responses already share one immutable encoded body,
+  but ordinary Express delivery hashes that body again for every reader. The
+  native CPU profile attributes 174 ms to this ETag path.
+- Fix: keep one last known built-in generator and validator inside the existing
+  opaque representation. Each delivery still owns fresh bytes. No mutable byte
+  cache, completed-response cache, global validator cache or copied hash
+  algorithm is introduced. Routes, SQL admission and their 4 ms bound stay with
+  their existing owners.
+- Privacy authority remains independent: both fresh generation reads must pass
+  before selecting a validator or delivering a body. Express still handles
+  content length, conditional freshness and HEAD/304. Custom serializers,
+  application/header hooks and preset headers retain their existing path.
+- Two earlier diagnostics remain rejected: an 8 ms admission delay and private
+  UTF-8 byte reuse did not show a consistent benefit. The ETag-only ABBA run
+  (`9f1f5a7d`) reduced aggregate CPU 6.7%, wall time 7.4% and median trial p95
+  7.5%; warm-only median p95 increased 7.1%. All 24 map trials met 100 ms.
+- Broader private validation (`2c010548`) passed all 144 lookup trial rows and
+  all 9,600 reads over the unchanged 120-second, 80-RPS schedule. The largest
+  C8 p95 was 75.5 ms. All 27 HTTP compatibility checks and a bound full backend
+  typecheck passed. Independent adoption-readiness audit: `012ecfac`. A tiny
+  native scheduler rounding warning remains recorded with its passing actual
+  timing checks.
+- This supports the exact reviewed implementation and normal repository
+  regression checks. The canonical 1x/10x matrices, full load/RF qualification
+  and restoration of original targets remain required; the original 115 ms
+  failure is retained.
+- Normal repository validation passed: 1,067 unit checks, typecheck, the 75 API/
+  11 operator route contract, local alert firing/recovery and production build.
+  Fourteen pre-existing conditional unit skips retain their separate native or
+  optional dispositions (`41263fec`). Both existing real-PostgreSQL ordinary
+  and prepared privacy-fence tests then passed without skips (`87ed1abc`), with
+  their temporary databases and instance removed; independent audit `ac6ed9a8`.
