@@ -9,6 +9,12 @@ replace the backend HTTP contracts or OpenAPI schema.
   `link-v3-admit.lua` owns admission transitions and the positional argument and
   return protocol. Producers retain argument packing, payload serialization,
   identity generation, configuration parsing and heartbeat policy.
+- `initial-state-columns.ts` owns the optional `columns-v1` bootstrap transport.
+  Its encoder accepts trusted PostgreSQL DTO records with ordinary data properties,
+  native Dates and parsed JSON, without accessors or custom JSON hooks. The final
+  wire stringify preserves JSON value semantics. Its decoder validates parsed wire
+  input and restores the existing row envelopes before application handlers run.
+  Database scope, privacy, freshness, admission and byte limits remain server-owned.
 
 Run `node scripts/generate-shared-contracts.mjs` after editing these sources.
 Commit the generated package-local adapters with the source change. CI checks

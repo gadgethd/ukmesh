@@ -1580,3 +1580,78 @@ qualification. Do not change workloads, timing or acceptance limits.
     actual measured and drain-tail rows; no sampling, timer, warmup, request,
     acceptance or response change. Fatal failures before final output can
     still lack those rows; do not invent missing observations.
+
+## Bound history rows before display identity hydration
+
+- Fix: apply the existing eligibility predicates and per-direction/global 500-row
+  limits before the one-to-one source identity display join. The identity
+  mapping primary key guarantees that hydration cannot multiply selected rows.
+  - Hidden link: display alias hydration previously ran over eligible history
+    before its limit, making custom plans scan and join thousands of rows.
+  - Ownership: the repository retains eligibility, raw indexed alias predicates,
+    time boundaries, scope, privacy fences, deduplication, DTO order and bounded
+    preparation. Only the location of display hydration changes.
+- Real read-only AB/BA/AB measurements returned identical ordered bytes in all
+  48 calls and reduced query wall time 47.48%. This is a single-client diagnostic.
+  Five real disposable-database tests passed after generic plan reuse, including
+  alias changes, exact time boundaries, 500-row limits and privacy changes.
+  Independent source and actual reviews passed before promotion. Existing mock
+  assertions remain in place. Integrated HTTP latency acceptance remains pending.
+- Preserve the failed private overlay run. Its runtime module identity/format
+  mismatch was corrected with the identical runtime import and explicit ESM
+  metadata; no credential fallback or production behavior changed for the test.
+
+## Keep compact bootstrap transport inside one shared contract
+
+- Fix: one generated contract owns a lossless column format. Clients explicitly
+  request columns-v1; the frontend restores ordinary rows before its existing
+  scope and live-event coordinator. The full synthetic probe decodes the same
+  format. Legacy clients retain their current envelope and rejection behavior.
+  - Hidden link: an unscoped bootstrap with all eligible nodes and 20,000 links
+    exceeds the existing 16 MiB cap. Dropping graph data, narrowing the monitor
+    scope or raising the cap would conceal this real application failure.
+  - Needless dependency: per-client recursive descriptor and custom-toJSON
+    checks validate hypothetical JavaScript inputs rather than the owning
+    producer's plain PostgreSQL DTOs. The producer encoder accepts own-data
+    records with native Dates and parsed JSON. The wire decoder validates
+    untrusted parsed input; neither owns database or privacy policy.
+  - Surplus: a second encoded cache, worker framework and full legacy JSON
+    clone would add lifecycle and memory ownership. Keep existing cache weights,
+    admission, limits, timestamps and final generation fence unchanged.
+- Two isolated real-snapshot proofs preserved full legacy serialized bytes and
+  reduced the latest 19,216,342-byte envelope to 11,823,442 bytes. The generic
+  defensive fast encoder cost 256 ms in that run and has no production speed
+  claim. Measure the simpler producer path and integrated latency before
+  accepting it. All earlier failed preflights remain failed.
+- Generate package-local TypeScript adapters through the existing contract
+  generator, so builds keep their current context and runtime dependencies.
+  The shared source owns shape/omission rules and strict decoding. No DTO field
+  allowlist, nested data rewrite, geometry change or new preference is added.
+
+- The existing synthetic socket checks own their connection, timeout and cleanup
+  in a small worker module. The monitor keeps scheduling, settings, persistence
+  and alert ownership. Real loopback tests call that same connection path without
+  importing the monitor's database and alert initialization.
+- Missing or unknown request formats retain legacy behavior, including the
+  existing first-query-value convention. Only an exact columns-v1 opt-in uses
+  compact delivery. A malformed advertised compact response fails decoding;
+  the frontend closes and reconnects before recording or hydrating that frame.
+
+- The first public build exceeded the unchanged total JavaScript budget by
+  376 bytes. Preserve that failure. Remove the decoder's redundant recursive
+  validation of JavaScript-only nested values: callers immediately parse the
+  producer's JSON, while the decoder owns the column structure. Keep every
+  envelope, shape, index, width and prototype-safe reconstruction check. Native
+  producer stringify converts nonfinite values to null. This contract does not
+  promise rejection of exotic non-producer JSON such as 1e400, which JSON.parse
+  itself turns into Infinity. The full ordinary producer-wire roundtrip remains
+  covered; tests no longer pretend host-JavaScript undefined is parsed wire.
+- Remove verbose browser connection console messages. The existing connection
+  state and retry timer still own user feedback and recovery. No retry, jitter,
+  delay, timestamp, error or server logging rule changes.
+
+- The first owned socket run returned every expected row but exposed a new
+  fixture expectation error: canonical identity responses use uppercase IDs,
+  while the expected set used lowercase hex. Preserve the 8-pass/2-fail native
+  result and correct only that expected set to the established identity rule.
+  The new encoder, identity views, caps and privacy policy are unchanged.

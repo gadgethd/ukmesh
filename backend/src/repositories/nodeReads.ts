@@ -96,13 +96,12 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
   // lookup: a combined OR/ANY lets LIMIT choose a scan of time-ordered traffic
   // for quiet nodes. Per-alias limits keep both node/time indexes useful even
   // at 28 days; the final limit retains the newest 500 observations overall.
+  // Hydrate canonical source IDs only after that final limit: the alias source
+  // key is unique, so this projection cannot filter or duplicate observations.
   const packetsFor = (column: 'rx_node_id' | 'src_node_id') => `
-    SELECT p.time, p.packet_hash,
-           COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+    SELECT p.time, p.packet_hash, p.src_node_id,
            topic, packet_type, hop_count, rssi, snr, payload
     FROM mesh.packets p
-    LEFT JOIN core.node_identity_aliases src_alias
-      ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
     WHERE p.${column} = requested.node_id
       ${column === 'src_node_id' ? `AND NOT COALESCE(p.rx_node_id = ANY(${aliases}), FALSE)` : ''}
       AND p.time > NOW() - INTERVAL '1 hour' * $2
@@ -111,14 +110,22 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
       ${buildPublicPacketPrivacyClause('p')}
     ORDER BY time DESC LIMIT 500`;
   const res = await query(
-    `/* ukmesh:node-history */ SELECT recent.*
-     FROM unnest(${aliases}) requested(node_id)
-     CROSS JOIN LATERAL (
-       (${packetsFor('rx_node_id')})
-       UNION ALL
-       (${packetsFor('src_node_id')})
+    `/* ukmesh:node-history */ SELECT recent.time, recent.packet_hash,
+       COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(recent.src_node_id))) AS src_node_id,
+       recent.topic, recent.packet_type, recent.hop_count, recent.rssi, recent.snr, recent.payload
+     FROM (
+       SELECT recent.*
+       FROM unnest(${aliases}) requested(node_id)
+       CROSS JOIN LATERAL (
+         (${packetsFor('rx_node_id')})
+         UNION ALL
+         (${packetsFor('src_node_id')})
+       ) recent
+       ORDER BY time DESC LIMIT 500
      ) recent
-     ORDER BY time DESC LIMIT 500`,
+     LEFT JOIN core.node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(recent.src_node_id))
+     ORDER BY recent.time DESC`,
     [nodeId, hours, ...scope.params],
     undefined,
     BOUNDED_READ_PREPARATION,

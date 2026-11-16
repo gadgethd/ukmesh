@@ -7,6 +7,15 @@ import { generate } from './generate-shared-contracts.mjs';
 const publicData = JSON.parse(fs.readFileSync(new URL('../contracts/public-data.json', import.meta.url)));
 const link = JSON.parse(fs.readFileSync(new URL('../contracts/link-v3.json', import.meta.url)));
 const lua = fs.readFileSync(new URL('../contracts/link-v3-admit.lua', import.meta.url), 'utf8');
+const codec = fs.readFileSync(new URL('../contracts/initial-state-columns.ts', import.meta.url), 'utf8');
+
+test('bootstrap codec adapters have one authoritative source in both packages', () => {
+  const outputs = generate(publicData, link, lua, codec);
+  const backend = outputs.get('backend/src/contracts/initialStateColumns.generated.ts');
+  const frontend = outputs.get('frontend/src/contracts/initialStateColumns.generated.ts');
+  assert.equal(backend, frontend);
+  assert.equal(backend.slice(backend.indexOf('\n') + 1), codec);
+});
 
 test('public bindings preserve channel identities without exposing crypto material', () => {
   const outputs = generate(publicData, link, lua);

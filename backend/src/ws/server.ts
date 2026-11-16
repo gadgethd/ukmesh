@@ -33,6 +33,7 @@ import { loadInitialMapNodes } from './initialStateNodes.js';
 import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
 import { ApiInputError } from '../platform/apiInputError.js';
+import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, encodeInitialStateColumns } from '../contracts/initialStateColumns.generated.js';
 
 const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
 
@@ -577,6 +578,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
     // state. The WebSocket control-frame ping/pong still proves the full HTTP
     // upgrade and bidirectional socket path without touching PostgreSQL.
     const skipInitialState = reqUrl.searchParams.get('initial_state') === '0';
+    const columnInitialState = reqUrl.searchParams.get(INITIAL_STATE_FORMAT_PARAMETER) === INITIAL_STATE_COLUMNS_FORMAT;
     if (skipInitialState) {
       // No application payload is required for a control-frame probe.
     } else if (WS_INITIAL_STATE_ENABLED) {
@@ -585,7 +587,7 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
         const entry = await initialStateGate.run(
           () => fetchInitialState(network, observer, region),
         );
-        if (initialStateEstimateExceedsLimit(entry)) {
+        if (!columnInitialState && initialStateEstimateExceedsLimit(entry)) {
           console.warn('[ws] initial state estimate exceeds configured limit', {
             network,
             observer,
@@ -608,12 +610,12 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
           if (rxNodeId) scope.nodeIds.add(rxNodeId);
           if (srcNodeId) scope.nodeIds.add(srcNodeId);
         }
-        const initMsg: WSMessage = {
-          type: 'initial_state',
+        const initMsg = {
+          type: 'initial_state' as const,
           data: { nodes, packets, messages, viable_links: viableLinks },
           ts: Date.now(),
         };
-        const serialized = JSON.stringify(initMsg);
+        const serialized = JSON.stringify(columnInitialState ? encodeInitialStateColumns(initMsg) : initMsg);
         if (Buffer.byteLength(serialized) > WS_INITIAL_STATE_MAX_BYTES) {
           ws.close(1013, 'initial state is temporarily unavailable');
           return;

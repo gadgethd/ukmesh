@@ -1,6 +1,8 @@
 import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+import { nodeMapHandle } from '../browserMapHandle.js';
+import { encodeInitialStateColumns, INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER } from '../../src/contracts/initialStateColumns.generated.js';
 
 // Service-worker fetches bypass page.route and can load the public basemap
 // instead of these fixtures. Keep all dashboard tile readiness under routing.
@@ -31,6 +33,8 @@ test.beforeEach(async ({ page }) => {
       static readonly CLOSING = 2;
       static readonly CLOSED = 3;
       static connections = 0;
+      static closedCodes: Array<number | undefined> = [];
+      static lastUrl = '';
       readyState = FixtureWebSocket.CONNECTING;
       onopen: ((event: Event) => void) | null = null;
       onmessage: ((event: MessageEvent<string>) => void) | null = null;
@@ -38,6 +42,10 @@ test.beforeEach(async ({ page }) => {
       onerror: ((event: Event) => void) | null = null;
       constructor(_url: string | URL) {
         super();
+        FixtureWebSocket.lastUrl = String(_url);
+        Object.assign(window, { dashboardFixtureRaw: (text: string) => {
+          this.onmessage?.(new MessageEvent('message', { data: text }));
+        } });
         Object.assign(window, { dashboardFixturePublish: (type: string, data: Record<string, unknown>) => {
           this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type, ts: Date.now(), data: type === 'initial_state' ? { nodes, viable_links: [], ...data } : data }) }));
         } });
@@ -55,7 +63,8 @@ test.beforeEach(async ({ page }) => {
         }, 0);
       }
       send(): void {}
-      close(): void {
+      close(code?: number): void {
+        FixtureWebSocket.closedCodes.push(code);
         this.readyState = FixtureWebSocket.CLOSED;
       }
     }
@@ -128,6 +137,29 @@ test.beforeEach(async ({ page }) => {
     }
     return route.fulfill({ json: {} });
   });
+});
+
+test('compact bootstrap hydrates the actual map and malformed compact state closes the socket', async ({ page }) => {
+  await page.goto('/');
+  await page.locator('.maplibregl-map canvas').first().waitFor();
+  await expect.poll(async () => page.evaluate(() =>
+    (window.WebSocket as typeof WebSocket & { connections: number }).connections)).toBeGreaterThan(0);
+  const requested = await page.evaluate(() => (window.WebSocket as typeof WebSocket & { lastUrl: string }).lastUrl);
+  expect(new URL(requested).searchParams.get(INITIAL_STATE_FORMAT_PARAMETER)).toBe(INITIAL_STATE_COLUMNS_FORMAT);
+  const node = { node_id: 'AB'.repeat(32), public_key: 'AB'.repeat(32), name: 'Compact bootstrap fixture',
+    role: 2, lat: 54.5, lon: -1.5, is_online: true, last_seen: new Date().toISOString() };
+  const compact = encodeInitialStateColumns({ type: 'initial_state', ts: Date.now(),
+    data: { nodes: [node], packets: [], messages: [], viable_links: [] } });
+  await page.evaluate(text => (window as unknown as { dashboardFixtureRaw(text: string): void })
+    .dashboardFixtureRaw(text), JSON.stringify(compact));
+  await expect.poll(async () => {
+    const nodes = await nodeMapHandle(page);
+    return nodes.evaluate(values => Array.from(values.values()).some(value => value.name === 'Compact bootstrap fixture'));
+  }).toBe(true);
+  await page.evaluate(text => (window as unknown as { dashboardFixtureRaw(text: string): void })
+    .dashboardFixtureRaw(text), JSON.stringify({ type: 'initial_state', format: INITIAL_STATE_COLUMNS_FORMAT, ts: Date.now(), data: {} }));
+  await expect.poll(async () => page.evaluate(() =>
+    (window.WebSocket as typeof WebSocket & { closedCodes: number[] }).closedCodes.includes(1002))).toBe(true);
 });
 
 test('map search and realtime load no nodes without valid privacy authority', async ({ page }, testInfo) => {

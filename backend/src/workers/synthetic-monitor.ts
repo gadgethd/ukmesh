@@ -1,7 +1,7 @@
 import 'node:process';
-import { WebSocket } from 'ws';
 import { pathToFileURL } from 'node:url';
 import path from 'node:path';
+import { websocketPingCheck, websocketInitialStateCheck } from './syntheticWebSocketChecks.js';
 import { DurableAlertQueue, type AlertReceipt } from './alertDeliveryQueue.js';
 import { createSyntheticAlertEvaluator } from './syntheticAlerts.js';
 import { observeSyntheticCheck } from '../metrics/synthetic.js';
@@ -58,64 +58,6 @@ async function httpCheck(name: string, path: string, validate?: (body: unknown) 
   }
 }
 
-function websocketUrl(skipInitialState: boolean): string {
-  const url = new URL(`${WS_URL}/ws`);
-  url.searchParams.set('network', 'ukmesh');
-  if (skipInitialState) url.searchParams.set('initial_state', '0');
-  return url.toString();
-}
-
-async function websocketPingCheck(): Promise<CheckResult> {
-  const started = performance.now();
-  return new Promise((resolve) => {
-    const socket = new WebSocket(websocketUrl(true), { handshakeTimeout: TIMEOUT_MS });
-    let settled = false;
-    const finish = (status: CheckResult['status'], detail: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      socket.close();
-      resolve({ name: 'websocket_ping', status, latencyMs: elapsedMs(started), detail: detail.slice(0, 300) });
-    };
-    const timeout = setTimeout(() => finish('failed', `no pong within ${TIMEOUT_MS}ms`), TIMEOUT_MS);
-    socket.on('open', () => socket.ping());
-    socket.on('pong', () => finish('ok', 'handshake and pong received'));
-    socket.on('error', (err) => finish('failed', err.message));
-    socket.on('close', () => finish('failed', 'socket closed before pong'));
-  });
-}
-
-async function websocketInitialStateCheck(): Promise<CheckResult> {
-  const started = performance.now();
-  return new Promise((resolve) => {
-    const socket = new WebSocket(websocketUrl(false), { handshakeTimeout: INITIAL_STATE_TIMEOUT_MS });
-    let settled = false;
-    const finish = (status: CheckResult['status'], detail: string) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      socket.close();
-      resolve({ name: 'websocket_initial_state', status, latencyMs: elapsedMs(started), detail: detail.slice(0, 300) });
-    };
-    const timeout = setTimeout(
-      () => finish('failed', `no initial_state within ${INITIAL_STATE_TIMEOUT_MS}ms`),
-      INITIAL_STATE_TIMEOUT_MS,
-    );
-    socket.on('message', (data) => {
-      try {
-        const lines = String(data).split('\n').filter(Boolean);
-        if (lines.some((line) => (JSON.parse(line) as { type?: string }).type === 'initial_state')) {
-          finish('ok', 'received initial_state');
-        }
-      } catch {
-        finish('failed', 'malformed WebSocket payload');
-      }
-    });
-    socket.on('error', (err) => finish('failed', err.message));
-    socket.on('close', () => finish('failed', 'socket closed before initial_state'));
-  });
-}
-
 async function persistResults(results: CheckResult[]): Promise<void> {
   await persistSyntheticCheckResults(results);
 }
@@ -150,7 +92,7 @@ export async function handleCheckResults(results: CheckResult[], deps: {
 
 async function runChecks(fullCanary: boolean): Promise<void> {
   const checks: Array<{ name: string; promise: Promise<CheckResult> }> = [
-    { name: 'websocket_ping', promise: websocketPingCheck() },
+    { name: 'websocket_ping', promise: websocketPingCheck(WS_URL, TIMEOUT_MS) },
   ];
   if (fullCanary) {
     checks.push(
@@ -166,7 +108,7 @@ async function runChecks(fullCanary: boolean): Promise<void> {
         name: 'stats_api',
         promise: httpCheck('stats_api', '/api/stats?network=ukmesh', (body) => Number.isFinite(Number((body as { totalNodes?: number } | null)?.totalNodes))),
       },
-      { name: 'websocket_initial_state', promise: websocketInitialStateCheck() },
+      { name: 'websocket_initial_state', promise: websocketInitialStateCheck(WS_URL, INITIAL_STATE_TIMEOUT_MS) },
     );
   }
   const settled = await Promise.allSettled(checks.map((check) => check.promise));

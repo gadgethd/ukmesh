@@ -4,6 +4,7 @@ import type { ApiScope } from '../utils/api.js';
 import { createMessageTimestampPublisher } from '../utils/messageTimestamp.js';
 import { POLLING } from '../config/polling.js';
 import { useCommittedRef } from './useCommittedRef.js';
+import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, decodeInitialStateMessage } from '../contracts/initialStateColumns.generated.js';
 
 type MessageHandler = (msg: WSMessage) => void;
 type ConnectionOwner = {
@@ -60,6 +61,7 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
 
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const params = new URLSearchParams();
+      params.set(INITIAL_STATE_FORMAT_PARAMETER, INITIAL_STATE_COLUMNS_FORMAT);
       if (owner.scope.network) params.set('network', owner.scope.network);
       if (owner.scope.observer) params.set('observer', owner.scope.observer);
       if (owner.scope.region) params.set('region', owner.scope.region);
@@ -78,7 +80,6 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
         if (!isCurrent()) return;
         setReadyState('connected');
         owner.retryDelay = 3000;
-        console.log('[ws] connected');
       };
       ws.onmessage = (event: MessageEvent<string>) => {
         if (!isCurrent()) return;
@@ -87,7 +88,16 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
           const lines = raw.includes('\n') ? raw.split('\n').filter(Boolean) : [raw];
           for (const line of lines) {
             if (!isCurrent()) return;
-            const msg = { ...(JSON.parse(line) as WSMessage), scopeEpoch: owner.scopeEpoch };
+            const parsed: unknown = JSON.parse(line);
+            let decoded: unknown;
+            try { decoded = decodeInitialStateMessage(parsed); }
+            catch {
+              // A malformed declared bootstrap cannot initialize the coordinator.
+              // Reconnect instead of retaining live events behind it indefinitely.
+              ws.close(1002, 'invalid initial state');
+              return;
+            }
+            const msg = { ...(decoded as WSMessage), scopeEpoch: owner.scopeEpoch };
             timestamps.record(Date.now());
             handlerRef.current(msg);
           }
@@ -105,7 +115,6 @@ export function useWebSocket(onMessage: MessageHandler, scope: ApiScope = {}, sc
         const jitter = Math.random() * 1000;
         const delay = owner.retryDelay + jitter;
         owner.retryDelay = Math.min(15000, owner.retryDelay * 1.5);
-        console.log(`[ws] disconnected — reconnecting in ${(delay / 1000).toFixed(1)}s (${Math.round(jitter)}ms jitter)`);
         owner.timer = setTimeout(connect, delay);
       };
       ws.onerror = () => { if (isCurrent()) ws.close(); };

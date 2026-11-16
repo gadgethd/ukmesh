@@ -5,6 +5,7 @@ import {
   type RealtimeMessageActions,
 } from './useAppMessageHandler.js';
 import type { WSMessage } from '../features/realtime/protocol.js';
+import { encodeInitialStateColumns, decodeInitialStateMessage } from '../contracts/initialStateColumns.generated.js';
 
 const NODE_ID = 'AB'.repeat(32);
 
@@ -12,7 +13,7 @@ function message(type: WSMessage['type'], data: unknown): WSMessage {
   return { type, data, ts: Date.now() };
 }
 
-function runFixture(liveBeforeSnapshot: boolean) {
+function runFixture(liveBeforeSnapshot: boolean, columns = false) {
   const state = {
     nodes: [] as string[],
     packets: [] as string[],
@@ -65,13 +66,17 @@ function runFixture(liveBeforeSnapshot: boolean) {
     viable_links: [],
     viable_pairs: [['stale-a', 'stale-b']],
   });
+  const delivered = columns ? decodeInitialStateMessage(JSON.parse(JSON.stringify(encodeInitialStateColumns({
+    type: 'initial_state', ts: snapshot.ts,
+    data: { nodes: [], packets: [], messages: [], viable_links: [] },
+  })))) as WSMessage : snapshot;
 
   if (liveBeforeSnapshot) {
     liveMessages.forEach(coordinator.handle);
     assert.equal(coordinator.pendingPacketCount(), 2);
-    coordinator.handle(snapshot);
+    coordinator.handle(delivered);
   } else {
-    coordinator.handle(snapshot);
+    coordinator.handle(delivered);
     liveMessages.forEach(coordinator.handle);
     coordinator.flush();
   }
@@ -88,6 +93,11 @@ test('live-before-snapshot and snapshot-before-live fixtures converge', () => {
     links: [],
     observedCount: 2,
   });
+});
+
+test('decoded compact snapshots preserve queued live events and coordinator readiness', () => {
+  assert.deepEqual(runFixture(true, true), runFixture(false));
+  assert.deepEqual(runFixture(false, true), runFixture(false));
 });
 
 test('coordinator resets pending events at a scope boundary', () => {
