@@ -2389,3 +2389,24 @@ qualification. Do not change workloads, timing or acceptance limits.
   do not describe this as zero advisories. These checks and the companion
   browser results are component evidence, not integrated qualification or
   remote CI. Keep every earlier failure and all acceptance limits.
+
+## Use Beacon's declared toolchain for formatting checks
+
+- The first real Beacon CI run builds successfully but fails formatting one
+  test file. Its merge tree exactly equals the reviewed head. CI follows
+  go.mod's Go1.26.10; the local Go1.27.4 formatter accepts different map-key
+  alignment. A successful check with the newer formatter is not evidence for
+  the declared CI formatter. Preserve both actual results.
+- Verify the official Go1.26.10 archive and extracted formatter, then apply
+  only its three whitespace alignment changes to the existing index-drop
+  regression. Keep every key, assertion, function body and other line exact.
+  Adopt Beacondf46000 without changing its runtime source, dependencies,
+  declared Go version, pipeline or test gates. Its declared-formatter check
+  covers the complete repository; the CI retry also passes build, formatting,
+  vet and units before continuing the PostgreSQL checks.
+- Beacon's source fingerprint includes its test file and committed revision,
+  so its source marker, API revision environment value and Compose hash must
+  update during the canonical rebuild. Its executable must remain byte-exact;
+  the migration job has no source-revision environment value and keeps its
+  configuration hash. Account for those precise metadata changes in the
+  adoption proof, retaining all existing resource, database and RF guards.
