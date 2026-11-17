@@ -2102,3 +2102,30 @@ qualification. Do not change workloads, timing or acceptance limits.
   A materialized projection can still spill. Measure this one owner before
   considering topology or full-state changes. No cache age, history, pool,
   timeout, service, privilege, durability or mathematical contract changes.
+
+## Reuse the canonical identity projection for topology membership
+
+- The adopted f8 summary removes three repeated identity evaluations, but the
+  unchanged baseline demand diagnostic still fails100ms admission:224ms max,
+  all9600 responses correct, all13 resources passing. Retain that failure.
+- At10:35:44–46, bounded activity separates native readers on172.18.0.1 from
+  the normal API on172.18.0.10. The remaining topology DISTINCT identity query
+  runs for1.35s alongside health/link/state work. Do not infer SQL ownership
+  from JavaScript CPU. Evidence: read-demand-activity-f8a6508-jyty1ukp.
+- The topology query uses the wide materialized canonical view even though it
+  needs only identity/name/network. Reuse publicIdentityNodeSourceSql, already
+  owned and tested by node reads: its singleton projection avoids computing
+  irrelevant aggregates, with the complete alias/collision fallback preserved.
+- A real HTTP-role repeatable-read probe preserves all49124 production and130
+  test identities plus the empty-network case. Untimed warm plans write5984
+  temporary blocks for the old source and zero for the existing fast source.
+  Evidence: topology-identity-probe-f8a6508-m46_53_8. These are work diagnostics,
+  not matched HTTP timings or a qualification pass.
+- Change only the identity source of the strict network/no-observer branch.
+  Preserve DISTINCT, network=ANY, name privacy, the separate full link scan,
+  radio aggregation and endpoint intersection. Keep the comment documenting
+  PostgreSQL's174M-probe constraint. Do not reuse getNodes IDs: its sightings
+  scope is broader, and its result omits network. All other scopes, counts,
+  deadlines, pools, caches, history and limits remain unchanged. Existing native
+  projection tests already cover every canonical column, aliases, private names,
+  missing canonical rows and legacy collisions; run that coverage for this reuse.

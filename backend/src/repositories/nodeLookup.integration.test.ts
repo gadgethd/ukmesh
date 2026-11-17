@@ -13,6 +13,8 @@ import { networkFilters, nodeAliasArraySql, publicPacketPrivacySql } from '../pl
 import { convergePacketVisibility } from '../privacy/convergence.js';
 import { createNodeRepository } from './nodes.js';
 import { createDatabaseRuntime } from '../db/databaseRuntime.js';
+import { mockRuntimeQuery } from '../db/fixtures/mockRuntimeQuery.js';
+import { getViableLinks } from './topologyReads.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 
@@ -72,6 +74,29 @@ test('indexed node projections and search retain canonical view results for alia
   const scoped = (await pool.query(`SELECT * FROM ${identityNodeSourceSql('SELECT unnest($1::text[]) AS node_id')} n
     ORDER BY node_id`, [original.map(row => row.node_id).concat(key('F'))])).rows;
   assert.deepEqual(scoped, original, 'scoped hydration includes absent canonical rows and one-hop alias chains');
+  await t.test('viable topology retains strict network/privacy scope across aliases and legacy keys', async inner => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO core.node_links
+        (node_a_id,node_b_id,observed_count,itm_viable,force_viable) VALUES
+        ($1,$2,5,true,false),($1,$3,6,true,false),($1,$4,7,true,false),
+        ($1,$5,8,true,false),($1,$6,9,false,true)`,
+      [key('1'), key('A'), key('3'), key('9'), key('b'), key('c')]);
+      await client.query('REFRESH MATERIALIZED VIEW core.node_identity_links');
+      mockRuntimeQuery(inner, (sql, params) => client.query(sql, params));
+      const links = await getViableLinks('ukmesh');
+      assert.deepEqual(links.map(row => [row.node_a_id, row.node_b_id, String(row.observed_count)]).sort(), [
+        [key('1'), key('4'), '6'], [key('1'), key('A'), '5'], [key('1'), key('C'), '9'],
+      ]);
+      for (const network of ['northeast', 'test', 'missing']) {
+        assert.deepEqual(await getViableLinks(network), [], `both endpoints must satisfy ${network}`);
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
   const priorityIds = [key('1'), key('4'), key('7'), key('A')];
   const availableIds = new Set(original.map(row => row.node_id));
   const boundaryIds = [...new Set([...priorityIds.filter(id => availableIds.has(id)), ...availableIds])];
