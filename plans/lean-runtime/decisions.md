@@ -2154,3 +2154,37 @@ qualification. Do not change workloads, timing or acceptance limits.
  overlap demand and publish, and verify cold/observer work and matched operation
  deadlines/regression. If serial work violates them, fix work instead of raising
  limits. Configuration is a candidate until integrated qualification passes.
+
+## Compile the regional transport probes once per rebuild
+
+- The current six matched native windows pass, but the first fixed-demand
+  baseline cohort fails admission (2748ms,9600 correct responses). Preserve the
+  failed batch and all short failures. The normal chart refresh completed at
+  12:24:41, before demand12:28:47–12:30:47, so it is not this burst's owner.
+  Regional application work uses23.36CPU-seconds during29.48wall seconds near
+  the backlog. A separate1Hz diagnostic captures learning upserts during a
+  different860ms backlog; reducing regional CPU does not establish that every
+  other background cost is resolved.
+- A read-only CPU replay of6000 existing captured wire fixtures spends16.66s
+  of18.37s sampled time in decodeRegionForPacket:12.44s in transport-code HMAC
+  calculation and2.08s in repeated region-key derivation. Packet compatibility
+  decoding itself takes0.65s. Evidence: final-evidence/
+  region-decoder-profile-6a9d0a0-cXw0O5/inclusive-summary.json. This diagnostic
+  isolates work on four fixtures; it is not a whole-corpus or HTTP benchmark.
+- The regional decoder owns this repeated work. Compile its fixed probe names
+  once per rebuild and derive each reached key once. Parse payload hex once with the
+  upstream parser and calculate the identical HMAC-SHA256 with Node crypto.
+  Keep upstream case/#/UTF8 key derivation, first-match order and returned name,
+  payload-type byte masking, little-endian uint16, reserved-code nudges and
+  input/error behavior. Keep the framing/compatibility decoder unchanged.
+- Use run-local probe data, with no packet cache, new concurrency
+  setting or global state. Retain the external firmware equation comment.
+  Establish upstream-reference behavior coverage on the old implementation
+  before adopting the compiled path. Compare real retained-corpus outputs and
+  native CPU work before rollout, then repeat unchanged qualification. Pools,
+  cadences, history, privacy fences, publication, deadlines and criteria stay
+  unchanged; the learning write cost remains separately observable.
+- Independent review identified malformed UTF16 names as an error-ordering
+  constraint: eager derivation can fail before an earlier successful match or
+  a payload hex error. A retained negative test reproduces this. Derive keys
+  lazily only when reached, preserving short-circuit and missing-input behavior.

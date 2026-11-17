@@ -50,7 +50,7 @@ import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from '../mqtt/decodePacket.js';
 import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.js';
 import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
-import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
+import { createRegionProbe, transportCode0Of } from '../regions/scopeDecode.js';
 import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
 import { withHeavyWorkAdmission, tryWithHeavyWorkAdmission,
@@ -113,6 +113,7 @@ async function rebuildWithAdmission(
   const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';
   const probeNames = regionProbeNamesWithEnv(process.env['MESHCORE_REGION_NAMES']);
+  const probeRegion = createRegionProbe(probeNames);
   const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: buildChannelSecrets() });
 
   const pool = new Pool({
@@ -158,8 +159,7 @@ async function rebuildWithAdmission(
         const compat = decodePacketCompat(row.raw, keyStore);
         if (compat.metadataValid && compat.transportCodes) {
           const tc0 = transportCode0Of(compat.transportCodes);
-          region = decodeRegionForPacket(
-            probeNames,
+          region = probeRegion(
             compat.decoded?.payloadType,
             compat.decoded?.payload?.raw,
             tc0,
