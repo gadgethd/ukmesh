@@ -62,17 +62,17 @@ export function analyticsPlannerOptions(env: NodeJS.ProcessEnv): string | undefi
 }
 
 /** Preserve pg URL-option precedence while sharing explicit analytics policy. */
-export function analyticsConnectionOptions(env: NodeJS.ProcessEnv, schemaOptions?: string) {
-  const plannerOptions = analyticsPlannerOptions(env);
-  const options = [schemaOptions, plannerOptions].filter(Boolean).join(' ') || undefined;
+export function analyticsConnectionOptions(env: NodeJS.ProcessEnv, schemaOptions?: string, sessionOptions?: string) {
+  const explicitOptions = [analyticsPlannerOptions(env), sessionOptions].filter(Boolean).join(' ') || undefined;
+  const options = [schemaOptions, explicitOptions].filter(Boolean).join(' ') || undefined;
   let connectionString = databaseUrlForRole('worker', env);
-  if (plannerOptions && connectionString) {
+  if (explicitOptions && connectionString) {
     let endpoint: URL;
     try { endpoint = new URL(connectionString); }
     catch { throw new Error('Invalid worker database URL for analytics planner options'); }
     if (endpoint.searchParams.has('options')) {
       const previous = endpoint.searchParams.getAll('options').at(-1);
-      endpoint.searchParams.set('options', [previous, plannerOptions].filter(Boolean).join(' '));
+      endpoint.searchParams.set('options', [previous, explicitOptions].filter(Boolean).join(' '));
       connectionString = endpoint.href;
     }
   }

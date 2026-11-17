@@ -7,12 +7,16 @@ import { RegionSnapshotRefresher } from './snapshotRefresh.js';
 const settings = regionRebuildSettings({});
 test('region tuning keeps finite source, execution and poll limits', () => {
   for (const value of ['NaN','Infinity','bad','']) {
-    const env = Object.fromEntries(['WINDOW_DAYS','MAX_PACKETS','MAX_NODES','STATEMENT_TIMEOUT_MS','RUN_TIMEOUT_MS','POLL_MS','MAX_AGE_MS'].map(key => ['REGION_SCOPE_'+key,value]));
+    const env = Object.fromEntries(['WINDOW_DAYS','MAX_PACKETS','MAX_NODES','WORK_MEM_KB','STATEMENT_TIMEOUT_MS','RUN_TIMEOUT_MS','POLL_MS','MAX_AGE_MS'].map(key => ['REGION_SCOPE_'+key,value]));
     assert.deepEqual(regionRebuildSettings(env), settings);
   }
   assert.equal(regionRebuildSettings({ REGION_SCOPE_ALLOW_EMPTY: '1' }).allowEmpty, true);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_RUN_TIMEOUT_MS: '0' }).runTimeoutMs, 5000);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_MAX_PACKETS: '1e99' }).maxPackets, 2_000_000);
+  assert.equal(settings.workMemKb, 16_384);
+  assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '32768' }).workMemKb, 32_768);
+  assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '1' }).workMemKb, 64);
+  assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '1e99' }).workMemKb, 262_144);
 });
 
 test('region refresh skips unavailable authority, coalesces calls and verifies actual publication', async t => {

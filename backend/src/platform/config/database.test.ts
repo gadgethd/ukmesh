@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { boundedIntegerSetting } from './boundedNumber.js';
-import { analyticsPlannerOptions, analyticsStatementTimeoutMs, databaseUrlForRole, loadDatabaseConfig } from './database.js';
+import { analyticsConnectionOptions, analyticsPlannerOptions, analyticsStatementTimeoutMs, databaseUrlForRole, loadDatabaseConfig } from './database.js';
 
 test('database numeric settings use bounded deployment-safe defaults', () => {
   assert.deepEqual(loadDatabaseConfig({}), {
@@ -73,6 +73,19 @@ test('analytics planner estimates reject malformed or injected startup options',
     assert.throws(() => analyticsPlannerOptions({ DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: value }),
       /DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE must be a PostgreSQL cache estimate/);
   }
+});
+
+test('owner session options preserve worker URL flags and pg option precedence', () => {
+  const env = { MESHCORE_WORKER_DATABASE_URL: 'postgres://worker@db/meshcore?options=-c%20search_path%3Dignored&options=-c%20default_transaction_read_only%3Don',
+    DATABASE_ANALYTICS_RANDOM_PAGE_COST: '4' };
+  const result = analyticsConnectionOptions(env, '-c search_path=core,public', '-c work_mem=16384kB');
+  assert.deepEqual(new URL(result.connectionString!).searchParams.getAll('options'),
+    ['-c default_transaction_read_only=on -c random_page_cost=4 -c work_mem=16384kB']);
+  assert.equal(result.options, '-c search_path=core,public -c random_page_cost=4 -c work_mem=16384kB');
+  const withoutUrlFlags = analyticsConnectionOptions({ MESHCORE_WORKER_DATABASE_URL: 'postgres://worker@db/meshcore' },
+    '-c search_path=core,public', '-c work_mem=16384kB');
+  assert.equal(withoutUrlFlags.connectionString, 'postgres://worker@db/meshcore');
+  assert.equal(withoutUrlFlags.options, '-c search_path=core,public -c work_mem=16384kB');
 });
 
 test('role DSNs prefer role-specific URLs and allow a legacy fallback only before enforcement', () => {

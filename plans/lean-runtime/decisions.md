@@ -1936,3 +1936,26 @@ qualification. Do not change workloads, timing or acceptance limits.
   WAL. The I/O benefit and CPU cost require the existing next qualification run;
   no latency or resource pass is claimed. Extend the existing Compose policy
   tests for the default, override isolation and unchanged CI/resources.
+
+## Bound region sort scratch space at the region settings owner
+
+- The 42698d2 short trial passed integrity and resources but failed map and
+  observer latency. The unchanged region SQL still spills while reads run.
+  Read-only, same-snapshot EXPLAIN evidence in
+  final-evidence/region-sort-memory-42698d2-8bfqy38a/native.json measured
+  97,381 temporary blocks written at 10,485kB, 64,075 at 16MB and 64,050
+  at 32MB, with identical 71,082 output rows. The earlier syntax/container
+  diagnostic failures remain retained. This is diagnostic evidence, not an
+  HTTP qualification result.
+- Give region rebuild sessions a bounded 16MiB work_mem default owned by
+  regionRebuildSettings, with an explicit REGION_SCOPE_WORK_MEM_KB override.
+  Keep the server, HTTP, ingest and ordinary worker defaults unchanged.
+  The existing admission gate still permits one heavy task; the region pool
+  remains two connections. work_mem is per operation, not a process cap;
+  integrated resource and latency criteria still apply without relaxation.
+- Extend the existing analytics startup-option merger to append trusted
+  owner-supplied settings once, preserving URL precedence, schema/read-only
+  flags, planner estimates and role selection. Avoid duplicating URL parsing
+  or changing transaction snapshots. Preserve SQL, results, deadlines and
+  publication/privacy fences. Check actual region sessions in the existing
+  disposable-database integration test before rollout.

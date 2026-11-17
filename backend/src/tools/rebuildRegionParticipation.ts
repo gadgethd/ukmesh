@@ -29,6 +29,7 @@
  *   REGION_SCOPE_MAX_PACKETS     distinct scoped packet cap (default 500000)
  *   REGION_SCOPE_MAX_NODES       node cap (default 100000)
  *   REGION_SCOPE_STATEMENT_TIMEOUT_MS SQL deadline (default 120000)
+ *   REGION_SCOPE_WORK_MEM_KB     per-operation PostgreSQL scratch memory (default 16384)
  *
  * All five tables are refreshed wholesale inside ONE transaction (delete +
  * insert), so readers never observe an empty or partial state. If the scoped
@@ -104,9 +105,9 @@ export function tryRebuildRegionParticipation(): Promise<HeavyWorkAdmissionResul
 async function rebuildWithAdmission(
   admit: (options: HeavyWorkAdmissionOptions<void>) => Promise<HeavyWorkAdmissionResult<void>>,
 ): Promise<HeavyWorkAdmissionResult<void>> {
-  const database = analyticsConnectionOptions(process.env);
-  if (!database.connectionString) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const settings = regionRebuildSettings();
+  const database = analyticsConnectionOptions(process.env, undefined, `-c work_mem=${settings.workMemKb}kB`);
+  if (!database.connectionString) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';
   const probeNames = regionProbeNamesWithEnv(process.env['MESHCORE_REGION_NAMES']);
