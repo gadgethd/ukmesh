@@ -310,34 +310,36 @@ test('summary shares one scoped identity read and retains its result rows', asyn
   }]);
 });
 
-test('statistics repository bounds concurrent database queries', async () => {
-  const previous = process.env['STATS_DB_QUERY_CONCURRENCY'];
-  process.env['STATS_DB_QUERY_CONCURRENCY'] = '2';
-  let active = 0;
-  let maxActive = 0;
-  try {
-    const query = async <T extends QueryResultRow = QueryResultRow>(): Promise<{ rows: T[] }> => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => setImmediate(resolve));
-      active -= 1;
-      return { rows: [] };
-    };
-    const repository = createStatsRepository({
-      query,
-      networkFilters: () => ({
-        params: ['ukmesh'],
-        packets: 'AND network = $1',
-        packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
-        nodes: 'AND network = $1',
-        nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
-      }),
-    });
+for (const concurrency of [1, 2]) {
+  test(`statistics repository bounds concurrent database queries at ${concurrency}`, async () => {
+    const previous = process.env['STATS_DB_QUERY_CONCURRENCY'];
+    process.env['STATS_DB_QUERY_CONCURRENCY'] = String(concurrency);
+    let active = 0;
+    let maxActive = 0;
+    try {
+      const query = async <T extends QueryResultRow = QueryResultRow>(): Promise<{ rows: T[] }> => {
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setImmediate(resolve));
+        active -= 1;
+        return { rows: [] };
+      };
+      const repository = createStatsRepository({
+        query,
+        networkFilters: () => ({
+          params: ['ukmesh'],
+          packets: 'AND network = $1',
+          packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+          nodes: 'AND network = $1',
+          nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+        }),
+      });
 
-    await repository.fetchStatsSummary('ukmesh', undefined);
-    assert.equal(maxActive, 2);
-  } finally {
-    if (previous === undefined) delete process.env['STATS_DB_QUERY_CONCURRENCY'];
-    else process.env['STATS_DB_QUERY_CONCURRENCY'] = previous;
-  }
-});
+      await repository.fetchStatsSummary('ukmesh', undefined);
+      assert.equal(maxActive, concurrency);
+    } finally {
+      if (previous === undefined) delete process.env['STATS_DB_QUERY_CONCURRENCY'];
+      else process.env['STATS_DB_QUERY_CONCURRENCY'] = previous;
+    }
+  });
+}

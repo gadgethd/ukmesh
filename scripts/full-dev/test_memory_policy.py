@@ -132,6 +132,18 @@ class LocalMemoryPolicy(unittest.TestCase):
                 expected['environment'] = dict(expected['environment'], REGION_SCOPE_BITMAP_SCAN='1')
             self.assertEqual(regional[service], expected)
 
+    def test_statistics_concurrency_default_and_override_preserve_the_complete_runtime(self):
+        files = ('docker-compose.yml', 'scripts/full-dev/compose.yml')
+        before = compose(*files)
+        self.assertEqual(before['backend']['environment']['STATS_DB_QUERY_CONCURRENCY'], '1')
+        after = compose(*files, STATS_DB_QUERY_CONCURRENCY='2')
+        self.assertEqual(set(after), set(before))
+        for service in before:
+            expected = dict(before[service])
+            if service == 'backend':
+                expected['environment'] = dict(expected['environment'], STATS_DB_QUERY_CONCURRENCY='2')
+            self.assertEqual(after[service], expected)
+
     def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_policy_overrides(self):
         files = ('docker-compose.yml', 'docker-compose.ci.yml')
         before = compose(*files)['timescaledb']

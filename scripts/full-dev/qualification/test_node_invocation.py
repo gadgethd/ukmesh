@@ -76,10 +76,11 @@ class ApplicationBoundary(unittest.TestCase):
             _, proof = owner.tool_environment(tool, MAIN, fixture, containers=containers)
             self.assertEqual(proof["category"], "application-read")
 
-    def test_explicit_analytics_estimates_follow_read_consumers_without_leaking_into_admin_tools(self):
+    def test_statistics_resource_settings_follow_read_consumers_without_leaking_into_admin_tools(self):
         fixture, containers = inputs()
         settings = {"DATABASE_ANALYTICS_RANDOM_PAGE_COST": "4",
-                    "DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE": "512MB"}
+                    "DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE": "512MB",
+                    "STATS_DB_QUERY_CONCURRENCY": "1"}
         for key, value in settings.items(): setting(containers, key, value)
         before = copy.deepcopy(containers)
         for tool in owner.READ_TOOLS:

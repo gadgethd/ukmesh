@@ -2129,3 +2129,28 @@ qualification. Do not change workloads, timing or acceptance limits.
   deadlines, pools, caches, history and limits remain unchanged. Existing native
   projection tests already cover every canonical column, aliases, private names,
   missing canonical rows and legacy collisions; run that coverage for this reuse.
+
+## Bound statistics work to one statement on the lean main runtime
+
+- The f644 diagnostic still fails admission (1005ms,9600 correct responses,
+ 13 resource checks passing). Actual SQL identifies two backend-analytics
+ observer-chart scans running concurrently for8–15s during the backlog. Keep
+ the failure; topology membership work is reduced but is not this burst's owner.
+- Exact emitted statements match the activity1023-byte prefixes. Both actually
+ include privacy predicates, despite one requesting includePrivacy:false;
+ preserve emitted behavior rather than changing that separate compatibility
+ case. An HTTP/worker read-only probe gives exact ON/OFF results. With current
+ work_mem10485kB, shared128MiB, planner4/512 and parallelism0, bitmap-off only
+ slightly reduces the two untimed6.7/5.4s scans and leaves13655/6663 temp blocks.
+ Do not extend planner policy to unrelated analytics callers on this evidence.
+- Trial the existing STATS_DB_QUERY_CONCURRENCY setting at1 in main Compose,
+ retaining analytics pool2 and explicit overrides for larger hosts. No new
+ queue, connection pool, feature flag or SQL rewrite. Forward the same existing
+ setting from the actual consumer to qualification tools so both source labels
+ use the same resource profile. Main configuration owns the lean default.
+- Queue wait counts toward the existing60s query budget and120s timeout.
+ Preserve those limits, HTTP pools, stored-snapshot freshness and warmup cadence.
+ A quiet cached cohort is inconclusive: require a complete chart refresh to
+ overlap demand and publish, and verify cold/observer work and matched operation
+ deadlines/regression. If serial work violates them, fix work instead of raising
+ limits. Configuration is a candidate until integrated qualification passes.
