@@ -1988,3 +1988,19 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Keep pools, memory bounds, admission, deadlines and publication fences. Run
   existing backend and real region regressions, independent review and a fresh
   integrated trial; these query diagnostics do not establish qualification.
+
+## Remove the former shared region input's materialization fence
+
+- Per-packet path aggregation leaves scoped_observations with one consumer.
+  Its forced MATERIALIZED fence was needed by the former two-branch query,
+  and now writes a temporary copy that is never reread. Remove only that fence;
+  the PostgreSQL statement snapshot and canonical privacy checks remain intact.
+- Read-only same-snapshot actual worker comparison in
+  final-evidence/region-single-consumer-9ed7b6d-p38paw9q/native.json passed exact
+  ordered byte equality for all71,982rows, including raw. Temporary writes fell
+  36,655→18,181blocks; reads stayed18,171. Preserve the previous raw-byte
+  failures and their scoped semantic resolutions; do not generalize this exact
+  comparison into a new latest-time tie rule or an HTTP performance claim.
+- Preserve all query parameters, fields, caps, ordering, memory, admission,
+  deadlines and publication/privacy fences. Verify the compiled SQL, existing
+  region checks and real producer tests before rollout and fresh qualification.

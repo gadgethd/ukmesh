@@ -12,7 +12,7 @@ export interface ScopedPacketRow {
 
 // Keep each packet's path union local instead of globally sorting expanded paths.
 // Native array text round-trips variable lengths, dimensions, nulls and escaping.
-export const SCOPED_PACKETS_SQL = `WITH scoped_observations AS MATERIALIZED (
+export const SCOPED_PACKETS_SQL = `WITH scoped_observations AS (
   SELECT p.packet_hash, p.time, p.raw_hex, p.rx_node_id, p.path_hashes, p.route_type
     FROM mesh.packets p
         WHERE p.network IN (${UKMESH_NETWORK_SQL_LIST})
