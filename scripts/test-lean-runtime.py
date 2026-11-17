@@ -101,7 +101,14 @@ class MainRuntimeContract(unittest.TestCase):
                 continue
             self.assertGreater(int(service["mem_limit"]), 0, name)
             self.assertEqual(int(service["mem_limit"]), int(service["memswap_limit"]), name)
-        self.assertEqual(self.services["hopreach"]["environment"]["GOMAXPROCS"], "2")
+        coordinator = self.services["hopreach"]
+        self.assertEqual(coordinator["environment"]["GOMAXPROCS"], "1")
+        self.assertEqual(float(coordinator["cpus"]), 1)
+        self.assertEqual(int(coordinator["mem_limit"]), 512 * 1024**2)
+        self.assertEqual(len(coordinator["ports"]), 1)
+        ingress = coordinator["ports"][0]
+        self.assertEqual((ingress["host_ip"], str(ingress["published"]), ingress["target"]),
+                         ("127.0.0.1", "19101", 8083))
         services = resolved(TYPESAFE_API_URL="http://owned-sink:8080/classify")
         self.assertEqual(services["tagger-worker"]["environment"]["TYPESAFE_API_URL"],
                          "http://owned-sink:8080/classify")

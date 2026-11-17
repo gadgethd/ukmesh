@@ -100,10 +100,14 @@ func TestEquivalentSitesRasterAndPNGParity(t *testing.T) {
 			params := propagation.Params{FrequencyMHz: fixture.frequency, TxPowerDBm: 22, TxAntennaGainDB: 3,
 				RxSensitivityDB: -124, FadeMarginDB: 20, AntennaHeightM: 1, RxHeightM: 2, MaxRangeKm: 100, MarginGreenDB: 15}
 			var rendered *image.NRGBA
+			var err error
 			if fixture.supersample == 1 {
-				rendered = coverage.Raster(compute.New(), grid, sites, bounds, 64, params, 190, nil)
+				rendered, err = coverage.Raster(compute.New(), grid, sites, bounds, 64, params, 190, nil)
 			} else {
-				rendered = coverage.RasterSupersampled(compute.New(), grid, sites, bounds, 64, fixture.supersample, params, 190, nil)
+				rendered, err = coverage.RasterSupersampled(compute.New(), grid, sites, bounds, 64, fixture.supersample, params, 190, nil)
+			}
+			if err != nil {
+				t.Fatal(err)
 			}
 			width, height := rendered.Bounds().Dx()*fixture.supersample, rendered.Bounds().Dy()*fixture.supersample
 			margins := propagation.ComputeMarginsCPU(grid, sites, bounds, width, height, propagation.LinkBudgetMaxRangeKm(params), params, nil)

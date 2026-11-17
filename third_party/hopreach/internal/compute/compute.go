@@ -16,6 +16,7 @@ package compute
 import (
 	"log"
 	"sync"
+	"time"
 
 	"hopreach/internal/demgrid"
 	"hopreach/internal/gpucompute"
@@ -28,9 +29,10 @@ import (
 // called concurrently once setup is complete (mirrors the original
 // package-global design, which only ever had one setup call at startup).
 type Engine struct {
-	localOnce sync.Once
-	localBE   *gpucompute.Backend
-	forced    bool // mode "gpu": failures are hard errors, not silent fallback
+	localOnce  sync.Once
+	localBE    *gpucompute.Backend
+	forced     bool // mode "gpu": failures are hard errors, not silent fallback
+	remoteOnly bool
 
 	gpuLogOnce     sync.Once
 	gpuSizeLogOnce sync.Once
@@ -38,6 +40,7 @@ type Engine struct {
 
 	brokerAddr     string // e.g. "127.0.0.1:8081"; empty disables the remote-GPU path
 	demTileURLBase string // upstream DEM tile source, passed to the remote worker verbatim
+	remoteTimeout  time.Duration
 	jobSeq         int64
 	jobMu          sync.Mutex
 
@@ -73,6 +76,14 @@ func (e *Engine) SetRemote(brokerAddr, demTileURLBase string) {
 	e.demTileURLBase = demTileURLBase
 }
 
+// SetRemoteJobTimeout lets the broker report its own deadline before the
+// dispatcher's HTTP deadline closes the connection.
+func (e *Engine) SetRemoteJobTimeout(maxWait time.Duration) {
+	if maxWait > 0 {
+		e.remoteTimeout = maxWait + 5*time.Second
+	}
+}
+
 // SetChunkBudgetBytes overrides MarginsChunked's automatic per-tile memory
 // budget sizing (see Engine.effectiveChunkBudgetBytes) with an explicit
 // value. Optional — bytes <= 0 (the zero value, i.e. never called) leaves
@@ -91,15 +102,16 @@ func (e *Engine) reportBackend(label string) {
 }
 
 // Setup initializes the local WebGPU backend according to mode
-// ("auto"|"cpu"|"gpu") and, for "auto"/"gpu", verifies its output against
+// ("auto"|"cpu"|"gpu"|"remote") and, for "auto"/"gpu", verifies its output against
 // the CPU path on a small fixture before it's ever trusted for real output.
 // Safe to call once at startup; failures are logged (never panics) and
 // simply leave the local backend unset, so Margins falls back to remote/CPU
 // for every pass. Errors are only fatal when mode is "gpu" (forced).
 func (e *Engine) Setup(mode string) {
 	e.localOnce.Do(func() {
-		if mode == "cpu" {
-			log.Printf("coverage: gpu.mode=cpu, skipping GPU probe")
+		e.remoteOnly = mode == "remote"
+		if mode == "cpu" || e.remoteOnly {
+			log.Printf("coverage: gpu.mode=%s, skipping local GPU probe", mode)
 			return
 		}
 		e.forced = mode == "gpu"
@@ -124,6 +136,10 @@ func (e *Engine) Setup(mode string) {
 		log.Printf("coverage: GPU compute enabled (%s)", be.AdapterID)
 		e.localBE = be
 	})
+}
+
+func (e *Engine) RemoteOnly() bool {
+	return e.remoteOnly
 }
 
 // Available reports whether GPU compute is usable right now, local or
@@ -153,7 +169,10 @@ func (e *Engine) LocalAdapterID() string {
 // before giving up on GPU entirely. Errors are only fatal when mode "gpu"
 // was forced via Setup (local GPU only; a forced-GPU config doesn't apply
 // to the optional remote path).
-func (e *Engine) Margins(grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, imageWidth, imageHeight int, rangeKm float64, p propagation.Params, progressFn func(done, total int)) []float32 {
+func (e *Engine) Margins(grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, imageWidth, imageHeight int, rangeKm float64, p propagation.Params, progressFn func(done, total int)) ([]float32, error) {
+	if e.remoteOnly {
+		return e.dispatchRemote(grid, sites, bounds, imageWidth, imageHeight, rangeKm, p, progressFn)
+	}
 	if e.localBE != nil {
 		// The elevation grid is uploaded in row-chunks, so WebGPU's ~2GB
 		// single-buffer ceiling isn't a reason to avoid the GPU by itself —
@@ -178,7 +197,7 @@ func (e *Engine) Margins(grid *demgrid.Grid, sites []propagation.Site, bounds pr
 				if progressFn != nil {
 					progressFn(imageHeight, imageHeight)
 				}
-				return margins
+				return margins, nil
 			}
 			if e.forced {
 				log.Fatalf("coverage: GPU dispatch failed (gpu.mode=gpu, not falling back): %v", err)
@@ -191,10 +210,9 @@ func (e *Engine) Margins(grid *demgrid.Grid, sites []propagation.Site, bounds pr
 	}
 
 	if e.remoteConfigured() {
-		e.reportBackend("remote_gpu")
-		margins, err := e.marginsRemote(grid, sites, bounds, imageWidth, imageHeight, rangeKm, p, progressFn)
+		margins, err := e.dispatchRemote(grid, sites, bounds, imageWidth, imageHeight, rangeKm, p, progressFn)
 		if err == nil {
-			return margins
+			return margins, nil
 		}
 		e.remoteLogOnce.Do(func() {
 			log.Printf("coverage: remote GPU worker dispatch failed, falling back to CPU for this pass: %v", err)
@@ -202,5 +220,5 @@ func (e *Engine) Margins(grid *demgrid.Grid, sites []propagation.Site, bounds pr
 	}
 
 	e.reportBackend("cpu")
-	return propagation.ComputeMarginsCPU(grid, sites, bounds, imageWidth, imageHeight, rangeKm, p, progressFn)
+	return propagation.ComputeMarginsCPU(grid, sites, bounds, imageWidth, imageHeight, rangeKm, p, progressFn), nil
 }

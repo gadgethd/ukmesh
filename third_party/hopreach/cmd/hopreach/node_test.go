@@ -2,14 +2,19 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"hopreach/internal/compute"
 	"hopreach/internal/corescope"
+	"hopreach/internal/coverage"
 )
 
 func TestNormalizeNodePublicKey(t *testing.T) {
@@ -96,5 +101,99 @@ func TestPruneNodeCoverageIsBoundedAndPreservesCurrent(t *testing.T) {
 	}
 	if index[preserve] == nil {
 		t.Fatal("current request was pruned")
+	}
+}
+
+func TestRunNodeParksAndKeepsLastPublishedCoverage(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	key := strings.Repeat("a", 64)
+	lat, lon := 55.9533, -3.1883
+	lastHeard := time.Now().UTC().Add(-time.Minute).Format(time.RFC3339)
+	node := corescope.Node{PublicKey: key, Role: "repeater", Lat: &lat, Lon: &lon, LastHeard: &lastHeard}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/nodes":
+			_ = json.NewEncoder(w).Encode(map[string]any{"nodes": []corescope.Node{node}, "total": 1})
+		case "/gpu/status":
+			_, _ = w.Write([]byte(`{"worker_connected":false}`))
+		default:
+			t.Errorf("unexpected request to %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	cfg := appConfig{
+		apiURL: srv.URL, outputDir: dir, timeout: time.Second, demCacheDir: t.TempDir(),
+		gpuMode: "remote", gpuBrokerAddr: strings.TrimPrefix(srv.URL, "http://"), demTileURLBase: srv.URL,
+		activeHours: 2, degradedHours: 12, coverageImageWidth: 1024, coveragePublicationTileSize: 256,
+	}
+	datasetID, err := nodeDatasetID(key, node, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requested := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	lastPublished := "tiles/nodes/previous/0-0.png"
+	index := map[string]*nodeCoverageMeta{
+		key: {DatasetID: datasetID, State: "computing", RequestedAt: requested, CompletedTiles: 2, TotalTiles: 10,
+			Standard: &coverageMeta{Tiles: []coverage.Tile{{Image: lastPublished}}}},
+	}
+	if err := writeNodeCoverageIndex(dir, index); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := runNode(cfg, key)
+	if !errors.Is(err, compute.ErrRemoteParked) || result.State != "parked" || result.DatasetID != datasetID {
+		t.Fatalf("runNode returned %+v, %v", result, err)
+	}
+	index, err = readNodeCoverageIndex(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := index[key]
+	if entry == nil || entry.State != "computing" || !entry.WaitingForGPU || entry.Failure != "" {
+		t.Fatalf("expected a recoverable node entry, got %+v", entry)
+	}
+	if entry.RequestedAt != requested || entry.CompletedTiles != 2 || entry.TotalTiles != 10 {
+		t.Fatalf("resume progress was changed: %+v", entry)
+	}
+	if entry.Standard == nil || len(entry.Standard.Tiles) != 1 || entry.Standard.Tiles[0].Image != lastPublished {
+		t.Fatalf("last-good coverage was lost: %+v", entry.Standard)
+	}
+}
+
+func TestNodeDatasetCleanupKeepsPendingCheckpointsAndPublishedTiles(t *testing.T) {
+	dir := t.TempDir()
+	checkpointDir := filepath.Join(dir, "checkpoints", nodeCoverageNamespace)
+	if err := os.MkdirAll(checkpointDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"published", "parked", "computing", "abandoned"} {
+		if err := os.MkdirAll(filepath.Join(dir, "tiles", nodeCoverageNamespace, id), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(checkpointDir, id+".json"), []byte("{}"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cleanupUnreferencedNodeDatasets(dir, map[string]*nodeCoverageMeta{
+		"first": {DatasetID: "parked", State: "computing", WaitingForGPU: true,
+			Standard: &coverageMeta{Tiles: []coverage.Tile{{Image: "tiles/nodes/published/0-0.png"}}}},
+		"second": {DatasetID: "computing", State: "computing"},
+		"third":  {DatasetID: "abandoned", State: "failed"},
+	})
+	for _, id := range []string{"published", "parked", "computing"} {
+		for _, path := range []string{filepath.Join(dir, "tiles", nodeCoverageNamespace, id), filepath.Join(checkpointDir, id+".json")} {
+			if _, err := os.Stat(path); err != nil {
+				t.Errorf("expected to keep %s: %v", path, err)
+			}
+		}
+	}
+	for _, path := range []string{filepath.Join(dir, "tiles", nodeCoverageNamespace, "abandoned"), filepath.Join(checkpointDir, "abandoned.json")} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("expected to remove %s: %v", path, err)
+		}
 	}
 }

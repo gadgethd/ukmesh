@@ -22,14 +22,11 @@ UKMesh. They are outside UKMesh's production Compose and release builds.
 
 The complete HopReach v0.1.32 source is vendored at
 `third_party/hopreach`, with the exact upstream revision recorded in
-`UPSTREAM_COMMIT`. The identical derived source is public as
-[`v0.1.32-ukmesh.4`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.4)
-at commit `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119`. The unmodified upstream CPU
-raster remains an executable accuracy oracle. The production CPU path retains
-the same propagation equations, DEM samples, free-space path loss, 4/3-earth
-curvature, knife-edge diffraction, link budget, and margin calculation while
-using a conservative site index, batched terrain sampling, and factored
-path-invariant calculations. Other UK-specific work covers chunk/progressive
+`UPSTREAM_COMMIT`. The vendored base is
+[`v0.1.32-ukmesh.4`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.4).
+The UKMesh coordinator requires the remote GPU protocol and retains the CPU
+raster for isolated parity tests. The propagation model retains its equations,
+terrain samples, boundary and link budget. Other UK-specific work covers chunk/progressive
 orchestration, the internal data adapter, versioned boundary, deployment
 profile, and native map consumer.
 
@@ -45,7 +42,7 @@ positioned UK repeaters + observed node_links
  backend /hopreach compatibility API
                  │ paginated/bounded
                  ▼
- HopReach ── DEM cache + checkpoint + singleton/nightly scheduler
+ HopReach coordinator ── private broker ── GPU worker + raster DEM cache
                  │ atomic Standard first, then gated Precision
                  ▼
  rf_coverage_data (last-known-good + current progressive tiles)

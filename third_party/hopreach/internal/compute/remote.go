@@ -2,7 +2,9 @@ package compute
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,6 +14,47 @@ import (
 	"hopreach/internal/gpujob"
 	"hopreach/internal/propagation"
 )
+
+// ErrRemoteParked indicates a retry can continue using the same checkpoint.
+var ErrRemoteParked = errors.New("waiting for the remote GPU worker")
+
+const (
+	remoteProbeTimeout = 3 * time.Second
+	remoteJobTimeout   = 30*time.Minute + 5*time.Second
+	remoteJSONLimit    = 16 * 1024
+)
+
+// RequireWorker checks remote-only mode before fetching terrain or replacing
+// metadata. Other modes retain their existing backend selection policy.
+func (e *Engine) RequireWorker() error {
+	if e.remoteOnly && !e.remoteAvailable() {
+		return ErrRemoteParked
+	}
+	return nil
+}
+
+func (e *Engine) dispatchRemote(grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, width, height int, rangeKm float64, p propagation.Params, progressFn func(done, total int)) ([]float32, error) {
+	if !e.remoteConfigured() {
+		return nil, ErrRemoteParked
+	}
+	e.reportBackend("remote_gpu")
+	margins, err := e.marginsRemote(grid, sites, bounds, width, height, rangeKm, p, progressFn)
+	if err != nil && e.remoteOnly {
+		return nil, fmt.Errorf("%w: %w", ErrRemoteParked, err)
+	}
+	return margins, err
+}
+
+func (e *Engine) brokerRequest(ctx context.Context, method, route string, body []byte) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, method, "http://"+e.brokerAddr+route, bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	if method == http.MethodPost {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	return http.DefaultClient.Do(req)
+}
 
 // remoteConfigured reports whether a broker address was configured at all —
 // if not, Margins skips the remote branch entirely rather than making a
@@ -39,7 +82,9 @@ func (e *Engine) remoteStatus() (connected bool, availableBytes uint64) {
 	if !e.remoteConfigured() {
 		return false, 0
 	}
-	resp, err := http.Get(fmt.Sprintf("http://%s/gpu/status", e.brokerAddr))
+	ctx, cancel := context.WithTimeout(context.Background(), remoteProbeTimeout)
+	defer cancel()
+	resp, err := e.brokerRequest(ctx, http.MethodGet, "/gpu/status", nil)
 	if err != nil {
 		return false, 0
 	}
@@ -48,7 +93,7 @@ func (e *Engine) remoteStatus() (connected bool, availableBytes uint64) {
 		WorkerConnected bool   `json:"worker_connected"`
 		AvailableBytes  uint64 `json:"available_bytes"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, remoteJSONLimit)).Decode(&status) != nil {
 		return false, 0
 	}
 	return status.WorkerConnected, status.AvailableBytes
@@ -109,8 +154,14 @@ func (e *Engine) marginsRemote(grid *demgrid.Grid, sites []propagation.Site, bou
 		err  error
 	}
 	outcomeCh := make(chan submitOutcome, 1)
+	timeout := e.remoteTimeout
+	if timeout <= 0 {
+		timeout = remoteJobTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
 	go func() {
-		data, err := e.submitRemoteJob(body, imageWidth, imageHeight)
+		data, err := e.submitRemoteJob(ctx, body, imageWidth, imageHeight)
 		outcomeCh <- submitOutcome{data: data, err: err}
 	}()
 
@@ -118,6 +169,8 @@ func (e *Engine) marginsRemote(grid *demgrid.Grid, sites []propagation.Site, bou
 	defer ticker.Stop()
 	for {
 		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		case outcome := <-outcomeCh:
 			if outcome.err != nil {
 				return nil, outcome.err
@@ -131,7 +184,7 @@ func (e *Engine) marginsRemote(grid *demgrid.Grid, sites []propagation.Site, bou
 			if progressFn == nil {
 				continue
 			}
-			if done, total := e.pollRemoteProgress(job.ID); total > 0 {
+			if done, total := e.pollRemoteProgress(ctx, job.ID); total > 0 {
 				progressFn(done, total)
 			}
 		}
@@ -141,8 +194,8 @@ func (e *Engine) marginsRemote(grid *demgrid.Grid, sites []propagation.Site, bou
 // submitRemoteJob does the actual blocking POST /gpu/submit call —
 // factored out of marginsRemote so that function can run it in a goroutine
 // and poll progress concurrently while it's outstanding.
-func (e *Engine) submitRemoteJob(body []byte, imageWidth, imageHeight int) ([]byte, error) {
-	resp, err := http.Post(fmt.Sprintf("http://%s/gpu/submit", e.brokerAddr), "application/json", bytes.NewReader(body))
+func (e *Engine) submitRemoteJob(ctx context.Context, body []byte, imageWidth, imageHeight int) ([]byte, error) {
+	resp, err := e.brokerRequest(ctx, http.MethodPost, "/gpu/submit", body)
 	if err != nil {
 		return nil, fmt.Errorf("remote GPU: submitting job: %w", err)
 	}
@@ -150,19 +203,20 @@ func (e *Engine) submitRemoteJob(body []byte, imageWidth, imageHeight int) ([]by
 
 	if resp.StatusCode != http.StatusOK {
 		var errResp gpujob.Result
-		_ = json.NewDecoder(resp.Body).Decode(&errResp)
+		_ = json.NewDecoder(io.LimitReader(resp.Body, remoteJSONLimit)).Decode(&errResp)
 		if errResp.Error != "" {
 			return nil, fmt.Errorf("remote GPU: %s", errResp.Error)
 		}
 		return nil, fmt.Errorf("remote GPU: broker returned status %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	expected := imageWidth * imageHeight * 4
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(expected)+1))
 	if err != nil {
 		return nil, fmt.Errorf("remote GPU: reading result: %w", err)
 	}
-	if len(data) != imageWidth*imageHeight*4 {
-		return nil, fmt.Errorf("remote GPU: result size %d doesn't match expected %d", len(data), imageWidth*imageHeight*4)
+	if len(data) != expected {
+		return nil, fmt.Errorf("remote GPU: result size %d doesn't match expected %d", len(data), expected)
 	}
 	return data, nil
 }
@@ -171,14 +225,16 @@ func (e *Engine) submitRemoteJob(body []byte, imageWidth, imageHeight int) ([]by
 // progress for jobID — any failure (network hiccup, broker briefly
 // unreachable) just means this poll contributes no update, never an error
 // that could disrupt the real submit/result flow above.
-func (e *Engine) pollRemoteProgress(jobID string) (done, total int) {
-	resp, err := http.Get(fmt.Sprintf("http://%s/gpu/progress?id=%s", e.brokerAddr, jobID))
+func (e *Engine) pollRemoteProgress(jobContext context.Context, jobID string) (done, total int) {
+	ctx, cancel := context.WithTimeout(jobContext, remoteProbeTimeout)
+	defer cancel()
+	resp, err := e.brokerRequest(ctx, http.MethodGet, "/gpu/progress?id="+jobID, nil)
 	if err != nil {
 		return 0, 0
 	}
 	defer resp.Body.Close()
 	var p struct{ Done, Total int }
-	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+	if resp.StatusCode != http.StatusOK || json.NewDecoder(io.LimitReader(resp.Body, remoteJSONLimit)).Decode(&p) != nil {
 		return 0, 0
 	}
 	return p.Done, p.Total

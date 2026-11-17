@@ -77,7 +77,10 @@ func TestRasterSupersampledChunkedMatchesUnchunked(t *testing.T) {
 	defer grid.Close()
 
 	eUnchunked := compute.New()
-	want := RasterSupersampled(eUnchunked, grid, sites, bounds, servedWidth, supersample, p, 190, nil)
+	want, err := RasterSupersampled(eUnchunked, grid, sites, bounds, servedWidth, supersample, p, 190, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if want == nil {
 		t.Fatal("RasterSupersampled returned nil")
 	}

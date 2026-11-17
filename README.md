@@ -10,18 +10,18 @@ For local development with CoreScope and Beacon, see
 ## Local development
 
 With Node (see `.nvmrc`), npm, Docker Engine and Compose available, use the
-candidate branch and run the local helper:
+development branch to start the complete lean stack:
 
 ```bash
 git clone --branch ukmesh-dev --single-branch https://github.com/gadgethd/ukmesh.git
 cd ukmesh
-scripts/dev-stack.sh up
+bash scripts/dev-all.sh init
+bash scripts/dev-all.sh start
 ```
 
-Run the helper from the repository root. It creates synthetic data,
-migrates owned local databases and checks MQTT persistence and live delivery.
-Open `http://127.0.0.1:5173`. See the [local stack runbook](scripts/local-sample/README.md)
-for profiles, explicit reset/cleanup, benchmarks and the optional private archive.
+Run the launcher from the repository root. It prepares owned local storage
+and starts UKMesh, CoreScope and Beacon. Open `http://127.0.0.1:5173`. See the
+[lean runtime guide](docs/lean-runtime.md) for service URLs and configuration.
 
 ## 2.0 candidate
 

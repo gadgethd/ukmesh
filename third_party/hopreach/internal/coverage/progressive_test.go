@@ -3,12 +3,71 @@
 package coverage
 
 import (
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"hopreach/internal/compute"
+	"hopreach/internal/gpujob"
 	"hopreach/internal/propagation"
 )
+
+func TestRemoteRasterResumesPublishedTilesAfterDisconnect(t *testing.T) {
+	var submits atomic.Int32
+	var connected atomic.Bool
+	mux := http.NewServeMux()
+	mux.HandleFunc("/gpu/submit", func(w http.ResponseWriter, r *http.Request) {
+		var job gpujob.Job
+		if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+			http.Error(w, "invalid test job", http.StatusBadRequest)
+			return
+		}
+		if submits.Add(1) > 1 && !connected.Load() {
+			http.Error(w, "worker disconnected", http.StatusServiceUnavailable)
+			return
+		}
+		margins := make([]float32, job.ImageWidth*job.ImageHeight)
+		_, _ = w.Write(gpujob.Float32ToBytesLE(margins))
+	})
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	engine := compute.New()
+	engine.Setup("remote")
+	engine.SetRemote(strings.TrimPrefix(server.URL, "http://"), server.URL)
+	dir := t.TempDir()
+	options := ProgressiveOptions{OutputDir: dir, Tier: "precision", RunID: "remote-fixture", TileSize: 64}
+	bounds := propagation.Bounds{South: 56.31, North: 56.32, West: -3.32, East: -3.30}
+	params := propagation.Params{FrequencyMHz: 868, TxPowerDBm: 22, RxSensitivityDB: -124, FadeMarginDB: 20, MaxRangeKm: 50, MarginGreenDB: 15}
+	sites := []propagation.Site{{Lat: 56.315, Lon: -3.31, TxHeightM: 1}}
+	render := func() ([]Tile, error) {
+		return RasterProgressiveChunked(engine, bounds, 13, t.TempDir(), server.URL, server.Client(), sites, 128, 2, params, 190, options, nil)
+	}
+	tiles, err := render()
+	if !errors.Is(err, compute.ErrRemoteParked) || len(tiles) != 1 || submits.Load() != 2 {
+		t.Fatalf("disconnect: %d published tiles, %d requests, error %v", len(tiles), submits.Load(), err)
+	}
+	first := filepath.Join(dir, tiles[0].Image)
+	info, err := os.Stat(first)
+	if err != nil {
+		t.Fatal(err)
+	}
+	connected.Store(true)
+	tiles, err = render()
+	if err != nil || len(tiles) < 2 || submits.Load() != int32(len(tiles)+1) {
+		t.Fatalf("resume: %d published tiles, %d requests, error %v", len(tiles), submits.Load(), err)
+	}
+	resumed, err := os.Stat(first)
+	if err != nil || !os.SameFile(info, resumed) {
+		t.Fatalf("resume replaced the tile published before disconnect: %v", err)
+	}
+}
 
 func TestProgressiveNamespaceRejectsPathSegments(t *testing.T) {
 	_, err := RasterProgressiveChunked(nil, propagation.Bounds{}, 11, "", "", nil, nil, 0, 1, propagation.Params{}, 0,

@@ -103,6 +103,19 @@ func TestTierNeedsCompute(t *testing.T) {
 	}
 }
 
+func TestPreviouslyPublishedPartialTierStillNeedsResume(t *testing.T) {
+	previous := meta{Run: &coverageRunInfo{ID: "interrupted", Tiers: map[string]tierRunState{
+		"standard": {State: "available"}, "precision": {State: "failed", CompletedTiles: 1, TotalTiles: 3},
+	}}}
+	if runID(previous) != "interrupted" || !incompleteTier(previous, "precision") || incompleteTier(previous, "standard") {
+		t.Fatal("a parked run should resume its partial tier and retain the completed tier")
+	}
+	previous.Complete = true
+	if runID(previous) == "interrupted" || incompleteTier(previous, "precision") {
+		t.Fatal("a completed run should not resume an old checkpoint")
+	}
+}
+
 func TestLastCompletedAt(t *testing.T) {
 	generated := "2026-10-28T00:30:00Z"
 	finished := "2026-10-28T01:10:00Z"

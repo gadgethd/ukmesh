@@ -584,20 +584,14 @@ func DownsampleMargins(src []float32, srcWidth, srcHeight, factor int) (dst []fl
 // (used for re-split sub-tiles, where losing intra-tile granularity is an
 // acceptable simplification — see computeTileLocal).
 func (e *Engine) computeTile(tl tile, tileSites []propagation.Site, zoom int, cacheDir, tileURLBase string, client *http.Client, rangeKm float64, p propagation.Params, supersample int, localBudgetBytes float64, progressFn func(done, total int)) ([]float32, int, int, error) {
-	if e.localBE == nil && e.remoteConfigured() {
-		// This path dispatches to the remote worker directly rather than
-		// through Margins, so it has to report the backend itself —
-		// Margins' own reportBackend calls never run for a chunked tier.
-		// Without this the Precision and Calibrated Precision tiers (the
-		// two longest, and the ones a remote worker exists to serve) left
-		// progress.json with no backend at all: the UI showed no GPU label
-		// for most of a run that was in fact entirely remote-GPU, and
-		// recordTier logged an empty backend into the analytics history.
-		e.reportBackend("remote_gpu")
-		margins, err := e.marginsRemote(stubGrid(zoom), tileSites, tl.outputBounds, tl.colCount, tl.rowCount, rangeKm, p, progressFn)
+	if e.remoteOnly || (e.localBE == nil && e.remoteConfigured()) {
+		margins, err := e.dispatchRemote(stubGrid(zoom), tileSites, tl.outputBounds, tl.colCount, tl.rowCount, rangeKm, p, progressFn)
 		if err == nil {
 			out, w, h := DownsampleMargins(margins, tl.colCount, tl.rowCount, supersample)
 			return out, w, h, nil
+		}
+		if e.remoteOnly {
+			return nil, 0, 0, err
 		}
 		e.remoteLogOnce.Do(func() {
 			log.Printf("coverage: remote GPU worker dispatch failed, falling back to CPU for this pass: %v", err)
@@ -629,7 +623,10 @@ func (e *Engine) computeTileLocal(tl tile, tileSites []propagation.Site, zoom in
 			return nil, 0, 0, fmt.Errorf("local terrain: %w", err)
 		}
 		defer grid.Close()
-		margins := e.Margins(grid, tileSites, tl.outputBounds, tl.colCount, tl.rowCount, rangeKm, p, progressFn)
+		margins, err := e.Margins(grid, tileSites, tl.outputBounds, tl.colCount, tl.rowCount, rangeKm, p, progressFn)
+		if err != nil {
+			return nil, 0, 0, err
+		}
 		out, w, h := DownsampleMargins(margins, tl.colCount, tl.rowCount, supersample)
 		return out, w, h, nil
 	}

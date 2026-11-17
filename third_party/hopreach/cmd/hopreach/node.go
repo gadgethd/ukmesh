@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -162,7 +163,13 @@ func pruneNodeCoverage(index map[string]*nodeCoverageMeta, preserve string, now 
 func cleanupUnreferencedNodeDatasets(outputDir string, index map[string]*nodeCoverageMeta) {
 	referenced := make(map[string]bool)
 	for _, entry := range index {
-		if entry == nil || entry.Standard == nil {
+		if entry == nil {
+			continue
+		}
+		if entry.State == "computing" {
+			referenced[entry.DatasetID] = true
+		}
+		if entry.Standard == nil {
 			continue
 		}
 		for _, tile := range entry.Standard.Tiles {
@@ -232,6 +239,7 @@ func recordNodeUnavailable(cfg appConfig, publicKey string, node *corescope.Node
 		}
 	}
 	entry.State = "failed"
+	entry.WaitingForGPU = false
 	entry.Failure = message
 	entry.UpdatedAt = now.Format(time.RFC3339)
 	entry.FreshUntil = now.Format(time.RFC3339)
@@ -284,8 +292,12 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 		return result, err
 	}
 	if positionStatus == "silent" {
-		if existing := index[publicKey]; existing != nil {
+		if existing := index[publicKey]; existing != nil && (existing.State != "computing" || existing.Standard != nil) {
 			existing.PositionStatus = "silent"
+			if existing.State == "computing" {
+				existing.State = "available"
+			}
+			existing.WaitingForGPU = false
 			existing.FreshUntil = now.Format(time.RFC3339)
 			existing.UpdatedAt = now.Format(time.RFC3339)
 			_ = writeNodeCoverageIndex(cfg.outputDir, index)
@@ -318,6 +330,11 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 	}
 	if previous != nil {
 		entry.Standard = previous.Standard
+		entry.FreshUntil = previous.FreshUntil
+		if previous.State == "computing" && previous.DatasetID == datasetID {
+			entry.RequestedAt = previous.RequestedAt
+			entry.CompletedTiles, entry.TotalTiles = previous.CompletedTiles, previous.TotalTiles
+		}
 	}
 	index[publicKey] = entry
 	pruneNodeCoverage(index, publicKey, now)
@@ -329,11 +346,21 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 		if err == nil {
 			return
 		}
-		entry.State, entry.Failure, entry.UpdatedAt = "failed", err.Error(), time.Now().UTC().Format(time.RFC3339)
+		entry.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
+		entry.WaitingForGPU = errors.Is(err, compute.ErrRemoteParked)
+		if entry.WaitingForGPU {
+			result.State, result.Message = "parked", "Waiting for the remote GPU worker."
+		} else {
+			entry.State, entry.Failure = "failed", err.Error()
+			result.State, result.Message = "failed", err.Error()
+		}
 		_ = writeNodeCoverageIndex(cfg.outputDir, index)
-		result.State, result.Message = "failed", err.Error()
 	}()
 
+	engine := cfg.coverageEngine()
+	if err := engine.RequireWorker(); err != nil {
+		return result, err
+	}
 	rangeKm := propagation.LinkBudgetMaxRangeKm(cfg.propagation)
 	point := coverage.Point{Lat: *node.Lat, Lon: *node.Lon}
 	bounds, ok := coverage.RasterBounds([]coverage.Point{point}, rangeKm)
@@ -345,12 +372,6 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 		return result, err
 	}
 	site := propagation.Site{Lat: point.Lat, Lon: point.Lon, GroundM: grounds[0], TxHeightM: grounds[0] + cfg.propagation.AntennaHeightM}
-	engine := compute.New()
-	engine.Setup(cfg.gpuMode)
-	engine.SetRemote(cfg.gpuBrokerAddr, cfg.demTileURLBase)
-	if cfg.coveragePrecisionChunkBudgetMB > 0 {
-		engine.SetChunkBudgetBytes(float64(cfg.coveragePrecisionChunkBudgetMB) * 1_000_000)
-	}
 	tiles, err := coverage.RasterProgressiveChunked(
 		engine, bounds, cfg.demZoom, cfg.demCacheDir, cfg.demTileURLBase, httpClient,
 		[]propagation.Site{site}, cfg.coverageImageWidth, 1, cfg.propagation, cfg.coverageMaxAlpha,

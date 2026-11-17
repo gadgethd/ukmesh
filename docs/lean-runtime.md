@@ -13,7 +13,7 @@ For a larger host, the main Compose file accepts `BACKEND_MEMORY_LIMIT`,
 ```sh
 BACKEND_MEMORY_LIMIT=2g DATABASE_POOL_MAX=12 WORKER_DATABASE_POOL_MAX=3 \
 PATH_RESOLVE_WORKERS=2 \
-HOPREACH_CPUS=4 HOPREACH_MEMORY_LIMIT=1536m \
+HOPREACH_CPUS=2 HOPREACH_MEMORY_LIMIT=768m \
 ALLOY_MEMORY_LIMIT=256m ALLOY_GOMEMLIMIT=192MiB \
 docker compose --env-file /dev/null -f docker-compose.yml config --quiet
 ```
@@ -56,6 +56,12 @@ configuration and do not read a deployment `.env`.
 built assets. `stop` stops consumers before infrastructure and retains stores.
 The migration, data initialization and historical link-backfill jobs complete
 and exit; successful exit is their expected healthy state.
+
+HopReach's coordinator uses one CPU and a 512 MiB container limit by default.
+The remote worker computes Standard, Precision and repeater footprints.
+The VM retains publication, checkpoints and the last published tiles. See
+[worker pairing and recovery](rf-coverage-rollout.md) for the private ingress
+and credential setup.
 
 Local overrides provide fixture credentials, owned storage and loopback
 ingress. Tagging and alert delivery use the local test endpoint, and Health

@@ -22,6 +22,8 @@ test('RF polls only visible work, preserves one discovery read and backs off aft
   assert.equal(rfCoveragePollingPolicy(true, pending, meta, true).enabled, false);
   assert.deepEqual(rfCoveragePollingPolicy(true, { ...off, layerVisible: true }, meta, true), { enabled: true, intervalMs: POLLING.rfIdle });
   meta.node_coverage![key]!.state = 'computing';
+  meta.node_coverage![key]!.waiting_for_gpu = true;
+  assert.equal(rfNodeCoverageState(meta, key), 'pending');
   assert.deepEqual(rfCoveragePollingPolicy(true, pending, meta, true), { enabled: true, intervalMs: POLLING.rfActive });
   assert.deepEqual(rfCoveragePollingPolicy(true, { ...off, layerVisible: true }, meta, true), { enabled: true, intervalMs: POLLING.rfActive });
   meta.node_coverage![key]!.state = 'failed';

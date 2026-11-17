@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"hopreach/internal/calibration"
+	"hopreach/internal/compute"
 	yconfig "hopreach/internal/config"
 	"hopreach/internal/propagation"
 )
@@ -72,6 +73,7 @@ type appConfig struct {
 	// default): no attempt is ever made to reach a broker that was never
 	// configured.
 	gpuBrokerAddr string
+	gpuJobTimeout time.Duration
 
 	// Per-tier GPU gating: when true, that tier is skipped entirely
 	// (omitted from meta.json, same as an always-optional tier like
@@ -110,6 +112,7 @@ type appConfig struct {
 	// Scheduled runs use the daily cron slot instead of the startup guard
 	// and per-tier calendar-day freshness. Complex cron keeps the old rules.
 	scheduled    bool
+	resumeRemote bool
 	scheduleCron string
 }
 
@@ -164,6 +167,7 @@ func toAppConfig(yc yconfig.Config) appConfig {
 
 		gpuMode:       yc.GPU.Mode,
 		gpuBrokerAddr: yc.GPU.Remote.BrokerAddr,
+		gpuJobTimeout: time.Duration(yc.RemoteWorker.JobTimeoutSeconds * float64(time.Second)),
 
 		standardRequiresGPU:            yc.Coverage.StandardRequiresGPU,
 		calibratedRequiresGPU:          yc.Coverage.CalibratedRequiresGPU,
@@ -182,6 +186,15 @@ func toAppConfig(yc yconfig.Config) appConfig {
 		minRecomputeIntervalHours: yc.Coverage.MinRecomputeIntervalHours,
 		scheduleCron:              yc.Schedule.Cron,
 	}
+}
+
+func (cfg appConfig) coverageEngine() *compute.Engine {
+	engine := compute.New()
+	engine.Setup(cfg.gpuMode)
+	engine.SetRemote(cfg.gpuBrokerAddr, cfg.demTileURLBase)
+	engine.SetRemoteJobTimeout(cfg.gpuJobTimeout)
+	engine.SetChunkBudgetBytes(float64(cfg.coveragePrecisionChunkBudgetMB) * 1_000_000)
+	return engine
 }
 
 // regionBoundaryLabel describes which boundary a run used, for meta.json's

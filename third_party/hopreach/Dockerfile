@@ -44,9 +44,10 @@ RUN GOOS=js GOARCH=wasm go build -o /out/hopreach.wasm ./wasm \
 # either way, not a functional requirement.
 FROM ubuntu:26.04@sha256:3131b4cc82a783df6c9df078f86e01819a13594b865c2cad47bd1bca2b7063bb
 ARG SOURCE_REVISION=unknown
+ARG SOURCE_REPOSITORY=https://github.com/gadgethd/hopreach
 ARG VERSION=v0.1.32+ukmesh
 LABEL org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.source="https://github.com/gadgethd/hopreach" \
+      org.opencontainers.image.source="${SOURCE_REPOSITORY}" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.licenses="AGPL-3.0-only WITH Commons-Clause"
 RUN apt-get -o APT::Update::Error-Mode=any update \
@@ -61,6 +62,7 @@ COPY --from=wasmbuild /out/hopreach.wasm /usr/share/nginx/html/hopreach.wasm
 COPY --from=wasmbuild /out/wasm_exec.js /usr/share/nginx/html/wasm_exec.js
 COPY docker/entrypoint.sh /entrypoint.sh
 COPY docker/default.conf.template /etc/nginx/conf.d/default.conf.template
+COPY docker/gpu-worker.nginx.conf /etc/nginx/snippets/hopreach-gpu-worker.conf
 COPY docker/config.docker.yaml /config/config.yaml
 COPY LICENSE UPSTREAM_COMMIT /usr/share/doc/hopreach/
 RUN chmod +x /entrypoint.sh /app/hopreach /app/hopreach-shareapi \
@@ -75,7 +77,7 @@ RUN chmod +x /entrypoint.sh /app/hopreach /app/hopreach-shareapi \
 ENV HOPREACH_CONFIG=/config/config.yaml
 
 VOLUME ["/data/dem-cache", "/data/shared-plans"]
-EXPOSE 80
+EXPOSE 80 8083
 
 # nginx starts immediately at container boot (see docker/entrypoint.sh) and
 # is healthy as soon as it's serving, independent of whether the first
