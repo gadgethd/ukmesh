@@ -2410,3 +2410,34 @@ qualification. Do not change workloads, timing or acceptance limits.
   the migration job has no source-revision environment value and keeps its
   configuration hash. Account for those precise metadata changes in the
   adoption proof, retaining all existing resource, database and RF guards.
+
+## Keep Beacon's compiler contract in its repository
+
+- The backup CI lane uses a separately pinned Docker builder. Its Go1.26.7
+  compiler rejects the declared1.26.10 minimum with GOTOOLCHAIN=local before
+  downloading modules. Verify that rejection using the exact image and module
+  files. A compatible1.26.10 pin then passes the image build and both PostgreSQL
+  backup tests; retain the original failed run.
+- The current vulnerability check subsequently rejects Go1.26.10 for
+  [GO-2026-6859](https://pkg.go.dev/vuln/GO-2026-6859). Set the owning go.mod
+  minimum to1.26.11 and pin the matching official Alpine3.24 builder. Keep
+  go.sum, dependencies, application code, runtime image, PostgreSQL16 client,
+  scanner and every test unchanged. The local canonical compiler is already
+  Go1.27.4, which the advisory lists as fixed. No VPS deployment is involved.
+- Reproduce the deployed Beacon binary with the canonical Go1.27.4 compiler,
+  source archive and trimpath/build flags, then change only the module minimum
+  in the same source directory. The baseline matches the deployed SHA exactly.
+  The candidate differs by59 bytes in its Go/GNU build identifiers; executable
+  code and all other sections match. Adopt only the exact measured candidate
+  SHA4135d16c2258dfd335f984b39875f5bd0ea3d0f672c5fde01467a835125f0e69.
+  Keep both Core binaries and all Core/Web artifacts byte-exact in this stage.
+- Docker serializes independent bind mounts and dependency-label members in
+  varying orders. Compare their exact members at capture, retaining raw order
+  for audit, so representation changes cannot masquerade as settings changes.
+  Preserve source/destination/mode and dependency conditions. Check every other
+  configuration, environment and ownership-label field exactly, allowing only
+  the declared source metadata and shared App image revision transitions.
+- Preserve all three failed CI runs and the original failed adoption collector.
+  Native compatibility and artifact proofs do not replace the pending full CI
+  retry, final source bindings or integrated qualification. Keep all existing
+  resource, database, backup, RF, permission and performance criteria.
