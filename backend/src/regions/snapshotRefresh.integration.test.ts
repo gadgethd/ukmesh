@@ -33,7 +33,7 @@ test('region repair follows real privacy convergence, certifies complete empty r
   await admin.query(`CREATE DATABASE ${name}`);
   const pool = new pg.Pool({ connectionString: url.href, max: 3, options: POST_MOVE_SEARCH_PATH });
   const directory = await mkdtemp(path.join(os.tmpdir(), 'ukmesh-region-fixture-'));
-  const environment = ['DATABASE_URL','MESHCORE_WORKER_DATABASE_URL','REGION_SCOPE_ALLOW_EMPTY','REGION_SCOPE_MAX_PACKETS','REGION_SCOPE_MAX_NODES',BASE_SCHEMA_BOOTSTRAP_ENV];
+  const environment = ['DATABASE_URL','MESHCORE_WORKER_DATABASE_URL','REGION_SCOPE_ALLOW_EMPTY','REGION_SCOPE_MAX_PACKETS','REGION_SCOPE_MAX_NODES','DATABASE_ANALYTICS_RANDOM_PAGE_COST','DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE',BASE_SCHEMA_BOOTSTRAP_ENV];
   const previous = new Map(environment.map(key => [key, process.env[key]]));
   t.after(async () => {
     for (const [key, value] of previous) { if (value === undefined) delete process.env[key]; else process.env[key] = value; }
@@ -47,6 +47,20 @@ test('region repair follows real privacy convergence, certifies complete empty r
   process.env['DATABASE_URL'] = url.href;
   process.env['MESHCORE_WORKER_DATABASE_URL'] = url.href;
   process.env['REGION_SCOPE_ALLOW_EMPTY'] = '1';
+  process.env['DATABASE_ANALYTICS_RANDOM_PAGE_COST'] = '4';
+  process.env['DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE'] = '512MB';
+  const plannerSessions: Array<{ random_page_cost: string; effective_cache_size: string }> = [];
+  const connect = pg.Pool.prototype.connect as (...args: unknown[]) => any;
+  t.mock.method(pg.Pool.prototype, 'connect', function(this: pg.Pool, ...args: unknown[]) {
+    const pending = connect.apply(this, args);
+    if (args.length || this.options.application_name !== 'meshcore-regions-rebuild') return pending;
+    return pending.then(async (client: pg.PoolClient) => {
+      try {
+        const result = await client.query("SELECT current_setting('random_page_cost') AS random_page_cost, current_setting('effective_cache_size') AS effective_cache_size");
+        plannerSessions.push(result.rows[0]); return client;
+      } catch (error) { client.release(true); throw error; }
+    });
+  });
   const query = (sql: string, params?: unknown[]) => pool.query(sql, params);
   const certificate = async () => (await pool.query(`SELECT visibility_generation::text, scoped_packets, decoded_packets, window_days FROM core.region_scope_run WHERE id`)).rows[0];
   const fingerprint = async () => (await pool.query(`SELECT md5(COALESCE(string_agg(value, '' ORDER BY value),'')) AS value FROM (
@@ -59,6 +73,9 @@ test('region repair follows real privacy convergence, certifies complete empty r
   const refresher = new RegionSnapshotRefresher({ query, settings: regionRebuildSettings(), run: async () => { runs++; await rebuildRegionParticipation(); return 'completed'; } });
   const signal = new AbortController().signal;
   assert.equal(await refresher.runOnce(signal), 'rebuilt');
+  assert.ok(plannerSessions.length > 0, 'actual analytical admission session observed');
+  for (const observed of plannerSessions) assert.deepEqual(observed,
+    { random_page_cost: '4', effective_cache_size: '512MB' });
   const firstGeneration = await readPublicResponseGeneration(query);
   assert.equal((await certificate()).visibility_generation, String(firstGeneration));
   assert.equal(Number((await certificate()).scoped_packets), 13);
@@ -333,7 +350,8 @@ await rebuildRegionParticipation();
       assert.equal(activity.filter(row => row.claims === 2).length, 1);
       assert.match(String(await running), /REGION_SNAPSHOT_DEADLINE/);
       await blocker.query('ROLLBACK');
-      assert.equal((await regionActivity()).length, 0, 'the deadline settles the actual child and both claims');
+      await waitFor(async () => (await regionActivity()).length === 0,
+        'the deadline settles the actual child and both claims after PostgreSQL observes disconnect');
       assert.equal(await fingerprint(), before);
     } finally {
       try { await blocker.query('ROLLBACK'); }

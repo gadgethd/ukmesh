@@ -61,6 +61,24 @@ export function analyticsPlannerOptions(env: NodeJS.ProcessEnv): string | undefi
     .filter(Boolean).join(' ') || undefined;
 }
 
+/** Preserve pg URL-option precedence while sharing explicit analytics policy. */
+export function analyticsConnectionOptions(env: NodeJS.ProcessEnv, schemaOptions?: string) {
+  const plannerOptions = analyticsPlannerOptions(env);
+  const options = [schemaOptions, plannerOptions].filter(Boolean).join(' ') || undefined;
+  let connectionString = databaseUrlForRole('worker', env);
+  if (plannerOptions && connectionString) {
+    let endpoint: URL;
+    try { endpoint = new URL(connectionString); }
+    catch { throw new Error('Invalid worker database URL for analytics planner options'); }
+    if (endpoint.searchParams.has('options')) {
+      const previous = endpoint.searchParams.getAll('options').at(-1);
+      endpoint.searchParams.set('options', [previous, plannerOptions].filter(Boolean).join(' '));
+      connectionString = endpoint.href;
+    }
+  }
+  return { connectionString, options };
+}
+
 export type DatabaseRole = 'http' | 'ingest' | 'worker' | 'owner' | 'migrate';
 
 const roleDatabaseUrlEnv: Record<DatabaseRole, string> = {

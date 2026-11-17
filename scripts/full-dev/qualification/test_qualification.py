@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import nullcontext
 import datetime as dt
 import json
 import os
@@ -1045,6 +1046,63 @@ class HealthSessionEvidence(unittest.TestCase):
                         patch.object(health, "http_get", return_value=(json.dumps(base | {field: value}).encode(), "application/json")):
                     self.assertFalse(health.verify_session(session, timeout=0)["passed"])
 
+
+
+class FixtureMaintenance(unittest.TestCase):
+    def record(self, token='owned', label='ukmesh'):
+        return {'token': token, 'label': label, 'database': 'lean_' + ('1x' if label == 'ukmesh' else 'owner') + '_' + token,
+                'container': 'owned-test-db', 'user': 'owned-admin', 'cluster': '123'}
+
+    def before(self, record):
+        return {'database': record['database'], 'cluster': record['cluster'],
+                'marker': 'ukmesh-owned-fixture:' + record['token'], 'phase_seconds': 0,
+                'next_start': '2026-11-17 06:00:00+00', 'next_aligned': True,
+                'job': {'job_id': 3, 'proc_schema': '_timescaledb_functions',
+                        'proc_name': 'policy_job_stat_history_retention', 'scheduled': True,
+                        'fixed_schedule': True, 'schedule_interval': '06:00:00', 'max_runtime': '01:00:00',
+                        'max_retries': -1, 'retry_period': '01:00:00', 'initial_start': '2000-01-01T00:00:00Z',
+                        'config': {'drop_after': '1 month', 'max_failures_per_job': 1000, 'max_successes_per_job': 1000}}}
+
+    def invoke(self, record, responses):
+        with patch('target_lease.target_lease', return_value=nullcontext()), \
+                patch('target_safety.publication_lease', return_value=nullcontext()), \
+                patch.object(fixtures, 'sql', side_effect=[json.dumps(row) for row in responses]) as execute:
+            result = fixtures.reschedule_fixture_maintenance(record, 3085)
+        return result, execute.call_count
+
+    def test_fixture_phases_are_stable_distinct_nonzero_and_reject_originals(self):
+        rows = [self.record(token, label) for token in ('one', 'two', 'three') for label in ('ukmesh', 'owner')]
+        plan = fixtures.fixture_maintenance_phases(rows)
+        self.assertEqual(plan, fixtures.fixture_maintenance_phases(list(reversed(rows))))
+        self.assertEqual(len({phase for _, phase in plan}), 6)
+        self.assertTrue(all(0 < phase < 21600 for _, phase in plan))
+        with self.assertRaises(ValueError): fixtures.fixture_maintenance_phases(rows + [rows[0]])
+        with self.assertRaises(ValueError): fixtures.fixture_maintenance_phases([dict(rows[0], database='meshcore')])
+        with self.assertRaises(ValueError): fixtures.fixture_maintenance_phases([dict(rows[0], label='beacon')])
+
+    def test_wrong_store_or_job_refuses_before_any_timing_mutation(self):
+        record = self.record(); before = self.before(record)
+        for changed in [dict(before, database='meshcore'), dict(before, cluster='other'), dict(before, marker='foreign'),
+                        dict(before, job=dict(before['job'], scheduled=False)),
+                        dict(before, job=dict(before['job'], proc_name='another_job')),
+                        dict(before, job=dict(before['job'], schedule_interval='01:00:00'))]:
+            with self.subTest(changed=changed), patch('target_lease.target_lease', return_value=nullcontext()), \
+                    patch('target_safety.publication_lease', return_value=nullcontext()), \
+                    patch.object(fixtures, 'sql', return_value=json.dumps(changed)) as execute:
+                with self.assertRaises(ValueError): fixtures.reschedule_fixture_maintenance(record, 3085)
+                self.assertEqual(execute.call_count, 1)
+
+    def test_timing_only_update_preserves_policy_and_repeat_does_not_postpone_job(self):
+        record = self.record(); before = self.before(record); after = copy.deepcopy(before)
+        after.update(phase_seconds=3085, next_start='2026-11-17 06:51:25+00')
+        after['job']['initial_start'] = '2000-01-01T00:51:25Z'
+        result, calls = self.invoke(record, [before, after])
+        self.assertEqual(calls, 2); self.assertTrue(result['changed'])
+        self.assertEqual(result['after']['job']['config'], before['job']['config'])
+        result, calls = self.invoke(record, [after])
+        self.assertEqual(calls, 1); self.assertFalse(result['changed'])
+        changed = copy.deepcopy(after); changed['job']['config']['drop_after'] = '1 day'
+        with self.assertRaises(ValueError): self.invoke(record, [before, changed])
 
 if __name__ == "__main__":
     unittest.main()

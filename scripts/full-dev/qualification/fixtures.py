@@ -256,19 +256,122 @@ def current_targets() -> dict[str, str]:
     return expected
 
 
+def fixture_maintenance_phases(records):
+    """Distribute owned internal cleanup across its unchanged six-hour cycle."""
+    ordered = sorted(records, key=lambda row: row['database'])
+    if len({row['database'] for row in ordered}) != len(ordered):
+        raise ValueError('duplicate fixture maintenance database')
+    for row in ordered:
+        token = row.get('token', '')
+        prefixes = ('fixture', '1x', '10x') if row.get('label') == 'ukmesh' else ('owner',) if row.get('label') == 'owner' else ()
+        if not TOKEN.fullmatch(token) or not DB_NAME.fullmatch(row['database']) \
+                or row['database'] not in {f'lean_{prefix}_{token}' for prefix in prefixes}:
+            raise ValueError('maintenance requires an owned fixture main/owner database')
+    phases = [(index + 1) * 21600 // (len(ordered) + 1) for index in range(len(ordered))]
+    if any(not 0 < phase < 21600 for phase in phases) or len(set(phases)) != len(phases):
+        raise ValueError('fixture maintenance phases exhausted')
+    return list(zip(ordered, phases))
+
+
+def reschedule_fixture_maintenance(record, phase_seconds):
+    """Change only verified fixture job timing; never original stores or policy."""
+    from target_lease import target_lease
+    from target_safety import publication_lease
+    fixture_maintenance_phases([record])
+    if type(phase_seconds) is not int or not 0 < phase_seconds < 21600:
+        raise ValueError('a nonzero six-hour fixture phase is required')
+    with target_lease(exclusive=True), publication_lease():
+        inspect = """SELECT json_build_object(
+          'database',current_database(), 'cluster',(SELECT system_identifier::text FROM pg_control_system()),
+          'marker',shobj_description((SELECT oid FROM pg_database WHERE datname=current_database()),'pg_database'),
+          'job',(SELECT to_jsonb(j) FROM timescaledb_information.jobs j WHERE job_id=3),
+          'next_start',(SELECT next_start::text FROM timescaledb_information.job_stats WHERE job_id=3),
+          'phase_seconds',(SELECT mod(extract(epoch FROM initial_start-TIMESTAMPTZ '2000-01-01T00:00:00Z'),21600)::int
+            FROM timescaledb_information.jobs WHERE job_id=3),
+          'next_aligned',(SELECT s.next_start>NOW() AND date_bin(INTERVAL '6 hours',s.next_start,j.initial_start)=s.next_start
+            FROM timescaledb_information.jobs j JOIN timescaledb_information.job_stats s USING(job_id) WHERE j.job_id=3))"""
+        def execute(query):
+            return sql(record['container'], record['database'], record['user'], query, timeout=15)
+        before = json.loads(execute(inspect))
+        job = before.get('job')
+        if before.get('database') != record['database'] or before.get('cluster') != record['cluster'] \
+                or before.get('marker') != 'ukmesh-owned-fixture:' + record['token']:
+            raise ValueError('fixture maintenance store identity differs')
+        if not isinstance(job, dict) or any(job.get(key) != value for key, value in {
+                'job_id': 3, 'proc_schema': '_timescaledb_functions',
+                'proc_name': 'policy_job_stat_history_retention', 'scheduled': True,
+                'fixed_schedule': True, 'schedule_interval': '06:00:00', 'max_runtime': '01:00:00'}.items()):
+            raise ValueError('fixture internal history policy differs')
+        if before.get('phase_seconds') == phase_seconds and before.get('next_aligned') is True \
+                and before.get('next_start') not in ('infinity', '-infinity', None):
+            return {'database': record['database'], 'phase_seconds': phase_seconds, 'changed': False,
+                    'before': before, 'after': before}
+        quote = lambda value: "'" + value.replace("'", "''") + "'"
+        expected = quote(json.dumps(job))
+        marker = quote('ukmesh-owned-fixture:' + record['token'])
+        name, cluster = quote(record['database']), quote(record['cluster'])
+        mutation = f"""BEGIN; SET LOCAL statement_timeout='5s';
+        DO $fixture_maintenance$
+        DECLARE old jsonb; fresh jsonb;
+          anchor timestamptz := TIMESTAMPTZ '2000-01-01T00:00:00Z' + make_interval(secs=>{phase_seconds});
+        BEGIN
+          IF current_database()<>{name} OR (SELECT system_identifier::text FROM pg_control_system())<>{cluster}
+            OR shobj_description((SELECT oid FROM pg_database WHERE datname=current_database()),'pg_database') IS DISTINCT FROM {marker}
+            THEN RAISE EXCEPTION 'fixture maintenance store identity changed'; END IF;
+          SELECT to_jsonb(j) INTO old FROM timescaledb_information.jobs j WHERE job_id=3;
+          IF old IS DISTINCT FROM {expected}::jsonb THEN RAISE EXCEPTION 'fixture history job changed'; END IF;
+          PERFORM alter_job(3, initial_start=>anchor,
+            next_start=>date_bin(INTERVAL '6 hours',NOW(),anchor)+INTERVAL '6 hours');
+          SELECT to_jsonb(j) INTO fresh FROM timescaledb_information.jobs j WHERE job_id=3;
+          IF (old-'initial_start'-'next_start') IS DISTINCT FROM (fresh-'initial_start'-'next_start')
+            OR NOT EXISTS (SELECT 1 FROM timescaledb_information.jobs j
+              JOIN timescaledb_information.job_stats s USING(job_id) WHERE j.job_id=3
+              AND j.initial_start=anchor AND s.next_start>NOW()
+              AND date_bin(INTERVAL '6 hours',s.next_start,anchor)=s.next_start)
+            THEN RAISE EXCEPTION 'fixture history policy preservation failed'; END IF;
+        END; $fixture_maintenance$;
+        {inspect}; COMMIT;"""
+        after = json.loads(execute(mutation))
+        protected = lambda value: {key: item for key, item in value.items() if key not in ('initial_start', 'next_start')}
+        if protected(after['job']) != protected(job) or after['phase_seconds'] != phase_seconds \
+                or after['next_aligned'] is not True:
+            raise ValueError('fixture history timing readback differs')
+        return {'database': record['database'], 'phase_seconds': phase_seconds, 'changed': True,
+                'before': before, 'after': after}
+
+
+def stagger_fixture_maintenance():
+    from target_lease import target_lease
+    from target_safety import publication_lease
+    with target_lease(exclusive=True), publication_lease():
+        records = []
+        for path in sorted(FIXTURES.glob('*/manifest.json')):
+            manifest = read_json(path)
+            if manifest.get('ready') is not True:
+                continue
+            owned = bundle(manifest['token'])
+            records.extend(dict(row, token=owned['token']) for row in owned['databases']
+                           if row['label'] in ('ukmesh', 'owner'))
+        jobs = [reschedule_fixture_maintenance(row, phase) for row, phase in fixture_maintenance_phases(records)]
+        return {'passed': True, 'jobs': jobs, 'original_databases_touched': False, 'interval_seconds': 21600}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("create", "switch", "restore", "status"))
+    parser.add_argument("action", choices=("create", "switch", "restore", "status", "stagger-maintenance"))
     parser.add_argument("name", nargs="?")
     parser.add_argument("--run")
     args = parser.parse_args()
     try:
         if args.action == "create":
             result = create_bundle(args.name or "sample", owned_run(args.run))
+            result['fixture_maintenance'] = stagger_fixture_maintenance()
         elif args.action == "switch":
             result = switch(args.name or "")
         elif args.action == "restore":
             result = restore_originals()
+        elif args.action == "stagger-maintenance":
+            result = stagger_fixture_maintenance()
         else:
             result = read_json(STATE / "runtime/selected-fixture.json")
         print(json.dumps(result))

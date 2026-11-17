@@ -1806,3 +1806,34 @@ qualification. Do not change workloads, timing or acceptance limits.
   tests and fresh qualification; neither is a claimed cure for every tail.
 - Keep the adopted256MiB learning bound unchanged. No new SQL, index, scan-force,
   pool, timeout, configuration selector or validation harness is introduced.
+
+
+## Keep region analytical policy and fixture maintenance with their owners
+
+- Reuse validated analytics connection options for the region tool's existing
+  max2 pool. Its main worker explicitly receives4/512MB; HTTP, ingest and other
+  workers retain server settings. Preserve URL read-only/schema options, all SQL,
+  generation fences, statement120s/child180s and publication/admission ownership.
+  A fresh-statistics post-preparation rebuild still exhausted180s with an active
+  DataFileRead query and stale certificate. Actual completion remains required.
+- Nine Timescale schedulers plus simultaneous midnight history-cleanup jobs
+  exhausted16worker slots. The fixture owner assigns only verified owned
+  main/owner databases distinct nonzero phases of their existing6hour cycle.
+  Original jobs remain unchanged. Supported alter_job changes only initial_start
+  and the next aligned future start; preserve complete job JSON, retention,
+  retries, runtime, enabled state and fixed scheduling. No job deletion/disable,
+  data removal or worker/cap increase is permitted. Repeating an aligned phase
+  must not postpone it. Existing fixture CLI repairs retained jobs and applies
+  the same owner after future creation. Native proof must execute this owner
+  against real owned jobs, alongside meaningful ownership/refusal unit tests.
+
+- Preserve the failed 13-case native run: 11 passed and the admitted-child
+  cleanup case plus its parent failed. Child exit does not guarantee an immediate
+  server-side session disappearance. PostgreSQL documents that with the default
+  [client connection checks disabled](https://www.postgresql.org/docs/17/runtime-config-connection.html#GUC-CLIENT-CONNECTION-CHECK-INTERVAL),
+  disconnect detection waits for the next socket interaction, and
+  [open transactions roll back on termination](https://www.postgresql.org/docs/17/protocol-flow.html#PROTOCOL-FLOW-TERMINATION).
+  After releasing the test's blocking transaction, use the existing bounded
+  cleanup wait before checking session/claim removal and the unchanged snapshot
+  fingerprint. Keep the five-second child deadline and every production bound;
+  a fresh successful native run is required.

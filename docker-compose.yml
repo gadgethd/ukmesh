@@ -34,6 +34,10 @@ x-worker-database: &worker-database
   DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
   DATABASE_POOL_MAX: ${WORKER_DATABASE_POOL_MAX:-2}
 
+x-analytics-db-env: &analytics-db-env
+  DATABASE_ANALYTICS_RANDOM_PAGE_COST: ${DATABASE_ANALYTICS_RANDOM_PAGE_COST:-4}
+  DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: ${DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE:-512MB}
+
 x-application-hardening: &application-hardening
   read_only: true
   cap_drop:
@@ -84,6 +88,7 @@ services:
     mem_limit: &backend-memory "${BACKEND_MEMORY_LIMIT:-1g}"
     memswap_limit: *backend-memory
     environment:
+      <<: *analytics-db-env
       DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
       MESHCORE_HTTP_DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-}
       MESHCORE_INGEST_DATABASE_URL: ${MESHCORE_INGEST_DATABASE_URL:-}
@@ -148,8 +153,6 @@ services:
       # separate analytics pool and retain its longer query budget.
       DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
-      DATABASE_ANALYTICS_RANDOM_PAGE_COST: ${DATABASE_ANALYTICS_RANDOM_PAGE_COST:-4}
-      DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: ${DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE:-512MB}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
@@ -377,7 +380,7 @@ services:
     memswap_limit: *region-snapshot-worker-memory
     command: ["node", "--max-old-space-size=128", "dist/workers/region-snapshot.js"]
     environment:
-      <<: *worker-database
+      <<: [*worker-database, *analytics-db-env]
       DATABASE_APPLICATION_NAME: meshcore-region-snapshot
       DATABASE_SKIP_SCHEMA_INIT: "true"
       MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-}

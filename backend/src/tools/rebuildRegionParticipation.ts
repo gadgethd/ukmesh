@@ -38,7 +38,7 @@
 
 import pg from 'pg';
 import { pathToFileURL } from 'node:url';
-import { databaseUrlForRole } from '../platform/config/database.js';
+import { analyticsConnectionOptions } from '../platform/config/database.js';
 import { regionRebuildSettings } from '../regions/rebuildSettings.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
@@ -112,8 +112,8 @@ export function tryRebuildRegionParticipation(): Promise<HeavyWorkAdmissionResul
 async function rebuildWithAdmission(
   admit: (options: HeavyWorkAdmissionOptions<void>) => Promise<HeavyWorkAdmissionResult<void>>,
 ): Promise<HeavyWorkAdmissionResult<void>> {
-  const databaseUrl = databaseUrlForRole('worker');
-  if (!databaseUrl) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
+  const database = analyticsConnectionOptions(process.env);
+  if (!database.connectionString) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const settings = regionRebuildSettings();
   const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';
@@ -121,7 +121,7 @@ async function rebuildWithAdmission(
   const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: buildChannelSecrets() });
 
   const pool = new Pool({
-    connectionString: databaseUrl,
+    ...database,
     application_name: 'meshcore-regions-rebuild',
     max: 2,
     connectionTimeoutMillis: 5_000,

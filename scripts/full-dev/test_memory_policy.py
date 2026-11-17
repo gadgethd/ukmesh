@@ -96,24 +96,25 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertEqual(int(after['db']['mem_limit']), 2048 * MIB)
         self.assertEqual(int(after['db']['memswap_limit']), 2048 * MIB)
 
-    def test_planner_estimates_are_only_backend_analytics_settings_and_preserve_resources(self):
+    def test_planner_estimates_are_only_analytics_services_and_preserve_resources(self):
         files = ('docker-compose.yml', 'scripts/full-dev/compose.yml')
         before = compose(*files)
         keys = ('DATABASE_ANALYTICS_RANDOM_PAGE_COST', 'DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE')
-        self.assertEqual({key: before['backend']['environment'][key] for key in keys},
-                         dict(zip(keys, ('4', '512MB'))))
+        analytical = {'backend', 'region-snapshot-worker'}
         for service, value in before.items():
-            if service != 'backend':
+            if service in analytical:
+                self.assertEqual({key: value['environment'][key] for key in keys},
+                                 dict(zip(keys, ('4', '512MB'))))
+            else:
                 self.assertTrue(set(keys).isdisjoint(value.get('environment', {})), service)
         after = compose(*files, DATABASE_ANALYTICS_RANDOM_PAGE_COST='2.5',
                         DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE='1GB')
-        expected = dict(before['backend'])
-        expected['environment'] = dict(expected['environment'], **dict(zip(keys, ('2.5', '1GB'))))
-        self.assertEqual(after['backend'], expected)
         self.assertEqual(set(after), set(before))
         for service in before:
-            if service != 'backend':
-                self.assertEqual(after[service], before[service])
+            expected = dict(before[service])
+            if service in analytical:
+                expected['environment'] = dict(expected['environment'], **dict(zip(keys, ('2.5', '1GB'))))
+            self.assertEqual(after[service], expected)
         database = self.postgres_settings(compose('scripts/local-sample/compose.yml')['db'])
         self.assertNotIn('random_page_cost', database)
         self.assertNotIn('effective_cache_size', database)
