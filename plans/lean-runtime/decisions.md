@@ -2216,3 +2216,30 @@ qualification. Do not change workloads, timing or acceptance limits.
   the old implementation first. International latitude and longitude retain
   their separate last_seen-only selections: test eligible tied values without
   adding a tiebreaker or combining their rows. No new settings or indexes.
+
+## Read Health Check's link activity in one statement
+
+- The deployed summary projection removes its wide temporary work, but the
+  next9600-response cohort still fails267ms admission. Preserve that failure.
+  Its capture overlaps exact path counting and full-state link/node reads;
+  BufferMapping waits show shared buffer contention, not row or DDL locks.
+- Current topology uses the stored node_identity_links materialized view
+  (migration051, moved by112), not the older regular definition in037. Its
+  untimed plan reads11550 blocks; the radio-report input is empty here. Do not
+  rewrite that graph source or weaken its publication/scope semantics.
+- Health Check's currentWorkers independently asks for recent link count,
+  latest computation and backfill count/latest observation. All three scan
+  core.node_links and are consumed together. A real-worker read-only snapshot
+  preserves all four values in one aggregate. The old plans read22008,21944
+  and21880 blocks; the shared plan reads21816. The separate COUNT/MAX variant
+  did not help and is rejected. Evidence: final-evidence/
+  health-link-shared-plan-673f704-x1iq0anv and full-state-link-plans-673f704-ebzv4kz_.
+- Let the health repository own one loadLinkActivity query and remove its three
+  surplus methods. Runtime maps that single row to the same worker fields.
+  Keep COUNT(*) over every raw link, strict itm_computed_at > NOW()-1h,
+  independent MAX timestamps, text/count types, empty zero/null results and
+  future timestamps. Establish old behavior on an owned native fixture before
+  changing the query and its internal test adapter.
+- Keep the remaining Promise.all work, error propagation, defaults, liveness
+  logic, metrics, freshness and cadence unchanged. One statement provides one
+  snapshot/cutoff; add no cache, settings, index, transaction or new service.
