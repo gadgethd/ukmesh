@@ -2441,3 +2441,25 @@ qualification. Do not change workloads, timing or acceptance limits.
   Native compatibility and artifact proofs do not replace the pending full CI
   retry, final source bindings or integrated qualification. Keep all existing
   resource, database, backup, RF, permission and performance criteria.
+
+## Qualify the remote GPU default on the four-core DEV VM
+
+- Give the coordinator one remote-only compute policy for scheduled coverage
+  and on-demand footprints. DEV currently clears the broker address and the
+  chunk dispatcher can fall through to local terrain and propagation. Preserve
+  the model, scheduling, checkpoints and published output while making a
+  disconnected worker an observable, recoverable job failure.
+- Validate effective PostgreSQL service policies at the existing inspection
+  boundary. The guard rejects the shared service inheritance before it can
+  check the inherited floor, and Beacon's capacity is below that floor.
+  Keep the actual Beacon container memory limit fixed.
+- Use the migration loader's names and checksums to check both replay ledgers.
+  The tests maintained a second migration head and now fail before exercising
+  the preserved grants and legacy schema moves.
+- Classify known fixture-only scan findings at their owning file and exact
+  value, keeping full-history scanning. Fix the affected frontend dependency
+  at the root of its graph, with a reviewed and pinned source backport if
+  upstream has no suitable release. The full audit remains required.
+- Compare feature contracts against GitHub main and the merged DEV revision
+  separately. Use the same fixtures for matched performance runs and keep
+  the database and RF artifacts owned by the existing lifecycle boundaries.

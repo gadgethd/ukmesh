@@ -25,7 +25,7 @@ const roleBootstrap = [
   readFileSync(new URL('../../../scripts/bootstrap-reader-roles.sql', import.meta.url), 'utf8'),
 ];
 const allMigrations = loadMigrationFiles();
-const HEAD = '152_bound_retention_calendar_intervals.sql';
+assert.ok(allMigrations.length > 0, 'shipped migrations must be present');
 // Everything before 078 is unaffected by this change; splitting the band there
 // lets the second test insert the legacy relations at the point they would have
 // existed on a live database.
@@ -114,7 +114,18 @@ async function assertMaintenanceAuthority(pool: pg.Pool): Promise<void> {
   }]);
 }
 
-test(`a fresh base-schema database replays the whole band to head ${HEAD.slice(0, 3)}`, {
+async function assertCompleteLedger(pool: pg.Pool): Promise<void> {
+  const { rows } = await pool.query<{ name: string; checksum_sha256: string }>(
+    'SELECT name, checksum_sha256 FROM public.schema_migrations',
+  );
+  assert.equal(rows.length, allMigrations.length);
+  assert.deepEqual(
+    new Map(rows.map(({ name, checksum_sha256 }) => [name, checksum_sha256])),
+    new Map(allMigrations.map(({ name, checksumSha256 }) => [name, checksumSha256])),
+  );
+}
+
+test('a fresh base-schema database replays every shipped migration', {
   skip: endpoint ? false : 'owned PostgreSQL required',
   timeout: 300000,
 }, async (t) => {
@@ -133,12 +144,7 @@ test(`a fresh base-schema database replays the whole band to head ${HEAD.slice(0
   // Every shipped migration is either executed or explicitly superseded; the
   // band may not stop early on a missing legacy relation.
   assert.equal(applied.length, allMigrations.length);
-  const ledger = await harness.pool.query<{ name: string; execution_mode: string }>(
-    'SELECT name, execution_mode FROM public.schema_migrations ORDER BY name',
-  );
-  assert.equal(ledger.rows.length, allMigrations.length);
-  assert.equal(ledger.rows.at(-1)?.name, HEAD);
-  assert.equal(Math.max(...ledger.rows.map((row) => Number(row.name.slice(0, 3)))), Number(HEAD.slice(0, 3)));
+  await assertCompleteLedger(harness.pool);
   await assertMaintenanceAuthority(harness.pool);
   const snapshotColumns = await harness.pool.query<{ table_schema: string; table_name: string; column_name: string }>(`
     SELECT table_schema, table_name, column_name FROM information_schema.columns
@@ -219,10 +225,7 @@ test('the guarded moves still move the legacy relations and carry their grants',
   const applied = await runMigrations(harness.pool, allMigrations);
   assert.equal(applied.length, allMigrations.length - firstBlock.length);
 
-  const ledger = await harness.pool.query<{ name: string }>(
-    'SELECT name FROM public.schema_migrations ORDER BY name',
-  );
-  assert.equal(ledger.rows.at(-1)?.name, HEAD);
+  await assertCompleteLedger(harness.pool);
   await assertMaintenanceAuthority(harness.pool);
 
   // Every guarded move actually ran: no public.* source names remain, and each

@@ -49,7 +49,7 @@ services:
       retries: 60
     mem_limit: &companion-beacon-db-memory 512m
     memswap_limit: *companion-beacon-db-memory
-    shm_size: 128m
+    shm_size: 1g
   beacon-redis:
     logging: *service-journal
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065

@@ -114,3 +114,9 @@ ebd704d7777a87448ad7fc8f787a2b23cd0e16a8:website-live-manifest.staging.json:gene
 # Identical to the reviewed 2c7ea435 fixture above; these are not credentials.
 f62b9356dddbf9775383b21d5c06f0dc5d0c6b2b:backend/src/spam/sanitize.test.ts:generic-api-key:50
 00588268598a88f0f3544314efe193bd048e2da5:backend/src/spam/sanitize.test.ts:generic-api-key:50
+# Exact historical fixture lines. These values were invented for owned tests
+# or used exclusively by the loopback DEV Health Check channel.
+b3d7a03184264f74ea569eee21f59510076934e9:scripts/full-dev/qualification/test_read_pairs.py:generic-api-key:296
+14f0f6b1e3622bf653a35082ca8aa4e999dab38c:scripts/full-dev/test_memory_policy.py:generic-api-key:16
+069f9fc8aec0aa1974202aa9fe95a9bf6f2d9de5:scripts/full-dev/compose.yml:generic-api-key:132
+8eb87e981083c85f65d3df6855e81f0dd166fde7:scripts/test-lean-runtime.py:generic-api-key:25
