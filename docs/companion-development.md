@@ -6,18 +6,22 @@ HopReach keeps its existing vendored layout.
 
 | Directory | Fork | Upstream branch | Preserved UKMesh branch |
 | --- | --- | --- | --- |
-| `third_party/corescope` | `hermes-gadget/CoreScope` | `Kpa-clawbot/CoreScope:master` | `burn/corescope-hunt-20261023` |
+| `third_party/corescope` | `gadgethd/CoreScope` | `Kpa-clawbot/CoreScope:master` | `hermes-gadget/CoreScope:burn/corescope-hunt-20261023` |
 | `third_party/beacon-server` | `gadgethd/beacon-server` | `MeshCore-Beacon/beacon-server:dev` | `security/remediation-20260912` |
 | `third_party/beacon-web` | `gadgethd/beacon-web` | `MeshCore-Beacon/beacon-web:dev` | `security/remediation-20260912` |
 
 The local integration branch in each submodule is `ukmesh-dev`. Integration
 commits are local until explicitly pushed to each fork; publish those commits
-before sharing the UKMesh submodule pins. These branches
-merge upstream without rewriting the fork's existing commits. CoreScope's
+before sharing the UKMesh submodule pins. These branches merge upstream without
+rewriting the fork's existing commits. CoreScope's
 preserved branch is the published recovery reconstruction, as documented in
 that repository; it does not establish the ancestry of the separate deployment.
 Beacon 2 replaces the 1.x migration chain and requires its own fresh database.
 The DEV launcher creates that database independently of UKMesh.
+
+CoreScope's `ukmesh-dev` branch is published on the `gadgethd` fork. In an
+existing UKMesh checkout, run `git submodule sync -- third_party/corescope` to
+pick up the new fork URL.
 
 ## Start and edit
 
