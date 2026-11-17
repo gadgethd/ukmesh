@@ -46,6 +46,11 @@ test('synthetic loader and derived-state preparation work on the complete migrat
   await generateSampleDataset(['--data-dir', directory, '--count', '25']);
   const args = ['--data-dir', directory, '--database-url', url.href];
   await loadSampleDataset([...args, '--reset', '--fast']);
+  const nodeRows = async () => (await pool.query(
+    'SELECT jsonb_agg(to_jsonb(n) ORDER BY node_id) AS value FROM core.nodes n',
+  )).rows[0].value;
+  const loadedNodes = await nodeRows();
+  const loadedHeap = (await pool.query("SELECT pg_relation_filenode('core.nodes') AS value")).rows[0].value;
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.packets')).rows[0].n, 25);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.packets WHERE raw_hex IS NOT NULL AND observation_id IS NOT NULL')).rows[0].n, 25);
   assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p WHERE ${publicPacketPrivacySql('p')}`)).rows[0].n, 0,
@@ -166,6 +171,10 @@ test('synthetic loader and derived-state preparation work on the complete migrat
       finally { await Promise.allSettled([openingChart, ...(preparing ? [preparing] : []), ...(closingChart ? [closingChart] : [])]); }
     }
   });
+  assert.deepEqual(await nodeRows(), loadedNodes, 'bulk finalization preserves every raw node field');
+  assert.notEqual((await pool.query("SELECT pg_relation_filenode('core.nodes') AS value")).rows[0].value, loadedHeap,
+    'a populated import receives physical maintenance after the empty-table migration');
+  assert.equal((await pool.query("SELECT indisclustered FROM pg_index WHERE indexrelid='core.nodes_normalized_lookup_idx'::regclass")).rows[0].indisclustered, true);
   assert.equal((await pool.query(`SELECT COUNT(*)::int AS n FROM mesh.packets p WHERE ${publicPacketPrivacySql('p')}`)).rows[0].n, 25);
   assert.equal((await pool.query('SELECT COUNT(*)::int AS n FROM mesh.multibyte_path_facts WHERE fully_decoded AND visibility_ok')).rows[0].n, 25);
   assert.ok(await readPublicResponseGeneration((sql) => pool.query(sql)) > 0);

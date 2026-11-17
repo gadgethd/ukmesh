@@ -2,6 +2,14 @@
 
 Place additive, versioned SQL migrations here. Do not put whole-table historical backfills in this folder.
 
+`153_node_lookup_heap_locality.sql` performs one bounded physical layout
+upgrade of `core.nodes` using its existing normalized lookup index. It preserves
+row values and adds no index. The migration owner uses a 5-second lock timeout
+and 60-second statement timeout; failure rolls back atomically. Later DEV bulk
+imports finalize layout in `sample:prepare`, after loading and convergence.
+This is explicit initialization/import maintenance, not a runtime clustering loop
+or a guarantee that later writes will preserve physical order indefinitely.
+
 The immutable `016_private_prefixes.sql` has a PostgreSQL ambiguity in its
 historical rollup query. Environments that already applied it retain and verify
 its checksum. A completely empty database records an explicit

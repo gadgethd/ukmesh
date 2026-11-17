@@ -2004,3 +2004,41 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Preserve all query parameters, fields, caps, ordering, memory, admission,
   deadlines and publication/privacy fences. Verify the compiled SQL, existing
   region checks and real producer tests before rollout and fresh qualification.
+
+## Keep the node lookup heap local without another write-heavy index
+
+- The six-window10x read collection on6f362fe failed its final candidate
+  C8/warm trial1 map page at565ms p95/813ms p99. All earlier candidate modes
+  passed and all13 resource checks passed over1,384.8s. Preserve that failure;
+  neither sampling cadence nor acceptance changes. Its timeline shows the
+  fixture observer probe reading packet history before the map's cold reads;
+  region-worker CPU was idle during this particular failure.
+- The ordered normalized lookup touched1,514 buffers for1,022 heap rows.
+  Heap/key correlation was0.0034. Existing migrations148/150 deliberately
+  removed an extra map index to meet the ingest WAL allowance. Avoid adding a
+  covering index: it would add write cost and indexed unbounded text can reject
+  previously valid node values. The hidden dependency is physical heap locality.
+- Guarded owned10x CLUSTER using the existing normalized index took1.74s,
+  preserving all49,542 rows by SHA256 and every index definition. Heap bytes
+  fell21,553,152→14,204,928 and key correlation became1. The action committed
+  once; its wrapper's JSON parse failure is retained separately from the
+  successful native action and43-service/37-log closure. Evidence:
+  final-evidence/owned-node-cluster-6f362fe-3zqn2_e5/closure.json.
+- The existing candidate window then passed all4 modes/3 trials, with C8 warm
+  p95≤74.69ms and13 resource checks passing. All36 compared HTTP case/trial
+  data digests and entry counts matched. A separate same-SQL/parameters cold
+  map probe after the same regional read needed103 disk blocks/~11.6ms,
+  compared with1,137 blocks/162ms before clustering. These are diagnostic
+  results, not fresh paired qualification. The original stores are untouched.
+- Put the populated-store upgrade in migration153 under the existing finite
+  db-migrate owner. Keep5s lock and60s statement bounds and atomic rollback.
+  Later DEV bulk loads belong to the existing sample preparation finalizer,
+  including scaleLookupFixture which already calls it. Finalize node layout
+  there on the existing admitted/pinned maintenance session, in its own bounded
+  transaction; never in an HTTP handler, retention tool or background loop.
+  An empty-table migration alone does not organize rows loaded later.
+- This is one-time upgrade plus explicit bulk finalization, not perpetual
+  physical ordering. Preserve row values, schema/roles, indexes, freshness,
+  pools, resource limits and privacy fences. Main configuration must own this
+  maintenance before any fresh matched evidence is collected at either scale;
+  fixture-only conditioning cannot substitute for the final runtime.

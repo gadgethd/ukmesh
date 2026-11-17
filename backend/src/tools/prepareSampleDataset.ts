@@ -15,7 +15,7 @@ export async function prepareSampleDataset(databaseUrl: string): Promise<void> {
     // Share the runtime analytical admission boundary before changing any
     // fixture state. The retained admission client leaves one of max2 clients
     // for the sequential preparation helpers below.
-    await withHeavyWorkAdmission({ pool, workload: 'fixture-prepare', task: async () => {
+    await withHeavyWorkAdmission({ pool, workload: 'fixture-prepare', task: async maintenance => {
       // Freeze local lifecycle/background policies for comparable runs. This does
       // not add, remove or activate compression/retention on any external DB.
       const jobs = await pool.query<{ job_id: number }>('SELECT job_id FROM timescaledb_information.jobs WHERE job_id >= 1000');
@@ -69,6 +69,21 @@ export async function prepareSampleDataset(databaseUrl: string): Promise<void> {
       // the earlier join statistics. Refresh them before releasing chart admission.
       await pool.query(`ANALYZE mesh.packets; ANALYZE mesh.packet_paths;
         ANALYZE mesh.multibyte_path_facts`);
+      // Migration153 organizes populated upgrades. Explicit bulk imports can
+      // populate an initially empty migrated table, so finish their layout here.
+      // CLUSTER requires a short exclusive lock; use the pinned admission
+      // session so the transaction and its local deadlines cannot cross clients.
+      await maintenance.query('BEGIN');
+      try {
+        await maintenance.query(`SET LOCAL lock_timeout = '5s';
+          SET LOCAL statement_timeout = '60s';
+          CLUSTER core.nodes USING nodes_normalized_lookup_idx;
+          ANALYZE core.nodes`);
+        await maintenance.query('COMMIT');
+      } catch (error) {
+        await maintenance.query('ROLLBACK');
+        throw error;
+      }
       const counts = await pool.query(`SELECT 'nodes' AS relation, COUNT(*)::text AS rows FROM core.nodes
         UNION ALL SELECT 'packets', COUNT(*)::text FROM mesh.packets
         UNION ALL SELECT 'paths', COUNT(*)::text FROM mesh.packet_paths
