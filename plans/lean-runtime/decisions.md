@@ -2463,3 +2463,7 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Compare feature contracts against GitHub main and the merged DEV revision
   separately. Use the same fixtures for matched performance runs and keep
   the database and RF artifacts owned by the existing lifecycle boundaries.
+- Reuse the loopback disposable database helper for compressed replay and run
+  it with TimescaleDB. The plain PostgreSQL audit job has a different schema
+  contract. Exercise the real launcher lease in the operator script test and
+  stub only the fixture and container inventory boundaries.

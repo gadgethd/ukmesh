@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
 import { backfillPackets, type BackfillEvent } from './backfillPacketIdentity.js';
 
 /**
@@ -11,10 +12,9 @@ import { backfillPackets, type BackfillEvent } from './backfillPacketIdentity.js
  * `is_compressed = FALSE` chunks, processed 1,860,579 of 3,796,145 eligible
  * rows, and still wrote `packets_complete`.
  *
- * These run against a real TimescaleDB (CI uses
- * `timescale/timescaledb:latest-pg16`): a genuine hypertable with one
- * compressed and one uncompressed chunk. `TEST_BACKFILL_DATABASE_URL` must
- * point at a throwaway loopback database.
+ * These run against a genuine TimescaleDB hypertable with one compressed and
+ * one uncompressed chunk. `TEST_BACKFILL_DATABASE_URL` identifies a local
+ * Timescale server on which the fixture can create disposable databases.
  *
  * Revert lines each test is built to catch:
  *  - packetChunks() back to `AND is_compressed = FALSE`          → (a), (b), (d)
@@ -26,12 +26,12 @@ import { backfillPackets, type BackfillEvent } from './backfillPacketIdentity.js
 const databaseUrl = process.env['TEST_BACKFILL_DATABASE_URL'];
 const skip = databaseUrl
   ? false
-  : 'real TimescaleDB required: set TEST_BACKFILL_DATABASE_URL to a throwaway loopback database';
+  : 'real TimescaleDB required: set TEST_BACKFILL_DATABASE_URL to a loopback Timescale server';
 
 const backendRoot = fileURLToPath(new URL('../..', import.meta.url));
 const toolPath = fileURLToPath(new URL('./backfillPacketIdentity.ts', import.meta.url));
 
-type Fixture = pg.Pool;
+type Fixture = pg.Pool & { fixtureUrl: string };
 
 function wireFixture(fill: number): { hash: string; rawHex: string } {
   const body = Buffer.alloc(8, fill);
@@ -87,32 +87,13 @@ INSERT INTO ops.packet_identity_backfill_state (singleton) VALUES (TRUE);
 
 async function prepare(t: TestContext): Promise<Fixture> {
   assert.ok(databaseUrl, 'TEST_BACKFILL_DATABASE_URL is required');
-  const endpoint = new URL(databaseUrl);
-  assert.ok(
-    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname),
-    'only an isolated loopback test database is permitted',
-  );
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-  t.after(async () => { await pool.end(); });
+  const fixture = await createDisposableDatabase(t, databaseUrl, 'identity_compressed');
+  const pool = Object.assign(new pg.Pool({ connectionString: fixture.url, max: 2 }), {
+    fixtureUrl: fixture.url,
+  });
+  fixture.addCleanup(() => pool.end());
 
-  const version = await pool.query<{ extversion: string }>(
-    `SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'`,
-  );
-  assert.ok(version.rows[0], 'TEST_BACKFILL_DATABASE_URL must point at a TimescaleDB database');
-
-  const strays = await pool.query<{ table_schema: string }>(
-    `SELECT table_schema FROM information_schema.tables
-      WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'mesh', 'ops')
-        AND table_schema NOT LIKE 'pg\\_%'
-        AND table_schema NOT LIKE '\\_timescaledb%'
-        AND table_schema NOT LIKE 'timescaledb\\_%'`,
-  );
-  assert.equal(strays.rowCount, 0, 'refusing to run: the target database already holds other tables');
-
-  await pool.query(`
-    DROP SCHEMA IF EXISTS mesh CASCADE;
-    DROP SCHEMA IF EXISTS ops CASCADE;
-  `);
+  await pool.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
   await pool.query(FIXTURE_SQL);
   await pool.query(`SELECT create_hypertable('mesh.packets', 'time', chunk_time_interval => INTERVAL '1 day')`);
   // Production settings from migration 051.
@@ -163,12 +144,11 @@ type BackfillRun = {
   summary: BackfillSummary | undefined;
 };
 
-function runBackfill(args: string[]): Promise<BackfillRun> {
-  assert.ok(databaseUrl);
+function runBackfill(pool: Fixture, args: string[]): Promise<BackfillRun> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', 'tsx', toolPath, ...args], {
       cwd: backendRoot,
-      env: { ...process.env, BACKFILL_DATABASE_URL: databaseUrl },
+      env: { ...process.env, BACKFILL_DATABASE_URL: pool.fixtureUrl },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -270,7 +250,7 @@ test(
     const before = await chunkStates(pool);
     assert.deepEqual(before.map((chunk) => chunk.compressed), [true, false], 'fixture: one compressed, one not');
 
-    const run = await runBackfill(['--batch-size', '2']);
+    const run = await runBackfill(pool, ['--batch-size', '2']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 6);
@@ -333,7 +313,7 @@ test(
 
     // batch-size 1 forces one batch per row: the pre-fix tool stopped after the
     // first batch of each chunk and reported 2.
-    const run = await runBackfill(['--dry-run', '--batch-size', '1']);
+    const run = await runBackfill(pool, ['--dry-run', '--batch-size', '1']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 6, 'a dry run must visit every batch of every chunk');
@@ -375,7 +355,7 @@ test(
     await insertPacket(pool, { time: '2026-03-03 00:00:01+00', hash: truncated.hash, rawHex: '0100' });
     await compressChunkStartingAt(pool, '2026-03-01 00:00:00+00');
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 3);
@@ -412,7 +392,7 @@ test(
     await insertPacket(pool, { time: '2026-04-03 00:00:01+00', hash: later.hash, rawHex: later.rawHex });
     await compressChunkStartingAt(pool, '2026-04-03 00:00:00+00');
 
-    const limited = await runBackfill(['--batch-size', '10', '--limit', '1']);
+    const limited = await runBackfill(pool, ['--batch-size', '10', '--limit', '1']);
     assert.equal(limited.code, 0, limited.stderr);
     assert.ok(limited.summary, limited.stdout);
     assert.equal(limited.summary.selected, 1, '--limit 1 stops after the first row');
@@ -432,7 +412,7 @@ test(
     assert.deepEqual(compressedAfterLimit.map((chunk) => chunk.compressed), [false, true],
       'a chunk the limit never reached must not be left decompressed');
 
-    const resumed = await runBackfill(['--batch-size', '10']);
+    const resumed = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(resumed.code, 0, resumed.stderr);
     assert.ok(resumed.summary, resumed.stdout);
     assert.equal(resumed.summary.selected, 1, 'the resumed run picks up the remaining row');
@@ -464,7 +444,7 @@ test(
     }
     await compressChunkStartingAt(pool, '2026-05-01 00:00:00+00');
 
-    const run = await runBackfill(['--batch-size', '1', '--limit', '1']);
+    const run = await runBackfill(pool, ['--batch-size', '1', '--limit', '1']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 1);
@@ -515,7 +495,7 @@ test(
              resolved = 1, batch_count = 1
     `, [recent.hash]);
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 2, 'the compressed chunk must be re-read despite the cursor');
@@ -560,7 +540,7 @@ test(
       [key],
     );
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.resolved, 2);
@@ -619,7 +599,7 @@ test(
              last_time = NULL, last_observation_id = NULL
     `);
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 2, 'the row above the stale high_water must be selected');
@@ -677,7 +657,7 @@ test(
     // Arrives after the checkpoint and above the old high_water.
     await insertPacket(pool, { time: '2026-10-04 00:00:01+00', hash: late.hash, rawHex: late.rawHex });
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 2, 'both the unseen row and the late row must be selected');

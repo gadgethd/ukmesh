@@ -5,8 +5,30 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 checkout="$fixture/repo with spaces"
-mkdir -p "$checkout/scripts/companion-dev" "$checkout/scripts/full-dev" "$checkout/plans/dev-stack"
+qualification="$checkout/scripts/full-dev/qualification"
+mkdir -p "$checkout/scripts/companion-dev" "$qualification" "$checkout/plans/dev-stack"
 cp "$repo/scripts/dev-all.sh" "$checkout/scripts/"
+cp "$repo/scripts/full-dev/qualification/"{common,target_entry,target_lease}.py "$qualification/"
+cat > "$qualification/fixtures.py" <<'MOCK'
+def selection_values():
+    return {}
+MOCK
+cat > "$qualification/target_safety.py" <<'MOCK'
+def inspect_snapshot():
+    return {'consumers': {}}
+
+def changing(*args):
+    return set()
+
+def target_values(values):
+    return values
+
+def check_start(*args, **kwargs):
+    raise AssertionError('orchestration test must not apply real targets')
+
+def mark_complete(values):
+    pass
+MOCK
 printf 'retained\n' > "$checkout/plans/dev-stack/fixture-ready"
 printf 'must not source $(touch dotenv-sourced)\n' > "$checkout/.env"
 for subsystem in full-dev companion-dev; do
