@@ -10,7 +10,8 @@ export interface ScopedPacketRow {
   observers: string[] | null;
 }
 
-// Keep raw payloads and observers at observation cardinality when paths expand.
+// Keep each packet's path union local instead of globally sorting expanded paths.
+// Native array text round-trips variable lengths, dimensions, nulls and escaping.
 export const SCOPED_PACKETS_SQL = `WITH scoped_observations AS MATERIALIZED (
   SELECT p.packet_hash, p.time, p.raw_hex, p.rx_node_id, p.path_hashes, p.route_type
     FROM mesh.packets p
@@ -20,6 +21,7 @@ export const SCOPED_PACKETS_SQL = `WITH scoped_observations AS MATERIALIZED (
           AND p.time > now() - make_interval(days => $1)
 ), packet_observation_groups AS (
   SELECT p.packet_hash,
+         array_agg(p.path_hashes::text) AS paths,
          min(p.time) AS t0,
          max(p.time) AS t1,
          (array_agg(p.raw_hex ORDER BY p.time DESC)
@@ -27,17 +29,14 @@ export const SCOPED_PACKETS_SQL = `WITH scoped_observations AS MATERIALIZED (
          (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
     FROM scoped_observations p
    GROUP BY p.packet_hash
-), packet_path_groups AS (
-  SELECT p.packet_hash,
-         (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems
-    FROM scoped_observations p
-    LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
-   GROUP BY p.packet_hash
 )
 SELECT observations.packet_hash, observations.t0, observations.t1,
-       observations.raw, paths.elems, observations.observers
+       observations.raw,
+       (SELECT (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80]
+          FROM unnest(observations.paths) AS path(value)
+          CROSS JOIN LATERAL unnest(path.value::text[]) AS e) AS elems,
+       observations.observers
   FROM packet_observation_groups observations
-  JOIN packet_path_groups paths USING (packet_hash)
  ORDER BY observations.packet_hash
  LIMIT $2
 `;

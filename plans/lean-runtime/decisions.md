@@ -1959,3 +1959,32 @@ qualification. Do not change workloads, timing or acceptance limits.
   or changing transaction snapshots. Preserve SQL, results, deadlines and
   publication/privacy fences. Check actual region sessions in the existing
   disposable-database integration test before rollout.
+
+## Union regional paths within their packet rather than globally sorting them
+
+- The 04c70b5 short trial passed all integrity/resource checks and drained in
+  4.9s, but map342ms/history270ms failed250ms. Its slow burst coincided with
+  PostgreSQL disk traffic and the region source query. The source query expands
+  563,825 observations into3,336,436 path rows before sorting. The union belongs
+  to each packet; the global expanded sort is surplus work.
+- Retain native path arrays alongside each packet's metadata, then unnest and
+  union only that packet's paths. Store each observation array in PostgreSQL's
+  native text representation inside a text[] aggregate: this permits variable
+  lengths and dimensions and round-trips nulls/escaping without adding a schema
+  type or JSON conversion. Preserve DISTINCT ordering, the80-element cap,
+  observers, latest raw selection, packet order and all privacy/window filters.
+- Read-only same-snapshot/role/16MiB comparison in
+  final-evidence/region-native-array-paths-04c70b5-fht815y1/native.json measured
+  temporary writes64,139→36,655blocks and execution11.00→6.82s. Whole-array
+  deduplication, element deduplication and ordered-input alternatives increased
+  disk work and are discarded; preserve their diagnostic evidence.
+- Raw-byte comparison still fails on the existing time-only latest ties. Its
+  exhaustive follow-up in
+  final-evidence/region-native-array-semantic-04c70b5-079bm8bm/native.json
+  compared71,982 rows each: no missing or nonraw differences; all11 raw
+  differences are eligible latest-time ties with identical actual producer
+  decoder inputs and region results. Retain the byte failure and the existing
+  unspecified tie policy. Raw remains intermediate and stored packets unchanged.
+- Keep pools, memory bounds, admission, deadlines and publication fences. Run
+  existing backend and real region regressions, independent review and a fresh
+  integrated trial; these query diagnostics do not establish qualification.
