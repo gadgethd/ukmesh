@@ -166,6 +166,7 @@ jobs:
         src/db/identity-decryptions.audit.test.ts
         src/tools/backfillIdentity.audit.test.ts
         src/tools/backfillIdentity.audit-high.test.ts
+        src/tools/backfillIdentity.compressed.test.ts
     defaults:
       run:
         working-directory: backend
