@@ -243,7 +243,17 @@ jobs:
           cache: npm
           cache-dependency-path: frontend/package-lock.json
       - run: npm ci
-      - name: Audit frontend dependencies
+      - name: Audit shipped frontend dependencies
+        # Gate on the tree that ships. vite / @vitejs/plugin-react / fdir /
+        # tinyglobby / picomatch are build-time devDependencies and never enter
+        # the bundle; picomatch currently has an unfixed ReDoS advisory
+        # (GHSA-fc5q-39xc-vjpf, <=4.0.7 is every published version) that no PR
+        # can clear. See #243.
+        run: npm audit --omit=dev --audit-level=high
+      - name: Report dev-tooling advisories
+        # Non-blocking: keeps build-tool advisories visible in the log so they
+        # are still triaged, without gating merges on an unfixable upstream.
+        continue-on-error: true
         run: npm audit --audit-level=high
       - run: npm test
       - name: Enforce both deployed frontend artifact budgets
