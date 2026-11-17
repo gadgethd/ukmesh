@@ -707,3 +707,35 @@ to the last 15 minutes, with a bounded 60-second cache. The Stats page refreshes
 this independently of historical charts. Charts regenerate every 30 minutes
 in the background; the previous complete snapshot remains available during
 refresh, and the page displays its generation time rather than its fetch time.
+
+## ObserverRegistrationWebhookFailing
+
+Observer registrations are announced to the operator Discord webhook configured
+by `OBSERVER_REGISTRATION_WEBHOOK_URL`. Delivery is fire-and-forget: a failed
+notification never fails the public registration request, and the request stays
+in `core.observer_registration_requests` for the operator page. The backend
+exports `meshcore_observer_registration_webhook_deliveries_total{outcome}` with
+one increment per delivery attempt (two attempts per notification).
+
+An increase in `outcome="failure"` pages because the operator loses the timely
+notification even though the submission survives. Confirm the variable is still
+a valid Discord webhook (`GET` returns the webhook object), that the backend has
+outbound HTTPS, and that `backend/src/security/outboundWebhook.ts` is not
+rejecting the resolved address (private/reserved answers, non-443 ports and
+plain HTTP are refused by design). There is no retry after the second attempt;
+re-announce from the operator page if the request is still actionable.
+
+### ObserverRegistrationWebhookSilent
+
+`ObserverRegistrationWebhookSilent` fires when at least one registration was
+accepted in the last six hours and no successful delivery was recorded in the
+same window. Its usual causes are an unset or empty
+`OBSERVER_REGISTRATION_WEBHOOK_URL` (the notification function returns without
+attempting a delivery, so the failure counter never moves), a rotated Discord
+webhook, or a DNS/egress failure. The absence of a successful-delivery series is
+treated as zero; never read it as "no submissions".
+
+Accepted and duplicate submissions are counted separately in
+`meshcore_observer_registration_submissions_total{outcome}`. Duplicates are
+deliberately not announced, so a burst of duplicates with no accepted
+submissions cannot page.

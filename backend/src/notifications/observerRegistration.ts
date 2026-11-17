@@ -1,4 +1,5 @@
 import { deliverWebhook } from '../security/outboundWebhook.js';
+import { observerRegistrationWebhookDeliveriesTotal } from '../metrics.js';
 
 const MAX_ATTEMPTS = 2;
 const RETRY_DELAY_MS = 1_000;
@@ -44,8 +45,10 @@ async function post(url: string, payload: Record<string, unknown>): Promise<void
   for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
     try {
       await deliverWebhook(url, payload);
+      observerRegistrationWebhookDeliveriesTotal.inc({ outcome: 'success' });
       return;
     } catch (error) {
+      observerRegistrationWebhookDeliveriesTotal.inc({ outcome: 'failure' });
       if (attempt === MAX_ATTEMPTS) {
         console.error(
           '[observer-registration] webhook delivery failed:',
