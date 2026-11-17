@@ -77,4 +77,16 @@ regexes = [
   # credential; the test builds it at runtime and this entry covers the
   # history of that fixture so --all scans stay clean.
   '''85953e404cd421a5d845051a8674d52bc38de2972f2357072ec1e79a79be47ed''',
+  # Synthetic harness credentials written by scripts/test-lean-runtime.py and
+  # scripts/full-dev/* when they stand up a throwaway Compose stack. The
+  # literals announce themselves as fixtures ("owned-fixture-only",
+  # "owned-fixture-secret-at-least-32-characters", "owned-synthetic-1x"); every
+  # service they configure is created by the test and torn down after it, and
+  # none can be used against a real deployment. generic-api-key flags them only
+  # because the variable names look like credentials. Listed as exact values so
+  # they also cover history reachable from other branches, where the
+  # repository-wide `gitleaks git --all` sweep sees the introducing commits.
+  '''owned-fixture-only''',
+  '''owned-fixture-secret-at-least-32-characters''',
+  '''owned-synthetic-1x''',
 ]
