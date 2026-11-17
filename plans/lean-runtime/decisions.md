@@ -2188,3 +2188,31 @@ qualification. Do not change workloads, timing or acceptance limits.
   constraint: eager derivation can fail before an earlier successful match or
   a payload hex error. A retained negative test reproduces this. Derive keys
   lazily only when reached, preserving short-circuit and missing-input behavior.
+
+## Reuse the identity projection inside routine summary counts
+
+- The deployed compiled regional probe preserves all75582 packet decisions and
+  reduces the captured6000-frame replay from18.35s to1.63s. Its next baseline
+  demand cohort still fails328ms admission with9600 correct responses. Keep
+  this failure. No chart, regional or learning job explains that window.
+- At13:11:33 the capture observes Health Check's exact30-day path count doing
+  IO, followed by normal API summary/full-node reads. PostgreSQL uses9.76CPU
+  seconds in5.30wall seconds, reads620MB and is throttled2.12s. These are
+  shared-container counters, not evidence that Health Check caused all reads.
+- A worker-role read-only plan comparison preserves the exact623552 count and
+  the other capacity values. Ordered-time and COUNT(time) variants do not
+  improve the existing narrow count plan. Leave Health Check unchanged.
+- The summary still projects nine fields through core.node_identity_nodes, a
+  regular view with an internally materialized wide CTE. A pinned HTTP-role
+  comparison gives exact summary values for global/UK/empty/observer scopes.
+  Reusing publicIdentityNodeSourceSql removes5976 temporary write blocks;
+  untimed execution is553ms versus133ms. This work diagnostic does not prove
+  HTTP latency or resolve every source of contention. Evidence:
+  final-evidence/routine-read-plans-33e5ae8-v2-vnuddw7k.
+- Replace only that shared summary source with the existing canonical identity
+  projection. Preserve its materialized nine-field scope, category predicates,
+  output types, other four queries, caches, pools, budgets and refresh cadence.
+  Establish native alias/collision/private-name/missing-canonical coverage on
+  the old implementation first. International latitude and longitude retain
+  their separate last_seen-only selections: test eligible tied values without
+  adding a tiebreaker or combining their rows. No new settings or indexes.

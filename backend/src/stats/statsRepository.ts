@@ -6,6 +6,7 @@ import {
   publicMapFreshPredicate,
 } from '../nodes/publicMap.js';
 import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
+import { publicIdentityNodeSourceSql } from '../nodes/identitySource.js';
 import {
   loadStoredChartSnapshot,
   saveStoredChartSnapshot,
@@ -1291,7 +1292,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       query(`WITH scoped_nodes AS MATERIALIZED (
                SELECT name, role, lat, lon, last_seen, last_rx_at,
                       last_status_at, last_path_evidence_at, advert_count
-               FROM core.node_identity_nodes nodes
+               FROM ${publicIdentityNodeSourceSql()} nodes
                WHERE TRUE ${filters.nodes}
              ), intl AS (
                SELECT lat, lon, last_seen, advert_count

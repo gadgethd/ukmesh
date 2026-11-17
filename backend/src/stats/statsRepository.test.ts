@@ -284,7 +284,7 @@ test('summary shares one scoped identity read and retains its result rows', asyn
     text: string, params?: unknown[],
   ): Promise<{ rows: T[] }> => {
     calls.push({ text, params });
-    const rows = text.includes('FROM core.node_identity_nodes') ? [{
+    const rows = text.includes('WITH scoped_nodes AS MATERIALIZED') ? [{
       stale_count: '3', map_node_count: '8', total_node_count: '12',
       count_connected: '0', total_adverts: null, last_seen_at: null, last_lat: null, last_lon: null,
     }] : [];
@@ -299,8 +299,10 @@ test('summary shares one scoped identity read and retains its result rows', asyn
     }),
   });
   const result = await repository.fetchStatsSummary('ukmesh', undefined);
-  const identityReads = calls.filter(call => call.text.includes('FROM core.node_identity_nodes'));
+  const identityReads = calls.filter(call => call.text.includes('WITH scoped_nodes AS MATERIALIZED'));
   assert.equal(identityReads.length, 1, 'node categories must share the expensive identity read');
+  assert.equal(identityReads[0].text.includes('FROM core.node_identity_nodes'), false,
+    'shared counts must avoid the wide canonical view');
   assert.deepEqual(identityReads[0].params, ['ukmesh']);
   assert.deepEqual(result.staleCount.rows, [{ count: '3' }]);
   assert.deepEqual(result.mapNodeCount.rows, [{ count: '8' }]);

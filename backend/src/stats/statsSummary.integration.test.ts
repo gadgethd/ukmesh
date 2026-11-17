@@ -59,6 +59,44 @@ test('summary preserves presence boundaries, role/privacy rules and internationa
     assert.deepEqual(empty.internationalCount.rows, [{
       count_connected: '0', total_adverts: null, last_seen_at: null, last_lat: null, last_lon: null,
     }]);
+
+    const key = (value: string) => value.repeat(64);
+    await client.query(`INSERT INTO core.nodes
+      (node_id,name,network,role,lat,lon,last_seen,advert_count)
+      SELECT id,name,network,role,lat,lon,NOW()+age::interval,adverts
+      FROM jsonb_to_recordset($1::jsonb) AS fixture(id text,name text,network text,
+        role integer,lat double precision,lon double precision,age text,adverts integer)`,
+    [JSON.stringify([
+      { id: key('A'), name: 'Canonical client', network: 'ukmesh', role: 1, lat: 51, lon: -1, age: '-3 hours', adverts: 10 },
+      { id: key('B'), name: 'French relay alias', network: 'northeast', role: 2, lat: 48.85, lon: 2.35, age: '-20 minutes', adverts: 3 },
+      { id: key('D'), name: 'Missing canonical', network: 'ukmesh', role: 2, lat: 51, lon: -1, age: '-1 day', adverts: 1 },
+      { id: key('F'), name: 'Normalized relay', network: 'ukmesh', role: 2, lat: 51, lon: -1, age: '-2 days', adverts: 1 },
+      { id: ` ${key('f')} `, name: 'Legacy relay', network: 'ukmesh', role: 2, lat: 51, lon: -1, age: '-1 day', adverts: 2 },
+      { id: key('9'), name: 'Public member', network: 'ukmesh', role: 2, lat: 51, lon: -1, age: '-1 hour', adverts: 1 },
+      { id: key('8'), name: 'Private 🚫 alias', network: 'ukmesh', role: 2, lat: 51, lon: -1, age: '-2 hours', adverts: 100 },
+    ])]);
+    await client.query(`INSERT INTO core.node_identity_aliases(source_node_id,canonical_node_id,confidence,reason)
+      VALUES ($1,$2,'high','summary fixture'),($3,$4,'high','summary fixture'),($5,$6,'high','summary fixture')`,
+    [key('B'), key('A'), key('D'), key('E'), key('8'), key('9')]);
+    const identities = await repository.fetchStatsSummary('ukmesh', undefined);
+    assert.equal(identities.staleCount.rows[0]?.count, '1');
+    assert.equal(identities.mapNodeCount.rows[0]?.count, '9');
+    assert.equal(identities.totalNodeCount.rows[0]?.count, '15');
+    const aliasSeen = (await client.query("SELECT (NOW()-INTERVAL '20 minutes')::text AS value")).rows[0].value;
+    assert.deepEqual(identities.internationalCount.rows, [{
+      count_connected: '2', total_adverts: '43', last_seen_at: aliasSeen, last_lat: 48.85, last_lon: 2.35,
+    }]);
+
+    await client.query(`INSERT INTO core.nodes(node_id,name,network,role,lat,lon,last_seen,advert_count)
+      VALUES ($1,'Tied Belgian','ukmesh',2,50.95,4.35,NOW()-INTERVAL '5 minutes',1),
+             ($2,'Tied German','ukmesh',2,52.52,13.405,NOW()-INTERVAL '5 minutes',1)`, [key('C'), key('7')]);
+    const tied = (await repository.fetchStatsSummary('ukmesh', undefined)).internationalCount.rows[0];
+    assert.equal(tied?.count_connected, '4');
+    assert.equal(tied?.total_adverts, '45');
+    // The original SQL selects each coordinate independently on last_seen ties.
+    // Preserve that contract instead of imposing a new row or node-id ordering.
+    assert.ok([50.95, 52.52].includes(tied?.last_lat));
+    assert.ok([4.35, 13.405].includes(tied?.last_lon));
   } finally {
     await client.query('ROLLBACK');
     client.release();
