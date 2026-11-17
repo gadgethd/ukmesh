@@ -113,11 +113,50 @@ const PATH_UPDATE_SQL = `UPDATE mesh.packet_paths path
              UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6))
            ]::text[]))`;
 
+export type PrivacyClaimReconciliation = {
+  /** Rows whose lease had expired and are now retryable or terminally failed. */
+  reclaimed: number;
+  /** Reclaimed rows that had already used every attempt. */
+  exhausted: number;
+};
+
+/**
+ * Reclaim privacy-rematerialization rows abandoned by a dead worker.
+ *
+ * A worker crash leaves `status = 'processing'` with a `claim_token` that no
+ * live process will ever clear. Ageing the claim out here is what stops that
+ * row from blocking the queue forever. Rows that have attempts left return to
+ * the normal failed/backoff path; rows that have exhausted `maxAttempts` stay
+ * `failed` with a distinct `last_error` so they are visible as terminal
+ * poison instead of being silently re-claimed.
+ */
+export async function reconcileAbandonedPrivacyClaims(
+  pool: Pick<pg.Pool, 'query'>,
+  maxAttempts: number = MAX_ATTEMPTS,
+): Promise<PrivacyClaimReconciliation> {
+  const result = await pool.query<{ attempts: number }>(`
+    UPDATE ops.privacy_rematerialization_queue
+       SET status = 'failed',
+           claim_token = NULL,
+           claim_expires_at = NULL,
+           finished_at = NOW(),
+           last_error = CASE
+             WHEN attempts >= $1
+               THEN 'worker lease expired; attempts exhausted (' || attempts || '/' || $1 || ')'
+             ELSE 'worker lease expired'
+           END
+     WHERE status = 'processing'
+       AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())
+     RETURNING attempts
+  `, [maxAttempts]);
+  return {
+    reclaimed: result.rowCount ?? 0,
+    exhausted: result.rows.filter((row) => row.attempts >= maxAttempts).length,
+  };
+}
+
 async function claim(pool: pg.Pool, maxAttempts: number, leaseMs: number): Promise<QueueRow | null> {
-  await pool.query(`UPDATE ops.privacy_rematerialization_queue
-    SET status = 'failed', claim_token = NULL, claim_expires_at = NULL,
-        finished_at = NOW(), last_error = 'worker lease expired'
-    WHERE status = 'processing' AND (claim_expires_at IS NULL OR claim_expires_at <= NOW())`);
+  await reconcileAbandonedPrivacyClaims(pool, maxAttempts);
   const result = await pool.query<QueueRow>(`
     UPDATE ops.privacy_rematerialization_queue
        SET status = 'processing', started_at = NOW(), attempts = attempts + 1,
