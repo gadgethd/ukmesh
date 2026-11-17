@@ -2352,3 +2352,40 @@ qualification. Do not change workloads, timing or acceptance limits.
   current trial supports adoption work, not a final performance result: fresh
   matched full-stack trials, ten-percent limits, recovery and full40 remain
   required under the final source/profile.
+
+## Keep companion qualification fixes with their owners
+
+- CoreScope's unchanged browser suite exposed a mobile VCR overflow. Its mobile
+  control gap lost to the desktop selector's specificity, and a single row
+  cannot preserve the existing controls, clock and timeline at320px. Fix the
+  selector at its owning breakpoint and use two rows below370px. Keep the
+  existing height observer, touch targets, theme, data and playback logic.
+  Remove obsolete padding-workaround commentary; retain external viewport and
+  touch constraints. Adopt CoreScope4dce32f only after its reviewed15-context
+  comparison and unchanged full browser suite:152 passes and one formal skip,
+  with additional existing manual/early-return limitations retained explicitly.
+- Beacon Web's full suite passed1660 tests but failed on an unhandled TanStack
+  scroll-end timeout after jsdom removed window. The test file did not own its
+  timer lifecycle. Let that file use a fake clock, unmount and drain callbacks
+  inside act, require no pending timers, and restore real timers in finally.
+  Preserve all original test bodies and assertions. Adopt test-only68ce55a;
+  focused18 tests, fresh build/lint and all1660 tests pass. No application,
+  dependency, global test policy or configuration change belongs to this fix.
+- The subsequent private proxy probe mistakenly targeted CoreScope3102 rather
+  than the Beacon3103 endpoint declared by the companion inventory. Preserve
+  the failed combined attempt. Correct only the private helper endpoint and
+  retain a separate11-case transport proof; do not convert the earlier failed
+  receipt into a pass. Beacon's origin admission policy remains unchanged.
+- Companion build inputs include their committed revision. Rebuild and publish
+  through the existing component owners, then bind new qualification evidence
+  to the actual source, artifacts and runtime. The shared binary-directory
+  fingerprint can also change Beacon's computed context when Core is rebuilt:
+  account for its exact directory delta and prove Beacon's own binary, image,
+  environment and configuration remain unchanged. Web's test-only change must
+  preserve served application bytes, apart from its source-revision marker.
+- Beacon's current native build, formatting, vet, units and selected race
+  checks pass. Database-gated skips retain their separate native evidence.
+  Govulncheck exits0 with three module-level findings retained in its raw JSON;
+  do not describe this as zero advisories. These checks and the companion
+  browser results are component evidence, not integrated qualification or
+  remote CI. Keep every earlier failure and all acceptance limits.
