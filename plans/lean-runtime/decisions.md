@@ -2316,3 +2316,39 @@ qualification. Do not change workloads, timing or acceptance limits.
  and endpoint indexes. Recheck final-scope read/seed parity, native migration,
  tri-state transitions, concurrent refresh and actual deployed roles before
  the unchanged full-stack trials. All original criteria remain binding.
+
+## Use spare CPU capacity at the shared PostgreSQL boundary
+
+- The published-view cover reduces its work, but the next9600-correct cohort
+  still fails129.858ms admission. Preserve that failure. Five-second samples
+  show1.3-1.7 host cores idle while the shared database hits its two-CPU quota
+  in bursts. The interval preceding the worst arrival has822ms of throttling
+  and525MB of read IO; this does not establish a CPU-only cause. Evidence:
+  final-evidence/database-cpu-headroom-3337722.json and the independent proposal
+  review02420be36d1baf79d2e815df47c7cf82460ad234258d02c61156568bb01f7a96.
+- A reversible live2-to2.5-to2 quota experiment keeps the same database process,
+  images, sources, targets, credentials, settings and backups. The unchanged
+ 120-second/80RPS native cohort passes9600 correct requests, no errors or
+  undelivered requests, maximum admission56.563ms and all interval/span checks.
+  Resources and logs pass. The original quota and entire prior context are
+  restored afterwards. No chart refresh overlaps; this is not final acceptance.
+- The private diagnostic collected outside the qualification evidence root, so
+  its successful native run then fails the existing ownership validator. Retain
+  that failure. Copy the raw files byte-for-byte into an owned run directory
+  and audit unchanged data, identities, clocks and companions with the same
+  strict validator. Only two pointers in a new audit record change; original
+  false/error records remain intact. The closure passes with958 in-window reads
+  per companion and no failures. Evidence: qualification/
+ 20261114T010853Z-y87xc51j/cpu25-owned-evidence-closure-paxov5c6. Future private
+  read diagnostics must allocate beneath the existing qualification root.
+- Put the bounded2.5 default in docker-compose.postgres.yml, the existing shared
+  resource owner. Add POSTGRES_CPUS for explicit deployment overrides. Preserve
+  every pool, connection reserve, memory/swap ceiling, parallel-worker setting,
+  buffer setting, command, binding and durability value. Local clean-environment
+  launchers use that default; no second setting or application-specific scheduler
+  is introduced. No VPS action is authorized by this configuration change.
+- Resolve real Compose inheritance and explicit CPU overrides while preserving
+  all other service fields. Keep the CI infrastructure policy independent. The
+  current trial supports adoption work, not a final performance result: fresh
+  matched full-stack trials, ten-percent limits, recovery and full40 remain
+  required under the final source/profile.

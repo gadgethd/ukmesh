@@ -62,7 +62,7 @@ class LocalMemoryPolicy(unittest.TestCase):
             'autovacuum_work_mem': '32MB', 'wal_compression': 'lz4',
         })
         self.assertEqual(database['image'], 'timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509')
-        self.assertEqual(float(database['cpus']), 2)
+        self.assertEqual(float(database['cpus']), 2.5)
         self.assertEqual(int(database['shm_size']), 1024 * MIB)
         self.assertEqual(database['container_name'], 'ukmesh-sample-db')
         self.assertEqual(database['environment'], {
@@ -78,6 +78,15 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertEqual(Path(schema['source']), ROOT / 'backend/src/db/schema/base.sql')
         self.assertTrue(schema['read_only'])
         self.assertEqual(database['healthcheck']['test'], ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U meshcore -d meshcore'])
+
+    def test_postgres_cpu_override_preserves_all_other_settings_and_services(self):
+        files = ('scripts/local-sample/compose.yml',)
+        before = compose(*files)
+        after = compose(*files, POSTGRES_CPUS='3')
+        self.assertEqual(float(after['db']['cpus']), 3)
+        expected = dict(before)
+        expected['db'] = dict(before['db'], cpus=after['db']['cpus'])
+        self.assertEqual(after, expected)
 
     def test_postgres_overrides_change_only_declared_settings_without_changing_resources(self):
         before = compose('scripts/local-sample/compose.yml')
@@ -147,7 +156,7 @@ class LocalMemoryPolicy(unittest.TestCase):
     def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_policy_overrides(self):
         files = ('docker-compose.yml', 'docker-compose.ci.yml')
         before = compose(*files)['timescaledb']
-        after = compose(*files, POSTGRES_SHARED_BUFFERS='512MB',
+        after = compose(*files, POSTGRES_CPUS='3', POSTGRES_SHARED_BUFFERS='512MB',
                         POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB',
                         POSTGRES_WAL_COMPRESSION='off',
                         DATABASE_ANALYTICS_RANDOM_PAGE_COST='2.5', DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE='1GB')['timescaledb']

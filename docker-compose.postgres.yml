@@ -21,7 +21,8 @@ services:
       - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-32MB}
       - -c
       - wal_compression=${POSTGRES_WAL_COMPRESSION:-lz4}
-    cpus: 2
+    # Allow bounded read bursts to use spare capacity on the four-CPU DEV VM.
+    cpus: ${POSTGRES_CPUS:-2.5}
     mem_limit: &postgres-memory 2g
     memswap_limit: *postgres-memory
     shm_size: "1g"
