@@ -1,0 +1,21 @@
+services:
+  beacon-web:
+    image: node@sha256:5df79989ed685e09f0a98019db4cebfb22fb9df1a53c0161664a011f7ff6b0f1
+    user: "${COMPANION_UID:-1000}:${COMPANION_GID:-1000}"
+    init: true
+    working_dir: /work
+    environment:
+      HOME: /tmp
+      VITE_API_BASE: /api/v1
+      BEACON_DEV_ENV_DIR: /tmp/ukmesh-empty-env
+      VITE_DEV_PROXY: http://beacon:8080
+    ports: !override ["127.0.0.1:5175:5175"]
+    volumes: !override
+      - ../../third_party/beacon-web:/work:ro
+      - ../../third_party/beacon-web/node_modules:/work/node_modules
+      - ../../plans/companion-dev/runtime/npm-cache:/npm-cache
+      - .:/dev-tools:ro
+    entrypoint: [sh, /dev-tools/web-start.sh]
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:5175').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+    mem_limit: 768m

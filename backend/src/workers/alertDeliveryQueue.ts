@@ -1,5 +1,6 @@
-import { randomUUID } from 'node:crypto';
-import { open, mkdir, readdir, readFile, rename, unlink } from 'node:fs/promises';
+import { createHash, randomUUID } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open, mkdir, readdir, link, rename, unlink } from 'node:fs/promises';
 import path from 'node:path';
 
 export type AlertReceipt = {
@@ -11,6 +12,29 @@ export type AlertReceipt = {
   resolved: number;
 };
 
+type RedriveRequest = {
+  requestId: string;
+  reason: string;
+  requestedAt: string;
+  originalSha256: string;
+};
+
+type Resolution = RedriveRequest & {
+  id: string;
+  deliveredAt: string;
+  attempts: number;
+};
+
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const isDate = (value: unknown): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value));
+
+export class AlertRedriveError extends Error {
+  constructor(public readonly statusCode: 400 | 404 | 409 | 503, message: string) {
+    super(message);
+    this.name = 'AlertRedriveError';
+  }
+}
+
 type DeliveryRecord = {
   id: string;
   receipt: AlertReceipt;
@@ -19,6 +43,7 @@ type DeliveryRecord = {
   lastAttemptAt: string | null;
   nextAttemptAt: string;
   lastError: string | null;
+  redrive?: RedriveRequest;
 };
 
 type QueueMetadata = { lastSuccessAt: string | null };
@@ -27,6 +52,8 @@ export type AlertDeliveryQueueMetrics = {
   pendingCount: number;
   oldestQueueAgeSeconds: number;
   deadLetterCount: number;
+  unresolvedDeadLetterCount: number;
+  resolvedDeadLetterCount: number;
   lastSuccessAt: string | null;
   lastError: string | null;
 };
@@ -40,15 +67,17 @@ export class AlertQueueFullError extends Error {
 
 export class DurableAlertQueue {
   private readonly records = new Map<string, DeliveryRecord>();
+  private readonly resolutions = new Map<string, Resolution>();
   private initialized = false;
   private running = false;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private lastSuccessAt: string | null = null;
-  private deadLetterCount = 0;
+  private readonly deadIds = new Set<string>();
   private lastError: string | null = null;
   private enqueueTail: Promise<void> = Promise.resolve();
   private processing = false;
   private closing = false;
+  private admissionFault: string | null = null;
 
   constructor(private readonly options: {
     directory: string;
@@ -65,55 +94,66 @@ export class DurableAlertQueue {
     if (this.initialized) return;
     await mkdir(this.options.directory, { recursive: true, mode: 0o700 });
     const entries = await readdir(this.options.directory, { withFileTypes: true });
-    const deadIds = new Set(
-      entries
-        .filter((entry) => entry.isFile() && entry.name.endsWith('.dead.json'))
-        .map((entry) => entry.name.slice(0, -'.dead.json'.length)),
-    );
-    this.deadLetterCount = deadIds.size;
+    const deadIds = new Set(entries.filter((entry) => entry.name.endsWith('.dead.json'))
+      .map((entry) => entry.name.slice(0, -'.dead.json'.length)));
+    for (const id of deadIds) this.deadIds.add(id);
 
     try {
-      const metadata = JSON.parse(
-        await readFile(path.join(this.options.directory, 'queue-state.json'), 'utf8'),
-      ) as QueueMetadata;
-      if (typeof metadata.lastSuccessAt === 'string' || metadata.lastSuccessAt === null) {
-        this.lastSuccessAt = metadata.lastSuccessAt;
-      }
+      const metadata = JSON.parse((await this.readRegular(path.join(this.options.directory, 'queue-state.json'))).toString()) as QueueMetadata;
+      if (metadata.lastSuccessAt === null || isDate(metadata.lastSuccessAt)) this.lastSuccessAt = metadata.lastSuccessAt;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
         this.lastError = `could not read queue state: ${(error as Error).message}`;
       }
     }
 
+    for (const entry of entries.filter((item) => item.name.endsWith('.resolved.json'))) {
+      const id = entry.name.slice(0, -'.resolved.json'.length);
+      if (!UUID.test(id) || !deadIds.has(id)) throw new Error('invalid dead-letter resolution identity');
+      const resolution = await this.readResolution(id);
+      if (!resolution) throw new Error('missing dead-letter resolution');
+      await this.syncDirectory();
+      this.acceptResolution(resolution);
+    }
     for (const entry of entries) {
-      if (!entry.isFile() || !entry.name.endsWith('.pending.json')) continue;
-      const id = entry.name.slice(0, -'.pending.json'.length);
+      if (!entry.name.endsWith('.pending.json')) continue;
+      const replay = entry.name.endsWith('.redrive.pending.json');
+      const id = entry.name.slice(0, -(replay ? '.redrive.pending.json' : '.pending.json').length);
+      if (!UUID.test(id) || !entry.isFile()) throw new Error('invalid pending queue file');
       const file = path.join(this.options.directory, entry.name);
-      if (deadIds.has(id)) {
+      if (!replay && deadIds.has(id)) {
         await this.removeFile(file);
         continue;
       }
+      let record: DeliveryRecord;
       try {
-        const record = JSON.parse(await readFile(file, 'utf8')) as DeliveryRecord;
-        if (
-          record.id !== id
-          || !record.receipt
-          || !Array.isArray(record.receipt.alert_names)
-          || !Number.isSafeInteger(record.attempts)
-          || typeof record.createdAt !== 'string'
-          || !Number.isFinite(Date.parse(record.createdAt))
-          || typeof record.nextAttemptAt !== 'string'
-          || !Number.isFinite(Date.parse(record.nextAttemptAt))
-        ) {
-          throw new Error('invalid queue record');
-        }
-        this.records.set(id, record);
+        record = JSON.parse((await this.readRegular(file)).toString()) as DeliveryRecord;
+        this.validateRecord(record, id);
       } catch (error) {
-        const deadPath = this.deadPath(id);
-        await rename(file, deadPath);
-        this.deadLetterCount += 1;
+        // Redrive audit corruption must never replace the immutable original.
+        if (replay) throw error;
+        await rename(file, this.deadPath(id));
+        await this.syncDirectory();
+        this.deadIds.add(id);
         this.lastError = `quarantined invalid queue record ${id}: ${(error as Error).message}`;
+        continue;
       }
+      if (replay) {
+        if (!record.redrive || !deadIds.has(id)) throw new Error('redrive is missing its original dead letter');
+        await this.validateOriginal(id, record.redrive.originalSha256);
+        const resolution = this.resolutions.get(id);
+        if (resolution) {
+          if (!this.sameRequest(resolution, record.redrive) || resolution.attempts !== record.attempts) throw new Error('resolution does not match pending redrive');
+          await this.removeFile(file);
+          continue;
+        }
+        if (await this.readOptional(this.failedPath(id, record.redrive.requestId))) {
+          await this.validateFailed(record);
+          await this.removeFile(file);
+          continue;
+        }
+      } else if (record.redrive) throw new Error('redrive has an ordinary pending filename');
+      this.records.set(id, record);
     }
     this.initialized = true;
   }
@@ -153,36 +193,117 @@ export class DurableAlertQueue {
     return {
       pendingCount: records.length,
       oldestQueueAgeSeconds: oldest === null ? 0 : Math.max(0, Math.floor((now - oldest) / 1_000)),
-      deadLetterCount: this.deadLetterCount,
+      deadLetterCount: this.deadIds.size,
+      unresolvedDeadLetterCount: this.deadIds.size - this.resolutions.size,
+      resolvedDeadLetterCount: this.resolutions.size,
       lastSuccessAt: this.lastSuccessAt,
-      lastError: pendingError ?? this.lastError,
+      lastError: this.admissionFault ?? pendingError ?? this.lastError,
     };
   }
 
   async enqueue(receipt: AlertReceipt): Promise<void> {
-    const previousEnqueue = this.enqueueTail;
+    await this.admit(async () => {
+      this.assertOpen();
+      if (this.records.size >= this.options.maxItems) throw new AlertQueueFullError();
+      const record = this.newRecord(randomUUID(), receipt);
+      await this.persistAdmission(record);
+    });
+  }
+
+  async redrive(id: string, requestId: string, reason: string): Promise<{ state: 'queued' | 'resolved' }> {
+    if (!UUID.test(id) || !UUID.test(requestId) || typeof reason !== 'string'
+      || !reason.trim() || reason.length > 200 || /[\x00-\x1f\x7f]/.test(reason)) {
+      throw new AlertRedriveError(400, 'provide canonical UUIDs and a reason of 1–200 printable characters');
+    }
+    return this.admit(async () => {
+      this.assertOpen();
+      const original = await this.readOptional(this.deadPath(id));
+      if (!original) throw new AlertRedriveError(404, 'dead letter not found');
+      const digest = createHash('sha256').update(original).digest('hex');
+      const resolution = this.resolutions.get(id);
+      if (resolution) {
+        if (resolution.originalSha256 !== digest) throw new Error('original dead letter does not match its audit digest');
+        if (resolution.requestId === requestId) return { state: 'resolved' };
+        throw new AlertRedriveError(409, 'dead letter has already been resolved');
+      }
+      const active = this.records.get(id);
+      if (active) {
+        if (!active.redrive) throw new AlertRedriveError(409, 'original delivery is still being finalized');
+        if (active.redrive.originalSha256 !== digest) throw new Error('original dead letter does not match its audit digest');
+        if (active.redrive.requestId === requestId) {
+          await this.syncDirectory();
+          return { state: 'queued' };
+        }
+        throw new AlertRedriveError(409, 'another redrive is pending');
+      }
+      if (await this.readOptional(this.failedPath(id, requestId))) {
+        throw new AlertRedriveError(409, 'this redrive request has exhausted its retry budget');
+      }
+      const retained = await this.readOptional(path.join(this.options.directory, `${id}.redrive.pending.json`));
+      if (retained) {
+        const pending = JSON.parse(retained.toString()) as DeliveryRecord;
+        this.validateRecord(pending, id);
+        if (pending.redrive?.originalSha256 !== digest) throw new Error('original dead letter does not match pending redrive');
+        if (pending.redrive.requestId !== requestId) throw new AlertRedriveError(409, 'another redrive is pending');
+        if (this.records.size >= this.options.maxItems) throw new AlertQueueFullError();
+        await this.syncDirectory();
+        this.records.set(id, pending);
+        this.schedule(0);
+        return { state: 'queued' };
+      }
+      if (this.records.size >= this.options.maxItems) throw new AlertQueueFullError();
+      const source = JSON.parse(original.toString()) as DeliveryRecord;
+      this.validateRecord(source, id);
+      if (source.redrive) throw new Error('original dead letter contains a redrive');
+      const record = this.newRecord(id, source.receipt);
+      record.redrive = { requestId, reason, requestedAt: record.createdAt, originalSha256: digest };
+      // Never replace an unaccounted pending intent after a storage failure.
+      await this.persistAdmission(record, true);
+      return { state: 'queued' };
+    });
+  }
+
+  private async admit<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.enqueueTail;
     let release!: () => void;
     this.enqueueTail = new Promise<void>((resolve) => { release = resolve; });
-    await previousEnqueue;
+    await previous;
+    try { return await operation(); } finally { release(); }
+  }
+
+  private assertOpen(): void {
+    if (!this.initialized) throw new Error('alert queue has not been initialized');
+    if (this.closing) throw new AlertRedriveError(503, 'alert forwarding queue is closing');
+    if (this.admissionFault) throw new AlertRedriveError(503, 'queue storage requires recovery before accepting work');
+  }
+
+  private async persistAdmission(record: DeliveryRecord, immutable = false): Promise<void> {
     try {
-      if (!this.initialized) throw new Error('alert queue has not been initialized');
-      if (this.records.size >= this.options.maxItems) throw new AlertQueueFullError();
-      const now = this.now();
-      const record: DeliveryRecord = {
-        id: randomUUID(),
-        receipt,
-        createdAt: new Date(now).toISOString(),
-        attempts: 0,
-        lastAttemptAt: null,
-        nextAttemptAt: new Date(now).toISOString(),
-        lastError: null,
-      };
-      await this.writeAtomic(this.pendingPath(record.id), record);
-      this.records.set(record.id, record);
-      this.schedule(0);
-    } finally {
-      release();
+      if (immutable) await this.writeImmutable(this.pendingPath(record), record);
+      else await this.writeAtomic(this.pendingPath(record), record);
+    } catch (error) {
+      // Rename/link may have succeeded before directory fsync failed. Keep that
+      // intent inside the same capacity/ID bound; sending still fsyncs its attempt.
+      try {
+        const retained = await this.readOptional(this.pendingPath(record));
+        if (retained) {
+          if (!retained.equals(Buffer.from(`${JSON.stringify(record)}\n`))) throw new Error('unexpected pending intent');
+          this.records.set(record.id, record);
+          this.schedule(1_000);
+        }
+      } catch {
+        this.admissionFault = 'could not inspect an uncertain queue admission; restart after storage recovery';
+      }
+      this.lastError = 'could not confirm durable queue admission';
+      throw error;
     }
+    this.records.set(record.id, record);
+    this.schedule(0);
+  }
+
+  private newRecord(id: string, receipt: AlertReceipt): DeliveryRecord {
+    const at = new Date(this.now()).toISOString();
+    return { id, receipt, createdAt: at, attempts: 0, lastAttemptAt: null, nextAttemptAt: at, lastError: null };
   }
 
   /** Process due alerts sequentially. The attempt is fsynced before sending. */
@@ -200,6 +321,21 @@ export class DurableAlertQueue {
 
       for (const record of due) {
         if (this.closing) break;
+        if (record.redrive) {
+          const resolution = await this.readResolution(record.id);
+          if (resolution) {
+            if (!this.sameRequest(resolution, record.redrive) || resolution.attempts !== record.attempts) throw new Error('resolution does not match pending redrive');
+            await this.syncDirectory();
+            this.acceptResolution(resolution);
+            await this.finalizeDelivery(record, resolution.deliveredAt);
+            continue;
+          }
+        }
+        // A crashed reserved attempt is ambiguous, but cannot grant extra tries.
+        if (record.attempts >= this.options.maxAttempts) {
+          await this.exhaust(record, record.lastError ?? 'retry budget exhausted before delivery could be confirmed');
+          continue;
+        }
         const attemptAt = this.now();
         const attempts = record.attempts + 1;
         const backoff = Math.min(
@@ -212,7 +348,7 @@ export class DurableAlertQueue {
           lastAttemptAt: new Date(attemptAt).toISOString(),
           nextAttemptAt: new Date(attemptAt + backoff).toISOString(),
         };
-        const pendingPath = this.pendingPath(record.id);
+        const pendingPath = this.pendingPath(record);
         await this.writeAtomic(pendingPath, attempted);
         this.records.set(record.id, attempted);
 
@@ -224,15 +360,7 @@ export class DurableAlertQueue {
           this.lastError = message;
           console.error(`[alert-receiver] forward attempt ${attempts}/${this.options.maxAttempts} failed: ${message}`);
           if (attempts >= this.options.maxAttempts) {
-            await this.writeAtomic(this.deadPath(record.id), failed);
-            this.records.delete(record.id);
-            this.deadLetterCount += 1;
-            console.error(`[alert-receiver] dead-lettered alert ${record.id} after ${attempts} attempts`);
-            try {
-              await this.removeFile(pendingPath);
-            } catch (removeError) {
-              this.lastError = `dead letter ${record.id} retained a pending file: ${(removeError as Error).message}`;
-            }
+            await this.exhaust(failed, message);
           } else {
             await this.writeAtomic(pendingPath, failed);
             this.records.set(record.id, failed);
@@ -242,16 +370,17 @@ export class DurableAlertQueue {
 
         const deliveredAt = new Date(this.now()).toISOString();
         try {
-          await this.writeAtomic(path.join(this.options.directory, 'queue-state.json'), {
-            lastSuccessAt: deliveredAt,
-          } satisfies QueueMetadata);
-          await this.removeFile(pendingPath);
-          this.records.delete(record.id);
-          this.lastSuccessAt = deliveredAt;
-          this.lastError = null;
+          if (attempted.redrive) {
+            const resolution: Resolution = { ...attempted.redrive, id: record.id, deliveredAt, attempts };
+            // The original remains immutable. Resolution must survive restart
+            // before pending cleanup can erase evidence of the confirmed send.
+            await this.writeImmutable(this.resolutionPath(record.id), resolution);
+            this.acceptResolution(resolution);
+          }
+          await this.finalizeDelivery(attempted, deliveredAt);
         } catch (error) {
-          // Keep the persisted pending record so a process restart or the next
-          // retry delivers at least once if it is unclear whether the send landed.
+          // Without durable resolution an ambiguous external success is retried
+          // at least once, within the original reserved attempt budget.
           this.lastError = `could not finalize delivered alert ${record.id}: ${(error as Error).message}`;
         }
       }
@@ -266,15 +395,120 @@ export class DurableAlertQueue {
     return (this.options.now ?? Date.now)();
   }
 
-  private pendingPath(id: string): string {
-    return path.join(this.options.directory, `${id}.pending.json`);
+  private pendingPath(record: DeliveryRecord): string {
+    return path.join(this.options.directory, `${record.id}${record.redrive ? '.redrive' : ''}.pending.json`);
   }
 
   private deadPath(id: string): string {
     return path.join(this.options.directory, `${id}.dead.json`);
   }
 
-  private async writeAtomic(file: string, value: unknown): Promise<void> {
+  private resolutionPath(id: string): string {
+    return path.join(this.options.directory, `${id}.resolved.json`);
+  }
+
+  private failedPath(id: string, requestId: string): string {
+    return path.join(this.options.directory, `${id}.redrive.${requestId}.failed.json`);
+  }
+
+  private validateRecord(record: DeliveryRecord, id: string): void {
+    if (!record || record.id !== id || !record.receipt || !Array.isArray(record.receipt.alert_names)
+      || !isDate(record.receipt.received_at)
+      || !['alertmanager', 'synthetic', 'unknown'].includes(record.receipt.source)
+      || !['firing', 'resolved', 'recovery', 'unknown'].includes(record.receipt.status)
+      || record.receipt.alert_names.length > 50
+      || record.receipt.alert_names.some((name) => typeof name !== 'string' || name.length > 120)
+      || !Number.isSafeInteger(record.receipt.firing) || record.receipt.firing < 0
+      || !Number.isSafeInteger(record.receipt.resolved) || record.receipt.resolved < 0
+      || !Number.isSafeInteger(record.attempts) || record.attempts < 0
+      || !isDate(record.createdAt) || !isDate(record.nextAttemptAt)) throw new Error('invalid queue record');
+    if (record.redrive) this.validateRequest(record.redrive);
+  }
+
+  private sameRequest(left: RedriveRequest, right: RedriveRequest): boolean {
+    return left.requestId === right.requestId && left.reason === right.reason
+      && left.requestedAt === right.requestedAt && left.originalSha256 === right.originalSha256;
+  }
+
+  private validateRequest(request: RedriveRequest): void {
+    if (!UUID.test(request.requestId) || !isDate(request.requestedAt) || !/^[0-9a-f]{64}$/.test(request.originalSha256)
+      || typeof request.reason !== 'string' || !request.reason.trim() || request.reason.length > 200
+      || /[\x00-\x1f\x7f]/.test(request.reason)) throw new Error('invalid redrive audit');
+  }
+
+  private async validateOriginal(id: string, digest: string): Promise<void> {
+    if (createHash('sha256').update(await this.readRegular(this.deadPath(id))).digest('hex') !== digest) {
+      throw new Error('original dead letter does not match its audit digest');
+    }
+  }
+
+  private async readResolution(id: string): Promise<Resolution | null> {
+    const bytes = await this.readOptional(this.resolutionPath(id));
+    if (!bytes) return null;
+    const resolution = JSON.parse(bytes.toString()) as Resolution;
+    this.validateRequest(resolution);
+    if (resolution.id !== id || !isDate(resolution.deliveredAt)
+      || !Number.isSafeInteger(resolution.attempts) || resolution.attempts < 1) throw new Error('invalid delivery resolution');
+    await this.validateOriginal(id, resolution.originalSha256);
+    return resolution;
+  }
+
+  private acceptResolution(resolution: Resolution): void {
+    this.resolutions.set(resolution.id, resolution);
+    if (!this.lastSuccessAt || resolution.deliveredAt > this.lastSuccessAt) this.lastSuccessAt = resolution.deliveredAt;
+  }
+
+  private async validateFailed(record: DeliveryRecord): Promise<void> {
+    const failed = JSON.parse((await this.readRegular(this.failedPath(record.id, record.redrive!.requestId))).toString()) as DeliveryRecord;
+    this.validateRecord(failed, record.id);
+    if (!failed.redrive || !this.sameRequest(failed.redrive, record.redrive!)
+      || failed.attempts !== record.attempts) throw new Error('failed redrive audit does not match pending request');
+  }
+
+  private async exhaust(record: DeliveryRecord, message: string): Promise<void> {
+    const failed = { ...record, lastError: message };
+    this.records.set(record.id, failed);
+    await this.writeImmutable(record.redrive ? this.failedPath(record.id, record.redrive.requestId) : this.deadPath(record.id), failed);
+    if (!record.redrive) this.deadIds.add(record.id);
+    await this.removeFile(this.pendingPath(record));
+    this.records.delete(record.id);
+  }
+
+  private async finalizeDelivery(record: DeliveryRecord, deliveredAt: string): Promise<void> {
+    await this.writeAtomic(path.join(this.options.directory, 'queue-state.json'), { lastSuccessAt: deliveredAt } satisfies QueueMetadata);
+    await this.removeFile(this.pendingPath(record));
+    this.records.delete(record.id);
+    this.lastSuccessAt = deliveredAt;
+    this.lastError = null;
+  }
+
+  private async readRegular(file: string): Promise<Buffer> {
+    const handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      if (!(await handle.stat()).isFile()) throw new Error('queue state must be a regular file');
+      return await handle.readFile();
+    } finally { await handle.close(); }
+  }
+
+  private async readOptional(file: string): Promise<Buffer | null> {
+    try { return await this.readRegular(file); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw error;
+    }
+  }
+
+  private async writeImmutable(file: string, value: unknown): Promise<void> {
+    const bytes = Buffer.from(`${JSON.stringify(value)}\n`);
+    const existing = await this.readOptional(file);
+    if (existing) {
+      if (!existing.equals(bytes)) throw new Error('immutable queue audit already exists with different content');
+      await this.syncDirectory();
+      return;
+    }
+    await this.writeAtomic(file, value, true);
+  }
+
+  private async writeAtomic(file: string, value: unknown, exclusive = false): Promise<void> {
     const temporary = `${file}.${randomUUID()}.tmp`;
     try {
       const handle = await open(temporary, 'wx', 0o600);
@@ -284,7 +518,10 @@ export class DurableAlertQueue {
       } finally {
         await handle.close();
       }
-      await rename(temporary, file);
+      if (exclusive) {
+        await link(temporary, file);
+        await unlink(temporary);
+      } else await rename(temporary, file);
       await this.syncDirectory();
     } catch (error) {
       try {

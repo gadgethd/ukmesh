@@ -27,6 +27,7 @@ import {
 
 type Row = Record<string, string>;
 type Publish = { atMs: number; topic: string; payload: Buffer; label: string };
+export type ReplayEnvelopeFormat = 'legacy' | 'observer';
 
 const DEFAULT_BROKER = 'ws://127.0.0.1:9002';
 
@@ -81,6 +82,7 @@ async function publishAll(
   speed: number,
   qos: 0 | 1,
   concurrency: number,
+  format: ReplayEnvelopeFormat,
 ): Promise<{ sent: number; failed: number }> {
   let sent = 0;
   let failed = 0;
@@ -90,7 +92,10 @@ async function publishAll(
 
   const send = async (publish: Publish): Promise<void> => {
     try {
-      await client.publishAsync(publish.topic, publish.payload, { qos });
+      const payload = format === 'observer'
+        ? Buffer.from(JSON.stringify({ ...JSON.parse(publish.payload.toString()), timestamp: new Date().toISOString() }))
+        : publish.payload;
+      await client.publishAsync(publish.topic, payload, { qos });
       sent += 1;
     } catch (error) {
       failed += 1;
@@ -124,7 +129,27 @@ async function publishAll(
   return { sent, failed };
 }
 
-async function packetPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number, limit?: number): Promise<Publish[]> {
+export function packetReplayEnvelope(row: Row, rawHex: string, format: ReplayEnvelopeFormat,
+  receivedAt = new Date().toISOString()): Record<string, unknown> {
+  const envelope: Record<string, unknown> = { raw: rawHex, direction: 'rx' };
+  if (format === 'observer') {
+    envelope['type'] = 'PACKET';
+    envelope['timestamp'] = receivedAt;
+    envelope['origin_id'] = row['rx_node_id'];
+  }
+  for (const field of ['packet_type', 'route_type', 'hop_count', 'path_hash_size_bytes'] as const) {
+    const value = Number(row[field]);
+    if (Number.isFinite(value)) envelope[field] = format === 'observer' ? String(value) : value;
+  }
+  for (const [field, key] of [['rssi', 'RSSI'], ['snr', 'SNR']] as const) {
+    const value = Number(row[field]);
+    if (row[field] && Number.isFinite(value)) envelope[key] = value;
+  }
+  return envelope;
+}
+
+async function packetPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number,
+  limit?: number, format: ReplayEnvelopeFormat = 'legacy'): Promise<Publish[]> {
   const [packets, raw] = await Promise.all([
     readGzipCsv(path.join(directory, 'packets.csv.gz')),
     readGzipCsv(path.join(directory, 'raw_packets.csv.gz')),
@@ -149,22 +174,7 @@ async function packetPublishes(directory: string, prefix: string | undefined, fr
       }
       const topic = rewritePrefix(row['topic'] ?? '', prefix);
       if (!topic) continue;
-      const envelope: Record<string, unknown> = {
-        raw: rawHex,
-        direction: 'rx',
-      };
-      const packetType = Number(row['packet_type']);
-      if (Number.isFinite(packetType)) envelope['packet_type'] = packetType;
-      const routeType = Number(row['route_type']);
-      if (Number.isFinite(routeType)) envelope['route_type'] = routeType;
-      const hopCount = Number(row['hop_count']);
-      if (Number.isFinite(hopCount)) envelope['hop_count'] = hopCount;
-      const hashSize = Number(row['path_hash_size_bytes']);
-      if (Number.isFinite(hashSize)) envelope['path_hash_size_bytes'] = hashSize;
-      const rssi = Number(row['rssi']);
-      if (row['rssi'] && Number.isFinite(rssi)) envelope['RSSI'] = rssi;
-      const snr = Number(row['snr']);
-      if (row['snr'] && Number.isFinite(snr)) envelope['SNR'] = snr;
+      const envelope = packetReplayEnvelope(row, rawHex, format);
       publishes.push({
         atMs,
         topic,
@@ -226,6 +236,8 @@ async function statusPublishes(directory: string, prefix: string | undefined, fr
 
 export async function replaySampleMqtt(args: string[]): Promise<void> {
   const directory = path.resolve(option(args, 'data-dir') ?? defaultDataDir());
+  const envelopeFormat = option(args, 'envelope-format') ?? 'legacy';
+  if (envelopeFormat !== 'legacy' && envelopeFormat !== 'observer') throw new Error('--envelope-format must be legacy or observer');
   const brokerText = option(args, 'broker') ?? DEFAULT_BROKER;
   const broker = new URL(brokerText);
   if (!isLoopback(broker) && !flag(args, 'allow-remote')) {
@@ -254,7 +266,7 @@ export async function replaySampleMqtt(args: string[]): Promise<void> {
 
   const publishes = statusMode
     ? await statusPublishes(directory, prefix, fromMs, toMs, limit)
-    : await packetPublishes(directory, prefix, fromMs, toMs, limit);
+    : await packetPublishes(directory, prefix, fromMs, toMs, limit, envelopeFormat);
   if (publishes.length === 0) throw new Error('no rows matched the replay filters');
   console.log(
     `[sample:replay] ${publishes.length} ${statusMode ? 'status' : 'packet'} messages`
@@ -269,7 +281,7 @@ export async function replaySampleMqtt(args: string[]): Promise<void> {
     option(args, 'password'),
   );
   try {
-    const result = await publishAll(client, publishes, speed, qos as 0 | 1, concurrency);
+    const result = await publishAll(client, publishes, speed, qos as 0 | 1, concurrency, envelopeFormat);
     console.log(`[sample:replay] done: sent=${result.sent} failed=${result.failed}`);
     if (result.failed > 0) throw new Error(`${result.failed} MQTT publications failed`);
   } finally {

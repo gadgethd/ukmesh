@@ -9,10 +9,12 @@ import type { LinkMetrics } from '../path-beta/types.js';
 import { expandResolverScope } from '../networks.js';
 import { assertLocalDatabaseUrl, requiredOption } from './sampleData.js';
 import type { LinkMetricRow } from '../path-beta/linkMetricsIndex.js';
+import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 
 const endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
-assert.match(new URL(endpoint).pathname, /^\/lookup_(1x|10x|soak)$/);
+if (new URL(endpoint).pathname.startsWith('/lean_')) await assertOwnedLeanFixture(endpoint);
+else assert.match(new URL(endpoint).pathname, /^\/lookup_(1x|10x|soak)$/);
 try {
   const context = await loadPathContext('ukmesh');
   const rows = (await query<LinkMetricRow>(`SELECT nl.node_a_id, nl.node_b_id, nl.observed_count,

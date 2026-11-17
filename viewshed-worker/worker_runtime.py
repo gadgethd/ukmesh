@@ -47,8 +47,6 @@ def link_idle_wait_seconds(now: float, last_link_reap: float, *, context=None) -
         5.0 - (now - last_link_reap),
         context.settings.LINK_TOPOLOGY_REFRESH_S
         - (now - float(context.topology.snapshot.updated_at)),
-        context.settings.SUPPORT_REFRESH_S
-        - (now - float(context.rf.support.updated_at)),
         CALIBRATION_REFRESH_S - (now - float(context.rf.calibration.updated_at)),
     ]
     if context.settings.RADIO_BOT_URL:
@@ -105,7 +103,8 @@ def worker_loop(settings=None, *, context=None):
     if sync_radio_neighbors and context.settings.WORKER_MODE in ("all", "link"):
         refresh_radio_neighbor_reports(db, r_client, force=True, context=context)
     refresh_rf_calibration(db, force=True, context=context)
-    refresh_support_context(db, force=True, context=context)
+    if context.settings.WORKER_MODE in ("all", "viewshed"):
+        refresh_support_context(db, force=True, context=context)
     if context.settings.WORKER_MODE in ("all", "link"):
         context.topology.refresh(db, force=True)
     log.info(f"{name} ready")
@@ -141,7 +140,8 @@ def worker_loop(settings=None, *, context=None):
             if sync_radio_neighbors and context.settings.WORKER_MODE in ("all", "link"):
                 refresh_radio_neighbor_reports(db, r_client, context=context)
             refresh_rf_calibration(db, context=context)
-            refresh_support_context(db, context=context)
+            if context.settings.WORKER_MODE in ("all", "viewshed"):
+                refresh_support_context(db, context=context)
             if context.settings.WORKER_MODE in ("all", "link"):
                 context.topology.refresh(db)
                 now = time.time()

@@ -109,3 +109,41 @@ test('public map enforces row and encoded-byte budgets on large results', () => 
     Buffer.byteLength(JSON.stringify(byteBounded.rows), 'utf8') < 10_000,
   );
 });
+
+test('fitted row JSON preserves Unicode and the exact existing byte boundary', () => {
+  const row = { node_id: 'A', name: '🛰️ "quoted" \\ newline\n<>&', lat: 54.5, iata: null };
+  const boundary = 512 + Buffer.byteLength(JSON.stringify(row), 'utf8') + 1;
+  const fitted = fitPublicMapRowsToByteBudget([row], 1, boundary);
+  assert.equal(fitted.rows[0], row, 'the value representation retains its original rows');
+  assert.equal(fitted.truncatedByBytes, false);
+  assert.equal(fitted.jsonRows, JSON.stringify([row]));
+  assert.deepEqual(JSON.parse(fitted.jsonRows), [row]);
+  assert.throws(() => fitPublicMapRowsToByteBudget([row], 1, boundary - 1), /one public map row exceeds/);
+  assert.equal(fitPublicMapRowsToByteBudget([], 0, 0).jsonRows, '[]');
+});
+
+test('budget truncation retains serialization order and never visits later bad rows', () => {
+  const visits: string[] = [];
+  const first = { toJSON() { visits.push('first'); return { node_id: 'A' }; } };
+  const oversized = { toJSON() { visits.push('oversized'); return { name: 'x'.repeat(1000) }; } };
+  const bad = { toJSON(): never { visits.push('bad'); throw new Error('must not visit later row'); } };
+  const fitted = fitPublicMapRowsToByteBudget([first, oversized, bad], 3, 600);
+  assert.deepEqual(visits, ['first', 'oversized']);
+  assert.deepEqual(fitted.rows, [first]);
+  assert.equal(fitted.truncatedByBytes, true);
+  assert.equal(fitted.jsonRows, '[{"node_id":"A"}]');
+  visits.length = 0;
+  assert.throws(() => fitPublicMapRowsToByteBudget([oversized, bad], 2, 600), /one public map row exceeds/);
+  assert.deepEqual(visits, ['oversized'], 'an oversized first row retains its original error');
+  visits.length = 0;
+  assert.equal(fitPublicMapRowsToByteBudget([first, bad], 1, 600).jsonRows, '[{"node_id":"A"}]');
+  assert.deepEqual(visits, ['first'], 'the row cap does not serialize the following row');
+});
+
+test('generic budget callers retain their original serialization errors', () => {
+  const circular: { self?: unknown } = {};
+  circular.self = circular;
+  assert.throws(() => fitPublicMapRowsToByteBudget([circular], 1), TypeError);
+  assert.throws(() => fitPublicMapRowsToByteBudget([undefined], 1), TypeError);
+  assert.throws(() => fitPublicMapRowsToByteBudget([1n], 1), TypeError);
+});

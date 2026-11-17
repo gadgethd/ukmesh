@@ -421,12 +421,17 @@ export async function persistEntriesCore(
       console.warn('[packet-batch] writer contention: another ingest writer holds the batch lock');
       throw new Error('PACKET_BATCH_LOCK_BUSY: another writer holds the packet batch lock');
     }
+    // Read Committed snapshots are taken before row-lock waits. Acquire this
+    // fence separately so classification sees a privacy change that just
+    // committed; SHARE also conflicts with nonkey prefix-generation updates.
+    await txQuery(`SELECT generation FROM ops.public_visibility_state
+      WHERE singleton = TRUE FOR SHARE`);
     const result = await txQuery<PersistRow>(
       `WITH current_visibility AS MATERIALIZED (
          SELECT generation
            FROM ops.public_visibility_state
           WHERE singleton = TRUE
-          FOR KEY SHARE
+          FOR SHARE
        ),
        privacy_remat_state AS MATERIALIZED (
          SELECT EXISTS (
@@ -445,7 +450,9 @@ export async function persistEntriesCore(
          SELECT i.*,
            COALESCE(i.observation_id_in, gen_random_uuid()) AS observation_id,
            CASE
-             WHEN remat.active THEN meshcore_path_matches_private(
+             WHEN visibility.generation > 0 AND (
+               remat.active OR i.prefix_cache_generation IS DISTINCT FROM visibility.generation
+             ) THEN meshcore_path_matches_private(
                i.network, i.rx_node_id, i.src_node_id,
                i.path_hashes, i.path_hash_size_bytes
              )

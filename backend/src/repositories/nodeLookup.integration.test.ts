@@ -1,15 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import pg from 'pg';
 import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
 import { bootstrapBaseSchemaFixture } from '../db/fixtures/baseSchema.js';
 import { identityNodeSourceSql, publicIdentityNodeSourceSql, pagedIdentityNodeSourceSql } from '../nodes/identitySource.js';
-import { mapVisiblePredicate } from '../nodes/publicMap.js';
+import { mapVisiblePredicate, PUBLIC_MAP_ALLOWED_FIELDS } from '../nodes/publicMap.js';
 import { nodeEffectiveLastSeenSql, nodeEffectiveOnlineSql } from '../nodes/presence.js';
 import { networkFilters, nodeAliasArraySql, publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { convergePacketVisibility } from '../privacy/convergence.js';
 import { createNodeRepository } from './nodes.js';
+import { createDatabaseRuntime } from '../db/databaseRuntime.js';
+import { mockRuntimeQuery } from '../db/fixtures/mockRuntimeQuery.js';
+import { getViableLinks } from './topologyReads.js';
+import { getNodes, getNodePrivacyRows } from './nodeReads.js';
+import { buildScopePlaceholders, buildNodeScopeClause } from '../db/readScope.js';
+import { PublicWsPrivacyIndex } from '../ws/privacy.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 
@@ -20,7 +28,9 @@ test('indexed node projections and search retain canonical view results for alia
   const pool = new pg.Pool({ connectionString: fixture.url, max: 2 });
   fixture.addCleanup(() => pool.end());
   await bootstrapBaseSchemaFixture(pool);
-  const query = <T extends pg.QueryResultRow>(sql: string, params?: unknown[]) => pool.query<T>(sql, params);
+  const runtime = createDatabaseRuntime({ DATABASE_URL: fixture.url, DATABASE_POOL_MAX: '1' });
+  fixture.addCleanup(() => runtime.close());
+  const query = runtime.query;
   const key = (hex: string) => hex.repeat(64);
   const snapshot = new Date().toISOString();
   for (const [id, nodeName, network, adverts, role, lat, lon] of [
@@ -67,6 +77,121 @@ test('indexed node projections and search retain canonical view results for alia
   const scoped = (await pool.query(`SELECT * FROM ${identityNodeSourceSql('SELECT unnest($1::text[]) AS node_id')} n
     ORDER BY node_id`, [original.map(row => row.node_id).concat(key('F'))])).rows;
   assert.deepEqual(scoped, original, 'scoped hydration includes absent canonical rows and one-hop alias chains');
+  await t.test('viable topology retains strict network/privacy scope across aliases and legacy keys', async inner => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO core.node_links
+        (node_a_id,node_b_id,observed_count,itm_viable,force_viable) VALUES
+        ($1,$2,5,true,false),($1,$3,6,true,false),($1,$4,7,true,false),
+        ($1,$5,8,true,false),($1,$6,9,false,true)`,
+      [key('1'), key('A'), key('3'), key('9'), key('b'), key('c')]);
+      await client.query('REFRESH MATERIALIZED VIEW core.node_identity_links');
+      mockRuntimeQuery(inner, (sql, params) => client.query(sql, params));
+      const links = await getViableLinks('ukmesh');
+      assert.deepEqual(links.map(row => [row.node_a_id, row.node_b_id, String(row.observed_count)]).sort(), [
+        [key('1'), key('4'), '6'], [key('1'), key('A'), '5'], [key('1'), key('C'), '9'],
+      ]);
+      for (const network of ['northeast', 'test', 'missing']) {
+        assert.deepEqual(await getViableLinks(network), [], `both endpoints must satisfy ${network}`);
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+  await t.test('WebSocket privacy refresh retains complete scoped identity names', async inner => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO core.nodes(node_id,name,network,role,lat,lon,last_seen) VALUES
+        ($1,'Private client 🚫','ukmesh',1,NULL,NULL,NOW()-INTERVAL '60 days'),
+        ($2,'Private test 🚫','test',3,95,0,NOW()),
+        ($3,'Private recent sighting 🚫','othernet',4,0,0,NOW()),
+        ($4,'Private expired sighting 🚫','othernet',2,51,-1,NOW()),
+        ($5,'Private alias 🚫','northeast',2,51,-1,NOW()+INTERVAL '1 minute')`,
+      [key('D'),key('E'),key('F'),key('5'),'AB'.repeat(32)]);
+      await client.query(`INSERT INTO core.node_identity_aliases
+        (source_node_id,canonical_node_id,confidence,reason)
+        VALUES ($1,$2,'high','privacy refresh fixture')`, ['AB'.repeat(32),key('1')]);
+      await client.query(`UPDATE core.nodes SET name='Canonical private 🚫' WHERE node_id=$1`,[key('1')]);
+      await client.query(`UPDATE core.nodes SET name='Private null presence 🚫',last_seen=NULL WHERE node_id=$1`,[key('c')]);
+      await client.query(`INSERT INTO core.node_map_suppressions(node_id,suppressed_by_node_id,reason,distance_m,stale_age_days,freshest_age_days) VALUES ($1,$1,'stale-colocated',0,60,1)`,[key('D')]);
+      await client.query(`INSERT INTO core.node_network_sightings(node_id,network,last_seen_at)
+        VALUES ($1,'ukmesh',NOW()-INTERVAL '29 days'),
+               ($2,'ukmesh',NOW()-INTERVAL '30 days'),
+               ($3,'ukmesh',NOW())`, [key('F'),key('5'),key('E')]);
+      await client.query('REFRESH MATERIALIZED VIEW core.node_identity_sightings');
+      mockRuntimeQuery(inner, (sql, params) => client.query(sql, params));
+      const order = (rows: Array<{node_id: string; name: string | null}>) =>
+        rows.map(({node_id,name}) => ({node_id,name})).sort((a,b) => a.node_id.localeCompare(b.node_id));
+      for (const network of [undefined,'ukmesh','northeast','test','othernet','missing']) {
+        const scope = buildScopePlaceholders(1,network);
+        const reference = (await client.query(`SELECT n.node_id,n.name FROM core.node_identity_nodes n
+          WHERE 1=1${buildNodeScopeClause(scope,'n')}`,scope.params)).rows;
+        const actual = order(await getNodePrivacyRows(network));
+        assert.deepEqual(actual,order(await getNodes(network)),`previous full privacy read for ${network}`);
+        assert.deepEqual(actual,order(reference),`complete privacy identities for ${network}`);
+        const index = new PublicWsPrivacyIndex(); index.replace(actual);
+        const expected = new PublicWsPrivacyIndex(); expected.replace(reference);
+        for (const row of original.concat(reference)) {
+          assert.equal(index.hasNode(row.node_id),expected.hasNode(row.node_id));
+          for (const width of [1,2,3]) {
+            const packet = {path:[row.node_id.slice(0,width*2)],pathHashSizeBytes:width,visibilityOk:true};
+            assert.equal(index.packetHasPrivateParticipant(packet),expected.packetHasPrivateParticipant(packet));
+          }
+        }
+        if (network === 'ukmesh') {
+          for (const id of [key('D'),key('F'),key('c')]) assert.equal(index.hasNode(id),true,id);
+          for (const id of [key('1'),key('5'),key('E')]) assert.equal(index.hasNode(id),false,id);
+        }
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+  await t.test('viable-link access paths preserve nullable flags, metrics and concurrent publication', async () => {
+    const client = await pool.connect();
+    const migration = await readFile(new URL('../db/migrations/154_index_viable_link_reads.sql',import.meta.url),'utf8');
+    const peers = Array.from({length:6},(_,i) => `D${i}`.repeat(32));
+    try {
+      await client.query('BEGIN');
+      for (const [i,[viable,forced]] of [[true,false],[false,false],[null,false],[true,true],[false,true],[null,true]].entries()) {
+        await client.query(`INSERT INTO core.node_links
+          (node_a_id,node_b_id,observed_count,multibyte_observed_count,itm_viable,force_viable,
+           itm_path_loss_db,count_a_to_b,count_b_to_a,last_observed)
+          VALUES ($1,$2,$3,1,$4,$5,123,2,3,NOW())`,[key('1'),peers[i],i+5,viable,forced]);
+      }
+      await client.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+      // Compare the established unindexed behavior before applying the migration.
+      await client.query('DROP INDEX core.node_identity_links_viable_metrics_idx');
+      const rows = async () => ({
+        pairs:(await client.query(`SELECT node_a_id,node_b_id FROM core.node_links
+          WHERE itm_viable=true OR force_viable=true ORDER BY node_a_id,node_b_id`)).rows,
+        metrics:(await client.query(`SELECT * FROM core.node_identity_links ORDER BY node_a_id,node_b_id`)).rows,
+      });
+      const before = await rows();
+      assert.deepEqual(before.pairs.map(row => row.node_b_id),[peers[0],peers[3],peers[4],peers[5]]);
+      await client.query(migration);
+      await client.query(migration);
+      assert.deepEqual(await rows(),before);
+      await client.query(`UPDATE core.node_links SET observed_count=observed_count+1,
+        multibyte_observed_count=multibyte_observed_count+1,count_a_to_b=count_a_to_b+1,
+        itm_viable=CASE WHEN node_b_id=$1 THEN false WHEN node_b_id=$2 THEN true ELSE itm_viable END`,[peers[0],peers[1]]);
+      await client.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+      const after = await rows();
+      assert.deepEqual(after.pairs.map(row => row.node_b_id),[peers[1],peers[3],peers[4],peers[5]]);
+      assert.deepEqual(after.metrics,before.metrics.map(row => ({...row,
+        observed_count:row.observed_count+1,multibyte_observed_count:row.multibyte_observed_count+1,
+        count_a_to_b:row.count_a_to_b+1,
+        itm_viable:row.node_b_id===peers[0]?false:row.node_b_id===peers[1]?true:row.itm_viable,
+      })));
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
   const priorityIds = [key('1'), key('4'), key('7'), key('A')];
   const availableIds = new Set(original.map(row => row.node_id));
   const boundaryIds = [...new Set([...priorityIds.filter(id => availableIds.has(id)), ...availableIds])];
@@ -169,4 +294,68 @@ test('indexed node projections and search retain canonical view results for alia
       }
     }
   }
+
+  // A private representative may be an alias outside the requested member
+  // list. Hydration must still aggregate the whole identity before filtering.
+  const privateAlias = 'DD' + 'D'.repeat(62);
+  await pool.query(`INSERT INTO core.nodes(node_id,name,network,advert_count,role,lat,lon,last_seen)
+    VALUES($1,'Private alias 🚫','ukmesh',100,2,51,-1,$2)`, [privateAlias,snapshot]);
+  await pool.query(`INSERT INTO core.node_identity_aliases(source_node_id,canonical_node_id,confidence,reason)
+    VALUES($1,$2,'high','owned private representative fixture')`, [privateAlias,key('1')]);
+  assert.equal((await query('SELECT name FROM core.node_identity_nodes WHERE node_id=$1',[key('1')])).rows[0]?.['name'],
+    'Private alias 🚫','the complete identity selects the private alias outside regional membership');
+  const baselineRoot = process.env['TEST_LOOKUP_BASELINE_SOURCE_ROOT'];
+  const baselineRepository = baselineRoot
+    ? (await import(pathToFileURL(path.join(baselineRoot,'repositories/nodes.ts')).href)).createNodeRepository(query)
+    : undefined;
+  // Region memberships accept normalized public keys; legacy Unicode IDs
+  // remain covered by the general identity/decoder cases above.
+  const ids = [...new Set([key('4'),key('1'),key('9'),key('B'),key('A'),key('7'),...boundaryIds])]
+    .filter(id=>/^[0-9A-F]{64}$/.test(id));
+  let regionalCases = 0;
+  for (const count of [0,1,127,128,129,500,ids.length]) {
+    const region = `lookup_size_${count}`;
+    const members = ids.slice(0,count).map(id => id===key('4') ? key('3') : id===key('1') ? key('2') : id===key('7') ? key('6') : id);
+    await pool.query('INSERT INTO core.region_scope_stats(region) VALUES($1)',[region]);
+    await pool.query(`INSERT INTO core.region_scope_members(region,node_id,packets)
+      SELECT $1,unnest($2::text[]),1`,[region,members]);
+    for (const network of ['ukmesh','northeast','test']) {
+      const filters = networkFilters(network,undefined,{region});
+      for (const requested of [fields,[...PUBLIC_MAP_ALLOWED_FIELDS]]) for (const cursor of [null,key('4')]) {
+        for (const limit of [3,1000]) {
+          const snapshotParameter=filters.params.length+1,cursorParameter=snapshotParameter+1,limitParameter=cursorParameter+1;
+          const projection=requested.map(field=>field==='last_seen' ? `${nodeEffectiveLastSeenSql('n')}::text AS last_seen`
+            : field==='is_online' ? `${nodeEffectiveOnlineSql('n',`$${snapshotParameter}::timestamptz`)} AS is_online` : `n.${field}`).join(',');
+          const expected = (await query(`SELECT ${projection} FROM core.node_identity_nodes n
+            WHERE ${mapVisiblePredicate('n',`$${snapshotParameter}::timestamptz`)}
+              AND NOT EXISTS(SELECT 1 FROM core.node_map_suppressions s WHERE s.node_id=n.node_id)
+              ${filters.nodesAlias('n')}
+              AND ($${cursorParameter}::text IS NULL OR n.node_id>$${cursorParameter})
+            ORDER BY n.node_id LIMIT $${limitParameter}`,[...filters.params,snapshot,cursor,limit+1])).rows;
+          const actual = await repository.listPublicMapRows(requested,filters,snapshot,cursor,limit);
+          assert.deepEqual(actual,expected,`region${count}/${network}/${requested.length}fields/${cursor??'first'}/${limit}`);
+          assert.ok(actual.every(row=>row['node_id']!==key('1')),'a private alias cannot expose its canonical identity');
+          if (network==='ukmesh' && cursor===null && limit===1000) {
+            if (count===0) assert.equal(actual.length,0,'an empty region has no public nodes');
+            else {
+              assert.ok(actual.some(row=>row['node_id']===key('4')),'the public alias family without a canonical raw row remains visible');
+              if (count===1) assert.equal(actual.length,1,'the sparse positive control is populated');
+              else assert.ok(actual.length>=count-10,'boundary and dense cases retain their public population');
+            }
+          }
+          if (network==='northeast') assert.equal(actual.length,0,'the only northeast family has a private representative');
+          if (network==='test' && count<=1) assert.equal(actual.length,0,'a public-only region does not cross the test-network scope');
+          if (baselineRepository) assert.deepEqual(actual,
+            await baselineRepository.listPublicMapRows(requested,filters,snapshot,cursor,limit),
+            `sealed baseline region${count}/${network}/${requested.length}fields/${cursor??'first'}/${limit}`);
+          regionalCases++;
+        }
+      }
+    }
+  }
+  t.diagnostic(`regional candidate parity: ${regionalCases} complete-field/scope/page cases; sealed baseline ${baselineRepository?'included':'independent canonical-view oracle'}`);
+  const prepared = (await query(`SELECT name,(generic_plans+custom_plans)::int AS executions
+    FROM pg_prepared_statements WHERE starts_with(name,'read_v1_')`)).rows;
+  assert.ok(prepared.length > 0 && prepared.length <= 32, 'canonical-view parity exercises actual bounded runtime preparation');
+  assert.ok(prepared.some(row => row['executions'] > 5), 'the same prepared shape observes subsequent privacy/identity changes');
 });

@@ -1,4 +1,5 @@
-import type { QueryResultRow } from 'pg';
+import type { DatabaseQueryFn } from '../db/contracts.js';
+import { BOUNDED_READ_PREPARATION } from '../db/preparedStatements.js';
 import { nodeAliasArraySql, type NetworkFilters } from '../platform/query/networkFilters.js';
 import { mapVisiblePredicate } from '../nodes/publicMap.js';
 import { identityNodeSourceSql, pagedIdentityNodeSourceSql } from '../nodes/identitySource.js';
@@ -6,11 +7,6 @@ import {
   nodeEffectiveLastSeenSql,
   nodeEffectiveOnlineSql,
 } from '../nodes/presence.js';
-
-type QueryFn = <T extends QueryResultRow = QueryResultRow>(
-  text: string,
-  params?: unknown[],
-) => Promise<{ rows: T[] }>;
 
 export type InferredPacketRow = {
   packet_hash: string;
@@ -59,7 +55,7 @@ export type NodeRepository = {
   ) => Promise<NodeLinkRow[]>;
 };
 
-export function createNodeRepository(query: QueryFn): NodeRepository {
+export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
   return {
     async loadTestDiagnostics() {
       const [packetsResult, latestStatusRows, statusSamplesResult] = await Promise.all([
@@ -241,7 +237,9 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
         limit: `$${limitParameter}`,
         candidates: candidateIds ? {
           idsSql: candidateIds,
-          projection: narrowSearch ? 'adaptive' : 'bulk',
+          // Indexed observer hydration already avoids a broad scan. Other
+          // candidate sets use their cardinality, including small regions.
+          projection: narrowSearch || scopedCandidates?.rowHydration !== 'indexed-points' ? 'adaptive' : 'bulk',
           rowHydration: scopedCandidates?.rowHydration ?? 'ordered-scan',
         } : undefined,
       });
@@ -262,6 +260,8 @@ export function createNodeRepository(query: QueryFn): NodeRepository {
           ORDER BY n.node_id
           LIMIT $${limitParameter}`,
         [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : []), ...(narrowSearch ? [literalPattern] : [])],
+        undefined,
+        BOUNDED_READ_PREPARATION,
       );
       return result.rows;
     },

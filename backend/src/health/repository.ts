@@ -71,11 +71,18 @@ export function createHealthRepository(query: DatabaseQueryFn) {
        GROUP BY target.table_name
     `, [JSON.stringify(CORE_CAPACITY_TARGETS)]);
     },
-    loadRecentLinkCount() {
-      return query<{ count: string }>(`SELECT COUNT(*) AS count FROM core.node_links WHERE itm_computed_at > NOW() - INTERVAL '1 hour'`);
-    },
-    loadLatestLinkComputation() {
-      return query<{ ts: string | null }>(`SELECT MAX(itm_computed_at)::text AS ts FROM core.node_links`);
+    loadLinkActivity() {
+      return query<{
+        recent_count: string;
+        last_computed: string | null;
+        links: string;
+        last_observed: string | null;
+      }>(`SELECT
+        COUNT(*) FILTER (WHERE itm_computed_at > NOW() - INTERVAL '1 hour')::text AS recent_count,
+        MAX(itm_computed_at)::text AS last_computed,
+        COUNT(*)::text AS links,
+        MAX(last_observed)::text AS last_observed
+      FROM core.node_links`);
     },
     loadLatestLearningCalibration() {
       return query<{ ts: string | null }>(`SELECT MAX(updated_at)::text AS ts FROM analytics.path_model_calibration`);
@@ -86,12 +93,6 @@ export function createHealthRepository(query: DatabaseQueryFn) {
                 MAX(ts)::text AS ts
          FROM ops.worker_health_snapshots
          WHERE worker_name = 'health-worker'`,
-      );
-    },
-    loadBackfillActivity() {
-      return query<{ links: string; last_observed: string | null }>(
-        `SELECT COUNT(*)::text AS links, MAX(last_observed)::text AS last_observed
-         FROM core.node_links`,
       );
     },
     loadCurrentWorkers() {

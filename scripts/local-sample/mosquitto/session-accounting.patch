@@ -1,0 +1,93 @@
+--- a/src/sys_tree.c
++++ b/src/sys_tree.c
+@@ -27,6 +27,7 @@
+ #include <inttypes.h>
+ 
+ #include "mosquitto_broker_internal.h"
++#include "net_mosq.h"
+ #include "sys_tree.h"
+ 
+ #define BUFLEN 100
+@@ -222,6 +223,8 @@
+  */
+ void sys_tree__update(bool force)
+ {
++	struct mosquitto *context, *ctxt_tmp;
++	int64_t connected_count, disconnected_count;
+ 	time_t uptime;
+ 	char buf[BUFLEN];
+ 	uint32_t len;
+@@ -255,8 +258,19 @@
+ #endif
+ 		metrics[mosq_gauge_clients_total].next = HASH_CNT(hh_id, db.contexts_by_id);
+ 		metrics[mosq_counter_clients_maximum].next = HASH_CNT(hh_id, db.contexts_by_id);
+-		metrics[mosq_gauge_clients_connected].next = HASH_CNT(hh_sock, db.contexts_by_sock);
+-		metrics[mosq_gauge_clients_disconnected].next = HASH_CNT(hh_id, db.contexts_by_id) - HASH_CNT(hh_sock, db.contexts_by_sock);
++		/* Session gauges share the identified-client domain. A transport
++		 * socket can exist before CONNECT and must not mask offline sessions. */
++		connected_count = 0;
++		disconnected_count = 0;
++		HASH_ITER(hh_id, db.contexts_by_id, context, ctxt_tmp){
++			if(net__is_connected(context)){
++				connected_count++;
++			}else{
++				disconnected_count++;
++			}
++		}
++		metrics[mosq_gauge_clients_connected].next = connected_count;
++		metrics[mosq_gauge_clients_disconnected].next = disconnected_count;
+ 
+ 		/* Handle loads first, because they reference other metrics and need next != current */
+ 		if(db.now_s > last_update){
+--- a/src/persist_write.c
++++ b/src/persist_write.c
+@@ -36,6 +36,22 @@
+ #include "util_mosq.h"
+ 
+ 
++/* Clean Start resets the previous MQTT 5 session at CONNECT; Session Expiry
++ * governs persistence of the new session. Bridges retain their local policy. */
++static bool persist__client_should_save(const struct mosquitto *context)
++{
++	if(!context || context->session_expiry_interval == MQTT_SESSION_EXPIRY_IMMEDIATE){
++		return false;
++	}
++#ifdef WITH_BRIDGE
++	if(context->bridge){
++		return context->bridge->clean_start_local == false;
++	}
++#endif
++	return context->protocol == mosq_p_mqtt5 || context->clean_start == false;
++}
++
++
+ static int persist__client_messages_save(FILE *db_fptr, struct mosquitto *context, struct mosquitto__client_msg *queue)
+ {
+ 	struct P_client_msg chunk;
+@@ -163,15 +179,7 @@
+ 	HASH_ITER(hh_id, db.contexts_by_id, context, ctxt_tmp){
+ 		memset(&chunk, 0, sizeof(struct P_client));
+ 
+-		if(context &&
+-				context->session_expiry_interval != MQTT_SESSION_EXPIRY_IMMEDIATE &&
+-#ifdef WITH_BRIDGE
+-				((!context->bridge && context->clean_start == false)
+-				|| (context->bridge && context->bridge->clean_start_local == false))
+-#else
+-				context->clean_start == false
+-#endif
+-				){
++		if(persist__client_should_save(context)){
+ 			chunk.F.session_expiry_time = context->session_expiry_time;
+ 			if(context->session_expiry_interval != MQTT_SESSION_EXPIRY_NEVER
+ 					&& context->session_expiry_time == 0){
+@@ -244,8 +252,7 @@
+ 
+ 	sub = node->subs;
+ 	while(sub){
+-		if(sub->context->session_expiry_interval != MQTT_SESSION_EXPIRY_IMMEDIATE
+-				&& sub->context->clean_start == false
++		if(persist__client_should_save(sub->context)
+ 				&& sub->context->id){
+ 
+ 			memset(&sub_chunk, 0, sizeof(struct P_sub));

@@ -29,6 +29,8 @@
  *   REGION_SCOPE_MAX_PACKETS     distinct scoped packet cap (default 500000)
  *   REGION_SCOPE_MAX_NODES       node cap (default 100000)
  *   REGION_SCOPE_STATEMENT_TIMEOUT_MS SQL deadline (default 120000)
+ *   REGION_SCOPE_WORK_MEM_KB     per-operation PostgreSQL scratch memory (default 16384)
+ *   REGION_SCOPE_BITMAP_SCAN=1   allow bitmap scans (disabled for bulk reads by default)
  *
  * All five tables are refreshed wholesale inside ONE transaction (delete +
  * insert), so readers never observe an empty or partial state. If the scoped
@@ -38,8 +40,9 @@
 
 import pg from 'pg';
 import { pathToFileURL } from 'node:url';
-import { databaseUrlForRole } from '../platform/config/database.js';
+import { analyticsConnectionOptions } from '../platform/config/database.js';
 import { regionRebuildSettings } from '../regions/rebuildSettings.js';
+import { SCOPED_PACKETS_SQL, type ScopedPacketRow } from '../regions/scopedPackets.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
@@ -47,24 +50,18 @@ import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from '../mqtt/decodePacket.js';
 import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.js';
 import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
-import { decodeRegionForPacket, transportCode0Of } from '../regions/scopeDecode.js';
+import { createRegionProbe, transportCode0Of } from '../regions/scopeDecode.js';
 import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
+import { withHeavyWorkAdmission, tryWithHeavyWorkAdmission,
+  type HeavyWorkAdmissionOptions, type HeavyWorkAdmissionResult } from '../analysis/heavyWorkAdmission.js';
+import { REGION_SNAPSHOT_DEFERRED_EXIT_CODE, REGION_SNAPSHOT_TRY_ADMISSION_ARG } from '../regions/snapshotOutcome.js';
 
 const { Pool } = pg;
 
 // Documented MeshCore public channel material, not an application credential.
 const DEFAULT_PUBLIC_CHANNEL_KEY = '8b3387e9c5cdea6ac9e5edbaa115cd72';
 const UNRESOLVED_ELEMENT_LOG_LIMIT = 12;
-
-interface ScopedPacketRow {
-  packet_hash: string;
-  t0: Date;
-  t1: Date;
-  raw: string | null;
-  elems: string[] | null;
-  observers: string[] | null;
-}
 
 interface NodeMetaRow {
   node_id: string;
@@ -99,16 +96,28 @@ function resolveElement(prefixIndex: Map<string, string[]>, element: string): st
 }
 
 export async function rebuildRegionParticipation(): Promise<void> {
-  const databaseUrl = databaseUrlForRole('worker');
-  if (!databaseUrl) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
+  await rebuildWithAdmission(async options => ({ acquired: true, value: await withHeavyWorkAdmission(options) }));
+}
+
+export function tryRebuildRegionParticipation(): Promise<HeavyWorkAdmissionResult<void>> {
+  return rebuildWithAdmission(tryWithHeavyWorkAdmission);
+}
+
+async function rebuildWithAdmission(
+  admit: (options: HeavyWorkAdmissionOptions<void>) => Promise<HeavyWorkAdmissionResult<void>>,
+): Promise<HeavyWorkAdmissionResult<void>> {
   const settings = regionRebuildSettings();
+  const database = analyticsConnectionOptions(process.env, undefined,
+    `-c work_mem=${settings.workMemKb}kB -c enable_bitmapscan=${settings.bitmapScan ? 'on' : 'off'}`);
+  if (!database.connectionString) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';
   const probeNames = regionProbeNamesWithEnv(process.env['MESHCORE_REGION_NAMES']);
+  const probeRegion = createRegionProbe(probeNames);
   const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: buildChannelSecrets() });
 
   const pool = new Pool({
-    connectionString: databaseUrl,
+    ...database,
     application_name: 'meshcore-regions-rebuild',
     max: 2,
     connectionTimeoutMillis: 5_000,
@@ -116,40 +125,27 @@ export async function rebuildRegionParticipation(): Promise<void> {
     query_timeout: settings.statementTimeoutMs + 1_000,
   });
 
-  let publisher: pg.PoolClient | undefined;
-  let ownsLock = false;
   try {
-    publisher = await pool.connect();
+    return await admit({ pool, workload: 'region-snapshot', task: async publisher => {
+    let ownsLock = false;
+    let taskError: { value: unknown } | undefined;
+    try {
     ownsLock = (await publisher.query<{ locked: boolean }>(
       "SELECT pg_try_advisory_lock(hashtext('meshcore-region-snapshot-publish')) AS locked",
     )).rows[0]?.locked === true;
     if (!ownsLock) throw new Error('REGION_SNAPSHOT_PUBLISHER_BUSY');
-    const visibilityGeneration = await readPublicResponseGeneration((sql) => pool.query(sql));
+    const visibilityGeneration = await readPublicResponseGeneration((sql) => publisher.query(sql));
     const startedAt = Date.now();
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
 
     const { rows: scopedRows } = await pool.query<ScopedPacketRow>(
-      `SELECT p.packet_hash,
-              min(p.time) AS t0,
-              max(p.time) AS t1,
-              (array_agg(p.raw_hex ORDER BY p.time DESC)
-                 FILTER (WHERE p.route_type IN (0, 3) AND p.raw_hex <> ''))[1] AS raw,
-              (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems,
-              (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
-         FROM mesh.packets p
-         LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
-        WHERE p.network IN (${UKMESH_NETWORK_SQL_LIST})
-          AND ${publicPacketPrivacySql('p')}
-          AND p.route_type IN (0, 3)
-          AND p.time > now() - make_interval(days => $1)
-        GROUP BY p.packet_hash
-        ORDER BY p.packet_hash
-        LIMIT $2`,
+      SCOPED_PACKETS_SQL,
       [windowDays, settings.maxPackets + 1],
     );
-    console.log(`[regions] scoped packets: ${scopedRows.length} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
-    if (scopedRows.length > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
-    if (scopedRows.length === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
+    const scopedPacketCount = scopedRows.length;
+    console.log(`[regions] scoped packets: ${scopedPacketCount} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    if (scopedPacketCount > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
+    if (scopedPacketCount === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
 
     const regionTotals = new Map<string, number>();
     const regionFirstSeen = new Map<string, Date>();
@@ -163,14 +159,14 @@ export async function rebuildRegionParticipation(): Promise<void> {
         const compat = decodePacketCompat(row.raw, keyStore);
         if (compat.metadataValid && compat.transportCodes) {
           const tc0 = transportCode0Of(compat.transportCodes);
-          region = decodeRegionForPacket(
-            probeNames,
+          region = probeRegion(
             compat.decoded?.payloadType,
             compat.decoded?.payload?.raw,
             tc0,
           );
         }
       }
+      row.raw = null;
       packetRegion.set(row.packet_hash, region);
       if (!region) unattributedRows.push(row);
       if (region) {
@@ -182,9 +178,10 @@ export async function rebuildRegionParticipation(): Promise<void> {
         if (!last || row.t1 > last) regionLastSeen.set(region, row.t1);
       }
     }
-    const unknownCount = scopedRows.length - decodedCount;
-    console.log(`[regions] decoded ${decodedCount}/${scopedRows.length} (${unknownCount} unknown)`);
-    if (scopedRows.length > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
+    const unattributedPacketCount = unattributedRows.length;
+    const unknownCount = scopedPacketCount - decodedCount;
+    console.log(`[regions] decoded ${decodedCount}/${scopedPacketCount} (${unknownCount} unknown)`);
+    if (scopedPacketCount > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
@@ -213,15 +210,16 @@ export async function rebuildRegionParticipation(): Promise<void> {
     // gap geographically without inventing a region name. Nodes that opted out
     // of public display are dropped here, so no cluster geometry is derived
     // from them.
-    const nodeInfo = new Map<string, { lat: number; lon: number; name: string | null }>();
+    const nodeInfo = new Map<string, Readonly<UnattributedPacket['nodes'][number]>>();
     for (const row of nodeRows) {
       const nodeId = (row.node_id ?? '').trim().toUpperCase();
       if (!nodeId || isPrivateNode(row.name)) continue;
       const lat = row.lat == null ? Number.NaN : Number(row.lat);
       const lon = row.lon == null ? Number.NaN : Number(row.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      nodeInfo.set(nodeId, { lat, lon, name: row.name ?? null });
+      nodeInfo.set(nodeId, { nodeId, lat, lon, name: row.name ?? null });
     }
+    nodeRows.length = 0;
 
     const unattributedPackets: UnattributedPacket[] = [];
     for (const row of unattributedRows) {
@@ -232,7 +230,7 @@ export async function rebuildRegionParticipation(): Promise<void> {
         const info = nodeInfo.get(nodeId);
         if (!info) return;
         seen.add(nodeId);
-        nodes.push({ nodeId, lat: info.lat, lon: info.lon, name: info.name });
+        nodes.push(info);
       };
       for (const element of row.elems ?? []) {
         const resolved = resolveElement(prefixIndex, element);
@@ -246,11 +244,14 @@ export async function rebuildRegionParticipation(): Promise<void> {
         lastSeen: row.t1,
       });
     }
+    unattributedRows.length = 0;
+    nodeInfo.clear();
     const unattributedClusters = clusterUnattributedPackets(unattributedPackets, {
       radiusKm: 60,
       minPackets: 10,
     });
-    console.log(`[regions] unattributed: ${unattributedRows.length} packets -> ` +
+    unattributedPackets.length = 0;
+    console.log(`[regions] unattributed: ${unattributedPacketCount} packets -> ` +
       `${unattributedClusters.clusters.length} clusters ` +
       `(${unattributedClusters.clusteredPackets} clustered, ` +
       `${unattributedClusters.discardedPackets} below floor, ` +
@@ -286,6 +287,8 @@ export async function rebuildRegionParticipation(): Promise<void> {
         }
       }
     }
+    scopedRows.length = 0;
+    packetRegion.clear();
     console.log(`[regions] element stats: ${JSON.stringify(Object.fromEntries([...elementStats.entries()].sort()))}`);
 
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(
@@ -307,6 +310,8 @@ export async function rebuildRegionParticipation(): Promise<void> {
       const nodeId = resolveElement(prefixIndex, row.e);
       if (nodeId) unscoped.set(nodeId, (unscoped.get(nodeId) ?? 0) + Number(row.c));
     }
+    unscopedRows.length = 0;
+    prefixIndex.clear();
     console.log(`[regions] unscoped relay evidence (7d): ${unscoped.size} nodes, ${[...unscoped.values()].reduce((sum, value) => sum + value, 0)} relay counts`);
 
     // Region view (members = relays with resolved ids carrying at least
@@ -380,18 +385,18 @@ export async function rebuildRegionParticipation(): Promise<void> {
     if (dryRun) {
       console.log(JSON.stringify({
         status: 'dry-run',
-        scopedPackets: scopedRows.length,
+        scopedPackets: scopedPacketCount,
         decodedPackets: decodedCount,
         regions: regionTotals.size,
         members: members.length,
         classification: classification.length,
-        unattributedPackets: unattributedRows.length,
+        unattributedPackets: unattributedPacketCount,
         unattributedClusters: unattributedClusters.clusters.length,
       }));
       return;
     }
 
-    const client = await pool.connect();
+    const client = publisher;
     try {
       await client.query('BEGIN');
       await client.query("SET LOCAL lock_timeout = '5s'");
@@ -478,7 +483,7 @@ export async function rebuildRegionParticipation(): Promise<void> {
       await client.query(
         `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets, visibility_generation, network)
          VALUES (TRUE, now(), $1, $2, $3, $4, 'ukmesh')`,
-        [windowDays, scopedRows.length, decodedCount, visibilityGeneration],
+        [windowDays, scopedPacketCount, decodedCount, visibilityGeneration],
       );
       if (await readPublicResponseGeneration((sql) => client.query(sql)) !== visibilityGeneration) {
         throw new Error('REGION_SNAPSHOT_VISIBILITY_CHANGED');
@@ -487,32 +492,51 @@ export async function rebuildRegionParticipation(): Promise<void> {
     } catch (error) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw error;
-    } finally {
-      client.release();
     }
 
     console.log(JSON.stringify({
       status: 'complete',
-      scopedPackets: scopedRows.length,
+      scopedPackets: scopedPacketCount,
       decodedPackets: decodedCount,
       regions: regionTotals.size,
       members: members.length,
       classification: classification.length,
-      unattributedPackets: unattributedRows.length,
+      unattributedPackets: unattributedPacketCount,
       unattributedClusters: unattributedClusters.clusters.length,
       elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
     }));
-  } finally {
-    if (publisher) {
-      if (ownsLock) await publisher.query("SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish'))").catch(() => undefined);
-      publisher.release();
+    } catch (error) {
+      taskError = { value: error };
+      throw error;
+    } finally {
+      if (ownsLock) {
+        try {
+          const released = await publisher.query<{ pg_advisory_unlock: boolean }>(
+            "SELECT pg_advisory_unlock(hashtext('meshcore-region-snapshot-publish'))",
+          );
+          if (released.rows[0]?.pg_advisory_unlock !== true) throw new Error('REGION_SNAPSHOT_PUBLISHER_RELEASE');
+        } catch (error) {
+          if (taskError) throw new AggregateError([taskError.value, error], 'REGION_SNAPSHOT_TASK_AND_RELEASE_FAILED');
+          throw error;
+        }
+      }
     }
+    } });
+  } finally {
     await pool.end();
   }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  rebuildRegionParticipation().catch((error: unknown) => {
+  const run = async () => {
+    if (process.argv.includes(REGION_SNAPSHOT_TRY_ADMISSION_ARG)) {
+      const result = await tryRebuildRegionParticipation();
+      if (!result.acquired) process.exitCode = REGION_SNAPSHOT_DEFERRED_EXIT_CODE;
+    } else {
+      await rebuildRegionParticipation();
+    }
+  };
+  run().catch((error: unknown) => {
     console.error('[regions] failed:', error instanceof Error ? error.message : error);
     process.exitCode = 1;
   });

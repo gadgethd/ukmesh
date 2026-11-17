@@ -16,3 +16,7 @@ npm-debug.log*
 terrain-tiles
 mosquitto
 *.log
+# Optional development submodules do not belong in UKMesh image build contexts.
+third_party/corescope
+third_party/beacon-server
+third_party/beacon-web

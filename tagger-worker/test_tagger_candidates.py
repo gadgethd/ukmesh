@@ -2,6 +2,7 @@
 
 from datetime import datetime, timedelta, timezone
 import os
+import time
 from unittest.mock import patch
 import unittest
 from urllib.parse import urlsplit
@@ -12,12 +13,13 @@ from psycopg2 import sql
 from tagger_config import TaggerSettings
 import tagger_repository as repository
 import tagger_service
+import tagger_worker
 
 URL = os.environ.get("TEST_INGEST_DATABASE_URL")
 
 
 @unittest.skipUnless(URL, "TEST_INGEST_DATABASE_URL is required")
-class CandidatePagingTests(unittest.TestCase):
+class TaggerDatabaseFixture(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         if urlsplit(URL).hostname not in ("127.0.0.1", "localhost"):
@@ -32,20 +34,15 @@ class CandidatePagingTests(unittest.TestCase):
         cls.conn = psycopg2.connect(URL, dbname=cls.database)
         cls.conn.autocommit = True
         with cls.conn.cursor() as cur:
-            # The worker uses public compatibility names for packets/tags on
-            # its current default search_path; privacy/retry state is read from
-            # the post-move `ops` schema by fully qualified name.
-            cur.execute("""CREATE SCHEMA IF NOT EXISTS ops;
-              CREATE TABLE packets (packet_hash text, time timestamptz, payload jsonb,
+            cur.execute("""CREATE SCHEMA mesh; CREATE SCHEMA ops;
+              CREATE TABLE mesh.packets (packet_hash text, time timestamptz, payload jsonb,
               packet_type int, network text, visibility_ok boolean, is_private boolean, rx_node_id text);
-              CREATE TABLE message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
-                model text, latency_ms int, tags jsonb, confidence jsonb);
-              CREATE TABLE ops.tagger_retry (packet_hash text PRIMARY KEY, exhausted boolean);
               CREATE TABLE ops.privacy_rematerialization_queue (status text);
               CREATE TABLE ops.public_visibility_state (singleton boolean, generation int);
               CREATE TABLE ops.packet_visibility_materialization_state (singleton boolean, visibility_generation int);
               INSERT INTO ops.public_visibility_state VALUES (true, 1);
               INSERT INTO ops.packet_visibility_materialization_state VALUES (true, 1);""")
+            repository.bootstrap_schema(cur)
 
     @classmethod
     def tearDownClass(cls):
@@ -58,17 +55,20 @@ class CandidatePagingTests(unittest.TestCase):
             )
         cls.admin.close()
 
+
+
+class CandidatePagingTests(TaggerDatabaseFixture):
     def setUp(self):
         self.cursor_time = datetime.now(timezone.utc) - timedelta(seconds=5)
         with self.conn.cursor() as cur:
             cur.execute(
-                "TRUNCATE packets, message_tags, ops.tagger_retry, ops.privacy_rematerialization_queue; UPDATE ops.public_visibility_state SET generation=1; UPDATE ops.packet_visibility_materialization_state SET visibility_generation=1"
+                "TRUNCATE mesh.packets, mesh.message_tags, ops.tagger_retry, ops.privacy_rematerialization_queue; UPDATE ops.public_visibility_state SET generation=1; UPDATE ops.packet_visibility_materialization_state SET visibility_generation=1"
             )
 
     def add(self, packet_hash, time, receiver=None):
         with self.conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO packets VALUES (%s,%s,
+                """INSERT INTO mesh.packets VALUES (%s,%s,
               '{"decrypted":{"sender":"fixture","message":"fixture"}}',5,'ukmesh',true,false,%s)""",
                 (packet_hash, time, receiver),
             )
@@ -90,7 +90,7 @@ class CandidatePagingTests(unittest.TestCase):
             )
             with self.conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO message_tags (packet_hash) VALUES (%s)", (key,)
+                    "INSERT INTO mesh.message_tags (packet_hash, packet_time, tags) VALUES (%s, now(), '{}')", (key,)
                 )
         self.add("new-message", self.cursor_time + timedelta(seconds=1))
         self.assertEqual(self.candidates(), ["new-message"])
@@ -100,7 +100,7 @@ class CandidatePagingTests(unittest.TestCase):
             self.add(key, self.cursor_time + timedelta(seconds=1))
             with self.conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO ops.tagger_retry VALUES (%s,%s)", (key, exhausted)
+                    "INSERT INTO ops.tagger_retry (packet_hash, packet_time, exhausted) VALUES (%s, now(), %s)", (key, exhausted)
                 )
         self.assertEqual(self.candidates(), [])
 
@@ -113,7 +113,7 @@ class CandidatePagingTests(unittest.TestCase):
     def test_private_retry_never_reaches_classifier(self):
         self.add("private-retry", self.cursor_time)
         with self.conn.cursor() as cur:
-            cur.execute("UPDATE packets SET is_private=true, visibility_ok=false")
+            cur.execute("UPDATE mesh.packets SET is_private=true, visibility_ok=false")
             with patch.object(
                 self,
                 "classify",
@@ -179,7 +179,7 @@ class CandidatePagingTests(unittest.TestCase):
                 )
                 classifier.assert_called_once()
                 cur.execute(
-                    "SELECT tags FROM message_tags WHERE packet_hash='public-retry'"
+                    "SELECT tags FROM mesh.message_tags WHERE packet_hash='public-retry'"
                 )
                 self.assertEqual(cur.fetchone()[0], {"kind": "chat"})
 
@@ -189,7 +189,7 @@ class CandidatePagingTests(unittest.TestCase):
         def revoke_and_fail(_state):
             with self.conn.cursor() as update:
                 update.execute(
-                    "UPDATE packets SET is_private=true, visibility_ok=false"
+                    "UPDATE mesh.packets SET is_private=true, visibility_ok=false"
                 )
             raise RuntimeError("fixture classifier unavailable")
 
@@ -217,7 +217,7 @@ class CandidatePagingTests(unittest.TestCase):
         self.add("shared-hash", self.cursor_time, "public-receiver")
         with self.conn.cursor() as cur:
             cur.execute(
-                "UPDATE packets SET is_private=true, visibility_ok=false WHERE rx_node_id='private-receiver'"
+                "UPDATE mesh.packets SET is_private=true, visibility_ok=false WHERE rx_node_id='private-receiver'"
             )
             with patch.object(self, "classify") as classifier:
                 self.assertEqual(
@@ -252,9 +252,155 @@ class CandidatePagingTests(unittest.TestCase):
                     cur, "queued-retry", self.cursor_time, self.settings().networks
                 )
             cur.execute("TRUNCATE ops.privacy_rematerialization_queue")
-            cur.execute("UPDATE packets SET is_private=true, visibility_ok=false")
+            cur.execute("UPDATE mesh.packets SET is_private=true, visibility_ok=false")
             self.assertIsNone(
                 repository.public_packet_keys(
                     cur, "queued-retry", self.cursor_time, self.settings().networks
                 )
             )
+
+
+class SchemaOwnershipTests(TaggerDatabaseFixture):
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        cls.role = "audit_tagger_" + uuid4().hex
+        cls.runtime_dsn = psycopg2.extensions.make_dsn(
+            URL, dbname=cls.database, user=cls.role, password="fixture-tagger-only"
+        )
+        with cls.admin.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE ROLE {} LOGIN NOINHERIT PASSWORD %s").format(
+                    sql.Identifier(cls.role)
+                ), ("fixture-tagger-only",),
+            )
+        with cls.conn.cursor() as cur:
+            cur.execute("REVOKE CREATE ON SCHEMA public FROM PUBLIC")
+        cls.grant_runtime_access()
+
+    @classmethod
+    def grant_runtime_access(cls):
+        with cls.conn.cursor() as cur:
+            for statement in (
+                "GRANT USAGE ON SCHEMA mesh, ops TO {}",
+                "GRANT SELECT ON ALL TABLES IN SCHEMA mesh, ops TO {}",
+                "GRANT INSERT ON mesh.message_tags TO {}",
+                "GRANT INSERT, UPDATE, DELETE ON ops.tagger_state, ops.tagger_retry TO {}",
+            ):
+                cur.execute(sql.SQL(statement).format(sql.Identifier(cls.role)))
+
+    @classmethod
+    def tearDownClass(cls):
+        super().tearDownClass()
+        with psycopg2.connect(URL) as admin:
+            admin.autocommit = True
+            with admin.cursor() as cur:
+                cur.execute(sql.SQL("DROP ROLE {}").format(sql.Identifier(cls.role)))
+
+    def test_runtime_without_schema_ownership_can_connect_and_tag(self):
+        settings = TaggerSettings.from_env({"DATABASE_URL": self.runtime_dsn})
+        conn, cur = tagger_worker.connect_database(settings)
+        try:
+            ts = datetime.now(timezone.utc)
+            with self.conn.cursor() as admin:
+                admin.execute(
+                    """INSERT INTO mesh.packets VALUES (%s,%s,
+                    '{"decrypted":{"sender":"fixture","message":"fixture"}}',
+                    5,'ukmesh',true,false,NULL)""", ("owned-schema-message", ts),
+                )
+            result = tagger_service.tag_message(
+                cur, "owned-schema-message", ts, None, "ukmesh", settings,
+                lambda _: ({"answers": {"kind": {"choice": "chat"}}}, 1),
+                sleep=lambda _: None,
+            )
+            self.assertEqual(result[0], "tagged")
+            cur.execute(
+                "SELECT tags FROM mesh.message_tags WHERE packet_hash=%s",
+                ("owned-schema-message",),
+            )
+            self.assertEqual(cur.fetchone()[0], {"kind": "chat"})
+            cur.execute("SELECT to_regclass('public.message_tags')")
+            self.assertIsNone(cur.fetchone()[0])
+            for statement in (
+                "CREATE TABLE mesh.runtime_ddl (id integer)",
+                "ALTER TABLE ops.tagger_state ADD COLUMN runtime_ddl integer",
+            ):
+                with self.assertRaises(psycopg2.errors.InsufficientPrivilege):
+                    cur.execute(statement)
+        finally:
+            cur.close()
+            conn.close()
+
+    def test_missing_schema_fails_with_migration_action(self):
+        with self.conn.cursor() as cur:
+            cur.execute("DELETE FROM ops.tagger_state WHERE id=1")
+        try:
+            with self.assertRaisesRegex(RuntimeError, "Apply UKMesh migrations"):
+                tagger_worker.connect_database(
+                    TaggerSettings.from_env({"DATABASE_URL": self.runtime_dsn})
+                )
+        finally:
+            with self.conn.cursor() as cur:
+                cur.execute("INSERT INTO ops.tagger_state (id) VALUES (1)")
+
+    def test_explicit_owner_bootstrap_initializes_without_classifier_key(self):
+        with self.conn.cursor() as cur:
+            cur.execute("DROP TABLE mesh.message_tags, ops.tagger_state, ops.tagger_retry")
+        try:
+            settings = TaggerSettings.from_env({
+                "DATABASE_URL": psycopg2.extensions.make_dsn(URL, dbname=self.database)
+            })
+            with patch.object(TaggerSettings, "from_env", return_value=settings):
+                tagger_worker.main(["--bootstrap-schema"])
+            with self.conn.cursor() as cur:
+                repository.validate_schema(cur)
+        finally:
+            self.grant_runtime_access()
+
+    def test_normal_worker_startup_uses_only_runtime_permissions(self):
+        settings = TaggerSettings.from_env({
+            "DATABASE_URL": self.runtime_dsn, "TYPESAFE_API_KEY": "fixture-key"
+        })
+        with (
+            patch.object(TaggerSettings, "from_env", return_value=settings),
+            patch.object(tagger_worker, "_running", False),
+            patch.object(tagger_worker.signal, "signal"),
+        ):
+            tagger_worker.main([])
+
+    def test_reconnect_replaces_and_closes_its_database_session(self):
+        settings = TaggerSettings.from_env({
+            "DATABASE_URL": self.runtime_dsn, "TYPESAFE_API_KEY": "fixture-key",
+            "DATABASE_APPLICATION_NAME": self.role,
+        })
+        attempts = []
+
+        def poll(cur, *_args):
+            cur.execute("SELECT pg_backend_pid()")
+            attempts.append(cur.fetchone()[0])
+            if len(attempts) == 1:
+                raise RuntimeError("fixture poll interruption")
+            tagger_worker._running = False
+            return []
+
+        with (
+            patch.object(TaggerSettings, "from_env", return_value=settings),
+            patch.object(tagger_worker, "_running", True),
+            patch.object(tagger_worker.signal, "signal"),
+            patch.object(tagger_worker.time, "sleep"),
+            patch.object(repository, "candidates", side_effect=poll),
+        ):
+            tagger_worker.main([])
+        self.assertEqual(len(attempts), 2)
+        self.assertNotEqual(attempts[0], attempts[1])
+        for _ in range(100):
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT count(*) FROM pg_stat_activity WHERE application_name=%s",
+                    (self.role,),
+                )
+                if cur.fetchone()[0] == 0:
+                    break
+            time.sleep(0.01)
+        else:
+            self.fail("worker left an owned PostgreSQL session open after reconnect/shutdown")

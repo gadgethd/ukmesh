@@ -3,10 +3,7 @@
 // Every pass it refreshes the last-hop series cached for each node of every
 // active MQTT owner, for both the 7d and 30d windows, so any owner opening the
 // dashboard — on either time window — hits a warm cache instead of paying for a
-// cold scan on their own request. The pass defaults to sequential work with a
-// small delay between nodes; optional concurrency is capped at two nodes.
-// Windows for each node remain sequential, and individual failures are
-// logged and skipped so one bad node can never stall the whole pass.
+// cold scan on their own request.
 export type OwnerLastHopPrewarmDeps = {
   listOwnerNodes: () => Promise<Array<{ mqttUsername: string; isActive: boolean; nodeIds: string[] }>>;
   refreshLastHop: (ownedNodeIds: string[], nodeId: string, windowDays: number, minAgeMs: number) => Promise<boolean>;
@@ -71,6 +68,11 @@ export function createOwnerLastHopPrewarm(deps: OwnerLastHopPrewarmDeps): () => 
         concurrency,
       };
     }
+    // The resident log reader parses JSON before classifying failure fields.
+    // Keep counters and their phase message in one structured progress record.
+    function logProgress(message: string) {
+      console.log(JSON.stringify({ message, ...progress() }));
+    }
     try {
       const active = (await deps.listOwnerNodes()).filter((account) => account.isActive && account.nodeIds.length > 0);
       owners = active.length;
@@ -79,9 +81,9 @@ export function createOwnerLastHopPrewarm(deps: OwnerLastHopPrewarmDeps): () => 
         return account.nodeIds.map((nodeId) => ({ owner, nodeId }));
       });
       totalNodes = tasks.length;
-      console.log('[owner-last-hop-prewarm] pass started', progress());
+      logProgress('[owner-last-hop-prewarm] pass started');
       progressTimer = setInterval(() => {
-        console.log('[owner-last-hop-prewarm] progress', progress());
+        logProgress('[owner-last-hop-prewarm] progress');
       }, PROGRESS_INTERVAL_MS);
       progressTimer.unref();
       let nextNode = 0;
@@ -112,7 +114,7 @@ export function createOwnerLastHopPrewarm(deps: OwnerLastHopPrewarmDeps): () => 
         }
       }
       await Promise.all(Array.from({ length: Math.min(concurrency, totalNodes) }, () => runWorker()));
-      console.log(`[owner-last-hop-prewarm] pass ${stopped ? 'stopped' : 'complete'}`, progress());
+      logProgress(`[owner-last-hop-prewarm] pass ${stopped ? 'stopped' : 'complete'}`);
     } catch (error) {
       console.warn('[owner-last-hop-prewarm] pass failed', {
         ...progress(), error: error instanceof Error ? error.message : String(error),

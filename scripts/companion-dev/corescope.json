@@ -1,0 +1,42 @@
+{
+  "port": 3000,
+  "dbPath": "/data/analyzer.db",
+  "apiKey": "local-companion-only",
+  "mqttSources": [
+    {
+      "name": "ukmesh-dev-fixture",
+      "broker": "tcp://ukmesh-sample-mqtt:1883",
+      "topics": [
+        "meshcore/#"
+      ],
+      "clientId": "corescope-ukmesh-dev"
+    }
+  ],
+  "corsAllowedOrigins": [
+    "http://127.0.0.1:3102",
+    "http://localhost:3102"
+  ],
+  "autoRegionKeys": {
+    "enabled": false
+  },
+  "retention": {
+    "packetDays": 30
+  },
+  "runtime": {
+    "maxMemoryMB": 256
+  },
+  "map": {
+    "tiles": {
+      "darkDefault": "osm-dark",
+      "lightDefault": "osm-standard",
+      "providers": {
+        "osm": {
+          "enabled": true
+        }
+      }
+    }
+  },
+  "channelKeys": {
+    "#test": "9cd8fcf22a47333b591d96a2b848b73f"
+  }
+}

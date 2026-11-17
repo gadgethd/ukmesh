@@ -1,0 +1,213 @@
+# Merge with docker-compose.yml. Keep the main service/resource policy; replace
+# only external infrastructure, fixture paths and local ingress/integrations.
+x-service-journal: &service-journal
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    labels: "com.docker.compose.service,com.docker.compose.project"
+services:
+  mosquitto-reloader:
+    logging: *service-journal
+    image: ${MOSQUITTO_RELOADER_IMAGE}
+    build:
+      context: .
+      dockerfile: Dockerfile.mosquitto-reloader
+      args: {SOURCE_REVISION: "${SOURCE_REVISION}"}
+    restart: unless-stopped
+    user: "1883:1883"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 64m
+    memswap_limit: 64m
+    environment:
+      OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET}
+      MOSQUITTO_RELOAD_FIFO: /mosquitto/control/reload
+    ports: ["127.0.0.1:3109:8080"]
+    volumes: [mosquitto_log:/mosquitto/log, mosquitto_control:/mosquitto/control]
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"]
+      interval: 15s
+      timeout: 3s
+      retries: 6
+  hopreach:
+    environment:
+      LOCAL_CONFIG_REVISION: ${FULL_DEV_HOPREACH_REVISION:-unprepared}
+    volumes:
+      - ./plans/lean-runtime/runtime/hopreach.yaml:/config/config.yaml:ro
+  db-migrate:
+    networks: [default, sample]
+    depends_on: !override {}
+    environment:
+      DATABASE_URL: postgresql://meshcore:meshcore@ukmesh-sample-db:5432/${UKMESH_DATABASE:-meshcore}
+  backend:
+    networks: [default, sample]
+    environment:
+      MQTT_USERNAME: !reset null
+      MQTT_PASSWORD: !reset null
+      # Keep local delivery controls outside the companions' business namespace.
+      MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ukmesh-local-control
+      REDIS_PASSWORD: ""
+      ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924
+      OWNER_ACL_MODE: shadow
+      OWNER_ACL_UNMANAGED_USERS: ""
+      MOSQUITTO_ACL_PATH: /mosquitto/config/acl
+      DATA_LIFECYCLE_RETENTION_ENABLED: "false"
+      DATA_LIFECYCLE_COMPRESSION_ENABLED: "false"
+      MQTT_RAM_PUBLIC_READ_TOKEN: local-full-public-stream-token-0123456789abcdef
+    ports: !override ["127.0.0.1:3100:3000", "127.0.0.1:9091:9091"]
+    volumes: !override
+      - ./scripts/local-sample/mosquitto-acl:/mosquitto/config/acl:ro
+      - mosquitto_log:/mosquitto/log:ro
+      - timescaledb_data:/health-volumes/database:ro
+      - redis_data:/health-volumes/redis:ro
+      - srtm_data:/health-volumes/terrain:ro
+      - loki_data:/health-volumes/logs:ro
+  path-learning-worker:
+    networks: [default, sample]
+    environment:
+      REDIS_PASSWORD: ""
+  health-worker:
+    networks: [default, sample]
+    environment:
+      REDIS_PASSWORD: ""
+      DATA_LIFECYCLE_RETENTION_ENABLED: "false"
+      DATA_LIFECYCLE_COMPRESSION_ENABLED: "false"
+    volumes: !override
+      - timescaledb_data:/health-volumes/database:ro
+      - redis_data:/health-volumes/redis:ro
+      - srtm_data:/health-volumes/terrain:ro
+      - loki_data:/health-volumes/logs:ro
+  tagger-worker:
+    networks: [default, sample]
+    environment:
+      TYPESAFE_API_URL: http://external-test:8080/tag
+      TYPESAFE_API_KEY: local-fixture-key
+  region-snapshot-worker:
+    networks: [default, sample]
+    ports: ["127.0.0.1:9092:9091"]
+  privacy-remat-worker:
+    networks: [default, sample]
+  synthetic-monitor:
+    networks: [default, sample]
+  link-backfill-worker:
+    networks: [default, sample]
+    environment:
+      REDIS_PASSWORD: ""
+  link-worker:
+    networks: [default, sample]
+    environment:
+      REDIS_PASSWORD: ""
+  app-ukmesh:
+    environment:
+      LOCAL_CONFIG_REVISION: ${FULL_DEV_APP_PROXY_REVISION:-unprepared}
+    volumes:
+      - ./plans/lean-runtime/runtime/nginx.app.conf:/etc/nginx/conf.d/default.conf:ro
+    build:
+      args:
+        VITE_APP_HOSTNAME: 127.0.0.1:3003
+  website-ukmesh:
+    environment:
+      LOCAL_CONFIG_REVISION: ${FULL_DEV_WEBSITE_PROXY_REVISION:-unprepared}
+    volumes:
+      - ./plans/lean-runtime/runtime/nginx.website.conf:/etc/nginx/conf.d/default.conf:ro
+    ports: !override ["127.0.0.1:5173:8080", "127.0.0.1:3004:8080"]
+    build:
+      args:
+        VITE_APP_HOSTNAME: 127.0.0.1:3003
+  website-dev:
+    environment:
+      LOCAL_CONFIG_REVISION: ${FULL_DEV_WEBSITE_PROXY_REVISION:-unprepared}
+    volumes:
+      - ./plans/lean-runtime/runtime/nginx.website.conf:/etc/nginx/conf.d/default.conf:ro
+    profiles: !override []
+    ports: !override ["127.0.0.1:3005:8080"]
+    build:
+      args:
+        VITE_APP_HOSTNAME: 127.0.0.1:3005
+        VITE_SITE_APP_URL: http://127.0.0.1:3005
+        VITE_SITE_HOME_URL: http://127.0.0.1:5173
+  mesh-health-check:
+    networks: [default, sample]
+    environment:
+      MQTT_HOST: ukmesh-sample-mqtt
+      MQTT_USERNAME: ""
+      MQTT_PASSWORD: ""
+      EXTERNAL_LINK_URL: http://127.0.0.1:5173
+      DASH_BROKER_HOST: 127.0.0.1:9002
+      WEBSOCKET_ALLOWED_ORIGINS: http://127.0.0.1:3090,http://localhost:3090,http://127.0.0.1:8925,http://localhost:8925
+      TEST_CHANNEL_NAME: test
+      TEST_CHANNEL_SECRET: 9cd8fcf22a47333b591d96a2b848b73f
+  anubis-website-ukmesh:
+    ports: ["127.0.0.1:8923:8923"]
+    environment: {COOKIE_DOMAIN: "", COOKIE_SECURE: "false", USE_REMOTE_ADDRESS: "true", CUSTOM_REAL_IP_HEADER: ""}
+  anubis-app-ukmesh:
+    ports: ["127.0.0.1:8924:8923"]
+    environment: {COOKIE_DOMAIN: "", COOKIE_SECURE: "false", USE_REMOTE_ADDRESS: "true", CUSTOM_REAL_IP_HEADER: ""}
+  anubis-health-check:
+    ports: ["127.0.0.1:8925:8923"]
+    environment: {COOKIE_DOMAIN: "", COOKIE_SECURE: "false", USE_REMOTE_ADDRESS: "true", CUSTOM_REAL_IP_HEADER: ""}
+  loki:
+    ports: ["127.0.0.1:3104:3100"]
+  alert-receiver:
+    environment:
+      ALERT_FORWARD_URL: http://external-test:8080/alerts
+    ports: ["127.0.0.1:3106:8080"]
+  alertmanager:
+    depends_on: !override
+      alert-bootstrap: {condition: service_completed_successfully}
+    ports: ["127.0.0.1:9095:9093"]
+    volumes: !override
+      - ./scripts/full-dev/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+  postgres-exporter:
+    networks: [default, sample]
+  blackbox-exporter:
+    networks: [default, sample]
+  redis-exporter:
+    networks: [default, sample]
+    environment:
+      REDIS_ADDR: redis://ukmesh-sample-redis:6379
+      REDIS_PASSWORD: ""
+  prometheus:
+    environment:
+      LOCAL_CONFIG_REVISION: ${FULL_DEV_PROMETHEUS_REVISION:-unprepared}
+    networks: [default, sample]
+    volumes:
+      - ./plans/lean-runtime/runtime/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+  external-test:
+    image: ${BACKEND_IMAGE}
+    command: [node, /dev-tools/external-test.mjs]
+    volumes: ["./scripts/full-dev/external-test.mjs:/dev-tools/external-test.mjs:ro"]
+    ports: ["127.0.0.1:3107:8080"]
+    read_only: true
+    cap_drop: [ALL]
+    mem_limit: &full-dev-external-test-memory 64m
+    memswap_limit: *full-dev-external-test-memory
+    logging: *service-journal
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+  alert-bootstrap:
+    logging: *service-journal
+    image: ${BACKEND_IMAGE}
+    restart: "no"
+    mem_limit: &full-dev-alert-bootstrap-memory 64m
+    memswap_limit: *full-dev-alert-bootstrap-memory
+    environment:
+      ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN}
+    command: [node, /dev-tools/alert-bootstrap.mjs]
+    volumes: ["./scripts/full-dev/alert-bootstrap.mjs:/dev-tools/alert-bootstrap.mjs:ro"]
+    depends_on:
+      alert-receiver: {condition: service_started}
+      external-test: {condition: service_healthy}
+networks:
+  sample:
+    external: true
+    name: ukmesh-sample_default
+volumes:
+  timescaledb_data: {external: true, name: ukmesh-sample_sample-db}
+  mosquitto_log: {external: true, name: ukmesh-sample_sample-mqtt-log}
+  mosquitto_control: {external: true, name: ukmesh-sample_sample-mqtt-control}

@@ -1,16 +1,21 @@
 name: ukmesh-sample
+x-service-journal: &service-journal
+  driver: journald
+  options:
+    tag: "{{.Name}}"
+    labels: "com.docker.compose.service,com.docker.compose.project"
 services:
   db:
-    image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
+    extends:
+      file: ../../docker-compose.postgres.yml
+      service: postgres
+    logging: *service-journal
     container_name: ukmesh-sample-db
     environment:
       POSTGRES_USER: meshcore
       POSTGRES_PASSWORD: meshcore
       POSTGRES_DB: meshcore
     ports: ["127.0.0.1:5433:5432"]
-    # The image's memory-based tuner otherwise lowers this to 25 on small hosts,
-    # below the backend + resolver pools even though all work is locally owned.
-    command: ["postgres", "-c", "shared_preload_libraries=timescaledb,pg_stat_statements", "-c", "max_parallel_workers_per_gather=0", "-c", "max_connections=100"]
     volumes:
       - sample-db:/var/lib/postgresql/data
       - ../../backend/src/db/schema/base.sql:/docker-entrypoint-initdb.d/010-base.sql:ro
@@ -19,10 +24,8 @@ services:
       interval: 2s
       timeout: 3s
       retries: 60
-    cpus: 2
-    mem_limit: 2g
-    shm_size: "1g"
   redis:
+    logging: *service-journal
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     container_name: ukmesh-sample-redis
     ports: ["127.0.0.1:6380:6379"]
@@ -33,19 +36,60 @@ services:
       timeout: 3s
       retries: 30
     cpus: 1
-    mem_limit: 256m
-  mqtt:
+    mem_limit: &sample-redis-memory 256m
+    memswap_limit: *sample-redis-memory
+  mqtt-log-init:
+    logging: *service-journal
     image: eclipse-mosquitto@sha256:75d6662dee52c947dc9dd9c29f1d8d7ffef78ddaf38001caa09755681e8bbc98
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        touch /mosquitto/log/mosquitto.log
+        chown -R 1883:1883 /mosquitto/log
+        chmod 0750 /mosquitto/log
+        chmod 0640 /mosquitto/log/mosquitto.log
+        chown 1883:1883 /mosquitto/control
+        chmod 0700 /mosquitto/control
+        chown 1883:1883 /mosquitto/data
+        chmod 0750 /mosquitto/data
+    network_mode: none
+    restart: "no"
+    mem_limit: &sample-mqtt-log-init-memory 16m
+    memswap_limit: *sample-mqtt-log-init-memory
+    volumes: [sample-mqtt-log:/mosquitto/log, sample-mqtt-control:/mosquitto/control, sample-mqtt-data:/mosquitto/data]
+  mqtt:
+    logging: *service-journal
+    image: ukmesh-sample-mosquitto:2.1.2-session-accounting-v1
+    build:
+      context: ./mosquitto
+      dockerfile: Dockerfile
     container_name: ukmesh-sample-mqtt
+    user: "1883:1883"
+    cap_drop: [ALL]
+    entrypoint: [/bin/sh, /dev-tools/mosquitto-lifecycle.sh]
+    command: [/usr/sbin/mosquitto, -c, /mosquitto/config/mosquitto.conf]
+    environment:
+      MOSQUITTO_RELOAD_FIFO: /mosquitto/control/reload
     ports: ["127.0.0.1:1884:1883", "127.0.0.1:9002:9001"]
     volumes:
       - ./mosquitto-test.conf:/mosquitto/config/mosquitto.conf:ro
+      - sample-mqtt-log:/mosquitto/log
+      - sample-mqtt-control:/mosquitto/control
+      - sample-mqtt-data:/mosquitto/data
+      - ./mosquitto-lifecycle.sh:/dev-tools/mosquitto-lifecycle.sh:ro
+    depends_on:
+      mqtt-log-init: {condition: service_completed_successfully}
     healthcheck:
       test: ["CMD-SHELL", "mosquitto_pub -h 127.0.0.1 -t local/health -m ready -q 1"]
       interval: 2s
       timeout: 3s
       retries: 30
     cpus: 1
-    mem_limit: 256m
+    mem_limit: &sample-mqtt-memory 256m
+    memswap_limit: *sample-mqtt-memory
 volumes:
   sample-db:
+  sample-mqtt-log:
+  sample-mqtt-control:
+  sample-mqtt-data:

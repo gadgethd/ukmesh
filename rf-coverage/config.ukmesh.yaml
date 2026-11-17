@@ -59,7 +59,7 @@ coverage:
   progressive_publication: true
   publication_tile_size: 1024
   precision_min_free_disk_gb: 8
-  precision_chunk_budget_mb: 1024
+  precision_chunk_budget_mb: 128
   min_recompute_interval_hours: 6
   standard_requires_gpu: false
   calibrated_requires_gpu: false

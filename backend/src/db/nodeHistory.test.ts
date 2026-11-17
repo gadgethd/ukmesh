@@ -7,7 +7,9 @@ test('history retains its DTO, indexed alias predicates, time cap and fail-close
   const rows = [{ time: '2026-09-07T12:00:00Z', packet_hash: '1234', src_node_id: 'B'.repeat(64),
     topic: 'ukmesh/LHR/observer/packets', packet_type: 4, hop_count: 1, rssi: -99, snr: 3, payload: {} }];
   let calls = 0;
-  mockRuntimeQuery(t, async (sql: string, params: unknown[]) => {
+  mockRuntimeQuery(t, async (input: string | { text: string; values?: unknown[] }, values: unknown[] = []) => {
+    const sql = typeof input === 'string' ? input : input.text;
+    const params = typeof input === 'string' ? values : input.values ?? [];
     calls += 1;
     assert.match(sql, /WHERE p.rx_node_id = requested.node_id/);
     assert.match(sql, /WHERE p.src_node_id = requested.node_id/);

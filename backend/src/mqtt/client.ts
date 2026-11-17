@@ -7,6 +7,7 @@ import { closePacketBatch, flush as flushPacketBatch } from '../db/packetBatch.j
 import { initSpamDetector } from './spamDetector.js';
 import { installDurableMqttIntake } from './durableIntake.js';
 import { createDeliveryProbe, type DeliveryHealth } from './deliveryProbe.js';
+import { deliveryProbeTopics } from './deliveryProbeTopics.js';
 import { connectPersistentMqtt, subscribePersistentTopics } from './persistentClient.js';
 import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
@@ -26,6 +27,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
   const events = deps.events;
   const processor = createPacketProcessor({ clientId: MQTT_CLIENT_ID, events, committedFollowUps: deps.committedFollowUps, markMqttPersistenceHealthy });
   const TOPIC_PREFIXES = processor.topicPrefixes;
+  const probeTopics = deliveryProbeTopics(TOPIC_PREFIXES, MQTT_CLIENT_ID, process.env['MQTT_DELIVERY_PROBE_TOPIC_PREFIX']);
   const MQTT_MAX_PAYLOAD_BYTES = processor.maxPayloadBytes;
   let mqttRuntimeStatus: MqttRuntimeStatus = { state: 'starting', changedAt: new Date().toISOString() };
   const mqttClients: MqttClient[] = [];
@@ -118,7 +120,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
       mqttClients.push(client);
       mqttDeliveryProbeEnabled.set(1);
       let previousRecoveries = 0;
-      const probeTopic = `${Array.from(TOPIC_PREFIXES)[0]}/_system/ingest/${MQTT_CLIENT_ID}`;
+      const probeTopic = probeTopics.topic;
       const probe = createDeliveryProbe({
         topic: probeTopic,
         publish: (nonce) => {
@@ -165,6 +167,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
             ? `$share/${MQTT_INGEST_SHARE_GROUP}/${prefix}/#`
             : `${prefix}/#`;
         });
+        if (probeTopics.subscription) topicFilters.push(probeTopics.subscription);
         subscribePersistentTopics(client, topicFilters, {
           ready: probe.connect,
           failed: error => reportMqttIngestFailure(client, error),

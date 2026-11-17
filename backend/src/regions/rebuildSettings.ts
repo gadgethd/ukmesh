@@ -7,6 +7,8 @@ export function regionRebuildSettings(env: NodeJS.ProcessEnv = process.env) {
     windowDays: read('REGION_SCOPE_WINDOW_DAYS', 92, 7, 365),
     maxPackets: read('REGION_SCOPE_MAX_PACKETS', 500_000, 1, 2_000_000),
     maxNodes: read('REGION_SCOPE_MAX_NODES', 100_000, 1, 1_000_000),
+    workMemKb: read('REGION_SCOPE_WORK_MEM_KB', 16_384, 64, 262_144),
+    bitmapScan: env['REGION_SCOPE_BITMAP_SCAN'] === '1',
     statementTimeoutMs: read('REGION_SCOPE_STATEMENT_TIMEOUT_MS', 120_000, 1_000, 900_000),
     runTimeoutMs: read('REGION_SCOPE_RUN_TIMEOUT_MS', 180_000, 5_000, 900_000),
     pollMs: read('REGION_SCOPE_POLL_MS', 30_000, 1_000, 300_000),

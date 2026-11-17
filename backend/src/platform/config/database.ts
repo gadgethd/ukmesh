@@ -41,6 +41,44 @@ export function analyticsStatementTimeoutMs(configuredTimeoutMs: number): number
   return configuredTimeoutMs === 0 ? 0 : Math.max(900_000, configuredTimeoutMs);
 }
 
+/** Optional per-analytics-session estimates; absent settings keep server defaults. */
+export function analyticsPlannerOptions(env: NodeJS.ProcessEnv): string | undefined {
+  const random = String(env['DATABASE_ANALYTICS_RANDOM_PAGE_COST'] ?? '').trim();
+  const cache = String(env['DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE'] ?? '').trim();
+  if (random && (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(random)
+    || !Number.isFinite(Number(random)))) {
+    throw new Error('DATABASE_ANALYTICS_RANDOM_PAGE_COST must be a nonnegative decimal');
+  }
+  if (cache) {
+    const match = /^([1-9][0-9]*)(kB|MB|GB|TB)$/.exec(cache);
+    const units: Record<string, bigint> = { kB: 1024n, MB: 1024n ** 2n, GB: 1024n ** 3n, TB: 1024n ** 4n };
+    const bytes = match ? BigInt(match[1]!) * units[match[2]!]! : 0n;
+    if (bytes < 8192n || bytes > 2_147_483_647n * 8192n) {
+      throw new Error('DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE must be a PostgreSQL cache estimate from 8kB to 2147483647 blocks');
+    }
+  }
+  return [random && `-c random_page_cost=${random}`, cache && `-c effective_cache_size=${cache}`]
+    .filter(Boolean).join(' ') || undefined;
+}
+
+/** Preserve pg URL-option precedence while sharing explicit analytics policy. */
+export function analyticsConnectionOptions(env: NodeJS.ProcessEnv, schemaOptions?: string, sessionOptions?: string) {
+  const explicitOptions = [analyticsPlannerOptions(env), sessionOptions].filter(Boolean).join(' ') || undefined;
+  const options = [schemaOptions, explicitOptions].filter(Boolean).join(' ') || undefined;
+  let connectionString = databaseUrlForRole('worker', env);
+  if (explicitOptions && connectionString) {
+    let endpoint: URL;
+    try { endpoint = new URL(connectionString); }
+    catch { throw new Error('Invalid worker database URL for analytics planner options'); }
+    if (endpoint.searchParams.has('options')) {
+      const previous = endpoint.searchParams.getAll('options').at(-1);
+      endpoint.searchParams.set('options', [previous, explicitOptions].filter(Boolean).join(' '));
+      connectionString = endpoint.href;
+    }
+  }
+  return { connectionString, options };
+}
+
 export type DatabaseRole = 'http' | 'ingest' | 'worker' | 'owner' | 'migrate';
 
 const roleDatabaseUrlEnv: Record<DatabaseRole, string> = {

@@ -10,7 +10,9 @@ const DML_TARGET = /\b(?:FROM|JOIN|INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+(?!ROW\
 function unqualifiedTargets(sql: string): string[] {
   const body = sql
     .replace(/--[^\n]*/g, '')
-    .replace(/'([^']|'')*'/g, "''");
+    .replace(/'([^']|'')*'/g, "''")
+    // EXTRACT's FROM separates its field and value; it introduces no relation.
+    .replace(/\bEXTRACT\s*\(\s*[a-z_]+\s+FROM\b/gi, 'EXTRACT(');
   const ctes = new Set(
     [...body.matchAll(/(?:\bWITH\b|,)\s*([a-z_][a-z0-9_]*)\s+AS\s+(?:MATERIALIZED\s+)?\(/gi)].map((match) => match[1]),
   );
@@ -22,6 +24,11 @@ function unqualifiedTargets(sql: string): string[] {
   }
   return found;
 }
+
+test('SQL qualification guard distinguishes extraction values from relation targets', () => {
+  assert.deepEqual(unqualifiedTargets('SELECT EXTRACT(year FROM retention), EXTRACT(month FROM retention) FROM ops.policy'), []);
+  assert.deepEqual(unqualifiedTargets('SELECT EXTRACT(year FROM retention) FROM policy JOIN other ON true'), ['policy', 'other']);
+});
 
 test('new migrations after 071 use qualified target tables', () => {
   const migrations = loadMigrationFiles()

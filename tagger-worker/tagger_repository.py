@@ -1,7 +1,9 @@
 """Public tagger reads and durable tagging state. No classifier or runtime setup."""
 
-DDL = """
-CREATE TABLE IF NOT EXISTS message_tags (
+BOOTSTRAP_DDL = """
+CREATE SCHEMA IF NOT EXISTS mesh;
+CREATE SCHEMA IF NOT EXISTS ops;
+CREATE TABLE IF NOT EXISTS mesh.message_tags (
   packet_hash  text PRIMARY KEY,
   packet_time  timestamptz NOT NULL,
   tagged_at    timestamptz NOT NULL DEFAULT now(),
@@ -36,6 +38,32 @@ CREATE TABLE IF NOT EXISTS ops.tagger_retry (
 """
 
 
+def bootstrap_schema(cur):
+    """Explicit one-shot initialization for standalone, migration-owner use."""
+    cur.execute(BOOTSTRAP_DDL)
+
+
+def validate_schema(cur):
+    """Require the migrated schema without asking the runtime role to own it."""
+    try:
+        cur.execute("""SELECT packet_hash, packet_time, tagged_at, model,
+            latency_ms, tags, confidence FROM mesh.message_tags LIMIT 0""")
+        cur.execute("""SELECT id, cursor_time, seen, tagged, errors, http_429,
+            last_error, avg_latency_ms_50, started_at, updated_at, retried,
+            given_up FROM ops.tagger_state LIMIT 0""")
+        cur.execute("""SELECT packet_hash, packet_time, attempts, last_error,
+            first_failed_at, exhausted FROM ops.tagger_retry LIMIT 0""")
+        cur.execute("SELECT id FROM ops.tagger_state WHERE id=1")
+        if cur.fetchone() is None:
+            raise RuntimeError("tagger state singleton is missing")
+    except Exception as error:
+        raise RuntimeError(
+            "Tagger schema is unavailable or unreadable. Apply UKMesh migrations "
+            "and grant the tagger role access before starting it; standalone "
+            "installations can run --bootstrap-schema with a schema-owner credential."
+        ) from error
+
+
 PUBLIC_PACKET_PRIVACY_SQL = """
       AND visibility_ok IS TRUE
       AND is_private IS NOT TRUE
@@ -68,7 +96,7 @@ def load_public_message(cur, ph, ts, rx_node_id, network, networks):
       LEFT JOIN LATERAL (
         SELECT payload->'decrypted'->>'sender' AS sender,
                payload->'decrypted'->>'message' AS message
-        FROM packets
+        FROM mesh.packets
         WHERE packet_hash=%s AND time=%s
           AND rx_node_id IS NOT DISTINCT FROM %s
           AND network IS NOT DISTINCT FROM %s AND network=ANY(%s::text[])
@@ -105,7 +133,7 @@ def public_packet_keys(cur, ph, ts, networks):
       )
       SELECT policy.ready, candidate.* FROM policy
       LEFT JOIN LATERAL (
-        SELECT packet_hash, time, rx_node_id, network FROM packets
+        SELECT packet_hash, time, rx_node_id, network FROM mesh.packets
         WHERE packet_hash=%s AND time=%s AND network=ANY(%s::text[])
           {PUBLIC_PACKET_PRIVACY_SQL} AND policy.ready
         ORDER BY rx_node_id NULLS LAST LIMIT 1
@@ -125,14 +153,14 @@ CANDIDATE_SQL = f"""
                        packet_hash, time, rx_node_id, network,
                        payload->'decrypted'->>'sender' AS sender,
                        payload->'decrypted'->>'message' AS message
-                FROM packets
+                FROM mesh.packets
                 WHERE packet_type = 5
                   AND payload->'decrypted'->>'message' IS NOT NULL
                   AND time > %s::timestamptz - make_interval(secs => %s)
                   AND time <= now()
                   AND network = ANY(%s::text[])
                   {PUBLIC_PACKET_PRIVACY_SQL}
-                  AND NOT EXISTS (SELECT 1 FROM message_tags tagged
+                  AND NOT EXISTS (SELECT 1 FROM mesh.message_tags tagged
                                   WHERE tagged.packet_hash = packets.packet_hash)
                   AND NOT EXISTS (SELECT 1 FROM ops.tagger_retry retry
                                   WHERE retry.packet_hash = packets.packet_hash)

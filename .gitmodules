@@ -1,0 +1,9 @@
+[submodule "third_party/corescope"]
+	path = third_party/corescope
+	url = https://github.com/gadgethd/CoreScope.git
+[submodule "third_party/beacon-server"]
+	path = third_party/beacon-server
+	url = https://github.com/gadgethd/beacon-server.git
+[submodule "third_party/beacon-web"]
+	path = third_party/beacon-web
+	url = https://github.com/gadgethd/beacon-web.git

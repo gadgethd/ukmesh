@@ -1,4 +1,5 @@
 import { query } from '../db/runtime.js';
+import { BOUNDED_READ_PREPARATION } from '../db/preparedStatements.js';
 import { nodeAliasArraySql } from '../platform/query/networkFilters.js';
 import { nodeEffectiveLastSeenSql } from '../nodes/presence.js';
 import { nodeEffectiveOnlineSql } from '../nodes/presence.js';
@@ -86,6 +87,18 @@ export async function getNodes(
   return res.rows;
 }
 
+/** Privacy refresh needs every scoped identity, including nodes excluded from maps. */
+export async function getNodePrivacyRows(network?: string) {
+  const scope = buildScopePlaceholders(1, network);
+  const res = await query<{ node_id: string; name: string | null }>(
+    `SELECT n.node_id, n.name
+     FROM ${publicIdentityNodeSourceSql()} n
+     WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
+    scope.params,
+  );
+  return res.rows;
+}
+
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
   const aliases = nodeAliasArraySql('$1');
@@ -95,13 +108,12 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
   // lookup: a combined OR/ANY lets LIMIT choose a scan of time-ordered traffic
   // for quiet nodes. Per-alias limits keep both node/time indexes useful even
   // at 28 days; the final limit retains the newest 500 observations overall.
+  // Hydrate canonical source IDs only after that final limit: the alias source
+  // key is unique, so this projection cannot filter or duplicate observations.
   const packetsFor = (column: 'rx_node_id' | 'src_node_id') => `
-    SELECT p.time, p.packet_hash,
-           COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id,
+    SELECT p.time, p.packet_hash, p.src_node_id,
            topic, packet_type, hop_count, rssi, snr, payload
     FROM mesh.packets p
-    LEFT JOIN core.node_identity_aliases src_alias
-      ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
     WHERE p.${column} = requested.node_id
       ${column === 'src_node_id' ? `AND NOT COALESCE(p.rx_node_id = ANY(${aliases}), FALSE)` : ''}
       AND p.time > NOW() - INTERVAL '1 hour' * $2
@@ -110,15 +122,25 @@ export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukme
       ${buildPublicPacketPrivacyClause('p')}
     ORDER BY time DESC LIMIT 500`;
   const res = await query(
-    `/* ukmesh:node-history */ SELECT recent.*
-     FROM unnest(${aliases}) requested(node_id)
-     CROSS JOIN LATERAL (
-       (${packetsFor('rx_node_id')})
-       UNION ALL
-       (${packetsFor('src_node_id')})
+    `/* ukmesh:node-history */ SELECT recent.time, recent.packet_hash,
+       COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(recent.src_node_id))) AS src_node_id,
+       recent.topic, recent.packet_type, recent.hop_count, recent.rssi, recent.snr, recent.payload
+     FROM (
+       SELECT recent.*
+       FROM unnest(${aliases}) requested(node_id)
+       CROSS JOIN LATERAL (
+         (${packetsFor('rx_node_id')})
+         UNION ALL
+         (${packetsFor('src_node_id')})
+       ) recent
+       ORDER BY time DESC LIMIT 500
      ) recent
-     ORDER BY time DESC LIMIT 500`,
-    [nodeId, hours, ...scope.params]
+     LEFT JOIN core.node_identity_aliases src_alias
+       ON src_alias.source_node_id = UPPER(BTRIM(recent.src_node_id))
+     ORDER BY recent.time DESC`,
+    [nodeId, hours, ...scope.params],
+    undefined,
+    BOUNDED_READ_PREPARATION,
   );
   return res.rows;
 }

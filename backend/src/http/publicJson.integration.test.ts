@@ -8,12 +8,12 @@ import express from 'express';
 import pg from 'pg';
 import { createStatsService } from '../stats/statsService.js';
 import type { StatsRepository } from '../stats/statsRepository.js';
-import { publicJson } from './publicJson.js';
+import { PreparedJson, publicJson } from './publicJson.js';
 
 const source = process.env['TEST_INGEST_DATABASE_URL'];
 const local = source && ['127.0.0.1', 'localhost'].includes(new URL(source).hostname);
 
-test('reused initial reads retain fresh HTTP fences against another SQL process and read failure', {
+for (const prepared of [false, true]) test(`reused ${prepared ? 'prepared' : 'ordinary'} reads retain fresh HTTP fences against another SQL process and read failure`, {
   skip: local ? false : 'owned loopback PostgreSQL required', timeout: 30_000,
 }, async t => {
   const admin = new pg.Pool({ connectionString: source, max: 1 });
@@ -47,8 +47,9 @@ test('reused initial reads retain fresh HTTP fences against another SQL process 
     try {
       await publicJson(res, read, async generation => {
         const data = await service.getStatsSummary('ukmesh', undefined, generation);
+        const response = prepared ? PreparedJson(data, JSON.stringify(data)) : data;
         if (mutation) await mutateElsewhere(mutation);
-        return data;
+        return response;
       });
     } catch { res.status(503).json({ error: 'Unavailable' }); }
   });

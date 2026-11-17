@@ -3,6 +3,7 @@ import { query } from '../db/runtime.js';
 import { UKMESH_NETWORKS } from '../networks.js';
 import { regionMemberIdsSql } from '../regions/filter.js';
 import { regionNodeSourceSql } from '../regions/nodeSource.js';
+import { publicIdentityNodeSourceSql } from '../nodes/identitySource.js';
 import { buildScopePlaceholders } from '../db/readScope.js';
 import { buildNodeScopeClause } from '../db/readScope.js';
 
@@ -138,10 +139,12 @@ export async function getViableLinks(
     // node Cartesian product and perform ~174M composite-index probes for
     // ukmesh. Each simple statement is fast even with that bad estimate, and
     // the in-memory intersection preserves the exact endpoint scope.
+    // Reuse the canonical projection so membership does not materialize the
+    // wide legacy view's unused aggregates. Keep this strict network scope.
     const [nodesRes, linksRes] = await Promise.all([
       query<{ node_id: string }>(
         `SELECT DISTINCT node_id
-         FROM core.node_identity_nodes
+         FROM ${publicIdentityNodeSourceSql()}
          WHERE network = ANY($1::text[])
            AND (name IS NULL OR name NOT LIKE '%🚫%')`,
         [scopedNetworks],

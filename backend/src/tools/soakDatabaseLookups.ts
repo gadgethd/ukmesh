@@ -3,21 +3,38 @@ import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import http from 'node:http';
+import { realpath, stat } from 'node:fs/promises';
 import pg from 'pg';
 import WebSocket from 'ws';
 import { assertLocalDatabaseUrl, option, readGzipCsv, requiredOption, rowObject } from './sampleData.js';
 import { replaySampleMqtt } from './replaySampleMqtt.js';
 import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
+import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
+import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
+import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
+import { waitForSoakDrain } from './soakDrain.js';
+import { auditSoakWorksetHashes, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
+import { SoakPublication, soakInvocationToken } from './soakPublication.js';
 
+const publication = new SoakPublication();
+let failureContext: Record<string, unknown> | undefined;
+let failureOutput: string | undefined;
+
+async function main() {
 const args = process.argv.slice(2), endpoint = process.env['DATABASE_URL'] ?? '';
 assertLocalDatabaseUrl(endpoint);
-if (!new URL(endpoint).pathname.startsWith('/lookup_')) throw new Error('owned lookup database required');
+let guardCompleted=false;
+if (!new URL(endpoint).pathname.startsWith('/lookup_')) { await assertOwnedLeanFixture(endpoint); guardCompleted=true; }
 const directory = path.resolve(requiredOption(args, 'data-dir'));
 const output = path.resolve(requiredOption(args, 'output'));
 const base = new URL(option(args, 'base-url') ?? 'http://127.0.0.1:3101');
 const metricsUrl = new URL(option(args, 'metrics-url') ?? 'http://127.0.0.1:9093/metrics');
 const broker = new URL(option(args, 'broker') ?? 'ws://127.0.0.1:9003');
+const envelopeFormat = option(args, 'envelope-format') ?? 'legacy';
+if (envelopeFormat !== 'legacy' && envelopeFormat !== 'observer') throw new Error('--envelope-format must be legacy or observer');
 for (const url of [base, metricsUrl, broker]) {
   if (!['localhost','127.0.0.1','[::1]'].includes(url.hostname)) throw new Error('owned loopback endpoints required');
 }
@@ -25,15 +42,62 @@ const count = Number(option(args, 'limit') ?? 72000), rate = Number(option(args,
 const budgetMs = Number(option(args,'budget-ms') ?? 250);
 if (!Number.isSafeInteger(count) || count < 30 || count > 108000 || rate !== 30) throw new Error('use 30 packets/s and 30..108000 unique packets');
 if (!Number.isFinite(budgetMs)||budgetMs<=0) throw new Error('positive lookup budget required');
+const auxiliaryFile = option(args, 'auxiliary-traffic');
+const auxiliaryTraffic = auxiliaryFile ? await readFullStackTraffic(auxiliaryFile) : undefined;
+const httpWarmup=args.includes('--warmup-reads');
+const readerSocket = option(args, 'http-reader-socket');
+if (readerSocket) {
+  if (!auxiliaryTraffic || await realpath(readerSocket) !== path.join(path.dirname(output), 'http-reader/reader.sock')
+    || !(await stat(readerSocket)).isSocket()) throw new Error('owned full-stack HTTP reader socket required');
+}
+async function readHttp(route: string, slot: number): Promise<{status: number; body: Buffer}> {
+  if (!readerSocket) {
+    const response = await fetch(new URL(route,base), {signal:AbortSignal.timeout(15_000)});
+    return {status: response.status, body: Buffer.from(await response.arrayBuffer())};
+  }
+  return new Promise((resolve, reject) => {
+    const request = http.get({socketPath: readerSocket, path: route, headers: {'x-owned-reader-slot': String(slot)}, timeout: 15000}, response => {
+      const chunks: Buffer[] = []; let bytes = 0;
+      response.on('data', (chunk: Buffer) => { bytes += chunk.length; if (bytes > 8*1024*1024) response.destroy(new Error('response budget exceeded')); else chunks.push(chunk); });
+      response.once('end', () => resolve({status: response.statusCode ?? 0, body: Buffer.concat(chunks)}));
+      response.once('error', reject);
+    });
+    request.once('timeout', () => request.destroy(new Error('HTTP reader deadline')));
+    request.once('error', reject);
+  });
+}
+if (auxiliaryTraffic) {
+  await assertOwnedLeanFixture(endpoint); guardCompleted=true;
+  if (envelopeFormat !== 'observer') throw new Error('full-stack auxiliary traffic requires observer envelopes');
+  if (auxiliaryTraffic.events.at(-1)!.offsetMs > count / rate * 1000) throw new Error('auxiliary traffic must fit the ACK replay window');
+}
+const expectedDeltas = { packets: count, paths: count, facts: count, ledger: count };
+if (auxiliaryTraffic) for (const key of ['packets', 'paths', 'facts', 'ledger'] as const) {
+  expectedDeltas[key] += auxiliaryTraffic.expected.ukmesh[key];
+}
 const manifest = JSON.parse(await readFile(path.join(directory, 'fixture.json'), 'utf8'));
 if (!manifest.synthetic || manifest.count !== count) throw new Error('matching invented fixture required');
 const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
 const hashes = table.rows.map(row => rowObject(table.headers,row)['packet_hash']!);
 const expected = new Set(hashes);
 if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
+const workset=soakWorkset(hashes,auxiliaryTraffic?.ukmeshHashes);
+const socketScope=soakSocketScope(table.headers,table.rows,count,auxiliaryTraffic!==undefined);
+if(auxiliaryTraffic){
+  const invocationToken=soakInvocationToken(option(args,'invocation-token'));
+  const checksum=async(file:string)=>createHash('sha256').update(await readFile(file)).digest('hex');
+  failureContext={guardCompleted,invocationToken,database:decodeURIComponent(new URL(endpoint).pathname.slice(1)),
+    dataDirectory:directory,outputDirectory:output,settings:{count,rate},countsScope:workset.countsScope,socketScope,
+    toolSha256:await checksum(fileURLToPath(import.meta.url)),helperSha256:{
+      publication:await checksum(fileURLToPath(new URL('./soakPublication'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
+      fixture:await checksum(path.join(directory,'fixture.json')),packets:await checksum(path.join(directory,'packets.csv.gz')),
+      raw:await checksum(path.join(directory,'raw_packets.csv.gz')),auxiliary:await checksum(auxiliaryFile!)}};
+  failureOutput=output;
+}
 const receiver = '0102' + '11'.repeat(30);
 const pool = new pg.Pool({ connectionString: endpoint, max: 1, statement_timeout: 30_000 });
-const wait = (ms: number) => new Promise(resolve => setTimeout(resolve,ms));
 const percentile = (values: number[], q: number) => [...values].sort((a,b) => a-b)[Math.ceil(values.length*q)-1] ?? null;
 async function metrics() {
   const response = await fetch(metricsUrl, { signal: AbortSignal.timeout(15_000) });
@@ -46,13 +110,15 @@ async function metrics() {
   }));
 }
 async function counts() {
-  return (await pool.query(`SELECT (SELECT count(*)::integer FROM mesh.packets) packets,
-    (SELECT count(*)::integer FROM mesh.packet_paths) paths,
-    (SELECT count(*)::integer FROM mesh.multibyte_path_facts) facts,
-    (SELECT count(*)::integer FROM mesh.ingest_observation_ledger) ledger`)).rows[0]!;
+  return countSoakWorkset(queryCounts,workset.hashes);
 }
+function queryCounts(text:string,values:unknown[]) {
+  const config:pg.QueryConfig & {query_timeout:number}={text,values,query_timeout:SOAK_COUNTER_DEADLINE_MS};
+  return pool.query(config);
+}
+
 const samples: {elapsedMs: number; values: Record<string,number>}[] = [];
-const reads: {name: string; ms: number; status: number; bytes: number; entries: number|null}[] = [];
+const reads: {name: string; ms: number; startElapsedMs: number; slot: number; burstOrdinal: number; status: number; bytes: number; entries: number|null}[] = [];
 const seen = new Set<string>();
 let ws: WebSocket | undefined, readWork: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 let failure: unknown;
@@ -79,70 +145,95 @@ try {
     ['feed','/api/packets/recent?network=ukmesh&fields=slim&limit=200'],
     ['links',`/api/nodes/${node.node_id}/links?network=ukmesh`],
   ];
+  publication.stage='baseline-counts';
   const before = await counts(), beforeMetrics = await metrics();
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
-  const socket = new URL('/ws?network=ukmesh',base); socket.protocol='ws:';
+  publication.stage='websocket-readiness';
+  const socket = soakSocketUrl(base,socketScope);
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
-  let wsErrors = 0;
+  let wsErrors = 0, wsUnexpectedCloses=0, wsCloseCode: number|null=null, wsCloseReason='', wsOpened=false;
+  ws.on('open',()=>{wsOpened=true;});
+  ws.on('close',(code,reason)=>{wsUnexpectedCloses++;wsCloseCode=code;wsCloseReason=socketCloseDetails(code,reason).reason;});
   ws.on('error',()=>{ wsErrors++; });
   ws.on('message',bytes=>{
-    for (const line of bytes.toString().split('\n').filter(Boolean)) {
-      const value=JSON.parse(line), hash=value.data?.packetHash;
-      if (value.type==='packet' && expected.has(hash)) seen.add(hash);
-    }
+    try {
+      for (const line of bytes.toString().split('\n').filter(Boolean)) {
+        const value=JSON.parse(line), hash=value.data?.packetHash;
+        if (value.type==='packet' && expected.has(hash)) seen.add(hash);
+      }
+    } catch {wsErrors++;}
   });
-  await new Promise<void>((resolve,reject)=>{
-    const deadline=setTimeout(()=>reject(new Error('WebSocket did not open')),15_000);
-    ws!.once('open',()=>{clearTimeout(deadline);resolve();});
-    ws!.once('error',error=>{clearTimeout(deadline);reject(error);});
-  });
-  const started=performance.now();
-  let lastBackground=0, metricsFailures=0;
-  const readBurst=async()=>{
+  await waitForInitialState(ws);
+  let started=performance.now();
+  let lastBackground=0, metricsFailures=0, measuredBurstOrdinal=0;
+  const warmupReads: typeof reads = [];
+  const readBurst=async(target=reads,measureMetrics=true)=>{
+    const burstOrdinal=measureMetrics?++measuredBurstOrdinal:0;
     const selected=routes.map(route=>[...route]);
     if (performance.now()-started-lastBackground>=60_000) {
       selected[selected.length-1]=['background-charts','/api/stats/charts?network=ukmesh'];
       lastBackground=performance.now()-started;
     }
     // Eight total HTTP slots, including background work; no overlapping bursts.
-    await Promise.all(selected.map(async ([name,route])=>{
+    await Promise.all(selected.map(async ([name,route],slot)=>{
       const at=performance.now(); let status=0,bytes=0,entries: number|null=null;
       try {
-        const response=await fetch(new URL(route!,base),{signal:AbortSignal.timeout(15_000)});
+        const response=await readHttp(route!,slot);
         status=response.status;
-        const body=await response.arrayBuffer(); bytes=body.byteLength;
+        const body=response.body; bytes=body.byteLength;
         if (bytes>8*1024*1024) throw new Error('response budget exceeded');
         const value=JSON.parse(Buffer.from(body).toString());
         entries=Array.isArray(value)?value.length:Array.isArray(value?.nodes)?value.nodes.length:null;
       } catch { status=0; }
-      reads.push({name:name!,ms:performance.now()-at,status,bytes,entries});
+      const ended=performance.now();
+      target.push({name:name!,ms:ended-at,startElapsedMs:at-started,slot,burstOrdinal,status,bytes,entries});
     }));
+    if (!measureMetrics) return;
     try {
       const values=await metrics();
       samples.push({elapsedMs:performance.now()-started,values:Object.fromEntries([...values].filter(([key])=>
         /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key)))});
     } catch { metricsFailures++; }
   };
+  publication.stage='http-warmup';
+  if (httpWarmup) await readBurst(warmupReads,false);
+  const warmupMs=httpWarmup?performance.now()-started:0;
+  const warmupPassed=!httpWarmup || (warmupReads.length===8 && warmupReads.every(row=>row.status===200));
+  if (httpWarmup) {
+    await mkdir(output,{recursive:true});
+    await writeFile(path.join(output,'warmup.json'),JSON.stringify({at:new Date().toISOString(),
+      passed:warmupPassed,measured:false,concurrency:8,elapsedMs:warmupMs,socketScope,checks:warmupReads},null,2)+'\n');
+    if (!warmupPassed) throw new Error('full-stack route warmup failed; see warmup.json');
+  }
+  started=performance.now();
   timer=setInterval(()=>{ if (!readWork) readWork=readBurst().finally(()=>{readWork=undefined;}); },5000);
-  let acknowledgedMs=0,drained=false;
+  let acknowledgedMs=0,drained=false,drainElapsedMs=0,auxiliaryAcknowledgements=0;
+  const auxiliaryController = new AbortController();
+  let auxiliaryWork: Promise<void> | undefined;
   try {
-    await replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1']);
+    publication.begin(); // BEFORE either publisher can send, even if its promise later rejects.
+    auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
+      .then(sent => { auxiliaryAcknowledgements = sent; publication.auxiliaryPublished=sent; }) : undefined;
+    await Promise.all([auxiliaryWork,
+      replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
+        '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
     acknowledgedMs=performance.now()-started;
-    const deadline=Date.now()+120_000;
-    while (Date.now()<deadline) {
-      const current=await metrics(), persisted=await counts();
-      if (persisted.packets-before.packets===count && current.get('meshcore_packet_batch_queue_depth')===0
-        && current.get('meshcore_mqtt_ingest_queue_depth')===0 && current.get('meshcore_mqtt_ingest_active')===0) {
-        drained=true;break;
-      }
-      await wait(1000);
-    }
-  } catch (error) { failure=error; }
+    publication.stage='drain';
+    ({drained,drainElapsedMs}=await waitForSoakDrain({before,expectedDeltas,count,metrics,counts,seenCount:()=>seen.size}));
+  } catch (error) {
+    failure=error; auxiliaryController.abort();
+    if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
+  }
   finally { clearInterval(timer);timer=undefined;await readWork; }
+  publication.stage='final-verification';
   const after=await counts(), afterMetrics=await metrics();
+  publication.stage='independent-final-hash-audit';
+  const independentTotals=await auditSoakWorksetHashes(queryCounts,workset.hashes);
+  const independentAudit={kind:'independent-owned-packet-hash-workset-v1',sha256:workset.countsScope.sha256,
+    totals:independentTotals,passed:(Object.keys(after) as (keyof typeof after)[]).every(key=>after[key]===independentTotals[key])};
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
-  const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,Number(value)-Number(before[key])]));
+  const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));
   const failures=reads.filter(row=>row.status!==200);
   const latency=[...new Set(reads.map(row=>row.name))].map(name=>{
     const rows=reads.filter(row=>row.name===name);
@@ -180,20 +271,43 @@ try {
     return {key,maximum,middleLow,finalLow,growth,plateau,withinBound:maximum<=1024*1024*1024};
   });
   const memoryPassed=memory.length===2&&memory.every(value=>value.plateau&&value.withinBound);
-  const passed=!failure&&drained&&Object.values(deltas).every(value=>value===count)
-    && failures.length===0 && metricsFailures===0 && wsErrors===0 && seen.size===count
+  const passed=!failure&&drained&&independentAudit.passed&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
+    && (!auxiliaryTraffic || auxiliaryAcknowledgements===auxiliaryTraffic.events.length)
+    && failures.length===0 && metricsFailures===0 && wsErrors===0 && wsUnexpectedCloses===0 && wsOpened && seen.size===count
     && badOutcomes.length===0 && dropped.length===0 && dedupMaximum<=50_000
     && cacheViolations.length===0 && memoryPassed
     && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
   await mkdir(output,{recursive:true});
-  await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,
+  await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,phase:'complete',
+    publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,socketScope,independentAudit,
+    ...(failureContext?{invocationToken:failureContext.invocationToken,inputSha256:failureContext.inputSha256,
+      toolSha256:failureContext.toolSha256,helperSha256:failureContext.helperSha256}:{}),
     commit:execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim(),
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
-    settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest},
-    elapsedMs,acknowledgedMs,drained,before,after,deltas,walBytes,walBytesPerPacket:walBytes/count,
-    wsPackets:seen.size,wsErrors,metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,failures,badOutcomes,dropped,
+    settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
+      httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct',httpWarmup},
+    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,
+    auxiliaryTraffic:auxiliaryTraffic?{seed:auxiliaryTraffic.seed,cycles:auxiliaryTraffic.cycles,
+      intervalMs:auxiliaryTraffic.intervalMs,expected:auxiliaryTraffic.expected,auxiliaryAcknowledgements}:null,
+    walBytes,walBytesPerPacket:walBytes/count,
+    wsPackets:seen.size,wsMissingCount:count-seen.size,
+    wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
+    wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode,closeReason:wsCloseReason},
+    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,reads,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));
   if (!passed) throw new Error('mixed lookup/ingest qualification failed; see saved evidence');
 } finally { if(timer)clearInterval(timer);await readWork;ws?.terminate();await pool.end(); }
+
+}
+
+main().catch(async(error:unknown)=>{
+  if(failureContext&&failureOutput){
+    try{
+      await mkdir(failureOutput,{recursive:true});
+      await writeFile(path.join(failureOutput,'failure.json'),JSON.stringify(publication.failure(failureContext,error),null,2)+'\n',{flag:'wx',mode:0o600});
+    }catch(receiptError){console.error('[soak] failure receipt unavailable',receiptError instanceof Error?receiptError.message:String(receiptError));}
+  }
+  console.error(error instanceof Error?error.message:String(error));process.exitCode=1;
+});

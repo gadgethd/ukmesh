@@ -6,6 +6,7 @@ if [[ ${UKMESH_LOCAL_ENV_CLEAN:-} != 1 ]]; then
   exec env -i PATH="$PATH" HOME="$HOME" LANG=C.UTF-8 UKMESH_LOCAL_ENV_CLEAN=1 \
     bash "$repo/scripts/dev-stack.sh" "$@"
 fi
+export DOCKER_HOST=unix:///var/run/docker.sock
 cd "$repo"
 state="$repo/plans/dev-stack"
 mkdir -p "$state"
@@ -92,6 +93,8 @@ command -v node >/dev/null
 command -v npm >/dev/null
 if [[ ! -d backend/node_modules ]]; then npm --prefix backend ci; fi
 if [[ ! -d frontend/node_modules ]]; then npm --prefix frontend ci; fi
+# Build this component even when its local tag already exists.
+"${compose[@]}" build mqtt > "$state/build-mqtt.log" 2>&1 || { tail -40 "$state/build-mqtt.log" >&2; exit 1; }
 "${compose[@]}" up -d --wait --wait-timeout 180
 # pg_isready over TCP plus a health check avoids the temporary init server.
 export DATABASE_URL=postgresql://meshcore:meshcore@127.0.0.1:5433/meshcore

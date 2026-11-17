@@ -72,3 +72,28 @@ test('bounded retention deletes are deterministic and compressed-table safe', as
   });
   assert.deepEqual(calls, [{ text: sql, params: ['30 days', 2_000] }]);
 });
+
+test('hypertable retention uses the bounded owner capability without operating on chunks', async () => {
+  const target = RETENTION_TARGETS.find(({ table }) => table === 'packets');
+  assert.ok(target);
+  const calls: Array<{ text: string; params?: unknown[] }> = [];
+  await deleteExpiredRows(target, async (text, params) => {
+    calls.push({ text, params });
+    return { rows: [{ prune_expired_hypertable: 0 }] };
+  });
+  assert.deepEqual(calls, [{
+    text: 'SELECT ops.prune_expired_hypertable($1::regclass, $2::interval)',
+    params: ['mesh.packets', '30 days'],
+  }]);
+});
+
+test('maintenance permission errors do not fall back to direct table mutation', async () => {
+  const target = RETENTION_TARGETS.find(({ table }) => table === 'node_status_samples');
+  assert.ok(target);
+  let calls = 0;
+  await assert.rejects(deleteExpiredRows(target, async () => {
+    calls++;
+    throw Object.assign(new Error('permission denied'), { code: '42501' });
+  }), /permission denied/);
+  assert.equal(calls, 1);
+});

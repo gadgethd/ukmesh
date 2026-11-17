@@ -127,12 +127,10 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
     const r = redis();
     const [
       linkQueue,
-      linkRecent,
-      linkLast,
+      linkActivity,
       linkHeartbeatAge,
       learning,
       healthActivity,
-      backfillState,
     ] = await Promise.all([
       Promise.all([
         r.llen('meshcore:link_jobs'),
@@ -154,12 +152,10 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
           retries: attempts.reduce((total, value) => total + Math.max(0, Number(value) - 1), 0),
         };
       }),
-      repository.loadRecentLinkCount(),
-      repository.loadLatestLinkComputation(),
+      repository.loadLinkActivity(),
       readLinkWorkerHeartbeatAge(r),
       repository.loadLatestLearningCalibration(),
       repository.loadRecentHealthActivity(),
-      repository.loadBackfillActivity(),
     ]);
 
     const stats = precomputedStats ?? systemStats();
@@ -167,13 +163,13 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
     const memPct = stats.memory.used_pct ?? -1;
     const diskPct = stats.disk.used_pct ?? -1;
 
-    const linkProcessed = Number(linkRecent.rows[0]?.count ?? 0);
+    const linkProcessed = Number(linkActivity.rows[0]?.recent_count ?? 0);
     const healthProcessed = Number(healthActivity.rows[0]?.count ?? 0);
     const healthLastTs = healthActivity.rows[0]?.ts ?? null;
     const learningLast = learning.rows[0]?.ts ?? null;
     const learningRecent = learningLast ? (Date.now() - Date.parse(learningLast)) <= 60 * 60_000 : false;
-    const backfillLinks = Number(backfillState.rows[0]?.links ?? 0);
-    const backfillLast = backfillState.rows[0]?.last_observed ?? null;
+    const backfillLinks = Number(linkActivity.rows[0]?.links ?? 0);
+    const backfillLast = linkActivity.rows[0]?.last_observed ?? null;
     linkQueueDepthMetric.set(linkQueue.count);
     linkQueueBytes.set(linkQueue.bytes);
     linkQueueDeadJobs.set(linkQueue.deadCount);
@@ -197,7 +193,7 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
         status: linkQueue.depth > 0 || linkProcessed > 0 ? 'running' : 'idle',
         queue_depth: linkQueue.depth,
         processed_1h: linkProcessed,
-        last_activity_at: linkLast.rows[0]?.ts ?? null,
+        last_activity_at: linkActivity.rows[0]?.last_computed ?? null,
         cpu_load_1m: load,
         cpu_usage_pct: stats.cpu.usage_pct,
         mem_used_pct: memPct,
@@ -327,6 +323,10 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
         .finally(() => {
           if (operationalChecksInflight === tracked) operationalChecksInflight = null;
         });
+      // Stale callers may return before settlement; blocking callers still await tracked.
+      void tracked.catch((error: unknown) => {
+        console.error('[health] operational checks refresh failed:', error instanceof Error ? error.message : error);
+      });
       operationalChecksInflight = tracked;
     }
     if (operationalChecksSnapshot && now - operationalChecksSnapshot.ts < OPERATIONAL_CHECKS_STALE_TTL_MS) {

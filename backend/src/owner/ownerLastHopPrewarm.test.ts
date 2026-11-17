@@ -14,7 +14,15 @@ function setup(t: TestContext, overrides: Partial<OwnerLastHopPrewarmDeps> = {})
   t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: 0 });
   const logs: Array<{ message: string; data: Record<string, unknown> }> = [];
   const warnings: typeof logs = [];
-  t.mock.method(console, 'log', (message: string, data: Record<string, unknown>) => { logs.push({ message, data }); });
+  const progressRecords: string[] = [];
+  t.mock.method(console, 'log', (message: string, data?: Record<string, unknown>) => {
+    if (data !== undefined) { logs.push({ message, data }); return; }
+    assert.equal(message.includes('\n'), false, 'progress is emitted as one physical log line');
+    const { message: phase, ...snapshot } = JSON.parse(message) as Record<string, unknown>;
+    assert.ok(typeof phase === 'string');
+    logs.push({ message: phase, data: snapshot });
+    progressRecords.push(message);
+  });
   t.mock.method(console, 'warn', (message: string, data: Record<string, unknown>) => { warnings.push({ message, data }); });
   const stop = createOwnerLastHopPrewarm({
     listOwnerNodes: async () => [{ mqttUsername: 'owner', isActive: true, nodeIds: ['a', 'b', 'c'] }],
@@ -30,7 +38,7 @@ function setup(t: TestContext, overrides: Partial<OwnerLastHopPrewarmDeps> = {})
     assert.ok(found, `missing ${suffix} log`);
     return found.data;
   };
-  return { stop, advance, logs, warnings, entry };
+  return { stop, advance, logs, warnings, entry, progressRecords };
 }
 
 test('default serial order, both windows, owner scopes, per-node delay and outcome accounting are preserved', async (t) => {
@@ -252,4 +260,41 @@ test('invalid intervals disable all scheduled work', async (t) => {
   await h.advance(300_000);
   assert.equal(calls, 0);
   assert.equal(h.warnings[0]!.message, '[owner-last-hop-prewarm] disabled (invalid interval)');
+});
+
+
+test('empty passes emit zero counters as complete one-line JSON progress records', async t => {
+  const h = setup(t, { listOwnerNodes: async () => [] });
+  await h.advance(20_000);
+  assert.equal(h.progressRecords.length, 2);
+  assert.deepEqual(h.progressRecords.map(raw => JSON.parse(raw).message), [
+    '[owner-last-hop-prewarm] pass started', '[owner-last-hop-prewarm] pass complete',
+  ]);
+  for (const raw of h.progressRecords) {
+    assert.equal(raw.includes('\n'), false);
+    const value = JSON.parse(raw);
+    assert.equal(value.failed, 0);
+    assert.equal(value.totalRefreshes, 0);
+    assert.equal(value.completedRefreshes, 0);
+    assert.equal(value.ratePerSecond, 0);
+    assert.equal(value.etaSeconds, 0);
+  }
+  assert.equal(h.warnings.length, 0);
+});
+
+test('positive failure counters remain structured and real warning details remain unchanged', async t => {
+  const h = setup(t, {
+    windows: [30],
+    listOwnerNodes: async () => [{ mqttUsername: 'owned-test', isActive: true, nodeIds: ['synthetic-node'] }],
+    refreshLastHop: async () => { throw new Error('owned refresh unavailable'); },
+  });
+  await h.advance(20_000);
+  assert.equal(h.progressRecords.length, 2);
+  const completed = JSON.parse(h.progressRecords[1]!);
+  assert.equal(completed.message, '[owner-last-hop-prewarm] pass complete');
+  assert.equal(completed.failed, 1);
+  assert.equal(completed.completedRefreshes, 1);
+  assert.deepEqual(h.warnings, [{ message: '[owner-last-hop-prewarm] refresh failed', data: {
+    mqttUsername: 'owned-test', nodeId: 'synthetic-node', windowDays: 30, error: 'owned refresh unavailable',
+  } }]);
 });

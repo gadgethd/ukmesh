@@ -1,13 +1,16 @@
 import pg from 'pg';
-import { analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
-import { databaseOperation, dbExecutionDuration, dbPoolWaitDuration, dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
+import { analyticsConnectionOptions, analyticsStatementTimeoutMs, loadDatabaseConfig, databaseUrlForRole } from '../platform/config/database.js';
+import { databaseOperation, dbExecutionDuration, dbQueriesTotal, dbQueryDuration, updateDbPoolMetrics } from '../metrics/database.js';
 import { createIngestDatabase, ingestPoolOptions } from './ingestExecution.js';
-import type { DatabaseQueryFn, FixedPreparedStatementName } from './contracts.js';
-import { fixedPreparedStatement } from './preparedStatements.js';
+import type { DatabaseQueryFn, StatementHint } from './contracts.js';
+import { fixedPreparedStatement, preparedStatementForClient, type BoundedReadPreparationHint } from './preparedStatements.js';
+import { checkoutDatabaseClient } from './poolCheckout.js';
 
 /** Independent HTTP, analytics and ingest execution. Importing this definition reads no process configuration. */
 export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   const databaseConfig = loadDatabaseConfig(env);
+  const analyticsOptions = analyticsConnectionOptions(env,
+    databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined);
   const { Pool } = pg;
   const pool = new Pool({
     connectionString: databaseUrlForRole('http', env),
@@ -27,9 +30,8 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
   // Dedicated pool for long-running analytical queries.
   // Kept separate so slow analytics can never exhaust the OLTP pool and take down the API.
   const analyticsPool = new Pool({
-    connectionString: databaseUrlForRole('worker', env),
+    ...analyticsOptions,
     application_name: `${databaseConfig.applicationName}-analytics`,
-    options: databaseConfig.schema ? `-c search_path=${databaseConfig.schema},public` : undefined,
     max: 2,
     idleTimeoutMillis: databaseConfig.idleTimeoutMs,
     connectionTimeoutMillis: databaseConfig.connectionTimeoutMs,
@@ -41,36 +43,26 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
     console.error('[db] unexpected analytics pool error', err.message);
   });
 
-  async function checkout(targetPool: pg.Pool, poolName: 'oltp' | 'analytics') {
-    const started = process.hrtime.bigint();
-    let outcome = 'success';
-    try { return await targetPool.connect(); }
-    catch (error) { outcome = 'failure'; throw error; }
-    finally {
-      dbPoolWaitDuration.observe({ pool: poolName, outcome }, Number(process.hrtime.bigint() - started) / 1e9);
-      updateDbPoolMetrics(poolName, targetPool);
-    }
-  }
-
   async function queryPool<T extends pg.QueryResultRow = pg.QueryResultRow>(
     targetPool: pg.Pool,
     poolName: 'oltp' | 'analytics',
     querySpec: string | pg.QueryConfig<unknown[]>,
     params?: unknown[],
     signal?: AbortSignal,
+    readPreparation?: BoundedReadPreparationHint,
   ): Promise<pg.QueryResult<T>> {
     const startedAt = process.hrtime.bigint();
     let outcome = 'success';
     let executionStarted: bigint | undefined;
     try {
       updateDbPoolMetrics(poolName, targetPool);
-      const execute = (target: pg.PoolClient) => (
-        typeof querySpec === 'string'
-          ? target.query<T>(querySpec, params)
-          : target.query<T>(querySpec)
-      );
+      const execute = (target: pg.PoolClient) => {
+        if (typeof querySpec !== 'string') return target.query<T>(querySpec);
+        if (readPreparation === undefined) return target.query<T>(querySpec, params);
+        return target.query<T>(preparedStatementForClient(target, readPreparation, querySpec, params));
+      };
       signal?.throwIfAborted();
-      const client = await checkout(targetPool, poolName);
+      const client = await checkoutDatabaseClient(targetPool, poolName);
       let destroyed = false;
       let abortedCleanup: (() => void) | undefined;
       const aborted = signal && new Promise<never>((_resolve, reject) => {
@@ -118,21 +110,21 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
     text: string,
     params?: unknown[],
     signal?: AbortSignal,
-    statement?: FixedPreparedStatementName,
+    statement?: StatementHint,
   ): Promise<pg.QueryResult<T>> {
-    return statement
+    return typeof statement === 'string'
       ? queryPool<T>(pool, 'oltp', fixedPreparedStatement(statement, text, params), undefined, signal)
-      : queryPool<T>(pool, 'oltp', text, params, signal);
+      : queryPool<T>(pool, 'oltp', text, params, signal, statement);
   }
 
   async function withTransaction<T>(work: (transactionQuery: DatabaseQueryFn) => Promise<T>): Promise<T> {
-    const client = await checkout(pool, 'oltp');
-    const execute = async <R extends pg.QueryResultRow>(text: string, params?: unknown[], statement?: FixedPreparedStatementName) => {
+    const client = await checkoutDatabaseClient(pool, 'oltp');
+    const execute = async <R extends pg.QueryResultRow>(text: string, params?: unknown[], statement?: StatementHint) => {
       const started = process.hrtime.bigint();
       let outcome = 'success';
       try {
-        return statement
-          ? await client.query<R>(fixedPreparedStatement(statement, text, params))
+        return statement !== undefined
+          ? await client.query<R>(preparedStatementForClient(client, statement, text, params))
           : await client.query<R>(text, params);
       }
       catch (error) { outcome = 'failure'; throw error; }
@@ -143,7 +135,7 @@ export function createDatabaseRuntime(env: NodeJS.ProcessEnv) {
       text: string,
       params?: unknown[],
       _signal?: AbortSignal,
-      statement?: FixedPreparedStatementName,
+      statement?: StatementHint,
     ) => {
       const result = await execute<R>(text, params, statement);
       return { rows: result.rows };

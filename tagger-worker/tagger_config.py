@@ -9,6 +9,7 @@ class TaggerSettings:
     api_url: str
     api_key: str
     database_url: str
+    database_application_name: str
     poll_s: float
     call_floor_s: float
     batch_limit: int
@@ -26,6 +27,9 @@ class TaggerSettings:
             api_url=env.get("TYPESAFE_API_URL", "https://api.typesafe.ai/v1/systemone"),
             api_key=env.get("TYPESAFE_API_KEY", "").strip(),
             database_url=env["DATABASE_URL"],
+            database_application_name=env.get(
+                "DATABASE_APPLICATION_NAME", "ukmesh-tagger-worker"
+            ),
             poll_s=float(env.get("TAGGER_POLL_S", "5")),
             call_floor_s=float(env.get("TAGGER_CALL_FLOOR_S", "0.5")),
             batch_limit=int(env.get("TAGGER_BATCH_LIMIT", "200")),

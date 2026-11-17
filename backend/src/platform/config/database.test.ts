@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { boundedIntegerSetting } from './boundedNumber.js';
-import { analyticsStatementTimeoutMs, databaseUrlForRole, loadDatabaseConfig } from './database.js';
+import { analyticsConnectionOptions, analyticsPlannerOptions, analyticsStatementTimeoutMs, databaseUrlForRole, loadDatabaseConfig } from './database.js';
 
 test('database numeric settings use bounded deployment-safe defaults', () => {
   assert.deepEqual(loadDatabaseConfig({}), {
@@ -53,6 +53,39 @@ test('analytics queries honor a longer configured timeout while retaining a safe
   assert.equal(analyticsStatementTimeoutMs(30_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(900_000), 900_000);
   assert.equal(analyticsStatementTimeoutMs(0), 0);
+});
+
+test('analytics planner estimates are explicit and absent settings retain standalone defaults', () => {
+  assert.equal(analyticsPlannerOptions({}), undefined);
+  assert.equal(analyticsPlannerOptions({ DATABASE_APPLICATION_NAME: 'meshcore-backend' }), undefined);
+  assert.equal(analyticsPlannerOptions({ DATABASE_ANALYTICS_RANDOM_PAGE_COST: '2.5' }), '-c random_page_cost=2.5');
+  assert.equal(analyticsPlannerOptions({ DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: '1GB' }), '-c effective_cache_size=1GB');
+  assert.equal(analyticsPlannerOptions({ DATABASE_ANALYTICS_RANDOM_PAGE_COST: '4',
+    DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: '512MB' }), '-c random_page_cost=4 -c effective_cache_size=512MB');
+});
+
+test('analytics planner estimates reject malformed or injected startup options', () => {
+  for (const value of ['-1', 'NaN', 'Infinity', '1e2', '01', '4 -c role=other']) {
+    assert.throws(() => analyticsPlannerOptions({ DATABASE_ANALYTICS_RANDOM_PAGE_COST: value }),
+      /DATABASE_ANALYTICS_RANDOM_PAGE_COST must be a nonnegative decimal/);
+  }
+  for (const value of ['0MB', '1kB', '16TB', '512mb', '1.5GB', '512MB -c role=other']) {
+    assert.throws(() => analyticsPlannerOptions({ DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE: value }),
+      /DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE must be a PostgreSQL cache estimate/);
+  }
+});
+
+test('owner session options preserve worker URL flags and pg option precedence', () => {
+  const env = { MESHCORE_WORKER_DATABASE_URL: 'postgres://worker@db/meshcore?options=-c%20search_path%3Dignored&options=-c%20default_transaction_read_only%3Don',
+    DATABASE_ANALYTICS_RANDOM_PAGE_COST: '4' };
+  const result = analyticsConnectionOptions(env, '-c search_path=core,public', '-c work_mem=16384kB');
+  assert.deepEqual(new URL(result.connectionString!).searchParams.getAll('options'),
+    ['-c default_transaction_read_only=on -c random_page_cost=4 -c work_mem=16384kB']);
+  assert.equal(result.options, '-c search_path=core,public -c random_page_cost=4 -c work_mem=16384kB');
+  const withoutUrlFlags = analyticsConnectionOptions({ MESHCORE_WORKER_DATABASE_URL: 'postgres://worker@db/meshcore' },
+    '-c search_path=core,public', '-c work_mem=16384kB');
+  assert.equal(withoutUrlFlags.connectionString, 'postgres://worker@db/meshcore');
+  assert.equal(withoutUrlFlags.options, '-c search_path=core,public -c work_mem=16384kB');
 });
 
 test('role DSNs prefer role-specific URLs and allow a legacy fallback only before enforcement', () => {

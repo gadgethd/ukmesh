@@ -44,6 +44,10 @@ root=$(cd -- "$(dirname -- "$0")/.." && pwd)
 [[ $1 != info ]] || exit 0
 [[ $1 == compose && $2 == -f ]] || exit 90
 case $4 in
+  build)
+    [[ $# == 5 && $5 == mqtt ]] || { echo 'Unexpected broker build command' >&2; exit 91; }
+    printf 'BROKER_IMAGE\n' >> "$root/calls"
+    [[ ! -f $root/fail-broker-image ]] || { echo 'fixture broker image build failed' >&2; exit 43; } ;;
   up) printf 'INFRA_UP\n' >> "$root/calls" ;;
   ps) ;;
   exec) cat >/dev/null; printf 'BOOTSTRAP_ROLE\n' >> "$root/calls" ;;
@@ -130,7 +134,11 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 const root = process.argv[2], read = name => readFileSync(join(root, name), 'utf8');
 const calls = read('calls').trim().split('\n');
-assert.equal(calls.filter(line => line === 'MIGRATE unset').length, 1);
+for (const stage of ['BROKER_IMAGE', 'INFRA_UP', 'MIGRATE unset']) {
+  assert.equal(calls.filter(line => line === stage).length, 1);
+}
+assert.ok(calls.indexOf('BROKER_IMAGE') < calls.indexOf('INFRA_UP'));
+assert.ok(calls.indexOf('INFRA_UP') < calls.indexOf('MIGRATE unset'));
 assert.ok(calls.indexOf('MIGRATE unset') < calls.indexOf('BUILD'));
 assert.ok(calls.indexOf('BUILD') < calls.indexOf('BACKEND'));
 for (const stage of ['BACKEND', 'REGION', 'FRONTEND']) assert.ok(calls.includes(stage));
@@ -139,11 +147,34 @@ assert.equal(read('data/marker'), 'preserve this fixture\n');
 assert.equal(read('repo/plans/dev-stack/fixture-ready'), 'snapshot\n');
 JS
 
+init_fixture failed-broker-build
+# A partial fixture and foreign PID remain untouched if no infrastructure can start.
+rm "$fixture/repo/plans/dev-stack/fixture-ready"
+touch "$fixture/fail-broker-image"
+bash -c 'trap "exit 0" TERM; while :; do /bin/sleep 0.02; done' _ "$fixture/foreign-entry.js" &
+broker_failure_foreign_pid=$!; foreign_pids+=("$broker_failure_foreign_pid")
+printf '%s\n' "$broker_failure_foreign_pid" > "$fixture/repo/plans/dev-stack/backend.pid"
+cp "$fixture/repo/plans/dev-stack/backend.pid" "$fixture/retained-pid.before"
+cp "$fixture/repo/plans/dev-stack/data-dir" "$fixture/data-dir.before"
+cp "$fixture/data/marker" "$fixture/marker.before"
+if run_fixture up --data-dir "$fixture/data" --profile snapshot; then
+  echo 'Broker image build failure did not stop startup' >&2; exit 1
+fi
+test "$(cat "$fixture/calls")" = BROKER_IMAGE
+grep -q 'fixture broker image build failed' "$fixture/output"
+cmp "$fixture/retained-pid.before" "$fixture/repo/plans/dev-stack/backend.pid"
+cmp "$fixture/data-dir.before" "$fixture/repo/plans/dev-stack/data-dir"
+cmp "$fixture/marker.before" "$fixture/data/marker"
+kill -0 "$broker_failure_foreign_pid"
+test ! -e "$fixture/app-pids"
+test ! -e "$fixture/repo/plans/dev-stack/build.log"
+test ! -e "$fixture/repo/plans/dev-stack/fixture-ready"
+
 init_fixture failed-restart
 touch "$fixture/fail-migration"
 if run_fixture start; then echo 'Migration failure did not stop startup' >&2; exit 1; fi
 grep -qx 'MIGRATE unset' "$fixture/calls"
-! grep -Eq 'BUILD|BACKEND|REGION|FRONTEND|BOOTSTRAP' "$fixture/calls"
+! grep -Eq '^(BUILD|BACKEND|REGION|FRONTEND|BOOTSTRAP_ROLE)$' "$fixture/calls"
 grep -q 'fixture migration failed' "$fixture/output"
 test -f "$fixture/data/marker"
 test -f "$fixture/repo/plans/dev-stack/fixture-ready"
@@ -154,7 +185,7 @@ touch "$fixture/fail-migration"
 if run_fixture up; then echo 'Migration failure did not stop fresh startup' >&2; exit 1; fi
 test "$(grep -c '^BOOTSTRAP_ROLE$' "$fixture/calls")" -eq 2
 grep -qx 'MIGRATE bootstrap-ledger-from-base-schema' "$fixture/calls"
-! grep -Eq 'BUILD|BACKEND|REGION|FRONTEND' "$fixture/calls"
+! grep -Eq '^(BUILD|BACKEND|REGION|FRONTEND)$' "$fixture/calls"
 
 init_fixture fresh-success
 rm "$fixture/repo/plans/dev-stack/fixture-ready"
@@ -163,7 +194,7 @@ node --input-type=module - "$fixture" <<'JS'
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const root=process.argv[2], calls=readFileSync(root+'/calls','utf8').trim().split('\n');
-const stages=['MIGRATE bootstrap-ledger-from-base-schema','LOAD','REFRESH','PREPARE','ROLLUPS','BUILD','BACKEND'];
+const stages=['BROKER_IMAGE','INFRA_UP','MIGRATE bootstrap-ledger-from-base-schema','LOAD','REFRESH','PREPARE','ROLLUPS','BUILD','BACKEND'];
 for(const stage of stages) assert.equal(calls.filter(line=>line===stage).length,1);
 for(let at=1;at<stages.length;at++) assert.ok(calls.indexOf(stages[at-1])<calls.indexOf(stages[at]));
 assert.equal(readFileSync(root+'/repo/plans/dev-stack/fixture-ready','utf8'),'snapshot\n');

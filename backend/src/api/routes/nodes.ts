@@ -1,8 +1,9 @@
 import { API_CACHE_POLICIES } from '../cachePolicies.js';
 import type { Request, Response, Router } from 'express';
 import { BoundedTtlMap } from '../../cache/boundedTtlMap.js';
+import { createReadBatcher } from '../../cache/readBatch.js';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import { publicJson, PUBLIC_REVALIDATE } from '../../http/publicJson.js';
+import { PreparedJson, publicJson, PUBLIC_REVALIDATE } from '../../http/publicJson.js';
 import type { NetworkFilters } from '../../platform/query/networkFilters.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { isPrivateNode, redactPrivateNode } from '../../privacy/privateNode.js';
@@ -96,6 +97,10 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => 
   let closed = false;
   const topAdvertsCache = new BoundedTtlMap<string, { ts: number; data: unknown[] }>(API_CACHE_POLICIES.topAdvertsCache);
   const topAdvertsInflight = new Map<string, Promise<unknown[]>>();
+  const mapReads = createReadBatcher<Readonly<{
+    payload: ReturnType<typeof PreparedJson>; snapshot: string; complete: boolean;
+  }>>(value => value);
+  const historyReads = createReadBatcher<ReturnType<typeof PreparedJson>>(value => value);
   const {
     getNodes,
     getNodeHistory,
@@ -168,34 +173,27 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => 
       const snapshot = parsePublicMapSnapshot(req.query['snapshot']);
       const cursor = parsePublicMapCursor(req.query['cursor']);
       const search = parsePublicMapQuery(req.query['q']);
-      await publicJson(res, getPublicVisibilityGeneration, async () => {
-        const result = await nodeRepository.listPublicMapRows(
-          fields,
-          filters,
-          snapshot,
-          cursor,
-          limit,
-          search,
-        );
-        const hasExtraRow = result.length > limit;
-        const fitted = fitPublicMapRowsToByteBudget(result, limit);
-        const rows = fitted.rows;
-        const complete = !hasExtraRow && !fitted.truncatedByBytes;
-        const nextCursor = complete || rows.length < 1
-          ? null
-          : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
-        res.setHeader('X-Map-Snapshot', snapshot);
-        res.setHeader('X-Map-Complete', complete ? 'true' : 'false');
-        return {
-          nodes: rows,
-          page: {
-            snapshot,
-            nextCursor,
-            complete,
-            returned: rows.length,
-            rowLimit: limit,
-          },
-        };
+      await publicJson(res, getPublicVisibilityGeneration, async generation => {
+        const key = JSON.stringify([generation, network, observer, region, fields, snapshot, cursor, limit, search]);
+        const result = await mapReads.run(key, async () => {
+          const raw = await nodeRepository.listPublicMapRows(fields, filters, snapshot, cursor, limit, search);
+          const hasExtraRow = raw.length > limit;
+          const fitted = fitPublicMapRowsToByteBudget(raw, limit);
+          const rows = fitted.rows;
+          const complete = !hasExtraRow && !fitted.truncatedByBytes;
+          const nextCursor = complete || rows.length < 1
+            ? null
+            : encodePublicMapCursor(String(rows[rows.length - 1]!['node_id']));
+          const page = { snapshot, nextCursor, complete, returned: rows.length, rowLimit: limit };
+          // Keep cloneable PostgreSQL values inside the opaque representation.
+          // Default delivery shares only its immutable, already-budgeted bytes.
+          const payload = PreparedJson({ nodes: rows, page },
+            `{"nodes":${fitted.jsonRows},"page":${JSON.stringify(page)}}`, value => structuredClone(value));
+          return Object.freeze({ payload, snapshot, complete });
+        });
+        res.setHeader('X-Map-Snapshot', result.snapshot);
+        res.setHeader('X-Map-Complete', result.complete ? 'true' : 'false');
+        return result.payload;
       }, search ? 'no-store' : PUBLIC_REVALIDATE);
     } catch (err) {
       if (err instanceof PublicMapInputError) {
@@ -532,7 +530,12 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => 
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      await publicJson(res, getPublicVisibilityGeneration, () => getNodeHistory(id, hours, network));
+      await publicJson(res, getPublicVisibilityGeneration, generation => historyReads.run(
+        JSON.stringify([generation, id, hours, network]), async () => {
+          const value = await getNodeHistory(id, hours, network);
+          return PreparedJson(value, JSON.stringify(value), item => structuredClone(item));
+        },
+      ));
     } catch (err) {
       console.error('[api] GET /nodes/:id/history', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
@@ -559,5 +562,9 @@ export function registerNodeRoutes(router: Router, deps: NodesRouteDeps): () => 
       res.status(500).json({ error: 'Internal server error' });
     }
   });
-  return () => { closed = true; topAdvertsCache.shutdown(); topAdvertsCache.clear(); topAdvertsInflight.clear(); };
+  return () => {
+    closed = true;
+    mapReads.close(); historyReads.close();
+    topAdvertsCache.shutdown(); topAdvertsCache.clear(); topAdvertsInflight.clear();
+  };
 }

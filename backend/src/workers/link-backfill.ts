@@ -1,12 +1,15 @@
 import 'node:process';
-import { initDb, pool, query } from '../db/runtime.js';
+import { once } from 'node:events';
+import { initDb, closeDb, query } from '../db/runtime.js';
 import { backfillHistoricalLinks } from '../ingest/backfillLinks.js';
 import { queueLinkJob, closeQueuePublisher } from '../queue/publisher.js';
 import { observeWorkerOutcome } from '../metrics/workers.js';
 import { startWorkerMetrics } from './workerMetrics.js';
+import { closeMetricsServer } from '../metricsServer.js';
 
 async function main() {
-  startWorkerMetrics();
+  const metrics = startWorkerMetrics();
+  if (!metrics.listening) await once(metrics, 'listening');
   await initDb();
 
   const { rows } = await query<{ count: string }>('SELECT COUNT(*) AS count FROM core.node_links');
@@ -30,10 +33,8 @@ main()
   .catch((err) => {
     observeWorkerOutcome('link_backfill', 'backfill', 'failure');
     console.error('[backfill] fatal error:', err);
-    process.exit(1);
+    process.exitCode = 1;
   })
   .finally(async () => {
-    await closeQueuePublisher();
-    await pool.end();
-    process.exit(0);
+    await Promise.all([closeQueuePublisher(), closeDb(), closeMetricsServer()]);
   });

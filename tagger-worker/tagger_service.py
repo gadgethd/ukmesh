@@ -32,7 +32,7 @@ def tag_message(cur, ph, ts, rx_node_id, network, settings, classify, sleep=time
             resp, ms = classify(state)
             tags, conf = flatten(resp.get("answers"))
             cur.execute(
-                """INSERT INTO message_tags
+                """INSERT INTO mesh.message_tags
                            (packet_hash, packet_time, tagged_at, model, latency_ms, tags, confidence)
                            VALUES (%s, %s, now(), %s, %s, %s, %s)
                            ON CONFLICT (packet_hash) DO NOTHING""",
@@ -67,7 +67,7 @@ def process_retries(cur, settings, classify, sleep=time.sleep):
     due = cur.fetchall()
     ok = fail = 0
     for ph, ts, attempts in due:
-        cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
+        cur.execute("SELECT 1 FROM mesh.message_tags WHERE packet_hash=%s", (ph,))
         if cur.fetchone():
             cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
             continue

@@ -1,0 +1,680 @@
+{
+  "version": 1,
+  "excluded": {
+    "cloudflared": "Public tunnel explicitly off in local DEV; supported tunnel profile retained",
+    "build": "Finite companion compiler, invoked on source changes; not a runtime service",
+    "web-build": "Finite static asset compiler, invoked on source changes; not a runtime service"
+  },
+  "services": [
+    {
+      "name": "db-migrate",
+      "container": "ukmesh-full-db-migrate-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM public.schema_migrations WHERE name='152_bound_retention_calendar_intervals.sql'"
+        }
+      ]
+    },
+    {
+      "name": "backend",
+      "container": "ukmesh-full-backend-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3100/readyz",
+          "json_path": "status",
+          "equals": "ready"
+        },
+        {
+          "kind": "metric",
+          "url": "http://127.0.0.1:9091/metrics",
+          "pattern": "^meshcore_mqtt_delivery_probe_healthy (\\d+)"
+        }
+      ]
+    },
+    {
+      "name": "path-learning-worker",
+      "container": "ukmesh-full-path-learning-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM analytics.path_model_calibration WHERE updated_at > now() - interval '2 hours'"
+        }
+      ]
+    },
+    {
+      "name": "health-worker",
+      "container": "ukmesh-full-health-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM ops.worker_health_snapshots WHERE ts > now() - interval '15 minutes'"
+        }
+      ]
+    },
+    {
+      "name": "tagger-worker",
+      "container": "ukmesh-full-tagger-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM mesh.message_tags"
+        }
+      ]
+    },
+    {
+      "name": "region-snapshot-worker",
+      "container": "ukmesh-full-region-snapshot-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "metric",
+          "url": "http://127.0.0.1:9092/metrics",
+          "pattern": "^meshcore_worker_outcomes_total\\{worker=\"region_scope\",phase=\"rebuild\",outcome=\"success\"\\} (\\d+)"
+        }
+      ]
+    },
+    {
+      "name": "privacy-remat-worker",
+      "container": "ukmesh-full-privacy-remat-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "privacy-remat-worker"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "synthetic-monitor",
+      "container": "ukmesh-full-synthetic-monitor-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM ops.operational_check_results WHERE status='ok' AND ts > now() - interval '15 minutes'"
+        }
+      ]
+    },
+    {
+      "name": "link-backfill-worker",
+      "container": "ukmesh-full-link-backfill-worker-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM core.node_links"
+        }
+      ]
+    },
+    {
+      "name": "link-worker",
+      "container": "ukmesh-full-link-worker-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM ops.link_job_commits"
+        }
+      ]
+    },
+    {
+      "name": "hopreach",
+      "container": "ukmesh-full-hopreach-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "hopreach"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "app-ukmesh",
+      "container": "ukmesh-full-app-ukmesh-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3003/build-target.json",
+          "json_path": "target",
+          "equals": "app"
+        },
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3003/api/nodes/map?network=ukmesh&limit=20",
+          "min": 1,
+          "json_path": "nodes"
+        }
+      ]
+    },
+    {
+      "name": "website-ukmesh",
+      "container": "ukmesh-full-website-ukmesh-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:5173/build-target.json",
+          "json_path": "target",
+          "equals": "public-website"
+        }
+      ]
+    },
+    {
+      "name": "mesh-health-check-data-init",
+      "container": "ukmesh-full-mesh-health-check-data-init-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "mesh-health-check-data-init"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "mesh-health-check",
+      "container": "ukmesh-full-mesh-health-check-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "mesh-health-check"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "website-dev",
+      "container": "ukmesh-full-website-dev-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3005/build-target.json",
+          "json_path": "target",
+          "equals": "dev-website"
+        }
+      ]
+    },
+    {
+      "name": "anubis-website-ukmesh",
+      "container": "ukmesh-full-anubis-website-ukmesh-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "anubis-website-ukmesh"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "anubis-app-ukmesh",
+      "container": "ukmesh-full-anubis-app-ukmesh-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "anubis-app-ukmesh"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "anubis-health-check",
+      "container": "ukmesh-full-anubis-health-check-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "anubis-health-check"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "loki",
+      "container": "ukmesh-full-loki-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "loki"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "alloy",
+      "container": "ukmesh-full-alloy-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "alloy"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "prometheus",
+      "container": "ukmesh-full-prometheus-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:9090/api/v1/query?query=sum(up)",
+          "json_path": "data.result.0.value.1",
+          "equals": "16"
+        }
+      ]
+    },
+    {
+      "name": "grafana",
+      "container": "ukmesh-full-grafana-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "grafana"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "alert-receiver",
+      "container": "ukmesh-full-alert-receiver-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3107/counts",
+          "json_path": "alerts"
+        }
+      ]
+    },
+    {
+      "name": "alertmanager",
+      "container": "ukmesh-full-alertmanager-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "alertmanager"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "postgres-exporter",
+      "container": "ukmesh-full-postgres-exporter-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "postgres-exporter"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "redis-exporter",
+      "container": "ukmesh-full-redis-exporter-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "redis-exporter"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "node-exporter",
+      "container": "ukmesh-full-node-exporter-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "node-exporter"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "blackbox-exporter",
+      "container": "ukmesh-full-blackbox-exporter-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "blackbox-exporter"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "external-test",
+      "container": "ukmesh-full-external-test-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3107/counts",
+          "json_path": "tags"
+        }
+      ]
+    },
+    {
+      "name": "alert-bootstrap",
+      "container": "ukmesh-full-alert-bootstrap-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3107/counts",
+          "json_path": "alerts"
+        }
+      ]
+    },
+    {
+      "name": "beacon-db",
+      "container": "ukmesh-companions-beacon-db-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-companions-beacon-db-1",
+          "user": "beacon_dev",
+          "database_target": "beacon",
+          "query": "SELECT count(*) FROM packet_observations"
+        }
+      ]
+    },
+    {
+      "name": "beacon-redis",
+      "container": "ukmesh-companions-beacon-redis-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "beacon-redis"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "corescope-ingestor",
+      "container": "ukmesh-companions-corescope-ingestor-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3102/api/stats",
+          "json_path": "totalPackets"
+        }
+      ]
+    },
+    {
+      "name": "corescope",
+      "container": "ukmesh-companions-corescope-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:3102/api/stats",
+          "json_path": "totalPackets"
+        }
+      ]
+    },
+    {
+      "name": "beacon",
+      "container": "ukmesh-companions-beacon-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-companions-beacon-db-1",
+          "user": "beacon_dev",
+          "database_target": "beacon",
+          "query": "SELECT count(*) FROM packet_observations"
+        }
+      ]
+    },
+    {
+      "name": "beacon-web",
+      "container": "ukmesh-companions-beacon-web-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "http",
+          "url": "http://127.0.0.1:5175/api/v1/info",
+          "json_path": "serverVersion",
+          "equals": "2.2.0"
+        }
+      ]
+    },
+    {
+      "name": "sample-db",
+      "container": "ukmesh-sample-db",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-sample-db",
+          "user": "meshcore",
+          "database_target": "ukmesh",
+          "query": "SELECT count(*) FROM mesh.packets"
+        }
+      ]
+    },
+    {
+      "name": "sample-redis",
+      "container": "ukmesh-sample-redis",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "sample-redis"
+          ],
+          "timeout": 30
+        }
+      ]
+    },
+    {
+      "name": "sample-mqtt",
+      "container": "ukmesh-sample-mqtt",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "metric",
+          "url": "http://127.0.0.1:9091/metrics",
+          "pattern": "^meshcore_mqtt_delivery_probe_healthy (\\d+)"
+        }
+      ]
+    },
+    {
+      "name": "mqtt-log-init",
+      "container": "ukmesh-sample-mqtt-log-init-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "metric",
+          "url": "http://127.0.0.1:9091/metrics",
+          "pattern": "^meshcore_mqtt_connection_monitor_healthy (\\d+)"
+        }
+      ]
+    },
+    {
+      "name": "beacon-migrate",
+      "container": "ukmesh-companions-beacon-migrate-1",
+      "kind": "oneshot",
+      "required": true,
+      "work": [
+        {
+          "kind": "sql",
+          "container": "ukmesh-companions-beacon-db-1",
+          "user": "beacon_dev",
+          "database_target": "beacon",
+          "query": "SELECT count(*) FROM schema_migration_integrity"
+        }
+      ]
+    },
+    {
+      "name": "mosquitto-reloader",
+      "container": "ukmesh-full-mosquitto-reloader-1",
+      "kind": "container",
+      "required": true,
+      "work": [
+        {
+          "kind": "command",
+          "command": [
+            "python3",
+            "scripts/full-dev/work.py",
+            "mosquitto-reloader"
+          ],
+          "timeout": 15
+        }
+      ]
+    }
+  ]
+}
