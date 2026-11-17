@@ -151,6 +151,47 @@ test('indexed node projections and search retain canonical view results for alia
       client.release();
     }
   });
+  await t.test('viable-link access paths preserve nullable flags, metrics and concurrent publication', async () => {
+    const client = await pool.connect();
+    const migration = await readFile(new URL('../db/migrations/154_index_viable_link_reads.sql',import.meta.url),'utf8');
+    const peers = Array.from({length:6},(_,i) => `D${i}`.repeat(32));
+    try {
+      await client.query('BEGIN');
+      for (const [i,[viable,forced]] of [[true,false],[false,false],[null,false],[true,true],[false,true],[null,true]].entries()) {
+        await client.query(`INSERT INTO core.node_links
+          (node_a_id,node_b_id,observed_count,multibyte_observed_count,itm_viable,force_viable,
+           itm_path_loss_db,count_a_to_b,count_b_to_a,last_observed)
+          VALUES ($1,$2,$3,1,$4,$5,123,2,3,NOW())`,[key('1'),peers[i],i+5,viable,forced]);
+      }
+      await client.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+      // Compare the established unindexed behavior before applying the migration.
+      await client.query('DROP INDEX core.node_identity_links_viable_metrics_idx');
+      const rows = async () => ({
+        pairs:(await client.query(`SELECT node_a_id,node_b_id FROM core.node_links
+          WHERE itm_viable=true OR force_viable=true ORDER BY node_a_id,node_b_id`)).rows,
+        metrics:(await client.query(`SELECT * FROM core.node_identity_links ORDER BY node_a_id,node_b_id`)).rows,
+      });
+      const before = await rows();
+      assert.deepEqual(before.pairs.map(row => row.node_b_id),[peers[0],peers[3],peers[4],peers[5]]);
+      await client.query(migration);
+      await client.query(migration);
+      assert.deepEqual(await rows(),before);
+      await client.query(`UPDATE core.node_links SET observed_count=observed_count+1,
+        multibyte_observed_count=multibyte_observed_count+1,count_a_to_b=count_a_to_b+1,
+        itm_viable=CASE WHEN node_b_id=$1 THEN false WHEN node_b_id=$2 THEN true ELSE itm_viable END`,[peers[0],peers[1]]);
+      await client.query('REFRESH MATERIALIZED VIEW CONCURRENTLY core.node_identity_links');
+      const after = await rows();
+      assert.deepEqual(after.pairs.map(row => row.node_b_id),[peers[1],peers[3],peers[4],peers[5]]);
+      assert.deepEqual(after.metrics,before.metrics.map(row => ({...row,
+        observed_count:row.observed_count+1,multibyte_observed_count:row.multibyte_observed_count+1,
+        count_a_to_b:row.count_a_to_b+1,
+        itm_viable:row.node_b_id===peers[0]?false:row.node_b_id===peers[1]?true:row.itm_viable,
+      })));
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
   const priorityIds = [key('1'), key('4'), key('7'), key('A')];
   const availableIds = new Set(original.map(row => row.node_id));
   const boundaryIds = [...new Set([...priorityIds.filter(id => availableIds.has(id)), ...availableIds])];

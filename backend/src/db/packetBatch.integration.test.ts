@@ -267,6 +267,7 @@ test('base schema and every migration apply to a brand-new database', {
     'node_identity_links_node_a_idx',
     'node_identity_links_node_b_idx',
     'node_identity_links_pair_uidx',
+    'node_identity_links_viable_metrics_idx',
     'node_identity_sightings_network_node_idx',
     'node_identity_sightings_node_network_uidx',
   ]);

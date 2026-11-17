@@ -2268,3 +2268,51 @@ qualification. Do not change workloads, timing or acceptance limits.
   network reads, shared in-flight promise, atomic replacement, error handling,
   refresh cadence and all public map/read contracts unchanged. Add no cache,
   settings, index, service or privacy-rule copy.
+
+## Index the shared viable-link access patterns
+
+- The smaller privacy projection preserves all identities and removes its sort,
+  but the unchanged baseline cohort still fails:9600 correct responses, no
+  errors or undispatched requests, maximum admission delay372ms. Preserve that
+  failure. Its worst scheduled arrival is14:45:46.315UTC. At14:45:44.991 the
+  captured link-worker pair scan has spent776ms with DataFileRead, while the
+  normal API viable-link materialized-view scan has spent829ms. Concurrent
+  timed map reads use the existing fast paged identity projection. These are
+  overlapping shared-storage costs, not sole-cause proof. Evidence:
+  final-evidence/chart-demand-d6e99d6-_628pw_k.
+- Catalog inspection finds only endpoint and unique-pair indexes: the441003-row
+  raw link heap is190MB and the identity-link materialized heap95MB. The latter
+  is almost entirely all-visible. Both consumers explicitly select the same
+  viable-or-forced subset, about99510 rows, but currently scan the broad heaps.
+- Test a partial raw pair index and a partial covering identity-link metrics
+  index for the exact existing viability predicate. The database owns this
+  access path; leave graph queries, identity publication, privacy, scope, cache
+  cadence, math, worker lifecycle and resource settings unchanged. Do not
+  include changing metrics in the raw pair index. Account for index storage
+  and materialized-view refresh/write cost.
+- First retain actual application-role read-only plans. Compare exact rows and
+  plans before/after indexes in a repeatable-read administrative transaction on
+  the explicitly owned10x fixture and roll back all DDL. Role-switched prototype
+  queries model planner permissions only; they do not prove authentication or
+  application capabilities. Adopt migrations only if reduced work and behavior
+  parity are demonstrated; then recheck actual deployed roles and qualification.
+- The two-index rollback prototype preserves full rows and the actual bounded
+ 20000-link seed, reducing read blocks and avoiding both broad scans. Its
+ real Python32-pair write/tri-state/refresh trial, however, increases median
+ isolated write time10.838ms to13.109ms (20.96%). Retain this adverse result
+ and reject the raw-table index from this stage. Do not call this a performance
+ pass or offset it with read gains. Evidence: viable-link-index-write-refresh-
+ d6e99d6-5195sz5g.
+- Repeat the identical AB/BA/AB workload with only the materialized-view cover.
+ All controlled values and returned fields match, all DDL/data changes roll
+ back, and prototype indexes are absent afterwards. Median write time is
+ 12.597ms versus11.592ms and concurrent refresh6262ms versus6250ms. These
+ small stage timings establish no observed median penalty, not integrated
+ acceptance. Cluster WAL insert-LSN deltas include unrelated writes; statement
+ EXPLAIN WAL is reported separately. Evidence: final-evidence/
+ viable-link-mv-only-write-refresh-d6e99d6-8m_hblfu.
+- Adopt only the partial metrics cover on core.node_identity_links. Keep raw
+ link storage/indexes unchanged and retain the unconditional unique pair index
+ and endpoint indexes. Recheck final-scope read/seed parity, native migration,
+ tri-state transitions, concurrent refresh and actual deployed roles before
+ the unchanged full-stack trials. All original criteria remain binding.
