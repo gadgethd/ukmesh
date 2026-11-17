@@ -19,6 +19,8 @@ services:
       - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
       - -c
       - autovacuum_work_mem=${POSTGRES_AUTOVACUUM_WORK_MEM:-32MB}
+      - -c
+      - wal_compression=${POSTGRES_WAL_COMPRESSION:-lz4}
     cpus: 2
     mem_limit: &postgres-memory 2g
     memswap_limit: *postgres-memory

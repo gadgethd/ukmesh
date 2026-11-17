@@ -1912,3 +1912,27 @@ qualification. Do not change workloads, timing or acceptance limits.
   packet data is untouched. This evidence supports region semantic equivalence,
   not raw-byte equality or an integrated latency claim. Preserve all calculations,
   pools, deadlines, admission/publication ownership and fresh qualification gates.
+
+
+## Compress full-page WAL images at the main PostgreSQL policy owner
+
+- The failed9d2aa47 short run generated547,995,216 WAL bytes during1,800 ACKs,
+  including its auxiliary and background work. A requested checkpoint overlapped
+  the map outliers. This motivates reducing disk traffic without raising WAL or
+  memory allowances; it does not establish the cause of every slow read.
+- PostgreSQL17 documents lossless compression of full-page WAL images and their
+  decompression during replay, with extra logging/replay CPU:
+  https://www.postgresql.org/docs/17/runtime-config-wal.html#GUC-WAL-COMPRESSION.
+  Root's read-only BEGIN/SET LOCAL/ROLLBACK capability receipt at
+  final-evidence/read-failure-668dd8b-ttdkqi77/wal-lz4-capability.json confirms
+  lz4 is supported by both current PostgreSQL builds. Both returned to off after
+  rollback, with fsync, full_page_writes and synchronous_commit on throughout.
+- Add wal_compression=lz4 to the existing shared main PostgreSQL command, with
+  POSTGRES_WAL_COMPRESSION as an explicit normal-Compose override. DEV's clean
+  environment uses the source default. Beacon's separate database command and
+  CI's distinct policy remain unchanged. Preserve all pages, backups, durability,
+  checkpoint settings, memory, CPU, worker and connection bounds.
+- Only full-page images are compressible under this setting, not all measured
+  WAL. The I/O benefit and CPU cost require the existing next qualification run;
+  no latency or resource pass is claimed. Extend the existing Compose policy
+  tests for the default, override isolation and unchanged CI/resources.

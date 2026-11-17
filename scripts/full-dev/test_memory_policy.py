@@ -59,7 +59,7 @@ class LocalMemoryPolicy(unittest.TestCase):
             'shared_preload_libraries': 'timescaledb,pg_stat_statements',
             'max_parallel_workers_per_gather': '0', 'max_connections': '100',
             'shared_buffers': '256MB', 'maintenance_work_mem': '64MB',
-            'autovacuum_work_mem': '32MB',
+            'autovacuum_work_mem': '32MB', 'wal_compression': 'lz4',
         })
         self.assertEqual(database['image'], 'timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509')
         self.assertEqual(float(database['cpus']), 2)
@@ -79,13 +79,15 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertTrue(schema['read_only'])
         self.assertEqual(database['healthcheck']['test'], ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -U meshcore -d meshcore'])
 
-    def test_postgres_memory_overrides_change_only_three_settings_without_changing_resources(self):
+    def test_postgres_overrides_change_only_declared_settings_without_changing_resources(self):
         before = compose('scripts/local-sample/compose.yml')
         after = compose('scripts/local-sample/compose.yml', POSTGRES_SHARED_BUFFERS='512MB',
-                        POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB')
+                        POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB',
+                        POSTGRES_WAL_COMPRESSION='off')
         self.assertEqual(set(after), set(before))
         expected = self.postgres_settings(before['db'])
-        expected.update(shared_buffers='512MB', maintenance_work_mem='128MB', autovacuum_work_mem='64MB')
+        expected.update(shared_buffers='512MB', maintenance_work_mem='128MB',
+                        autovacuum_work_mem='64MB', wal_compression='off')
         self.assertEqual(self.postgres_settings(after['db']), expected)
         for service in before:
             if service != 'db':
@@ -119,11 +121,12 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertNotIn('random_page_cost', database)
         self.assertNotIn('effective_cache_size', database)
 
-    def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_memory_overrides(self):
+    def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_policy_overrides(self):
         files = ('docker-compose.yml', 'docker-compose.ci.yml')
         before = compose(*files)['timescaledb']
         after = compose(*files, POSTGRES_SHARED_BUFFERS='512MB',
                         POSTGRES_MAINTENANCE_WORK_MEM='128MB', POSTGRES_AUTOVACUUM_WORK_MEM='64MB',
+                        POSTGRES_WAL_COMPRESSION='off',
                         DATABASE_ANALYTICS_RANDOM_PAGE_COST='2.5', DATABASE_ANALYTICS_EFFECTIVE_CACHE_SIZE='1GB')['timescaledb']
         self.assertEqual(after, before)
         self.assertEqual(int(before['mem_limit']), 4096 * MIB)
