@@ -1837,3 +1837,20 @@ qualification. Do not change workloads, timing or acceptance limits.
   cleanup wait before checking session/claim removal and the unchanged snapshot
   fingerprint. Keep the five-second child deadline and every production bound;
   a fresh successful native run is required.
+
+
+## Release region rebuild inputs when their consumers finish
+
+- Keep one read-only geometry record per located public node and reuse it across
+  unattributed packets. The clustering implementation reads these records and
+  constructs its own output; repeated packet membership needs references, not
+  duplicate coordinates and names.
+- Save packet counts separately, discard raw hex after decoding, and release
+  source rows and intermediate maps after their last consumers. This removes the
+  link between final publication/log counts and retaining the entire input graph.
+  Preserve every SQL statement, read and iteration order, calculation, privacy
+  fence, atomic transaction, capacity and deadline.
+- The failed05205fa preflight remains failed. This reduces unnecessary retention;
+  initial query materialization remains, and memory savings or effects on host
+  swap and latency require measurement. No cache, worker or resource allowance is
+  changed, and no additional validation harness is introduced.

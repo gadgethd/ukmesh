@@ -161,9 +161,10 @@ async function rebuildWithAdmission(
         LIMIT $2`,
       [windowDays, settings.maxPackets + 1],
     );
-    console.log(`[regions] scoped packets: ${scopedRows.length} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
-    if (scopedRows.length > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
-    if (scopedRows.length === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
+    const scopedPacketCount = scopedRows.length;
+    console.log(`[regions] scoped packets: ${scopedPacketCount} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    if (scopedPacketCount > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
+    if (scopedPacketCount === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
 
     const regionTotals = new Map<string, number>();
     const regionFirstSeen = new Map<string, Date>();
@@ -185,6 +186,7 @@ async function rebuildWithAdmission(
           );
         }
       }
+      row.raw = null;
       packetRegion.set(row.packet_hash, region);
       if (!region) unattributedRows.push(row);
       if (region) {
@@ -196,9 +198,10 @@ async function rebuildWithAdmission(
         if (!last || row.t1 > last) regionLastSeen.set(region, row.t1);
       }
     }
-    const unknownCount = scopedRows.length - decodedCount;
-    console.log(`[regions] decoded ${decodedCount}/${scopedRows.length} (${unknownCount} unknown)`);
-    if (scopedRows.length > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
+    const unattributedPacketCount = unattributedRows.length;
+    const unknownCount = scopedPacketCount - decodedCount;
+    console.log(`[regions] decoded ${decodedCount}/${scopedPacketCount} (${unknownCount} unknown)`);
+    if (scopedPacketCount > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
 
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
@@ -227,15 +230,16 @@ async function rebuildWithAdmission(
     // gap geographically without inventing a region name. Nodes that opted out
     // of public display are dropped here, so no cluster geometry is derived
     // from them.
-    const nodeInfo = new Map<string, { lat: number; lon: number; name: string | null }>();
+    const nodeInfo = new Map<string, Readonly<UnattributedPacket['nodes'][number]>>();
     for (const row of nodeRows) {
       const nodeId = (row.node_id ?? '').trim().toUpperCase();
       if (!nodeId || isPrivateNode(row.name)) continue;
       const lat = row.lat == null ? Number.NaN : Number(row.lat);
       const lon = row.lon == null ? Number.NaN : Number(row.lon);
       if (!Number.isFinite(lat) || !Number.isFinite(lon)) continue;
-      nodeInfo.set(nodeId, { lat, lon, name: row.name ?? null });
+      nodeInfo.set(nodeId, { nodeId, lat, lon, name: row.name ?? null });
     }
+    nodeRows.length = 0;
 
     const unattributedPackets: UnattributedPacket[] = [];
     for (const row of unattributedRows) {
@@ -246,7 +250,7 @@ async function rebuildWithAdmission(
         const info = nodeInfo.get(nodeId);
         if (!info) return;
         seen.add(nodeId);
-        nodes.push({ nodeId, lat: info.lat, lon: info.lon, name: info.name });
+        nodes.push(info);
       };
       for (const element of row.elems ?? []) {
         const resolved = resolveElement(prefixIndex, element);
@@ -260,11 +264,14 @@ async function rebuildWithAdmission(
         lastSeen: row.t1,
       });
     }
+    unattributedRows.length = 0;
+    nodeInfo.clear();
     const unattributedClusters = clusterUnattributedPackets(unattributedPackets, {
       radiusKm: 60,
       minPackets: 10,
     });
-    console.log(`[regions] unattributed: ${unattributedRows.length} packets -> ` +
+    unattributedPackets.length = 0;
+    console.log(`[regions] unattributed: ${unattributedPacketCount} packets -> ` +
       `${unattributedClusters.clusters.length} clusters ` +
       `(${unattributedClusters.clusteredPackets} clustered, ` +
       `${unattributedClusters.discardedPackets} below floor, ` +
@@ -300,6 +307,8 @@ async function rebuildWithAdmission(
         }
       }
     }
+    scopedRows.length = 0;
+    packetRegion.clear();
     console.log(`[regions] element stats: ${JSON.stringify(Object.fromEntries([...elementStats.entries()].sort()))}`);
 
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(
@@ -321,6 +330,8 @@ async function rebuildWithAdmission(
       const nodeId = resolveElement(prefixIndex, row.e);
       if (nodeId) unscoped.set(nodeId, (unscoped.get(nodeId) ?? 0) + Number(row.c));
     }
+    unscopedRows.length = 0;
+    prefixIndex.clear();
     console.log(`[regions] unscoped relay evidence (7d): ${unscoped.size} nodes, ${[...unscoped.values()].reduce((sum, value) => sum + value, 0)} relay counts`);
 
     // Region view (members = relays with resolved ids carrying at least
@@ -394,12 +405,12 @@ async function rebuildWithAdmission(
     if (dryRun) {
       console.log(JSON.stringify({
         status: 'dry-run',
-        scopedPackets: scopedRows.length,
+        scopedPackets: scopedPacketCount,
         decodedPackets: decodedCount,
         regions: regionTotals.size,
         members: members.length,
         classification: classification.length,
-        unattributedPackets: unattributedRows.length,
+        unattributedPackets: unattributedPacketCount,
         unattributedClusters: unattributedClusters.clusters.length,
       }));
       return;
@@ -492,7 +503,7 @@ async function rebuildWithAdmission(
       await client.query(
         `INSERT INTO core.region_scope_run (id, finished_at, window_days, scoped_packets, decoded_packets, visibility_generation, network)
          VALUES (TRUE, now(), $1, $2, $3, $4, 'ukmesh')`,
-        [windowDays, scopedRows.length, decodedCount, visibilityGeneration],
+        [windowDays, scopedPacketCount, decodedCount, visibilityGeneration],
       );
       if (await readPublicResponseGeneration((sql) => client.query(sql)) !== visibilityGeneration) {
         throw new Error('REGION_SNAPSHOT_VISIBILITY_CHANGED');
@@ -505,12 +516,12 @@ async function rebuildWithAdmission(
 
     console.log(JSON.stringify({
       status: 'complete',
-      scopedPackets: scopedRows.length,
+      scopedPackets: scopedPacketCount,
       decodedPackets: decodedCount,
       regions: regionTotals.size,
       members: members.length,
       classification: classification.length,
-      unattributedPackets: unattributedRows.length,
+      unattributedPackets: unattributedPacketCount,
       unattributedClusters: unattributedClusters.clusters.length,
       elapsedSeconds: Math.round((Date.now() - startedAt) / 1000),
     }));
