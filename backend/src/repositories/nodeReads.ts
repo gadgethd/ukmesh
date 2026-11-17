@@ -87,6 +87,18 @@ export async function getNodes(
   return res.rows;
 }
 
+/** Privacy refresh needs every scoped identity, including nodes excluded from maps. */
+export async function getNodePrivacyRows(network?: string) {
+  const scope = buildScopePlaceholders(1, network);
+  const res = await query<{ node_id: string; name: string | null }>(
+    `SELECT n.node_id, n.name
+     FROM ${publicIdentityNodeSourceSql()} n
+     WHERE 1=1${buildNodeScopeClause(scope, 'n')}`,
+    scope.params,
+  );
+  return res.rows;
+}
+
 export async function getNodeHistory(nodeId: string, hours = 24, network = 'ukmesh') {
   const scope = buildScopePlaceholders(3, network);
   const aliases = nodeAliasArraySql('$1');

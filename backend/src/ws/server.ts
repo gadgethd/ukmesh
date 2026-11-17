@@ -5,7 +5,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
 import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes } from '../repositories/nodeReads.js';
+import { getNodes, getNodePrivacyRows } from '../repositories/nodeReads.js';
 import { getRecentPackets, getRecentMessages } from '../repositories/packetReads.js';
 import { getViableLinks } from '../repositories/topologyReads.js';
 import {
@@ -213,7 +213,7 @@ let privacyRefreshInFlight: Promise<void> | null = null;
 
 function refreshPrivacyIndex(): Promise<void> {
   if (privacyRefreshInFlight) return privacyRefreshInFlight;
-  const tracked = Promise.all([getNodes('ukmesh'), getNodes('test')])
+  const tracked = Promise.all([getNodePrivacyRows('ukmesh'), getNodePrivacyRows('test')])
     .then(([productionNodes, testNodes]) => {
       publicPrivacy.replace([...productionNodes, ...testNodes]);
     })

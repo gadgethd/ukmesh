@@ -15,6 +15,9 @@ import { createNodeRepository } from './nodes.js';
 import { createDatabaseRuntime } from '../db/databaseRuntime.js';
 import { mockRuntimeQuery } from '../db/fixtures/mockRuntimeQuery.js';
 import { getViableLinks } from './topologyReads.js';
+import { getNodes, getNodePrivacyRows } from './nodeReads.js';
+import { buildScopePlaceholders, buildNodeScopeClause } from '../db/readScope.js';
+import { PublicWsPrivacyIndex } from '../ws/privacy.js';
 
 const endpoint = process.env['TEST_SAMPLE_DATABASE_URL'];
 
@@ -91,6 +94,57 @@ test('indexed node projections and search retain canonical view results for alia
       ]);
       for (const network of ['northeast', 'test', 'missing']) {
         assert.deepEqual(await getViableLinks(network), [], `both endpoints must satisfy ${network}`);
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+  await t.test('WebSocket privacy refresh retains complete scoped identity names', async inner => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(`INSERT INTO core.nodes(node_id,name,network,role,lat,lon,last_seen) VALUES
+        ($1,'Private client 🚫','ukmesh',1,NULL,NULL,NOW()-INTERVAL '60 days'),
+        ($2,'Private test 🚫','test',3,95,0,NOW()),
+        ($3,'Private recent sighting 🚫','othernet',4,0,0,NOW()),
+        ($4,'Private expired sighting 🚫','othernet',2,51,-1,NOW()),
+        ($5,'Private alias 🚫','northeast',2,51,-1,NOW()+INTERVAL '1 minute')`,
+      [key('D'),key('E'),key('F'),key('5'),'AB'.repeat(32)]);
+      await client.query(`INSERT INTO core.node_identity_aliases
+        (source_node_id,canonical_node_id,confidence,reason)
+        VALUES ($1,$2,'high','privacy refresh fixture')`, ['AB'.repeat(32),key('1')]);
+      await client.query(`UPDATE core.nodes SET name='Canonical private 🚫' WHERE node_id=$1`,[key('1')]);
+      await client.query(`UPDATE core.nodes SET name='Private null presence 🚫',last_seen=NULL WHERE node_id=$1`,[key('c')]);
+      await client.query(`INSERT INTO core.node_map_suppressions(node_id,suppressed_by_node_id,reason,distance_m,stale_age_days,freshest_age_days) VALUES ($1,$1,'stale-colocated',0,60,1)`,[key('D')]);
+      await client.query(`INSERT INTO core.node_network_sightings(node_id,network,last_seen_at)
+        VALUES ($1,'ukmesh',NOW()-INTERVAL '29 days'),
+               ($2,'ukmesh',NOW()-INTERVAL '30 days'),
+               ($3,'ukmesh',NOW())`, [key('F'),key('5'),key('E')]);
+      await client.query('REFRESH MATERIALIZED VIEW core.node_identity_sightings');
+      mockRuntimeQuery(inner, (sql, params) => client.query(sql, params));
+      const order = (rows: Array<{node_id: string; name: string | null}>) =>
+        rows.map(({node_id,name}) => ({node_id,name})).sort((a,b) => a.node_id.localeCompare(b.node_id));
+      for (const network of [undefined,'ukmesh','northeast','test','othernet','missing']) {
+        const scope = buildScopePlaceholders(1,network);
+        const reference = (await client.query(`SELECT n.node_id,n.name FROM core.node_identity_nodes n
+          WHERE 1=1${buildNodeScopeClause(scope,'n')}`,scope.params)).rows;
+        const actual = order(await getNodePrivacyRows(network));
+        assert.deepEqual(actual,order(await getNodes(network)),`previous full privacy read for ${network}`);
+        assert.deepEqual(actual,order(reference),`complete privacy identities for ${network}`);
+        const index = new PublicWsPrivacyIndex(); index.replace(actual);
+        const expected = new PublicWsPrivacyIndex(); expected.replace(reference);
+        for (const row of original.concat(reference)) {
+          assert.equal(index.hasNode(row.node_id),expected.hasNode(row.node_id));
+          for (const width of [1,2,3]) {
+            const packet = {path:[row.node_id.slice(0,width*2)],pathHashSizeBytes:width,visibilityOk:true};
+            assert.equal(index.packetHasPrivateParticipant(packet),expected.packetHasPrivateParticipant(packet));
+          }
+        }
+        if (network === 'ukmesh') {
+          for (const id of [key('D'),key('F'),key('c')]) assert.equal(index.hasNode(id),true,id);
+          for (const id of [key('1'),key('5'),key('E')]) assert.equal(index.hasNode(id),false,id);
+        }
       }
     } finally {
       await client.query('ROLLBACK');

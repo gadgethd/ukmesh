@@ -2243,3 +2243,28 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Keep the remaining Promise.all work, error propagation, defaults, liveness
   logic, metrics, freshness and cadence unchanged. One statement provides one
   snapshot/cutoff; add no cache, settings, index, transaction or new service.
+
+## Give the WebSocket privacy index its own narrow read
+
+- The deployed shared Health Check link scan removes two redundant scans, but
+  the next demand cohort still fails:9596 correct responses,4 not admitted,
+  maximum admission delay154ms. Preserve the failure and resource/log passes.
+  Near its worst delay the capture includes two full getNodes reads and health
+  overview work on the HTTP pool. This identifies overlapping work, not proof
+  that either alone caused the delay. Evidence: final-evidence/
+  chart-demand-6d9b445-uutdjshm.
+- PublicWsPrivacyIndex.replace reads only node_id and name; its refresh borrows
+  getNodes, coupling privacy maintenance to map fields, presence calculations,
+  sorting and wide row transfer. Keep canonical identity and network membership
+  under the existing repository helpers. Add a two-column privacy read using
+  the same publicIdentityNodeSourceSql and buildNodeScopeClause. Do not filter
+  private names, map roles, coordinates, ages or suppressions. The complete
+  private identity set, including aliases and recent sightings, remains needed.
+- Establish the current full-read projection as a native behavior oracle before
+  changing the consumer. Cover aliases, missing canonical and legacy collisions,
+  public/private names, non-map roles and invalid coordinates, test isolation,
+  recent and exact30-day sighting boundaries. Compare unordered ID/name sets;
+  the privacy index owns sets and does not use map ordering. Keep its parallel
+  network reads, shared in-flight promise, atomic replacement, error handling,
+  refresh cadence and all public map/read contracts unchanged. Add no cache,
+  settings, index, service or privacy-rule copy.
