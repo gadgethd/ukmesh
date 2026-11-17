@@ -26,6 +26,38 @@ type PathingRepositoryDeps = {
 
 export type PathingRepository = ReturnType<typeof createPathingRepository>;
 
+type EdgePriorOrder = {
+  score: number;
+  observed_count: number;
+  from_node_id: string;
+  to_node_id: string;
+  hour_bucket: number;
+  receiver_region: string;
+};
+
+/** Compare text the way PostgreSQL's default C collation does for these keys. */
+function compareText(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
+/**
+ * Total order for `/api/path-learning` edge priors.
+ *
+ * `(score, observed_count)` alone is not unique: ties were returned in
+ * whatever order the planner produced, so two identical reads could emit a
+ * different `edgePriors` array (and a different LIMIT boundary set). The
+ * repository key `(from_node_id, to_node_id, hour_bucket, receiver_region)` is
+ * unique, which makes both the selected set and the emitted order stable.
+ */
+export function compareEdgePriors(a: EdgePriorOrder, b: EdgePriorOrder): number {
+  return (b.score - a.score)
+    || (b.observed_count - a.observed_count)
+    || compareText(a.from_node_id, b.from_node_id)
+    || compareText(a.to_node_id, b.to_node_id)
+    || (a.hour_bucket - b.hour_bucket)
+    || compareText(a.receiver_region, b.receiver_region);
+}
+
 export function createPathingRepository(deps: PathingRepositoryDeps) {
   const { getPublicVisibilityGeneration, query } = deps;
 
@@ -96,7 +128,8 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
          WHERE pe.network = $1
            AND (from_node.name IS NULL OR from_node.name NOT LIKE '%🚫%')
            AND (to_node.name IS NULL OR to_node.name NOT LIKE '%🚫%')
-         ORDER BY pe.score DESC, pe.observed_count DESC
+         ORDER BY pe.score DESC, pe.observed_count DESC,
+                  pe.from_node_id, pe.to_node_id, pe.hour_bucket, pe.receiver_region
          LIMIT $2`,
         [network, limit],
       ),
@@ -135,6 +168,12 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
         [network],
       ),
     ]);
+
+    // Belt and braces: the SQL tie-break fixes the LIMIT boundary, and this
+    // sort makes the emitted array independent of whatever order the driver
+    // hands back. A future edit that drops a key from ORDER BY still cannot
+    // make two identical reads disagree here.
+    edgeRows.rows.sort(compareEdgePriors);
 
     return {
       prefixRows,
