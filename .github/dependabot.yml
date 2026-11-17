@@ -14,6 +14,15 @@ updates:
     groups:
       frontend-dependencies:
         patterns: ['*']
+        exclude-patterns:
+          - 'maplibre-gl'
+          - '@maplibre/*'
+    ignore:
+      # maplibre-gl is version-locked on purpose: frontend/src/plugins/maplibre-source.ts
+      # rebuilds MapLibre from its own source maps and refuses to build for any other
+      # version until that source/worker inventory is re-qualified (#239).
+      - dependency-name: 'maplibre-gl'
+      - dependency-name: '@maplibre/*'
   - package-ecosystem: npm
     directory: /scripts
     schedule:
