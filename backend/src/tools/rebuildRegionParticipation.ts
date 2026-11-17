@@ -30,6 +30,7 @@
  *   REGION_SCOPE_MAX_NODES       node cap (default 100000)
  *   REGION_SCOPE_STATEMENT_TIMEOUT_MS SQL deadline (default 120000)
  *   REGION_SCOPE_WORK_MEM_KB     per-operation PostgreSQL scratch memory (default 16384)
+ *   REGION_SCOPE_BITMAP_SCAN=1   allow bitmap scans (disabled for bulk reads by default)
  *
  * All five tables are refreshed wholesale inside ONE transaction (delete +
  * insert), so readers never observe an empty or partial state. If the scoped
@@ -106,7 +107,8 @@ async function rebuildWithAdmission(
   admit: (options: HeavyWorkAdmissionOptions<void>) => Promise<HeavyWorkAdmissionResult<void>>,
 ): Promise<HeavyWorkAdmissionResult<void>> {
   const settings = regionRebuildSettings();
-  const database = analyticsConnectionOptions(process.env, undefined, `-c work_mem=${settings.workMemKb}kB`);
+  const database = analyticsConnectionOptions(process.env, undefined,
+    `-c work_mem=${settings.workMemKb}kB -c enable_bitmapscan=${settings.bitmapScan ? 'on' : 'off'}`);
   if (!database.connectionString) throw new Error('MESHCORE_WORKER_DATABASE_URL or DATABASE_URL is required');
   const { windowDays } = settings;
   const dryRun = process.env['REGION_SCOPE_DRY_RUN'] === '1';

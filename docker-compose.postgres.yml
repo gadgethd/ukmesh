@@ -14,7 +14,7 @@ services:
       - -c
       - max_connections=100
       - -c
-      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-256MB}
+      - shared_buffers=${POSTGRES_SHARED_BUFFERS:-128MB}
       - -c
       - maintenance_work_mem=${POSTGRES_MAINTENANCE_WORK_MEM:-64MB}
       - -c

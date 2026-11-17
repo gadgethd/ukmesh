@@ -14,6 +14,9 @@ test('region tuning keeps finite source, execution and poll limits', () => {
   assert.equal(regionRebuildSettings({ REGION_SCOPE_RUN_TIMEOUT_MS: '0' }).runTimeoutMs, 5000);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_MAX_PACKETS: '1e99' }).maxPackets, 2_000_000);
   assert.equal(settings.workMemKb, 16_384);
+  assert.equal(settings.bitmapScan, false);
+  assert.equal(regionRebuildSettings({ REGION_SCOPE_BITMAP_SCAN: '1' }).bitmapScan, true);
+  assert.equal(regionRebuildSettings({ REGION_SCOPE_BITMAP_SCAN: '0' }).bitmapScan, false);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '32768' }).workMemKb, 32_768);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '1' }).workMemKb, 64);
   assert.equal(regionRebuildSettings({ REGION_SCOPE_WORK_MEM_KB: '1e99' }).workMemKb, 262_144);

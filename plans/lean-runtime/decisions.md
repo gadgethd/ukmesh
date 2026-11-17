@@ -2042,3 +2042,34 @@ qualification. Do not change workloads, timing or acceptance limits.
   pools, resource limits and privacy fences. Main configuration must own this
   maintenance before any fresh matched evidence is collected at either scale;
   fixture-only conditioning cannot substitute for the final runtime.
+
+## Protect interactive buffers from the admitted regional scan
+
+- The 488ea22 short trial passes the default map at 201.6 ms but fails history,
+  observer map and packet detail during regional source I/O. Integrity and all 13
+  resource checks pass; retain the failure. Pool waits are below 100 ms and the
+  execution histograms include the SQL outliers. Node locality remains useful
+  but does not protect packet/history pages from the shared scan pressure.
+- Actual main PostgreSQL is 16.11. Its tableam.h starts bitmap scans without
+  SO_ALLOW_STRAT, while heapam.c permits bulk-read rings for sequential scans
+  only above one quarter of shared_buffers:
+  https://github.com/postgres/postgres/blob/REL_16_STABLE/src/include/access/tableam.h
+  https://github.com/postgres/postgres/blob/REL_16_STABLE/src/backend/access/heap/heapam.c
+  With 256 MiB, multiple 34–60 MiB chunks use normal buffers. At 128 MiB they can
+  use the bulk-read strategy. This explains a mechanism to test, not a claim
+  that every observed delay has a single cause.
+- Lower only the shared main PostgreSQL buffer default to 128 MiB, retaining its
+  explicit larger-VPS override and separate CI policy. Discourage bitmap scans
+  only in the regional rebuild pool, owned by regionRebuildSettings and its
+  existing startup-option merger. REGION_SCOPE_BITMAP_SCAN=1 restores them.
+  HTTP, ingest, owner and other analytic pool planner flags remain unchanged.
+- Bitmap-off does not guarantee sequential plans. Inspect actual regional
+  plans/session settings and pg_stat_io normal/bulk-read activity; those counters
+  aggregate client backends and must not be attributed solely to the region job.
+  A smaller buffer cache can increase other misses: existing matched reads and
+  operations, plus unchanged short/full workloads, decide acceptance.
+- Preserve locality maintenance, all pools, deadlines, durability, response
+  caches/freshness, history, algorithms, cadence and criteria. No resource cap
+  increase or new runtime service/framework is introduced. Check defaults and
+  overrides, actual regional sessions and producer/privacy behavior before
+  canonical rollout and fresh qualification.

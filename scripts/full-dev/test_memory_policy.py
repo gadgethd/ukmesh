@@ -58,7 +58,7 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.assertEqual(self.postgres_settings(database), {
             'shared_preload_libraries': 'timescaledb,pg_stat_statements',
             'max_parallel_workers_per_gather': '0', 'max_connections': '100',
-            'shared_buffers': '256MB', 'maintenance_work_mem': '64MB',
+            'shared_buffers': '128MB', 'maintenance_work_mem': '64MB',
             'autovacuum_work_mem': '32MB', 'wal_compression': 'lz4',
         })
         self.assertEqual(database['image'], 'timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509')
@@ -120,6 +120,17 @@ class LocalMemoryPolicy(unittest.TestCase):
         database = self.postgres_settings(compose('scripts/local-sample/compose.yml')['db'])
         self.assertNotIn('random_page_cost', database)
         self.assertNotIn('effective_cache_size', database)
+        for service, value in before.items():
+            if service == 'region-snapshot-worker':
+                self.assertEqual(value['environment']['REGION_SCOPE_BITMAP_SCAN'], '0')
+            else:
+                self.assertNotIn('REGION_SCOPE_BITMAP_SCAN', value.get('environment', {}))
+        regional = compose(*files, REGION_SCOPE_BITMAP_SCAN='1')
+        for service in before:
+            expected = dict(before[service])
+            if service == 'region-snapshot-worker':
+                expected['environment'] = dict(expected['environment'], REGION_SCOPE_BITMAP_SCAN='1')
+            self.assertEqual(regional[service], expected)
 
     def test_ci_retains_its_distinct_database_capacity_and_is_not_affected_by_policy_overrides(self):
         files = ('docker-compose.yml', 'docker-compose.ci.yml')
