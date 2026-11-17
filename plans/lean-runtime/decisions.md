@@ -2073,3 +2073,32 @@ qualification. Do not change workloads, timing or acceptance limits.
   increase or new runtime service/framework is introduced. Check defaults and
   overrides, actual regional sessions and producer/privacy behavior before
   canonical rollout and fresh qualification.
+
+## Share the statistics summary's identity snapshot
+
+- The unchanged52 preflight passes1800 ACKs,43 useful services,65 application
+  access checks and13 VM checks. Its formal10x native windows all pass, with
+  candidate p95 maxima71.85/71.42/74.88ms. Retain the formal batch failure:
+  baseline demand completed9600 correct responses but admission lateness329ms
+  exceeded100ms. Do not change the workload, baseline, criteria or resource caps.
+- A bounded read-only diagnostic reproduces the backlog and captures the
+  overlapping SQL at09:59:46–49. Summary counts, topology scope and full state
+  queries compete inside PostgreSQL. Low regional-worker JavaScript CPU does
+  not identify SQL ownership; no regional fix follows from that observation.
+  Evidence: final-evidence/read-demand-activity-52f3725-8awz1mjr.
+- First remove the summary owner's repeated work: fetchStatsSummary currently
+  evaluates core.node_identity_nodes four times under its existing two-query
+  limiter. Materialize one narrow projection with the common network/observer
+  scope, then derive stale/map/total/international results from it. Keep the
+  four packet/longest-hop queries, limiter and public service contract intact.
+- Predicates differ intentionally: international uses raw last_seen, separate
+  latest latitude/longitude subqueries, existing country boxes and null SUM/MAX;
+  map uses effective presence and existing role/coordinate/freshness rules;
+  total has its own role/private-name exclusions. Preserve bigint strings and
+  row shapes. Do not push one category's predicates into the shared scope.
+- Establish real PostgreSQL behavior coverage before adjusting implementation-
+  coupled SQL assertions. Compare old/new values in a pinned read-only snapshot
+  on retained10x, then inspect untimed plans/buffers/temp before adoption.
+  A materialized projection can still spill. Measure this one owner before
+  considering topology or full-state changes. No cache age, history, pool,
+  timeout, service, privilege, durability or mathematical contract changes.

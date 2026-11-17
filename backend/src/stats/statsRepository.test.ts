@@ -278,60 +278,36 @@ test('Compose aggregate switch accepts a comma-separated network value', async (
   }
 });
 
-test('map summary uses the same coordinate, role, and 14-day freshness rules as the map', async () => {
+test('summary shares one scoped identity read and retains its result rows', async () => {
   const calls: Array<{ text: string; params?: unknown[] }> = [];
   const query = async <T extends QueryResultRow = QueryResultRow>(
-    text: string,
-    params?: unknown[],
+    text: string, params?: unknown[],
   ): Promise<{ rows: T[] }> => {
     calls.push({ text, params });
-    return { rows: [] };
+    const rows = text.includes('FROM core.node_identity_nodes') ? [{
+      stale_count: '3', map_node_count: '8', total_node_count: '12',
+      count_connected: '0', total_adverts: null, last_seen_at: null, last_lat: null, last_lon: null,
+    }] : [];
+    return { rows: rows as T[] };
   };
   const repository = createStatsRepository({
     query,
     networkFilters: () => ({
-      params: ['ukmesh'],
-      packets: 'AND network = $1',
+      params: ['ukmesh'], packets: 'AND network = $1',
       packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
-      nodes: 'AND network = $1',
-      nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+      nodes: 'AND network = $1', nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
     }),
   });
-
-  await repository.fetchStatsSummary('ukmesh', undefined);
-
-  assert.equal(
-    calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
-    false,
-    'summary queries must canonicalize through the identity alias relation',
-  );
-
-  const staleSql = calls.find((call) =>
-    call.text.includes("<= NOW() - INTERVAL '14 days'"),
-  )?.text;
-  const mapSql = calls.find((call) =>
-    call.text.includes('nodes.last_path_evidence_at')
-    && call.text.includes('nodes.last_rx_at')
-    && call.text.includes("> NOW() - INTERVAL '28 days'")
-    && !call.text.includes("<= NOW() - INTERVAL '14 days'"),
-  )?.text;
-  assert.ok(staleSql, 'expected stale-node count query');
-  assert.ok(mapSql, 'expected on-map node count query');
-
-  for (const sql of [staleSql, mapSql]) {
-    assert.match(sql, /nodes\.lat BETWEEN -90 AND 90/);
-    assert.match(sql, /nodes\.lon BETWEEN -180 AND 180/);
-    assert.match(sql, /NOT \(ABS\(nodes\.lat\) < 5 AND ABS\(nodes\.lon\) < 5\)/);
-    assert.match(sql, /\(nodes\.role IS NULL OR nodes\.role NOT IN \(1, 3\)\)/);
-    assert.match(sql, /nodes\.last_seen/);
-    assert.match(sql, /nodes\.last_rx_at/);
-    assert.match(sql, /nodes\.last_status_at/);
-    assert.match(sql, /nodes\.last_path_evidence_at/);
-    assert.match(sql, /nodes\.name NOT LIKE/);
-    assert.doesNotMatch(sql, /INTERVAL '7 days'/);
-  }
-
-  assert.match(staleSql, />\s+NOW\(\) - INTERVAL '28 days'/);
+  const result = await repository.fetchStatsSummary('ukmesh', undefined);
+  const identityReads = calls.filter(call => call.text.includes('FROM core.node_identity_nodes'));
+  assert.equal(identityReads.length, 1, 'node categories must share the expensive identity read');
+  assert.deepEqual(identityReads[0].params, ['ukmesh']);
+  assert.deepEqual(result.staleCount.rows, [{ count: '3' }]);
+  assert.deepEqual(result.mapNodeCount.rows, [{ count: '8' }]);
+  assert.deepEqual(result.totalNodeCount.rows, [{ count: '12' }]);
+  assert.deepEqual(result.internationalCount.rows, [{
+    count_connected: '0', total_adverts: null, last_seen_at: null, last_lat: null, last_lon: null,
+  }]);
 });
 
 test('statistics repository bounds concurrent database queries', async () => {

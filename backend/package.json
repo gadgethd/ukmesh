@@ -52,7 +52,7 @@
     "sample:generate": "tsx src/tools/generateSampleDataset.ts",
     "sample:prepare": "tsx src/tools/prepareSampleDataset.ts",
     "sample:smoke": "tsx src/tools/smokeSampleReplay.ts",
-    "test:sample-integration": "node --import tsx --test src/tools/samplePipeline.integration.test.ts src/tools/soakWorksetCounts.integration.test.ts",
+    "test:sample-integration": "node --import tsx --test src/tools/samplePipeline.integration.test.ts src/tools/soakWorksetCounts.integration.test.ts src/stats/statsSummary.integration.test.ts",
     "check": "npm run typecheck && npm test && npm run contract:check",
     "bench:api": "tsx src/tools/benchmarkApi.ts",
     "bench:ingest": "tsx src/tools/benchmarkIngest.ts",

@@ -1252,7 +1252,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
            LIMIT 1`, params);
     };
 
-    const [mqttCount, packetCount, staleCount, mapNodeCount, totalNodeCount, longestHopCount, nodesDayCount, internationalCount] = await Promise.all([
+    const [mqttCount, packetCount, nodeSummary, longestHopCount, nodesDayCount] = await Promise.all([
       network != null
         ? query(`SELECT COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS count
                  FROM mesh.packets p
@@ -1286,31 +1286,16 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
              WHERE time > NOW() - INTERVAL '24 hours'
                AND rx_node_id IS NOT NULL AND rx_node_id <> ''
                ${filters.packets}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
-             WHERE ${publicMapBasePredicate('nodes')}
-               AND ${nodeEffectiveLastSeenSql('nodes')}
-                     <= NOW() - INTERVAL '14 days'
-               AND ${nodeEffectiveLastSeenSql('nodes')}
-                     > NOW() - INTERVAL '28 days'
-               ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
-             WHERE ${publicMapFreshPredicate('nodes')}
-               ${filters.nodes}`, filters.params),
-      query(`SELECT COUNT(*) AS count FROM core.node_identity_nodes nodes
-             WHERE (name IS NULL OR name NOT LIKE '%🚫%')
-               AND (role IS NULL OR role != 4)
-               ${filters.nodes}`, filters.params),
-      longestHopResult(),
-      query(`SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
-             FROM mesh.packets p
-             LEFT JOIN core.node_identity_aliases src_alias
-               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-             WHERE p.time > NOW() - INTERVAL '24 hours'
-               AND p.src_node_id IS NOT NULL
-               ${filters.packetsAlias('p')}`, filters.params),
-      query(`WITH intl AS (
-               SELECT lat, lon, last_seen, advert_count
+      // These categories share identity/network/observer scope, but deliberately
+      // retain separate map, total and international eligibility rules.
+      query(`WITH scoped_nodes AS MATERIALIZED (
+               SELECT name, role, lat, lon, last_seen, last_rx_at,
+                      last_status_at, last_path_evidence_at, advert_count
                FROM core.node_identity_nodes nodes
+               WHERE TRUE ${filters.nodes}
+             ), intl AS (
+               SELECT lat, lon, last_seen, advert_count
+               FROM scoped_nodes nodes
                WHERE lat IS NOT NULL AND lon IS NOT NULL
                  AND lat != 0 AND lon != 0
                  AND last_seen > NOW() - INTERVAL '7 days'
@@ -1330,16 +1315,47 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
                    (lat >= 59.81 AND lat <= 70.09 AND lon >= 19.09 AND lon <= 31.59) OR
                    (lat >= 46.37 AND lat <= 54.84 AND lon >= 14.12 AND lon <= 24.15)
                  )
-                 ${filters.nodes}
              )
              SELECT
+               (SELECT COUNT(*) FROM scoped_nodes nodes
+                WHERE ${publicMapBasePredicate('nodes')}
+                  AND ${nodeEffectiveLastSeenSql('nodes')}
+                        <= NOW() - INTERVAL '14 days'
+                  AND ${nodeEffectiveLastSeenSql('nodes')}
+                        > NOW() - INTERVAL '28 days') AS stale_count,
+               (SELECT COUNT(*) FROM scoped_nodes nodes
+                WHERE ${publicMapFreshPredicate('nodes')}) AS map_node_count,
+               (SELECT COUNT(*) FROM scoped_nodes nodes
+                WHERE (name IS NULL OR name NOT LIKE '%🚫%')
+                  AND (role IS NULL OR role != 4)) AS total_node_count,
                COUNT(*) FILTER (WHERE last_seen > NOW() - INTERVAL '1 hour') AS count_connected,
                SUM(advert_count) AS total_adverts,
                MAX(last_seen)::text AS last_seen_at,
                (SELECT lat FROM intl ORDER BY last_seen DESC LIMIT 1) AS last_lat,
                (SELECT lon FROM intl ORDER BY last_seen DESC LIMIT 1) AS last_lon
              FROM intl`, filters.params),
+      longestHopResult(),
+      query(`SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
+             FROM mesh.packets p
+             LEFT JOIN core.node_identity_aliases src_alias
+               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+             WHERE p.time > NOW() - INTERVAL '24 hours'
+               AND p.src_node_id IS NOT NULL
+               ${filters.packetsAlias('p')}`, filters.params),
     ]);
+
+    const nodeRow = nodeSummary.rows[0];
+    const countResult = (column: string) => ({ rows: nodeRow ? [{ count: nodeRow[column] }] : [] });
+    const staleCount = countResult('stale_count');
+    const mapNodeCount = countResult('map_node_count');
+    const totalNodeCount = countResult('total_node_count');
+    const internationalCount = { rows: nodeRow ? [{
+      count_connected: nodeRow['count_connected'],
+      total_adverts: nodeRow['total_adverts'],
+      last_seen_at: nodeRow['last_seen_at'],
+      last_lat: nodeRow['last_lat'],
+      last_lon: nodeRow['last_lon'],
+    }] : [] };
 
     return {
       mqttCount,
