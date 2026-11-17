@@ -1869,3 +1869,23 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Preserve the failed668dd8b read run and resident restart. Its retained stack
   does not identify the exact detached promise or establish the cause of pool
   starvation; closing this ownership gap does not claim to resolve those causes.
+
+
+## Refresh RF support only in modes that consume it
+
+- The link-only worker runs physical link jobs using its topology and calibration
+  snapshots. RF support coordinates and link-capped coverage radii serve coverage
+  and planned-coverage jobs, which the link-only queue loop never dispatches.
+  Stop refreshing that unused snapshot at link startup and during its idle loop;
+  retain both refreshes for viewshed and all mode.
+- The support refresh computes complete ordered node/link checksum strings before
+  checking whether its inputs changed, and then reloads those inputs on a change.
+  The observed link-worker query was waiting on BufFileWrite alongside region
+  work. Removing an unused consumer dependency avoids this work; it does not
+  establish that this query caused the failed reads or shared pressure.
+- Remove the unused support deadline from link idle scheduling as well. Otherwise
+  an intentionally uninitialized support timestamp would force a 50ms wakeup.
+  Keep topology, calibration, radio-neighbor and five-second lease-reaping
+  deadlines, all physical calculations, coverage behavior and resource bounds.
+  Exercise the actual mode loop and idle deadlines in existing worker tests;
+  Root owns execution and fresh qualification.
