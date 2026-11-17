@@ -2467,3 +2467,6 @@ qualification. Do not change workloads, timing or acceptance limits.
   it with TimescaleDB. The plain PostgreSQL audit job has a different schema
   contract. Exercise the real launcher lease in the operator script test and
   stub only the fixture and container inventory boundaries.
+- Bound Chromium context setup separately in the production basemap tests.
+  The CI trace spent 32 seconds creating a context. Keep the recovery
+  deadline, assertions and normal pointer action in the test body.

@@ -1,5 +1,18 @@
-import { expect, test } from '@playwright/test';
+import { expect, test as base } from '@playwright/test';
 import { fixtures, vectorRoutes } from './basemapFixtures.js';
+
+const test = base.extend({
+  // Cold Chromium contexts can take tens of seconds on the software renderer.
+  // Give context setup its own deadline so the page still has 60s for recovery.
+  context: [async ({ browser, contextOptions, baseURL, serviceWorkers }, use) => {
+    const context = await browser.newContext({ ...contextOptions, baseURL, serviceWorkers });
+    try {
+      await use(context);
+    } finally {
+      await context.close();
+    }
+  }, { timeout: 45_000 }],
+});
 
 test.beforeEach(async ({ page }) => fixtures(page));
 
