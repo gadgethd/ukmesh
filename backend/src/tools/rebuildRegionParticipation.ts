@@ -40,6 +40,7 @@ import pg from 'pg';
 import { pathToFileURL } from 'node:url';
 import { analyticsConnectionOptions } from '../platform/config/database.js';
 import { regionRebuildSettings } from '../regions/rebuildSettings.js';
+import { SCOPED_PACKETS_SQL, type ScopedPacketRow } from '../regions/scopedPackets.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
@@ -59,15 +60,6 @@ const { Pool } = pg;
 // Documented MeshCore public channel material, not an application credential.
 const DEFAULT_PUBLIC_CHANNEL_KEY = '8b3387e9c5cdea6ac9e5edbaa115cd72';
 const UNRESOLVED_ELEMENT_LOG_LIMIT = 12;
-
-interface ScopedPacketRow {
-  packet_hash: string;
-  t0: Date;
-  t1: Date;
-  raw: string | null;
-  elems: string[] | null;
-  observers: string[] | null;
-}
 
 interface NodeMetaRow {
   node_id: string;
@@ -143,22 +135,7 @@ async function rebuildWithAdmission(
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
 
     const { rows: scopedRows } = await pool.query<ScopedPacketRow>(
-      `SELECT p.packet_hash,
-              min(p.time) AS t0,
-              max(p.time) AS t1,
-              (array_agg(p.raw_hex ORDER BY p.time DESC)
-                 FILTER (WHERE p.route_type IN (0, 3) AND p.raw_hex <> ''))[1] AS raw,
-              (array_agg(DISTINCT e) FILTER (WHERE e IS NOT NULL))[1:80] AS elems,
-              (array_agg(DISTINCT p.rx_node_id) FILTER (WHERE p.rx_node_id IS NOT NULL))[1:40] AS observers
-         FROM mesh.packets p
-         LEFT JOIN LATERAL unnest(p.path_hashes) AS e ON TRUE
-        WHERE p.network IN (${UKMESH_NETWORK_SQL_LIST})
-          AND ${publicPacketPrivacySql('p')}
-          AND p.route_type IN (0, 3)
-          AND p.time > now() - make_interval(days => $1)
-        GROUP BY p.packet_hash
-        ORDER BY p.packet_hash
-        LIMIT $2`,
+      SCOPED_PACKETS_SQL,
       [windowDays, settings.maxPackets + 1],
     );
     const scopedPacketCount = scopedRows.length;

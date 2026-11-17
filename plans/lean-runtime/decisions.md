@@ -1889,3 +1889,26 @@ qualification. Do not change workloads, timing or acceptance limits.
   deadlines, all physical calculations, coverage behavior and resource bounds.
   Exercise the actual mode loop and idle deadlines in existing worker tests;
   Root owns execution and fresh qualification.
+
+
+## Aggregate region observations before expanding their paths
+
+- The region query expanded each observation into its path hops before sorting
+  raw packet payloads and deduplicating observers. Materialize the scoped
+  observations once, aggregate raw/times/observers at observation cardinality,
+  and aggregate only packet hashes and elements across expanded paths. Join the
+  two packet groups in the same statement. Keep the shared network/privacy
+  predicate, windows, latest-nonempty raw ordering, path80/observer40 limits and
+  packet capacity unchanged. A small region module owns this SQL and row type;
+  the tool retains its existing orchestration and atomic generation fences.
+- The controlled comparison reduced temporary I/O by about 36% and completed
+  faster, but failed raw-row byte parity. Retain that failed result. Its exhaustive
+  follow-up compared 70,182 rows per query: no missing rows or nonraw differences;
+  all 11 raw differences were observations tied at the latest eligible timestamp.
+  The existing time-only ordering leaves those ties unspecified. Actual producer
+  keystore/probes and decoder inputs, payload hashes and resulting regions matched
+  for every difference. No tie-break rule or required test is waived.
+- Raw is an intermediate decoder input, never a published region field; stored
+  packet data is untouched. This evidence supports region semantic equivalence,
+  not raw-byte equality or an integrated latency claim. Preserve all calculations,
+  pools, deadlines, admission/publication ownership and fresh qualification gates.
