@@ -1854,3 +1854,18 @@ qualification. Do not change workloads, timing or acceptance limits.
   initial query materialization remains, and memory savings or effects on host
   swap and latency require measurement. No cache, worker or resource allowance is
   changed, and no additional validation harness is introduced.
+
+
+## Observe operational-check refresh failures at the cache owner
+
+- The health cache can return a stale snapshot while its replacement query runs.
+  That detached refresh still needs a rejection observer; otherwise a checkout
+  failure can escape the health caller and trigger application shutdown.
+- Observe and log refresh rejection without replacing the original promise.
+  Fresh reads, the existing stale interval, blocking error propagation and retry
+  after settlement retain their current behavior. Keep SQL, privacy, deadlines
+  and fallback policy unchanged. Cover these paths through the existing health
+  runtime tests, without a new cache API or validation harness.
+- Preserve the failed668dd8b read run and resident restart. Its retained stack
+  does not identify the exact detached promise or establish the cause of pool
+  starvation; closing this ownership gap does not claim to resolve those causes.

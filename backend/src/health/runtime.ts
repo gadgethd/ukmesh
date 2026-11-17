@@ -327,6 +327,10 @@ export function createHealthRuntime(deps: { execute?: typeof defaultQuery; creat
         .finally(() => {
           if (operationalChecksInflight === tracked) operationalChecksInflight = null;
         });
+      // Stale callers may return before settlement; blocking callers still await tracked.
+      void tracked.catch((error: unknown) => {
+        console.error('[health] operational checks refresh failed:', error instanceof Error ? error.message : error);
+      });
       operationalChecksInflight = tracked;
     }
     if (operationalChecksSnapshot && now - operationalChecksSnapshot.ts < OPERATIONAL_CHECKS_STALE_TTL_MS) {
