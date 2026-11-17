@@ -13,7 +13,7 @@ With Node (see `.nvmrc`), npm, Docker Engine and Compose available, use the
 candidate branch and run the local helper:
 
 ```bash
-git clone --branch ukmesh2.0 --single-branch https://github.com/gadgethd/ukmesh.git
+git clone --branch ukmesh-dev --single-branch https://github.com/gadgethd/ukmesh.git
 cd ukmesh
 scripts/dev-stack.sh up
 ```
