@@ -763,6 +763,20 @@ Normal packet/content retention, compression, signed backups and the host disk
 exhaustion forecast continue to apply. Compression reduces retained metadata;
 it does not make an infinite exact identity history occupy bounded disk.
 
+### MqttBrokerBacklog
+
+Full local DEV subscribes to the three exact Mosquitto system topics for
+stored messages, stored bytes, and dropped publications. An external broker
+can opt in with `MQTT_BROKER_BACKLOG_MONITOR=true` and read grants for those
+topics. Backlog metrics are broker-wide and include retained messages.
+
+The warning uses half of the local 10,000-message or 16 MiB per-session
+capacity as an early indicator. A rise in dropped publications is critical.
+Check the subscriber's commit and PUBACK rates, the active stored message
+count, and the broker log before retrying a session. Keep the persistent
+session and its storage intact. Confirm any suspected gap against committed
+observations. A publisher's PUBACK measures broker acceptance.
+
 ### MqttDeliveryStalled
 
 The ingest connection publishes a non-retained QoS 1 nonce every 30 seconds on

@@ -47,6 +47,7 @@ services:
       MQTT_PASSWORD: !reset null
       # Keep local delivery controls outside the companions' business namespace.
       MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ukmesh-local-control
+      MQTT_BROKER_BACKLOG_MONITOR: "true"
       REDIS_PASSWORD: ""
       ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924
       OWNER_ACL_MODE: shadow
