@@ -334,6 +334,12 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}
       DATABASE_APPLICATION_NAME: ukmesh-tagger-worker
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      # Tagger backend: 'local' = the UKMesh tagger on the pinned GPU lane
+      # (reached through the GPU gateway); 'jev' = the TypeSafe cloud call.
+      TAGGER_BACKEND: ${TAGGER_BACKEND:-local}
+      TAGGER_MODEL_ID: ${TAGGER_MODEL_ID:-ukmesh-tagger/run-base4}
+      TAGGER_URL: ${TAGGER_URL:-http://100.127.15.104:1240/v1/tag/batch}
+      TAGGER_API_KEY: ${TAGGER_API_KEY:-}
       TAGGER_START: ${TAGGER_START:-}
       TAGGER_POLL_S: ${TAGGER_POLL_S:-5}
       TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}

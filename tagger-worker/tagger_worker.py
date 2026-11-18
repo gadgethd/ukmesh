@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""UKMesh realtime message tagger - TypeSafe/Jev.
+"""UKMesh realtime message tagger - local UKMesh tagger (TypeSafe/Jev fallback).
 
-Polls the packets table for new public-channel messages, asks Jev to tag each
-one (speaker / kind / topic + flags), and stores the result in message_tags.
+Polls the packets table for new public-channel messages, asks the UKMesh tagger
+model (run-base4, served on the pinned GPU lane and reached through the GPU
+gateway) to tag each one (speaker / kind / topic + flags), and stores the
+result in message_tags. Set TAGGER_BACKEND=jev to fall back to TypeSafe.
 Tags are displayed on the public feed and app.ukmesh.com detail panels; private
 or out-of-scope packets are never sent to the API (public visibility predicate +
 network scope applied in the query). Monitoring data lives in ops.tagger_state
@@ -32,7 +34,19 @@ BATCH_LIMIT = int(os.environ.get('TAGGER_BATCH_LIMIT', '200'))
 OVERLAP_S = int(os.environ.get('TAGGER_OVERLAP_S', '120'))
 MAX_RETRY_ATTEMPTS = int(os.environ.get('TAGGER_MAX_RETRY_ATTEMPTS', '30'))
 RETRY_BATCH = int(os.environ.get('TAGGER_RETRY_BATCH', '20'))
-MODEL = os.environ.get('TYPESAFE_MODEL', 'jev-latest')
+# Backend: 'local' = the UKMesh tagger on the pinned GPU lane (via the gateway);
+# 'jev' = the original TypeSafe cloud call, kept as a rollback lever.
+BACKEND = os.environ.get('TAGGER_BACKEND', 'local').strip().lower()
+MODEL = (os.environ.get('TYPESAFE_MODEL', 'jev-latest') if BACKEND == 'jev'
+         else os.environ.get('TAGGER_MODEL_ID', 'ukmesh-tagger/run-base4'))
+TAGGER_URL = os.environ.get('TAGGER_URL', 'http://100.127.15.104:1240/v1/tag/batch').strip()
+TAGGER_KEY = os.environ.get('TAGGER_API_KEY', '').strip()
+TAGGER_KEY_FILE = os.environ.get('TAGGER_API_KEY_FILE', '/home/ben/.secrets/ukmesh-tagger-key')
+if not TAGGER_KEY and os.path.exists(TAGGER_KEY_FILE):
+    try:
+        TAGGER_KEY = open(TAGGER_KEY_FILE).read().strip()
+    except OSError:
+        pass
 START = os.environ.get('TAGGER_START', '').strip()
 NETWORKS = [n.strip() for n in os.environ.get('TAGGER_NETWORKS', 'ukmesh,northeast,teesside').split(',') if n.strip()]
 
@@ -69,7 +83,7 @@ QUESTIONS = {
 }
 
 DDL = """
-CREATE TABLE IF NOT EXISTS message_tags (
+CREATE TABLE IF NOT EXISTS mesh.message_tags (
   packet_hash  text PRIMARY KEY,
   packet_time  timestamptz NOT NULL,
   tagged_at    timestamptz NOT NULL DEFAULT now(),
@@ -136,15 +150,44 @@ def log(msg):
     print(f"[tagger] {msg}", flush=True)
 
 
-def api_tag(state):
-    payload = {'state': state, 'model': MODEL, 'questions': QUESTIONS}
-    req = urllib.request.Request(API_URL, data=json.dumps(payload).encode(),
-                                 headers={'Authorization': f'Bearer {API_KEY}',
+def _state(sender, message):
+    return f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
+
+
+def _local_answers(sender, message):
+    """Ask the local tagger and reshape its output into the answers structure."""
+    payload = {'items': [{'sender': sender, 'message': message}]}
+    req = urllib.request.Request(TAGGER_URL, data=json.dumps(payload).encode(),
+                                 headers={'Authorization': f'Bearer {TAGGER_KEY}',
                                           'Content-Type': 'application/json'})
-    t0 = time.time()
     with urllib.request.urlopen(req, timeout=90) as r:
         resp = json.loads(r.read().decode())
-    return resp, (time.time() - t0) * 1000.0
+    results = resp.get('results') or []
+    if not results:
+        raise RuntimeError('tagger returned no results')
+    row = results[0]
+    return {
+        'kind': {'choice': row['kind']['value'], 'confidence': row['kind']['p']},
+        'topic': {'choice': row['topic']['value'], 'confidence': row['topic']['p']},
+        'speaker': {'choice': row['speaker']['value'], 'confidence': row['speaker']['p']},
+        'mentions_location': {'score': row['flags']['mentions_location']},
+        'directed': {'score': row['flags']['directed']},
+        'safety': {'score': row['flags']['safety']},
+    }
+
+
+def api_tag(sender, message):
+    """Return (response, latency_ms); response carries 'answers' for flatten()."""
+    t0 = time.time()
+    if BACKEND == 'jev':
+        payload = {'state': _state(sender, message), 'model': MODEL, 'questions': QUESTIONS}
+        req = urllib.request.Request(API_URL, data=json.dumps(payload).encode(),
+                                     headers={'Authorization': f'Bearer {API_KEY}',
+                                              'Content-Type': 'application/json'})
+        with urllib.request.urlopen(req, timeout=90) as r:
+            resp = json.loads(r.read().decode())
+        return resp, (time.time() - t0) * 1000.0
+    return {'answers': _local_answers(sender, message)}, (time.time() - t0) * 1000.0
 
 
 def flatten(answers):
@@ -202,11 +245,10 @@ def tag_message(cur, ph, ts, rx_node_id, network):
         if row is None:
             return True, None, None  # deleted, private, or no longer taggable
         sender, message = row
-        state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
         try:
-            resp, ms = api_tag(state)
+            resp, ms = api_tag(sender, message)
             tags, conf = flatten(resp.get('answers'))
-            cur.execute("""INSERT INTO message_tags
+            cur.execute("""INSERT INTO mesh.message_tags
                            (packet_hash, packet_time, tagged_at, model, latency_ms, tags, confidence)
                            VALUES (%s, %s, now(), %s, %s, %s, %s)
                            ON CONFLICT (packet_hash) DO NOTHING""",
@@ -266,7 +308,7 @@ def process_retries(cur):
     due = cur.fetchall()
     ok = fail = 0
     for ph, ts, attempts in due:
-        cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
+        cur.execute("SELECT 1 FROM mesh.message_tags WHERE packet_hash=%s", (ph,))
         if cur.fetchone():
             cur.execute("DELETE FROM ops.tagger_retry WHERE packet_hash=%s", (ph,))
             continue
@@ -296,8 +338,11 @@ def process_retries(cur):
 
 
 def main():
-    if not API_KEY:
+    if BACKEND == 'jev' and not API_KEY:
         log('FATAL: TYPESAFE_API_KEY is empty')
+        sys.exit(2)
+    if BACKEND != 'jev' and not TAGGER_KEY:
+        log(f'FATAL: TAGGER_API_KEY is empty (and {TAGGER_KEY_FILE} is not readable)')
         sys.exit(2)
     conn = psycopg2.connect(DATABASE_URL)
     conn.autocommit = True
@@ -312,7 +357,8 @@ def main():
             cur.execute("UPDATE ops.tagger_state SET cursor_time=now() - interval '5 minutes' WHERE id=1")
         cur.execute("SELECT cursor_time FROM ops.tagger_state WHERE id=1")
         cursor = cur.fetchone()[0]
-    log(f"started; model={MODEL} poll={POLL_S}s floor={CALL_FLOOR_S}s overlap={OVERLAP_S}s "
+    log(f"started; backend={BACKEND} endpoint={TAGGER_URL if BACKEND != 'jev' else API_URL} "
+        f"model={MODEL} poll={POLL_S}s floor={CALL_FLOOR_S}s overlap={OVERLAP_S}s "
         f"networks={','.join(NETWORKS)} cursor={cursor.isoformat()}")
 
     lat_hist = []
@@ -335,7 +381,7 @@ def main():
                   AND time <= now()
                   AND network = ANY(%s::text[])
                   {PUBLIC_PACKET_PRIVACY_SQL}
-                  AND NOT EXISTS (SELECT 1 FROM message_tags tagged
+                  AND NOT EXISTS (SELECT 1 FROM mesh.message_tags tagged
                                   WHERE tagged.packet_hash = packets.packet_hash)
                   AND NOT EXISTS (SELECT 1 FROM ops.tagger_retry retry
                                   WHERE retry.packet_hash = packets.packet_hash)
@@ -348,7 +394,7 @@ def main():
             for ph, ts, rx_node_id, network, sender, message in rows:
                 if ts > max_t:
                     max_t = ts
-                cur.execute("SELECT 1 FROM message_tags WHERE packet_hash=%s", (ph,))
+                cur.execute("SELECT 1 FROM mesh.message_tags WHERE packet_hash=%s", (ph,))
                 if cur.fetchone():
                     continue
                 ans, ms, err = None, None, None
@@ -359,9 +405,8 @@ def main():
                         no_longer_public = True
                         break
                     sender, message = current
-                    state = f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
                     try:
-                        resp, ms = api_tag(state)
+                        resp, ms = api_tag(sender, message)
                         ans = resp.get('answers')
                         break
                     except urllib.error.HTTPError as e:
@@ -378,7 +423,7 @@ def main():
                     continue
                 if ans:
                     tags, conf = flatten(ans)
-                    cur.execute("""INSERT INTO message_tags
+                    cur.execute("""INSERT INTO mesh.message_tags
                                    (packet_hash, packet_time, tagged_at, model, latency_ms, tags, confidence)
                                    VALUES (%s, %s, now(), %s, %s, %s, %s)
                                    ON CONFLICT (packet_hash) DO NOTHING""",

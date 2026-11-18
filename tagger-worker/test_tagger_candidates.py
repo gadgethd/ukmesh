@@ -45,13 +45,15 @@ class CandidatePagingTests(unittest.TestCase):
         cls.conn = psycopg2.connect(URL, dbname=cls.database)
         cls.conn.autocommit = True
         with cls.conn.cursor() as cur:
-            # The worker uses public compatibility names for packets/tags on
-            # its current default search_path; privacy/retry state is read from
-            # the post-move `ops` schema by fully qualified name.
+            # Mirror the deployed schema: packets resolves through the public
+            # compatibility name, message_tags lives in `mesh` (migration 121)
+            # and is addressed fully qualified so the worker cannot recreate a
+            # stale public copy, and privacy/retry state is read from `ops`.
             cur.execute('''CREATE SCHEMA IF NOT EXISTS ops;
+              CREATE SCHEMA IF NOT EXISTS mesh;
               CREATE TABLE packets (packet_hash text, time timestamptz, payload jsonb,
               packet_type int, network text, visibility_ok boolean, is_private boolean, rx_node_id text);
-              CREATE TABLE message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
+              CREATE TABLE mesh.message_tags (packet_hash text PRIMARY KEY, packet_time timestamptz, tagged_at timestamptz,
                 model text, latency_ms int, tags jsonb, confidence jsonb);
               CREATE TABLE ops.tagger_retry (packet_hash text PRIMARY KEY, exhausted boolean);
               CREATE TABLE ops.privacy_rematerialization_queue (status text);
@@ -70,7 +72,7 @@ class CandidatePagingTests(unittest.TestCase):
     def setUp(self):
         self.cursor_time = datetime.now(timezone.utc) - timedelta(seconds=5)
         with self.conn.cursor() as cur:
-            cur.execute('TRUNCATE packets, message_tags, ops.tagger_retry, ops.privacy_rematerialization_queue; UPDATE ops.public_visibility_state SET generation=1; UPDATE ops.packet_visibility_materialization_state SET visibility_generation=1')
+            cur.execute('TRUNCATE packets, mesh.message_tags, ops.tagger_retry, ops.privacy_rematerialization_queue; UPDATE ops.public_visibility_state SET generation=1; UPDATE ops.packet_visibility_materialization_state SET visibility_generation=1')
 
     def add(self, packet_hash, time, receiver=None):
         with self.conn.cursor() as cur:
@@ -88,7 +90,7 @@ class CandidatePagingTests(unittest.TestCase):
             key = 'completed-' + str(index)
             self.add(key, self.cursor_time - timedelta(seconds=100, milliseconds=-index))
             with self.conn.cursor() as cur:
-                cur.execute('INSERT INTO message_tags (packet_hash) VALUES (%s)', (key,))
+                cur.execute('INSERT INTO mesh.message_tags (packet_hash) VALUES (%s)', (key,))
         self.add('new-message', self.cursor_time + timedelta(seconds=1))
         self.assertEqual(self.candidates(), ['new-message'])
 
@@ -134,14 +136,14 @@ class CandidatePagingTests(unittest.TestCase):
             with patch.object(module, 'api_tag', return_value=({'answers': {'kind': {'choice': 'chat'}}}, 1)) as classifier:
                 self.assertTrue(module.tag_message(cur, 'public-retry', self.cursor_time, None, 'ukmesh')[0])
                 classifier.assert_called_once()
-                cur.execute("SELECT tags FROM message_tags WHERE packet_hash='public-retry'")
+                cur.execute("SELECT tags FROM mesh.message_tags WHERE packet_hash='public-retry'")
                 self.assertEqual(cur.fetchone()[0], {'kind': 'chat'})
 
 
     def test_privacy_revocation_during_backoff_prevents_another_external_attempt(self):
         self.add('revoked-during-retry', self.cursor_time)
         module = self.worker()
-        def revoke_and_fail(_state):
+        def revoke_and_fail(_sender, _message):
             with self.conn.cursor() as update:
                 update.execute('UPDATE packets SET is_private=true, visibility_ok=false')
             raise RuntimeError('fixture classifier unavailable')
