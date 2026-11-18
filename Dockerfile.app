@@ -26,7 +26,7 @@ ENV VITE_SITE_HOME_URL=$VITE_SITE_HOME_URL
 ENV VITE_RF_COVERAGE_ENABLED=$VITE_RF_COVERAGE_ENABLED
 RUN npm run build && npm run budget
 
-FROM nginx:alpine@sha256:713fc2ebfd92e8217db451477182ee91944b123d2b1ee9fd5a8c6e91ca6c3a11
+FROM nginx:alpine@sha256:fed7e14be83cbd2661a75cdc5b872d936cf155d46c327084d30b8df19ae88d72
 # Keep the newer pinned base and apply the verified Brotli security update.
 RUN apk add --no-cache --upgrade brotli-libs=1.2.1-r0
 ARG SOURCE_REVISION=unknown
