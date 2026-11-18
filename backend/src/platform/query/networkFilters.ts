@@ -58,7 +58,8 @@ function unresolvedPacketRematerialization(alias: string): string {
   return `${alias}.target = 'packets' AND ${alias}.status IN ('pending', 'processing', 'failed')`;
 }
 
-export function publicPacketPrivacySql(alias = 'packets'): string {
+export function publicPacketPrivacySql(tableAlias?: string): string {
+  const alias = tableAlias || 'packets';
   const prefix = `${alias}.`;
   return `(
     ${publicPacketFlags(alias)}

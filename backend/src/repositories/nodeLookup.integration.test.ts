@@ -99,6 +99,8 @@ test('indexed node projections and search retain canonical view results for alia
           `the queued private path prefix remains fenced while ${status}`);
       }
 
+      await client.query('DELETE FROM ops.privacy_rematerialization_queue WHERE node_id=$1 AND target=\'packets\'', [key('D')]);
+      assert.deepEqual(await ids(), visible, 'clearing the queue restores eligible sources');
       await client.query(`UPDATE ops.public_visibility_state SET generation=generation+1 WHERE singleton`);
       assert.deepEqual(await ids(), visible.filter(id => id === key('1')),
         'stale packet materialization preserves only the observer identity');
