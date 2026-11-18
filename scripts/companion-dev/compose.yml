@@ -65,6 +65,7 @@ services:
     <<: *go
     environment:
       <<: *go-env
+      GOMEMLIMIT: ${CORESCOPE_INGEST_GOMEMLIMIT:-192MiB}
       COMPANION_SOURCE_REVISION: ${COMPANION_CORESCOPE_SOURCE:-unknown}
       COMPANION_CONFIG_REVISION: ${COMPANION_CORESCOPE_CONFIG:-unknown}
     volumes:
@@ -81,7 +82,7 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: &companion-corescope-ingestor-memory 320m
+    mem_limit: &companion-corescope-ingestor-memory 256m
     memswap_limit: *companion-corescope-ingestor-memory
     stop_grace_period: 30s
   corescope:
@@ -108,7 +109,7 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: &companion-corescope-memory 448m
+    mem_limit: &companion-corescope-memory 512m
     memswap_limit: *companion-corescope-memory
   beacon-migrate:
     <<: *go
