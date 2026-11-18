@@ -88,6 +88,8 @@ services:
     <<: *go
     environment:
       <<: *go-env
+      # Leave room under the cgroup limit for SQLite and other native allocations.
+      GOMEMLIMIT: ${CORESCOPE_WEB_GOMEMLIMIT:-256MiB}
       COMPANION_SOURCE_REVISION: ${COMPANION_CORESCOPE_SOURCE:-unknown}
       COMPANION_CONFIG_REVISION: ${COMPANION_CORESCOPE_CONFIG:-unknown}
     entrypoint: [/bin/companions/corescope-server, -config-dir, /config, -public, /public]
