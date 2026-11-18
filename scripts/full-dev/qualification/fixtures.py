@@ -14,7 +14,7 @@ import sys
 import tempfile
 import uuid
 
-from backups import ORIGINALS, SQLITE
+from backups import ORIGINALS, SQLITE, sqlite_backup
 from common import DB_NAME, REPO, STATE, digest, docker, owned_run, read_json, safe_error, sql, utc_now, write_json
 
 
@@ -50,7 +50,26 @@ def verify_backups(run: Path) -> dict:
     return manifest
 
 
-from target_safety import managed_publisher
+from target_lease import target_lease
+from target_safety import managed_publisher, publication_lease
+
+
+def reserve_bundle(kind: str, backup_run: Path) -> tuple[Path, dict]:
+    token = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
+    path = FIXTURES / token
+    path.mkdir(parents=True, mode=0o700)
+    result = {"token": token, "kind": kind, "created_at": utc_now(),
+              "backup_run": str(backup_run), "ready": False, "databases": []}
+    write_json(path / "manifest.json", result)
+    return path, result
+
+
+def fixture_database(label: str, kind: str, token: str) -> str:
+    prefix = ("fixture" if kind == "sample" else kind) if label == "ukmesh" else label
+    name = f"lean_{prefix}_{token}"
+    if not DB_NAME.fullmatch(name):
+        raise ValueError("generated fixture database name rejected")
+    return name
 
 
 @managed_publisher
@@ -58,12 +77,8 @@ def create_bundle(kind: str, backup_run: Path) -> dict:
     if kind not in ("sample", "1x", "10x"):
         raise ValueError("fixture kind must be sample, 1x or 10x")
     backup = verify_backups(backup_run)
-    token = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d%H%M%S") + "_" + uuid.uuid4().hex[:6]
-    path = FIXTURES / token
-    path.mkdir(parents=True, mode=0o700)
-    result = {"token": token, "kind": kind, "created_at": utc_now(),
-              "backup_run": str(backup_run), "ready": False, "databases": []}
-    write_json(path / "manifest.json", result)
+    path, result = reserve_bundle(kind, backup_run)
+    token = result["token"]
     stores = {item.get("database", "sqlite"): item for item in backup["stores"]}
     source = backup_run / stores["meshcore"]["archive"]
     source_container_started = False
@@ -90,10 +105,7 @@ def create_bundle(kind: str, backup_run: Path) -> dict:
                        output_stream=output, timeout=3600)
             result["lookup_source_sha256"] = digest(source)
         for label, container, original, user in ORIGINALS:
-            prefix = ("fixture" if kind == "sample" else kind) if label == "ukmesh" else label
-            name = f"lean_{prefix}_{token}"
-            if not DB_NAME.fullmatch(name):
-                raise ValueError("generated fixture database name rejected")
+            name = fixture_database(label, kind, token)
             identity = cluster_identity(container, user)
             docker(["exec", container, "createdb", "-U", user, "-T", "template0", name])
             sql(container, "postgres", user,
@@ -143,6 +155,56 @@ def bundle(token: str) -> dict:
     if corescope != (FIXTURES / token / "corescope").resolve() or not (corescope / "analyzer.db").is_file():
         raise ValueError("CoreScope fixture directory ownership failed")
     return value
+
+
+def clone_bundle(token: str) -> dict:
+    """Copy a converged, inactive owned fixture without changing its targets."""
+    with target_lease(exclusive=True), publication_lease():
+        source = bundle(token)
+        if source["kind"] not in ("1x", "10x"):
+            raise ValueError("fixture clones require an owned 1x or 10x source")
+        if set(current_targets().values()) & {row["database"] for row in source["databases"]}:
+            raise ValueError("restore original targets before cloning the selected fixture")
+        sqlite = Path(source["corescope_data_dir"]) / "analyzer.db"
+        required_bytes = sqlite.stat().st_size
+        wal = sqlite.with_name(sqlite.name + "-wal")
+        if wal.exists():
+            required_bytes += wal.stat().st_size
+        for row in source["databases"]:
+            database = row["database"]
+            required_bytes += int(sql(row["container"], "postgres", row["user"],
+                                     f"SELECT pg_database_size('{database}')"))
+        # Leave room for WAL, the first workload and evidence after copying.
+        floor = 10 * 1024**3
+        allowance = 512 * 1024**2
+        if shutil.disk_usage(REPO).free < floor + required_bytes + allowance:
+            raise ValueError(f"insufficient free bytes for fixture copy ({required_bytes}) and the 10 GiB floor")
+
+        path, result = reserve_bundle(source["kind"], owned_run(source["backup_run"]))
+        result.update(cloned_from=token, source_bytes=required_bytes)
+        write_json(path / "manifest.json", result)
+        for row in source["databases"]:
+            label, container, user = row["label"], row["container"], row["user"]
+            name = fixture_database(label, result["kind"], result["token"])
+            docker(["exec", container, "createdb", "-U", user, "--strategy=file_copy", "-T", row["database"], name],
+                   timeout=600)
+            sql(container, "postgres", user, f"""COMMENT ON DATABASE "{name}"
+                IS 'ukmesh-owned-fixture:{result["token"]}';
+                REVOKE ALL ON DATABASE "{name}" FROM PUBLIC;""")
+            result["databases"].append(dict(row, database=name, restored=True))
+            write_json(path / "manifest.json", result)
+
+        # The canonical switch revokes cluster-wide access and grants only its
+        # selected targets. The clone stays inaccessible until that switch.
+        corescope = path / "corescope"
+        corescope.mkdir(mode=0o700)
+        snapshot = sqlite_backup(corescope, sqlite)
+        if not snapshot["verified"]:
+            raise ValueError("cloned CoreScope SQLite snapshot failed integrity or foreign-key checks")
+        (corescope / snapshot["archive"]).rename(corescope / "analyzer.db")
+        result.update(corescope_data_dir=str(corescope), corescope_snapshot_sha256=snapshot["sha256"], ready=True)
+        write_json(path / "manifest.json", result)
+        return result
 
 
 def write_targets(values: dict[str, str]) -> None:
@@ -358,7 +420,7 @@ def stagger_fixture_maintenance():
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("create", "switch", "restore", "status", "stagger-maintenance"))
+    parser.add_argument("action", choices=("create", "clone", "switch", "restore", "status", "stagger-maintenance"))
     parser.add_argument("name", nargs="?")
     parser.add_argument("--run")
     args = parser.parse_args()
@@ -366,6 +428,8 @@ def main() -> int:
         if args.action == "create":
             result = create_bundle(args.name or "sample", owned_run(args.run))
             result['fixture_maintenance'] = stagger_fixture_maintenance()
+        elif args.action == "clone":
+            result = clone_bundle(args.name or "")
         elif args.action == "switch":
             result = switch(args.name or "")
         elif args.action == "restore":

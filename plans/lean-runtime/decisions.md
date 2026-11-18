@@ -2535,3 +2535,16 @@ qualification. Do not change workloads, timing or acceptance limits.
   Check each hash and reception count during drain so missing packets cannot
   cancel out duplicate observations in aggregate totals. The final global
   scan still detects orphan children outside the publication window.
+
+## Clone retained fixtures through their existing ownership gate
+
+- Copy an unused, validated fixture under the target publication lease and
+  verify its SQLite snapshot. The restore path creates a new logical fixture
+  from backups, which cannot reproduce the enlarged CoreScope history and
+  already-converged PostgreSQL baseline together. Keep source fixtures and
+  original stores available for comparison.
+- Check free space against all three PostgreSQL stores, SQLite, and a write
+  allowance before creating any database. Use PostgreSQL's file-copy
+  strategy. Revoke PUBLIC access only on new databases, then let the existing
+  selected-target switch grant application roles. Provisioning during clone
+  creation would revoke access from the currently selected pair.

@@ -190,6 +190,36 @@ class ActualTargetOwnership(unittest.TestCase):
         self.assertEqual(profile('lean_1x_owned'),profile('lean_10x_owned'))
 
 
+class FixtureCloneProtection(unittest.TestCase):
+    def test_selected_fixture_cannot_be_cloned(self):
+        source = {"kind": "1x", "databases": [{"database": "owned"}]}
+        with patch.object(fixtures, "target_lease", return_value=nullcontext()), \
+                patch.object(fixtures, "publication_lease", return_value=nullcontext()), \
+                patch.object(fixtures, "bundle", return_value=source), \
+                patch.object(fixtures, "current_targets", return_value={"ukmesh": "owned"}), \
+                patch.object(fixtures, "docker") as docker:
+            with self.assertRaisesRegex(ValueError, "restore original targets"):
+                fixtures.clone_bundle("owned")
+            docker.assert_not_called()
+
+    def test_clone_keeps_disk_floor_before_starting_any_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "analyzer.db").write_bytes(b"sqlite fixture")
+            source = {"kind": "10x", "corescope_data_dir": temporary,
+                      "databases": [{"database": "owned", "container": "local", "user": "owner"}]}
+            with patch.object(fixtures, "target_lease", return_value=nullcontext()), \
+                    patch.object(fixtures, "publication_lease", return_value=nullcontext()), \
+                    patch.object(fixtures, "bundle", return_value=source), \
+                    patch.object(fixtures, "current_targets", return_value={"ukmesh": "original"}), \
+                    patch.object(fixtures, "sql", return_value=str(8 * 1024**3)), \
+                    patch.object(fixtures.shutil, "disk_usage", return_value=Mock(free=16 * 1024**3)), \
+                    patch.object(fixtures, "reserve_bundle") as reserve:
+                with self.assertRaisesRegex(ValueError, "10 GiB floor"):
+                    fixtures.clone_bundle("owned")
+                reserve.assert_not_called()
+
+
 class LookupSourceEvidence(unittest.TestCase):
     def test_all_measurements_require_the_sealed_baseline_and_current_candidate(self):
         expected={label:{'source_root':'/'+label,'sha256':label,'revision':'ref','files':2}
