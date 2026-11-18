@@ -81,7 +81,7 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: &companion-corescope-ingestor-memory 384m
+    mem_limit: &companion-corescope-ingestor-memory 320m
     memswap_limit: *companion-corescope-ingestor-memory
     stop_grace_period: 30s
   corescope:
@@ -108,7 +108,7 @@ services:
       timeout: 3s
       retries: 60
       start_period: 5s
-    mem_limit: &companion-corescope-memory 384m
+    mem_limit: &companion-corescope-memory 448m
     memswap_limit: *companion-corescope-memory
   beacon-migrate:
     <<: *go
