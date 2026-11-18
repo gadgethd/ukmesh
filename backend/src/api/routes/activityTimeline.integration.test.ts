@@ -34,7 +34,13 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
     await rm(directory, { recursive: true, force: true });
   });
   await bootstrapBaseSchemaFixture(pool);
-  await generateSampleDataset(['--data-dir', directory, '--count', '25']);
+  // Insert the fixture inside the bucket we will normalize. Timescale cannot
+  // move an existing row to a different chunk with UPDATE.
+  const { rows: [clock] } = await pool.query<{ packetTime: Date }>(
+    "SELECT date_bin(INTERVAL '15 minutes', NOW(), TIMESTAMPTZ '2000-01-01')"
+    + " - INTERVAL '1 minute' AS \"packetTime\"");
+  const packetTime = clock!.packetTime.toISOString();
+  await generateSampleDataset(['--data-dir', directory, '--count', '25', '--as-of', packetTime]);
   await loadSampleDataset(['--data-dir', directory, '--database-url', url.href, '--reset', '--fast']);
   const receiver = '0102' + '11'.repeat(30), alias = 'AABB' + '22'.repeat(30), peer = 'CCDD' + '33'.repeat(30);
   await pool.query(`INSERT INTO core.node_identity_aliases
@@ -43,10 +49,10 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
   await pool.query(`WITH numbered AS (
     SELECT time,packet_hash,row_number() OVER (ORDER BY packet_hash) AS n FROM mesh.packets
   ) UPDATE mesh.packets p SET
-    time=date_bin(INTERVAL '15 minutes',NOW(),TIMESTAMPTZ '2000-01-01')-INTERVAL '1 minute',
+    time=$4::timestamptz,
     rx_node_id=CASE WHEN n.n<=12 THEN $1 WHEN n.n<=24 THEN $2 ELSE NULL END,
     src_node_id=CASE WHEN n.n<=5 THEN $3 WHEN n.n=6 THEN $2 ELSE NULL END
-    FROM numbered n WHERE p.time=n.time AND p.packet_hash=n.packet_hash`, [receiver,alias,peer]);
+    FROM numbered n WHERE p.time=n.time AND p.packet_hash=n.packet_hash`, [receiver,alias,peer,packetTime]);
   await pool.query(`INSERT INTO mesh.packets
     (time,packet_hash,rx_node_id,src_node_id,topic,topic_prefix,network,packet_type,route_type,
      hop_count,path_hashes,path_hash_size_bytes,visibility_ok,is_private)
