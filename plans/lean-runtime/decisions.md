@@ -2470,3 +2470,21 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Bound Chromium context setup separately in the production basemap tests.
   The CI trace spent 32 seconds creating a context. Keep the recovery
   deadline, assertions and normal pointer action in the test body.
+
+## Reduce buffer reads on 10× search and observer maps
+
+- Give current name, raw ID and IATA candidate discovery one indexed text
+  expression. Three GIN probes repeat work on the same index. Preserve the
+  canonical-ID and former-name candidates and exact matching after identity
+  hydration. Keep the earlier index usable by the sealed baseline and by
+  clients rolling back to earlier builds.
+- Let observer scope use a covering index on publicly eligible packet flags
+  when the current visibility generation is fully materialized and the packet
+  rematerialization queue is clear. The current query discovers sources from
+  the same index and then revisits every source to prove visibility. Reuse the
+  original packet-level checks during rematerialization and preserve the
+  observer's own identity, network scope and seven-day membership rules.
+- Verify identical rows before comparing timings. The single-scan experiment
+  with the whole privacy predicate lost SkipScan and read the packet heap.
+  Keep the separate indexed proof during recovery and measure the extra index
+  writes under the existing full ingest workload.

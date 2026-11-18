@@ -39,24 +39,34 @@ export function nodeAliasArraySql(requestedNodeParam: string): string {
   )`;
 }
 
-export function publicPacketPrivacySql(alias?: string): string {
-  const prefix = alias ? `${alias}.` : 'packets.';
+function publicPacketFlags(alias: string): string {
+  return `${alias}.visibility_ok IS TRUE AND ${alias}.is_private IS NOT TRUE`;
+}
+
+function packetVisibilityIsCurrent(): string {
+  return `EXISTS (
+    SELECT 1
+    FROM ops.packet_visibility_materialization_state cached_visibility
+    JOIN ops.public_visibility_state current_visibility
+      ON current_visibility.singleton = cached_visibility.singleton
+    WHERE cached_visibility.singleton = TRUE
+      AND cached_visibility.visibility_generation = current_visibility.generation
+  )`;
+}
+
+function unresolvedPacketRematerialization(alias: string): string {
+  return `${alias}.target = 'packets' AND ${alias}.status IN ('pending', 'processing', 'failed')`;
+}
+
+export function publicPacketPrivacySql(alias = 'packets'): string {
+  const prefix = `${alias}.`;
   return `(
-    ${prefix}visibility_ok IS TRUE
-    AND ${prefix}is_private IS NOT TRUE
-    AND EXISTS (
-      SELECT 1
-      FROM ops.packet_visibility_materialization_state cached_visibility
-      JOIN ops.public_visibility_state current_visibility
-        ON current_visibility.singleton = cached_visibility.singleton
-      WHERE cached_visibility.singleton = TRUE
-        AND cached_visibility.visibility_generation = current_visibility.generation
-    )
+    ${publicPacketFlags(alias)}
+    AND ${packetVisibilityIsCurrent()}
     AND NOT EXISTS (
       SELECT 1
       FROM ops.privacy_rematerialization_queue remat
-      WHERE remat.target = 'packets'
-        AND remat.status IN ('pending', 'processing', 'failed')
+      WHERE ${unresolvedPacketRematerialization('remat')}
         AND (
           ${prefix}rx_node_id = remat.node_id
           OR ${prefix}src_node_id = remat.node_id
@@ -104,6 +114,46 @@ function excludesLegacyTestTopic(prefix: string): string {
   return `COALESCE(NULLIF(${prefix}topic_prefix, ''), split_part(${prefix}topic, '/', 1)) <> 'meshcore-test'`;
 }
 
+function observerNodeIdsSql(observerParam: string, networkParam: string | null, networkIsMulti: boolean): string {
+  const observerPacketWindow = `p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL
+    ${networkParam ? `AND p.network ${networkIsMulti ? `= ANY(${networkParam})` : `= ${networkParam}`}` : ''}`;
+  return `WITH observer_aliases AS MATERIALIZED (
+    SELECT UNNEST(${nodeAliasArraySql(observerParam)}) AS node_id
+  ), policy AS MATERIALIZED (
+    SELECT ${packetVisibilityIsCurrent()} AS current,
+           EXISTS (SELECT 1 FROM ops.privacy_rematerialization_queue remat
+                   WHERE ${unresolvedPacketRematerialization('remat')}) AS rematerializing
+  ), observer_sources AS MATERIALIZED (
+    SELECT p.src_node_id
+    FROM (SELECT node_id FROM observer_aliases
+          WHERE (SELECT current AND rematerializing FROM policy)) observed
+    CROSS JOIN LATERAL (
+      SELECT DISTINCT p.src_node_id FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
+        AND ${observerPacketWindow} ORDER BY p.src_node_id OFFSET 0
+    ) p
+  ), public_sources AS (
+    SELECT p.src_node_id
+    FROM (SELECT node_id FROM observer_aliases
+          WHERE (SELECT current AND NOT rematerializing FROM policy)) observed
+    CROSS JOIN LATERAL (
+      SELECT DISTINCT p.src_node_id FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
+        AND ${observerPacketWindow} AND ${publicPacketFlags('p')} ORDER BY p.src_node_id OFFSET 0
+    ) p
+    UNION ALL
+    SELECT source.src_node_id FROM (SELECT DISTINCT src_node_id FROM observer_sources) source
+    JOIN LATERAL (
+      SELECT 1 FROM observer_aliases observed CROSS JOIN LATERAL (
+        SELECT 1 FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
+          AND ${observerPacketWindow} AND p.src_node_id=source.src_node_id
+          AND ${publicPacketPrivacySql('p')} LIMIT 1
+      ) eligible LIMIT 1
+    ) public_proof ON TRUE
+  ) SELECT node_id FROM observer_aliases
+    UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(source.src_node_id))) AS node_id
+    FROM public_sources source
+    LEFT JOIN core.node_identity_aliases a ON a.source_node_id=UPPER(BTRIM(source.src_node_id))`;
+}
+
 export function networkFilters(
   network?: string,
   observer?: string,
@@ -131,30 +181,7 @@ export function networkFilters(
   const regionParam = opts?.region ? `$${params.length + 1}` : null;
   if (regionParam) params.push(opts!.region);
 
-  const observerPacketWindow = `p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL
-    ${networkParam ? `AND p.network ${networkIsMulti ? `= ANY(${networkParam})` : `= ${networkParam}`}` : ''}`;
-  // Discover raw sources cheaply, then prove one CURRENT public observation
-  // per source. Repeated receptions cannot require repeated privacy proofs;
-  // private-only sources still fail the identical public predicate below.
-  const observerIds = observerParam ? `WITH observer_aliases AS MATERIALIZED (
-    SELECT UNNEST(${nodeAliasArraySql(observerParam)}) AS node_id
-  ), observer_sources AS MATERIALIZED (
-    SELECT p.src_node_id FROM observer_aliases observed
-    CROSS JOIN LATERAL (
-      SELECT DISTINCT p.src_node_id FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
-        AND ${observerPacketWindow} ORDER BY p.src_node_id OFFSET 0
-    ) p
-  ) SELECT node_id FROM observer_aliases
-    UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(source.src_node_id))) AS node_id
-    FROM (SELECT DISTINCT src_node_id FROM observer_sources) source
-    JOIN LATERAL (
-      SELECT 1 FROM observer_aliases observed CROSS JOIN LATERAL (
-        SELECT 1 FROM mesh.packets p WHERE p.rx_node_id=observed.node_id
-          AND ${observerPacketWindow} AND p.src_node_id=source.src_node_id
-          AND ${publicPacketPrivacySql('p')} LIMIT 1
-      ) eligible LIMIT 1
-    ) public_proof ON TRUE
-    LEFT JOIN core.node_identity_aliases a ON a.source_node_id=UPPER(BTRIM(source.src_node_id))` : undefined;
+  const observerIds = observerParam ? observerNodeIdsSql(observerParam, networkParam, networkIsMulti) : undefined;
   const nodeIds = regionParam
     ? `SELECT member.node_id FROM (${regionMemberIdsSql(regionParam)}) AS member(node_id)
        ${observerIds ? `WHERE member.node_id IN (${observerIds})` : ''}`
