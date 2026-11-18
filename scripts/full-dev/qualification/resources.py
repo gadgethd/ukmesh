@@ -281,7 +281,6 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
     output = run / "resources.jsonl"
     if output.exists():
         raise ValueError("resource samples already exist; use a fresh run directory")
-    rows = []
     start = time.monotonic()
     next_database_sample = start
     with output.open("x") as stream:
@@ -295,7 +294,6 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
             if time.monotonic() >= next_database_sample:
                 row["databases"] = database_samples(targets)
                 next_database_sample = time.monotonic() + 60
-            rows.append(row)
             stream.write(json.dumps(row) + "\n")
             stream.flush()
             if ready_event and not ready_event.is_set():
@@ -309,6 +307,10 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
                 time.sleep(min(interval, seconds - elapsed))
     required = {service.get("container", service["name"]) for service in manifest["services"]
                 if service.get("required", True) and service.get("kind", "container") == "container"}
+    # The raw samples already live on disk. Decode them after load so the
+    # collector's heap does not grow with every resident and every sample.
+    with output.open() as stream:
+        rows = [json.loads(line) for line in stream]
     result = evaluate(rows, duration=seconds, warmup=warmup, required_containers=required)
     result["required_containers"] = sorted(required)
     result["context"] = provenance

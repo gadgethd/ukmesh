@@ -148,6 +148,10 @@ try {
   ];
   publication.stage='baseline-counts';
   const before = await counts(), beforeMetrics = await metrics();
+  // The auxiliary manifest deliberately gives each channel message two observers.
+  const auditWorkset = () => auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
+    auxiliaryTraffic?.channelHashes ?? []);
+  let reconciliation: Awaited<ReturnType<typeof auditWorkset>> | undefined;
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
   publication.stage='websocket-readiness';
   const socket = soakSocketUrl(base,socketScope);
@@ -220,7 +224,21 @@ try {
         '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
     acknowledgedMs=performance.now()-started;
     publication.stage='drain';
-    ({drained,drainElapsedMs}=await waitForSoakDrain({before,expectedDeltas,count,metrics,counts,seenCount:()=>seen.size}));
+    // Publication has completed. Let the last mixed read burst settle inside
+    // the same drain deadline before starting the exact reconciliation.
+    clearInterval(timer);
+    timer = undefined;
+    ({drained,drainElapsedMs}=await waitForSoakDrain({
+      count, seenCount: () => seen.size,
+      metrics: async () => { await readWork; return metrics(); },
+      verifyCommit: async () => {
+        const audit = await auditWorkset();
+        reconciliation = audit;
+        return audit.mismatchCount === 0
+          && (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key =>
+            audit.totals[key] - before[key] === expectedDeltas[key]);
+      },
+    }));
   } catch (error) {
     failure=error; auxiliaryController.abort();
     if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
@@ -229,12 +247,10 @@ try {
   publication.stage='final-verification';
   const after=await counts(), afterMetrics=await metrics();
   publication.stage='independent-final-hash-audit';
-  // Each auxiliary channel message is intentionally received by both synthetic observers.
-  const reconciliation = await auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
-    auxiliaryTraffic?.channelHashes ?? []);
+  const audit = drained && reconciliation ? reconciliation : await auditWorkset();
   const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
-    ...reconciliation, passed: reconciliation.mismatchCount === 0
-      && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === reconciliation.totals[key]) };
+    ...audit, passed: audit.mismatchCount === 0
+      && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === audit.totals[key]) };
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
   const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));

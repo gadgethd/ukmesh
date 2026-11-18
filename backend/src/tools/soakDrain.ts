@@ -1,6 +1,9 @@
-type Totals = { packets: number; paths: number; facts: number; ledger: number };
-type Completion = { before: Totals; expectedDeltas: Totals; count: number;
-  metrics: () => Promise<ReadonlyMap<string, number>>; counts: () => Promise<Totals>; seenCount: () => number };
+type Completion = {
+  count: number;
+  metrics: () => Promise<ReadonlyMap<string, number>>;
+  verifyCommit: () => Promise<boolean>;
+  seenCount: () => number;
+};
 type Clock = { now: () => number; pause: (milliseconds: number) => Promise<void> };
 
 /** SQL, post-persist publication and observed live delivery share one ACK deadline. */
@@ -17,12 +20,9 @@ export async function waitForSoakDrain(input: Completion, clock: Clock = {
       && current.get('meshcore_mqtt_post_persist_inflight') === 0;
     if (queuesEmpty && input.seenCount() === input.count) {
       // Run the exact workset check once cheaper signals show delivery is caught up.
-      const persisted = await input.counts();
+      const committed = await input.verifyCommit();
       if (clock.now() > deadline) break;
-      if ((Object.keys(input.expectedDeltas) as (keyof Totals)[]).every(key =>
-        persisted[key] - input.before[key] === input.expectedDeltas[key])) {
-        return { drained: true, drainElapsedMs: clock.now() - started };
-      }
+      if (committed) return { drained: true, drainElapsedMs: clock.now() - started };
     }
     await clock.pause(Math.min(1000, Math.max(0, deadline - clock.now())));
   }
