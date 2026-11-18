@@ -114,8 +114,12 @@ def native_pss(manifest: dict) -> dict:
             roots.add(pid)
         except FileNotFoundError:
             continue
+    return process_memory(process_family(roots))
+
+
+def process_family(roots: set[int], *, proc_root: Path = Path('/proc')) -> set[int]:
     parents = {}
-    for entry in Path("/proc").iterdir():
+    for entry in proc_root.iterdir():
         if not entry.name.isdigit():
             continue
         try:
@@ -129,22 +133,27 @@ def native_pss(manifest: dict) -> dict:
         if descendants.issubset(selected):
             break
         selected.update(descendants)
-    return process_memory(selected)
+    return selected
 
 
-def process_memory(selected: set[int], *, proc_root: Path = Path('/proc')) -> dict:
-    result, swapped = {}, {}
+def process_memory(selected: set[int], *, proc_root: Path = Path('/proc'), best_effort: bool = False) -> dict:
+    result, swapped, unreadable = {}, {}, 0
     for pid in selected:
         try:
             values = key_values(proc_root / str(pid) / 'smaps_rollup')
             result[str(pid)] = values["Pss"]
             swapped[str(pid)] = values.get("SwapPss")
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
+        except (PermissionError, KeyError):
+            if not best_effort:
+                raise
+            unreadable += 1
     return {"processes": result, "total_bytes": sum(result.values()),
             "swap_processes": swapped,
             "swap_total_bytes": sum(value for value in swapped.values() if value is not None),
-            "swap_coverage_complete": all(value is not None for value in swapped.values())}
+            "swap_coverage_complete": unreadable == 0 and all(value is not None for value in swapped.values()),
+            "unreadable_processes": unreadable}
 
 
 def container_samples() -> list[dict]:
@@ -160,10 +169,27 @@ def container_samples() -> list[dict]:
         if not pid:
             continue
         try:
-            result.append(running_container_sample(item, container_cgroup(pid)))
+            resident = running_container_sample(item, container_cgroup(pid))
+            labels = item.get("Config", {}).get("Labels", {})
+            if labels.get("com.docker.compose.project") == "ukmesh-companions" \
+                    and labels.get("com.docker.compose.service") == "corescope":
+                mounts = [Path(mount["Source"]) for mount in item.get("Mounts", []) if mount["Destination"] == "/data"]
+                if len(mounts) == 1 and mounts[0].resolve().is_relative_to(REPO / "plans"):
+                    resident["sqlite"] = sqlite_sizes(mounts[0])
+            result.append(resident)
         except FileNotFoundError:
             continue
     return result
+
+
+def sqlite_sizes(directory: Path) -> dict:
+    sizes = {}
+    for label, filename in (("database_bytes", "analyzer.db"), ("wal_bytes", "analyzer.db-wal")):
+        try:
+            sizes[label] = (directory / filename).stat().st_size
+        except FileNotFoundError:
+            sizes[label] = 0
+    return sizes
 
 
 def running_container_sample(item: dict, group: Path) -> dict:
@@ -197,6 +223,11 @@ def database_samples(targets: dict) -> list[dict]:
           'max_connections', current_setting('max_connections')::integer,
           'active', (SELECT count(*) FROM pg_stat_activity WHERE state='active'),
           'waiting_locks', (SELECT count(*) FROM pg_locks WHERE NOT granted),
+          'wait_classes', (SELECT coalesce(jsonb_object_agg(wait_event_type, sessions), '{}'::jsonb)
+            FROM (SELECT wait_event_type, count(*) sessions FROM pg_stat_activity
+                   WHERE datname = current_database() AND pid <> pg_backend_pid()
+                     AND state IS DISTINCT FROM 'idle' AND wait_event_type IS NOT NULL
+                   GROUP BY wait_event_type) waits),
           'deadlocks', (SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()),
           'temp_bytes', (SELECT temp_bytes FROM pg_stat_database WHERE datname=current_database()),
           'wal_bytes_position', pg_wal_lsn_diff(pg_current_wal_lsn(),'0/0'),
@@ -283,6 +314,7 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
         raise ValueError("resource samples already exist; use a fresh run directory")
     start = time.monotonic()
     next_database_sample = start
+    next_harness_sample = start
     with output.open("x") as stream:
         output.chmod(0o600)
         while True:
@@ -291,6 +323,9 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
             native = native_pss(manifest)
             row = {"host": host, "containers": containers, "native": native,
                    "runtime_working_bytes": sum(item["working_bytes"] for item in containers) + native["total_bytes"]}
+            if time.monotonic() >= next_harness_sample:
+                row["harness"] = process_memory(process_family({os.getpid()}), best_effort=True)
+                next_harness_sample = time.monotonic() + 10
             if time.monotonic() >= next_database_sample:
                 row["databases"] = database_samples(targets)
                 next_database_sample = time.monotonic() + 60
@@ -312,6 +347,13 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
     with output.open() as stream:
         rows = [json.loads(line) for line in stream]
     result = evaluate(rows, duration=seconds, warmup=warmup, required_containers=required)
+    harness = [row["harness"] for row in rows if "harness" in row]
+    result["harness"] = {
+        "samples": len(harness),
+        "pss_peak_bytes": max((row["total_bytes"] for row in harness), default=0),
+        "swap_pss_peak_bytes": max((row["swap_total_bytes"] for row in harness), default=0),
+        "complete_swap_coverage": bool(harness) and all(row["swap_coverage_complete"] for row in harness),
+    }
     result["required_containers"] = sorted(required)
     result["context"] = provenance
     write_json(run / "resources.json", result)

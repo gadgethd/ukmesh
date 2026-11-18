@@ -35,6 +35,7 @@ import core_projection
 import source_identity
 import context
 import operations
+import cli
 from unittest.mock import Mock
 from test_role_evidence import database_identity, role_context
 
@@ -561,15 +562,61 @@ class ResourceAcceptance(unittest.TestCase):
 
 
 class EvidenceAcceptance(unittest.TestCase):
+    def test_cli_selects_profile_explicitly_without_changing_the_full_stack_default(self):
+        with patch.object(cli, 'owned_run', return_value=Path('/unused-owned-run')), \
+                patch.object(soak, 'soak', return_value={'passed': True}) as operation, patch('builtins.print'):
+            for flags, expected in (([], 'full-stack'), (['--acceptance-profile', 'mqtt-first'], 'mqtt-first')):
+                with patch('sys.argv', ['qualification', 'soak', '--count', '300', *flags]):
+                    self.assertEqual(cli.main(), 0)
+                    self.assertEqual(operation.call_args.kwargs['acceptance_profile'], expected)
+
     def test_cold_route_failures_or_missing_warmup_cannot_disappear_from_soak_evidence(self):
         value={'passed':True,'settings':{'count':72000,'rate':30,'httpConcurrency':8},'drained':True,
                'wsPackets':72000,'logs_passed':True,'socketReadiness':{'initialState':True,'unexpectedCloses':0},
+               'acceptance_profile':'full-stack','readLatency':{'passed':True,'advisory':False},
                'warmupReads':[{'status':200} for _ in range(8)]}
         self.assertFalse(report.phase_check('soak',value)[0])
         value['settings']['httpWarmup']=True
         self.assertTrue(report.phase_check('soak',value)[0])
         value['warmupReads'][0]['status']=503
         self.assertFalse(report.phase_check('soak',value)[0])
+
+    def test_mqtt_first_keeps_latency_advisory_but_cannot_qualify_as_full_stack(self):
+        value = {'passed': True, 'acceptance_profile': 'mqtt-first',
+                 'settings': {'count': 72000, 'rate': 30, 'httpConcurrency': 8, 'httpWarmup': True},
+                 'drained': True, 'wsPackets': 72000, 'logs_passed': True,
+                 'socketReadiness': {'initialState': True, 'unexpectedCloses': 0},
+                 'warmupReads': [{'status': 200} for _ in range(8)],
+                 'readLatency': {'passed': False, 'advisory': True}}
+        self.assertTrue(report.phase_check('soak', value, acceptance_profile='mqtt-first')[0])
+        self.assertFalse(report.phase_check('soak', value)[0])
+        for changed in ({'drained': False}, {'wsPackets': 71999}, {'logs_passed': False},
+                        {'acceptance_profile': 'full-stack'}, {'readLatency': {'passed': False, 'advisory': False}}):
+            with self.subTest(changed=changed):
+                self.assertFalse(report.phase_check('soak', {**value, **changed}, acceptance_profile='mqtt-first')[0])
+
+    def test_phase_receipts_keep_exact_native_bytes_and_refuse_other_invocations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'native-soak'
+            source = Path(temporary) / 'source'
+            expected = {'version': 1, 'invocationToken': 'owned', 'database': 'lean_1x_owned',
+                        'outputDirectory': str(output), 'dataDirectory': str(source),
+                        'toolSha256': common.digest(common.REPO / 'backend/src/tools/soakDatabaseLookups.ts')}
+            for phase in soak.SOAK_PHASES:
+                common.write_json(output / ('phase-' + phase + '.json'), {**expected, 'phase': phase, 'passed': True})
+            before = {p.name: p.read_bytes() for p in output.iterdir()}
+            records = soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)
+            self.assertTrue(all(row['passed'] for row in records))
+            self.assertEqual(before, {p.name: p.read_bytes() for p in output.iterdir()})
+            self.assertFalse(any(row['passed'] for row in soak.phase_receipts(
+                output, invocation='other', database='lean_1x_owned', source=source)))
+            (output / 'phase-reconciliation.json').unlink()
+            partial = soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)
+            self.assertTrue(all(row['passed'] for row in partial[:3]))
+            self.assertFalse(partial[-1]['passed'])
+            changed = {**expected, 'phase': 'publication', 'passed': True, 'toolSha256': 'old-source'}
+            common.write_json(output / 'phase-publication.json', changed)
+            self.assertFalse(soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)[0]['passed'])
 
     def test_missing_phases_and_short_soak_fail_even_with_passed_flag(self):
         self.assertFalse(report.phase_check("soak", {"passed": True, "settings": {"count": 30, "rate": 30,

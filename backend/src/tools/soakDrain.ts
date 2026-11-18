@@ -1,5 +1,6 @@
 type Completion = {
   count: number;
+  acknowledgedAt?: number;
   metrics: () => Promise<ReadonlyMap<string, number>>;
   verifyCommit: () => Promise<boolean>;
   seenCount: () => number;
@@ -10,7 +11,7 @@ type Clock = { now: () => number; pause: (milliseconds: number) => Promise<void>
 export async function waitForSoakDrain(input: Completion, clock: Clock = {
   now: () => performance.now(), pause: milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds)),
 }): Promise<{ drained: boolean; drainElapsedMs: number }> {
-  const started = clock.now();
+  const started = input.acknowledgedAt ?? clock.now();
   const deadline = started + 120_000;
   while (clock.now() < deadline) {
     const current = await input.metrics();

@@ -2488,3 +2488,50 @@ qualification. Do not change workloads, timing or acceptance limits.
   with the whole privacy predicate lost SkipScan and read the packet heap.
   Keep the separate indexed proof during recovery and measure the extra index
   writes under the existing full ingest workload.
+
+## Keep retained CoreScope history independent of cache size
+
+- Give the retained packet reader ownership of pagination, totals, and page
+  hydration under one SQLite snapshot. The old time-only fallback treats
+  unbounded queries and late observations as cache-complete, skips radio
+  filters, and can silently return partial rows after a database error.
+- Reuse the packet filters and the page formatters at the history boundary.
+  The old fallback has independent definitions of channel and node matching
+  and a second set of response fields. Resolve linked metadata once per
+  request and return errors before sending a partial result.
+- Move per-observation radio data to the observation read path. The global
+  map duplicates SQLite and grows independently of packet eviction. Keep the
+  radio-stint fallback used by single-radio observers and earlier schemas.
+- Keep the DEV cap off until retained packet details, VCR and history consumers
+  pass with actual eviction. The cap cannot safely turn a cache miss into
+  a historical miss.
+
+## Record MQTT qualification outcomes at their owning stages
+
+- Save publication, delivery, drain and final reconciliation evidence as the
+  corresponding work completes. A later SQL timeout currently hides timings
+  and counters from earlier work, even though the failure receipt shows the
+  exact stage.
+- Use the existing matched-read validators to close the MQTT-first profile.
+  Keep fixed 80 RPS and mixed-read latency visible as advisory and bind all
+  required phases to the same source, runtime profile and intended fixtures.
+
+## Attribute swap without changing the qualification gates
+
+- Count qualification processes separately from resident services. Host swap
+  counters show movement but cannot identify the process or tell whether a
+  process moved swap traffic and paged back in between samples. Record
+  harness PSS and SwapPss alongside the existing resident and host evidence.
+- Measure the selected CoreScope SQLite store and WAL during the workload,
+  and capture PostgreSQL wait classes without query text. The previous
+  evidence combined disk I/O and backend waits into broad counters while
+  two SQLite processes shared one retained store.
+
+## Prove exact timed drain through committed parent keys
+
+- Reuse the parent-key checks inside the timed drain and keep the global hash
+  audit for final independent reconciliation. The drain and final checks
+  currently repeat the same global scans of path history and the ledger.
+  Check each hash and reception count during drain so missing packets cannot
+  cancel out duplicate observations in aggregate totals. The final global
+  scan still detects orphan children outside the publication window.

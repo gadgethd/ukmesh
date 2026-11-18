@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
 import { assertLocalDatabaseUrl } from './sampleData.js';
-import { SOAK_HASH_AUDIT_SQL,SOAK_WORKSET_COUNTS_SQL } from './soakWorksetCounts.js';
+import { SOAK_HASH_AUDIT_SQL,SOAK_PARENT_AUDIT_SQL,SOAK_WORKSET_COUNTS_SQL } from './soakWorksetCounts.js';
 
 const endpoint=process.env['TEST_INGEST_DATABASE_URL'];
 const columns='"time" timestamptz,packet_hash text,network text,rx_node_id text,topic text,observation_id uuid';
@@ -84,6 +84,14 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
       });
       assert.equal(mismatch_count, expectedMismatches.length, fixture.name);
       assert.deepEqual(mismatches, expectedMismatches, fixture.name);
+      const scopedSql = SOAK_PARENT_AUDIT_SQL.replaceAll('$2', '$6').replaceAll('$3', '$7').replaceAll('$4', '$8');
+      const { mismatch_count: scopedMismatchCount, mismatches: scopedMismatches, ...scopedTotals } =
+        (await client.query(native(scopedSql), [...params, ackHashes, fixture.dual ?? [], row(1).time])).rows[0];
+      assert.deepEqual(scopedTotals, expected, fixture.name);
+      assert.equal(scopedMismatchCount, scopedMismatches.length, fixture.name);
+      if (fixture.name.startsWith('missing observation')) {
+        assert.equal(scopedMismatchCount, 2, 'aggregate agreement never hides two unmatched hashes');
+      }
       if(fixture.name.includes('orphan'))assert.notDeepEqual(expected,independent,'final orphan audit must remain independent');
     }
   }finally{await client.query('ROLLBACK');client.release();await pool.end();}

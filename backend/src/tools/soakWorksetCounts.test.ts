@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import test from 'node:test';
-import { auditSoakWorksetHashes,countSoakWorkset,soakWorkset } from './soakWorksetCounts.js';
+import { auditSoakWorksetHashes,auditSoakWorksetParents,countSoakWorkset,soakWorkset } from './soakWorksetCounts.js';
 
 test('workset retains every ACK and auxiliary canonical hash once with an exact shared digest',()=>{
   const a='A'.repeat(64),b='B'.repeat(64),c='C'.repeat(64);
@@ -14,10 +14,11 @@ test('workset retains every ACK and auxiliary canonical hash once with an exact 
   assert.throws(()=>soakWorkset(['not-a-packet-hash']),/invalid/);
 });
 
-test('both exact queries retain their deadline and propagate database failures', async () => {
+test('each exact query retains their deadline and propagate database failures', async () => {
   const queries = [
     (query: () => Promise<{ rows: unknown[] }>, now: () => number) => countSoakWorkset(query, [], { now }),
     (query: () => Promise<{ rows: unknown[] }>, now: () => number) => auditSoakWorksetHashes(query, [], [], [], now),
+    (query: () => Promise<{ rows: unknown[] }>, now: () => number) => auditSoakWorksetParents(query, [], [], [], new Date(0), now),
   ];
   for (const run of queries) {
     let clock = 0;

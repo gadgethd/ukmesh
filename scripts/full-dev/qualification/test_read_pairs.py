@@ -234,6 +234,40 @@ class ReadPairs(unittest.TestCase):
             common.write_json(path, batch); bad['batches'][0]['sha256'] = common.digest(path); common.write_json(self.root/'reads.json', bad)
             self.assertFalse(report.report(self.root)['passed'])
 
+    def test_mqtt_first_report_uses_real_native_validators_and_preserves_full_profile(self):
+        runs = self.windows()
+        value = {**measured.native_read_comparison(runs), 'runs': runs, 'demand_runs': [],
+                 'native_only': True, 'context': runs[-1]['context'], 'batches': []}
+        for scale in ('1x', '10x'):
+            rows = [r for r in runs if r['scale'] == scale]
+            path = self.root / ('native-batch-' + scale + '.json')
+            batch = {'passed': True, 'diagnostic_only': False, 'native_only': True, 'protocol': IDENTITY,
+                     'batch_id': rows[0]['read_window']['batch_id'], 'runs': rows, 'demand_runs': [],
+                     'context': rows[0]['context'], 'context_before': rows[0]['context'],
+                     'collection_seconds': 60, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
+                     'demand_collection_seconds': 0, 'demand_collection_budget_seconds': PROFILE['demand']['collection_budget_seconds'],
+                     'errors': [], 'final_context_error': None}
+            common.write_json(path, batch)
+            value['batches'].append({'passed': True, 'scale': scale, 'batch_id': batch['batch_id'],
+                                      'path': str(path), 'sha256': common.digest(path)})
+        common.write_json(self.root / 'reads-native.json', value)
+        before = (self.root / 'reads-native.json').read_bytes()
+        common.write_json(self.root / 'report.json', {'passed': False, 'historical': 'full-stack'})
+        old_report = (self.root / 'report.json').read_bytes()
+        with patch.object(report, 'REQUIRED', ('reads',)), patch.object(report, 'phase_context', return_value=value['context']), \
+                patch.object(source_identity, 'expected_sources', return_value=self.sources):
+            result = report.report(self.root, acceptance_profile='mqtt-first')
+            self.assertTrue(result['passed'])
+            self.assertEqual(result['acceptance_profile'], 'mqtt-first')
+            self.assertTrue((self.root / 'report-mqtt-first.json').is_file())
+            self.assertEqual(old_report, (self.root / 'report.json').read_bytes())
+            self.assertFalse(report.report(self.root)['passed'])
+            self.assertEqual(before, (self.root / 'reads-native.json').read_bytes())
+            wrong = copy.deepcopy(value)
+            wrong['runs'][0]['measured_source'] = self.sources['candidate']
+            common.write_json(self.root / 'reads-native.json', wrong)
+            self.assertFalse(report.report(self.root, acceptance_profile='mqtt-first')['passed'])
+
     def test_owned_native_document_refuses_fifo_symlink_and_changed_digest(self):
         path = self.root/'evidence.json'; common.write_json(path, {'owned': True}); sha = common.digest(path)
         self.assertEqual(measured.owned_document(path, sha), {'owned': True})

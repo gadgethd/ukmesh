@@ -3,37 +3,51 @@ import { createHash } from 'node:crypto';
 export const SOAK_COUNTER_DEADLINE_MS = 30_000;
 export type SoakTotals = { packets: number; paths: number; facts: number; ledger: number };
 
-/** All observations for the owned hashes, then their exact persisted children.
- * The lateral fence keeps work proportional to wanted hash probes. Child keys
- * use existing indexes; this is not an independent orphan-row/history audit. */
-export const SOAK_WORKSET_COUNTS_SQL = `WITH wanted AS MATERIALIZED (
+const wanted = `wanted AS MATERIALIZED (
   SELECT DISTINCT packet_hash FROM unnest($1::text[]) AS input(packet_hash)
-), observations AS MATERIALIZED (
+)`;
+
+const parentKeys = (since: string) => `observations AS MATERIALIZED (
   SELECT p.time, p.packet_hash, p.network, p.rx_node_id, p.topic, p.observation_id
     FROM wanted w CROSS JOIN LATERAL (
       SELECT time, packet_hash, network, rx_node_id, topic, observation_id
         FROM mesh.packets
-        WHERE packet_hash=w.packet_hash AND ($2::timestamptz IS NULL OR time >= $2::timestamptz)
+        WHERE packet_hash=w.packet_hash AND (${since}::timestamptz IS NULL OR time >= ${since}::timestamptz)
         OFFSET 0
     ) p
 ), path_keys AS MATERIALIZED (
   SELECT DISTINCT time, packet_hash, network, COALESCE(rx_node_id,'') AS rx_node_id, topic FROM observations
 ), observation_keys AS MATERIALIZED (
   SELECT DISTINCT observation_id, packet_hash, network FROM observations WHERE observation_id IS NOT NULL
-)
-SELECT (SELECT count(*)::integer FROM observations) AS packets,
-  (SELECT count(*)::integer FROM path_keys k JOIN mesh.packet_paths p
-    ON p.time=k.time AND p.packet_hash=k.packet_hash AND p.network=k.network
-      AND COALESCE(p.rx_node_id,'')=k.rx_node_id AND p.topic=k.topic) AS paths,
-  (SELECT count(*)::integer FROM observation_keys k JOIN mesh.multibyte_path_facts f
-    ON f.observation_id=k.observation_id AND f.packet_hash=k.packet_hash AND f.network=k.network) AS facts,
-  (SELECT count(*)::integer FROM observation_keys k JOIN mesh.ingest_observation_ledger l
-    ON l.observation_id=k.observation_id AND l.packet_hash=k.packet_hash AND l.network=k.network) AS ledger`;
+)`;
 
-/** Independent hash reconciliation includes children that have lost their parent UUID. */
-export const SOAK_HASH_AUDIT_SQL = `WITH wanted AS MATERIALIZED (
-  SELECT DISTINCT packet_hash FROM unnest($1::text[]) AS input(packet_hash)
-), packets AS (
+const parentPaths = `path_keys k JOIN mesh.packet_paths p
+  ON p.time=k.time AND p.packet_hash=k.packet_hash AND p.network=k.network
+    AND COALESCE(p.rx_node_id,'')=k.rx_node_id AND p.topic=k.topic`;
+const parentFacts = `observation_keys k JOIN mesh.multibyte_path_facts f
+  ON f.observation_id=k.observation_id AND f.packet_hash=k.packet_hash AND f.network=k.network`;
+const parentLedger = `observation_keys k JOIN mesh.ingest_observation_ledger l
+  ON l.observation_id=k.observation_id AND l.packet_hash=k.packet_hash AND l.network=k.network`;
+
+/** Exact persisted children of each owned packet observation. */
+export const SOAK_WORKSET_COUNTS_SQL = `WITH ${wanted}, ${parentKeys('$2')}
+SELECT (SELECT count(*)::integer FROM observations) AS packets,
+  (SELECT count(*)::integer FROM ${parentPaths}) AS paths,
+  (SELECT count(*)::integer FROM ${parentFacts}) AS facts,
+  (SELECT count(*)::integer FROM ${parentLedger}) AS ledger`;
+
+const parentAuditCounts = `${parentKeys('$4')}, packets AS (
+  SELECT packet_hash, count(*)::integer AS n, count(DISTINCT topic)::integer AS observers
+    FROM observations GROUP BY packet_hash
+), paths AS (
+  SELECT k.packet_hash, count(*)::integer AS n FROM ${parentPaths} GROUP BY k.packet_hash
+), facts AS (
+  SELECT k.packet_hash, count(*)::integer AS n FROM ${parentFacts} GROUP BY k.packet_hash
+), ledger AS (
+  SELECT k.packet_hash, count(*)::integer AS n FROM ${parentLedger} GROUP BY k.packet_hash
+)`;
+
+const globalAuditCounts = `packets AS (
   SELECT packet_hash, count(*)::integer AS n, count(DISTINCT topic)::integer AS observers
     FROM mesh.packets JOIN wanted USING(packet_hash) GROUP BY packet_hash
 ), paths AS (
@@ -42,7 +56,9 @@ export const SOAK_HASH_AUDIT_SQL = `WITH wanted AS MATERIALIZED (
   SELECT packet_hash, count(*)::integer AS n FROM mesh.multibyte_path_facts JOIN wanted USING(packet_hash) GROUP BY packet_hash
 ), ledger AS (
   SELECT packet_hash, count(*)::integer AS n FROM mesh.ingest_observation_ledger JOIN wanted USING(packet_hash) GROUP BY packet_hash
-), per_hash AS (
+)`;
+
+const auditSQL = (counts: string) => `WITH ${wanted}, ${counts}, per_hash AS (
   SELECT w.packet_hash, a.packet_hash IS NOT NULL AS expects_path,
     1 + (multi.packet_hash IS NOT NULL)::integer AS expected_observers,
     coalesce(p.observers,0) AS observers, coalesce(p.n,0) AS packets, coalesce(t.n,0) AS paths,
@@ -65,6 +81,13 @@ SELECT coalesce(sum(packets),0)::integer AS packets, coalesce(sum(paths),0)::int
   (SELECT coalesce(json_agg(m), '[]'::json) FROM
     (SELECT * FROM mismatches ORDER BY packet_hash LIMIT 20) m) AS mismatches
 FROM per_hash`;
+
+/** Timed reconciliation prunes to the publication window and uses child-key indexes. */
+export const SOAK_PARENT_AUDIT_SQL = auditSQL(parentAuditCounts);
+
+/** Independent reconciliation finds children without a matching packet parent. */
+export const SOAK_HASH_AUDIT_SQL = auditSQL(globalAuditCounts);
+
 
 export function soakWorkset(ackHashes: string[], auxiliaryHashes: string[] = []) {
   const normalized = (values: string[]) => [...new Set(values.map(value => {
@@ -90,11 +113,20 @@ export async function countSoakWorkset(query: Query, hashes: string[], options: 
 
 export async function auditSoakWorksetHashes(query: Query, hashes: string[], ackHashes: string[],
   dualObserverHashes: string[], now = () => performance.now()) {
-  const row = await checkedRow(query, SOAK_HASH_AUDIT_SQL, [hashes, ackHashes, dualObserverHashes], now);
+  return audit(query, SOAK_HASH_AUDIT_SQL, [hashes, ackHashes, dualObserverHashes], hashes.length, now);
+}
+
+export async function auditSoakWorksetParents(query: Query, hashes: string[], ackHashes: string[],
+  dualObserverHashes: string[], since: Date, now = () => performance.now()) {
+  return audit(query, SOAK_PARENT_AUDIT_SQL, [hashes, ackHashes, dualObserverHashes, since], hashes.length, now);
+}
+
+async function audit(query: Query, sql: string, parameters: unknown[], worksetSize: number, now: () => number) {
+  const row = await checkedRow(query, sql, parameters, now);
   const mismatchCount = row['mismatch_count'];
   const mismatches = row['mismatches'];
   if (typeof mismatchCount !== 'number' || !Number.isSafeInteger(mismatchCount) || mismatchCount < 0
-    || mismatchCount > hashes.length || !Array.isArray(mismatches) || mismatches.length !== Math.min(mismatchCount, 20)) {
+    || mismatchCount > worksetSize || !Array.isArray(mismatches) || mismatches.length !== Math.min(mismatchCount, 20)) {
     throw new Error('owned soak audit returned invalid reconciliation');
   }
   return { totals: totals(row), mismatchCount, mismatches };

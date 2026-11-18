@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
@@ -16,7 +17,7 @@ import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
 import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
 import { waitForSoakDrain } from './soakDrain.js';
-import { auditSoakWorksetHashes, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
+import { auditSoakWorksetHashes, auditSoakWorksetParents, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
 import { SoakPublication, soakInvocationToken } from './soakPublication.js';
 
 const publication = new SoakPublication();
@@ -123,6 +124,16 @@ const reads: {name: string; ms: number; startElapsedMs: number; slot: number; bu
 const seen = new Set<string>();
 let ws: WebSocket | undefined, readWork: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 let failure: unknown;
+let started = performance.now();
+// Four small receipts preserve completed work if a later database check fails.
+// Delivery is recorded once at the last live frame, rather than after drain SQL.
+function recordPhase(phase: keyof SoakPublication['completedPhases'], details: Record<string, unknown>) {
+  const receipt = publication.complete(phase, { ...failureContext, at: new Date().toISOString(),
+    elapsedMs: performance.now() - started, countsScope: workset.countsScope, socketScope,
+    publicationStarted: publication.publicationStarted, ...details });
+  mkdirSync(output, { recursive: true });
+  writeFileSync(path.join(output, `phase-${phase}.json`), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
+}
 try {
   for (let index=0; index<hashes.length; index+=3000) {
     const existing = await pool.query('SELECT 1 FROM mesh.packets WHERE packet_hash=ANY($1::text[]) LIMIT 1',[hashes.slice(index,index+3000)]);
@@ -164,12 +175,17 @@ try {
     try {
       for (const line of bytes.toString().split('\n').filter(Boolean)) {
         const value=JSON.parse(line), hash=value.data?.packetHash;
-        if (value.type==='packet' && expected.has(hash)) seen.add(hash);
+        if (value.type==='packet' && expected.has(hash)) {
+          seen.add(hash);
+          if (seen.size === count && !publication.completedPhases.delivery) {
+            recordPhase('delivery', { passed: true, wsPackets: seen.size, expectedPackets: count });
+          }
+        }
       }
     } catch {wsErrors++;}
   });
   await waitForInitialState(ws);
-  let started=performance.now();
+  started=performance.now();
   let lastBackground=0, metricsFailures=0, measuredBurstOrdinal=0;
   const warmupReads: typeof reads = [];
   const readBurst=async(target=reads,measureMetrics=true)=>{
@@ -215,6 +231,7 @@ try {
   let acknowledgedMs=0,drained=false,drainElapsedMs=0,auxiliaryAcknowledgements=0;
   const auxiliaryController = new AbortController();
   let auxiliaryWork: Promise<void> | undefined;
+  let drainStarted: number | undefined;
   try {
     publication.begin(); // BEFORE either publisher can send, even if its promise later rejects.
     auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
@@ -222,25 +239,34 @@ try {
     await Promise.all([auxiliaryWork,
       replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
         '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
-    acknowledgedMs=performance.now()-started;
+    drainStarted = performance.now();
+    acknowledgedMs=drainStarted-started;
+    recordPhase('publication', { passed: true, acknowledgedMs, ackPublished: publication.ackPublished,
+      auxiliaryPublished: publication.auxiliaryPublished });
     publication.stage='drain';
     // Publication has completed. Let the last mixed read burst settle inside
     // the same drain deadline before starting the exact reconciliation.
     clearInterval(timer);
     timer = undefined;
     ({drained,drainElapsedMs}=await waitForSoakDrain({
-      count, seenCount: () => seen.size,
+      count, acknowledgedAt: drainStarted, seenCount: () => seen.size,
       metrics: async () => { await readWork; return metrics(); },
       verifyCommit: async () => {
-        const audit = await auditWorkset();
+        const audit = await auditSoakWorksetParents(queryCounts, workset.hashes, workset.ackHashes,
+          auxiliaryTraffic?.channelHashes ?? [], commitWindowStart);
         return audit.mismatchCount === 0
           && (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key =>
-            audit.totals[key] - before[key] === expectedDeltas[key]);
+            audit.totals[key] === expectedDeltas[key]);
       },
     }));
+    recordPhase('drain', { passed: drained, drainElapsedMs, wsPackets: seen.size });
   } catch (error) {
     failure=error; auxiliaryController.abort();
     if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
+    if (drainStarted !== undefined && !publication.completedPhases.drain) {
+      recordPhase('drain', { passed: false, drainElapsedMs: performance.now() - drainStarted,
+        wsPackets: seen.size, error: { name: error instanceof Error ? error.name : 'Error' } });
+    }
   }
   finally { clearInterval(timer);timer=undefined;await readWork; }
   publication.stage='final-verification';
@@ -252,6 +278,9 @@ try {
   const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
     ...audit, passed: audit.mismatchCount === 0
       && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === audit.totals[key]) };
+  recordPhase('reconciliation', { passed: independentAudit.passed &&
+    (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key => after[key] - before[key] === expectedDeltas[key]),
+    before, after, expectedDeltas, independentAudit });
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
   const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));

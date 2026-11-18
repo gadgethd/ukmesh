@@ -30,6 +30,15 @@ test('an awaited probe completing after120s fails even if every count is then co
   assert.deepEqual(result, { drained: false, drainElapsedMs: 120_001 });
 });
 
+test('receipt time after ACK completion consumes the same drain deadline', async () => {
+  let now = 119_900;
+  const result = await waitForSoakDrain({ count: 300, acknowledgedAt: 0,
+    metrics: async () => metrics(), seenCount: () => 300,
+    verifyCommit: async () => { now = 120_001; return true; } },
+    { now: () => now, pause: async () => assert.fail('receipt I/O cannot reopen the deadline') });
+  assert.deepEqual(result, { drained: false, drainElapsedMs: 120_001 });
+});
+
 test('a missing durable observation cannot pass because the packet count and live feed match', async () => {
   let now = 0;
   const result = await waitForSoakDrain({ count: 300, metrics: async () => metrics(),

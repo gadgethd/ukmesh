@@ -27,6 +27,33 @@ from health import create_session, verify_session
 from read_transport import start_reader, stop_reader
 from runtime_logs import collect_logs
 
+SOAK_PHASES = ('publication', 'delivery', 'drain', 'reconciliation')
+
+
+def phase_receipts(output: Path, *, invocation: str, database: str, source: Path) -> list[dict]:
+    """Retain native stage identities without rewriting their source-bound bytes."""
+    records = []
+    for phase in SOAK_PHASES:
+        path = output / ('phase-' + phase + '.json')
+        record = {'phase': phase, 'path': str(path), 'passed': False}
+        try:
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_size > 65536:
+                raise ValueError('bounded regular phase receipt required')
+            value = read_json(path)
+            record['sha256'] = digest(path)
+            if type(value.get('version')) is not int or value['version'] != 1 or value.get('phase') != phase \
+                    or value.get('invocationToken') != invocation or value.get('database') != database \
+                    or value.get('outputDirectory') != str(output.resolve()) \
+                    or value.get('dataDirectory') != str(source.resolve()) \
+                    or value.get('toolSha256') != digest(REPO / 'backend/src/tools/soakDatabaseLookups.ts'):
+                raise ValueError('phase receipt belongs to another invocation or source')
+            record['passed'] = value.get('passed') is True
+        except (OSError, ValueError, TypeError, AttributeError) as error:
+            record['error'] = type(error).__name__ + ': native phase evidence unavailable or invalid'
+        records.append(record)
+    return records
+
 
 def prepublication_failure(output, source, auxiliary, fixture, count, invocation, code):
     """Only this invocation's source/input-bound, guarded zero-publisher receipt is authoritative."""
@@ -150,7 +177,11 @@ def verify_prepared_fixture(database: str, source: Path) -> None:
 from target_safety import managed_publisher
 
 @managed_publisher
-def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse_prepared: bool = False) -> dict:
+def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse_prepared: bool = False,
+         acceptance_profile: str = 'full-stack') -> dict:
+    from report import ACCEPTANCE_PROFILES
+    if acceptance_profile not in ACCEPTANCE_PROFILES:
+        raise ValueError('unknown qualification acceptance profile')
     if not isinstance(count, int) or not 30 <= count <= 108000:
         raise ValueError("soak count must be 30..108000; final qualification requires 72000")
     fixture = active_fixture()
@@ -218,7 +249,8 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse
             "--broker", "ws://127.0.0.1:9002", "--limit", str(count), "--rate", "30",
             "--envelope-format", "observer", "--auxiliary-traffic", str(auxiliary / "traffic.json"),
             "--http-reader-socket", str(reader_socket),
-            '--warmup-reads', '--advisory-read-latency',
+            '--warmup-reads',
+            *(['--advisory-read-latency'] if acceptance_profile == 'mqtt-first' else []),
             '--invocation-token', invocation,
             "--budget-ms", "100" if fixture["kind"] == "1x" else "250"], database,
             run / "soak.log", timeout=math.ceil(count / 30) + 300)
@@ -227,6 +259,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse
     finally:
         companion_results=stop_measurements(worker,health_worker,companions,stop,reader_name)
     native = read_json(native_output / "soak.json") if (native_output / "soak.json").exists() else {"passed": False}
+    stages = phase_receipts(native_output, invocation=invocation, database=database, source=source)
     typed, ack_proof, health_result = verify_persistence(source, auxiliary, fixture, health_result, prepublication)
     logs=collect_logs(run,started=log_started,finished=utc_now())
     logs['context']=context
@@ -238,10 +271,13 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse
                     'prepublication_failure': prepublication}
     write_json(run / "companion-commits.json", commit_proof)
     native.update({"native_passed": native.get("passed", False), "exit_code": code, "context": context,
+                   'acceptance_profile': acceptance_profile, 'phase_receipts': stages,
+                   'phase_receipts_context': context,
                    'prepublication_failure': prepublication,
                    "resources_passed": resources_result.get("passed", False), "companions": companion_results,
                    "companion_commits_passed": commit_proof["passed"],"logs_passed":logs['passed']})
     native["passed"] = code == 0 and native["native_passed"] and native["resources_passed"] and commit_proof["passed"] \
-        and logs['passed'] and all(value["requests"] > 0 and value["failures"] == 0 for value in companion_results.values())
+        and logs['passed'] and all(row['passed'] for row in stages) \
+        and all(value["requests"] > 0 and value["failures"] == 0 for value in companion_results.values())
     write_json(run / "soak.json", native)
     return native
