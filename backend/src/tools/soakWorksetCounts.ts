@@ -12,7 +12,9 @@ export const SOAK_WORKSET_COUNTS_SQL = `WITH wanted AS MATERIALIZED (
   SELECT p.time, p.packet_hash, p.network, p.rx_node_id, p.topic, p.observation_id
     FROM wanted w CROSS JOIN LATERAL (
       SELECT time, packet_hash, network, rx_node_id, topic, observation_id
-        FROM mesh.packets WHERE packet_hash=w.packet_hash OFFSET 0
+        FROM mesh.packets
+        WHERE packet_hash=w.packet_hash AND ($2::timestamptz IS NULL OR time >= $2::timestamptz)
+        OFFSET 0
     ) p
 ), path_keys AS MATERIALIZED (
   SELECT DISTINCT time, packet_hash, network, COALESCE(rx_node_id,'') AS rx_node_id, topic FROM observations
@@ -79,8 +81,11 @@ export function soakWorkset(ackHashes: string[], auxiliaryHashes: string[] = [])
 type Query = (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>;
 const totalKeys = ['packets', 'paths', 'facts', 'ledger'] as const;
 
-export async function countSoakWorkset(query: Query, hashes: string[], now = () => performance.now()): Promise<SoakTotals> {
-  return totals(await checkedRow(query, SOAK_WORKSET_COUNTS_SQL, [hashes], now));
+export async function countSoakWorkset(query: Query, hashes: string[], options: {
+  since?: Date; now?: () => number;
+} = {}): Promise<SoakTotals> {
+  return totals(await checkedRow(query, SOAK_WORKSET_COUNTS_SQL, [hashes, options.since ?? null],
+    options.now ?? (() => performance.now())));
 }
 
 export async function auditSoakWorksetHashes(query: Query, hashes: string[], ackHashes: string[],
@@ -95,7 +100,7 @@ export async function auditSoakWorksetHashes(query: Query, hashes: string[], ack
   return { totals: totals(row), mismatchCount, mismatches };
 }
 
-async function checkedRow(query: Query, sql: string, params: string[][], now: () => number): Promise<Record<string, unknown>> {
+async function checkedRow(query: Query, sql: string, params: unknown[], now: () => number): Promise<Record<string, unknown>> {
   const began = now();
   const result = await query(sql, params);
   if (now() - began > SOAK_COUNTER_DEADLINE_MS) throw new Error('owned soak counter exceeded30-second logical deadline');

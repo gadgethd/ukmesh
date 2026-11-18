@@ -110,8 +110,8 @@ async function metrics() {
     return match ? [[match[1]!,Number(match[2])]] : [];
   }));
 }
-async function counts() {
-  return countSoakWorkset(queryCounts,workset.hashes);
+async function counts(since?: Date) {
+  return countSoakWorkset(queryCounts, workset.hashes, since ? { since } : {});
 }
 function queryCounts(text:string,values:unknown[]) {
   const config:pg.QueryConfig & {query_timeout:number}={text,values,query_timeout:SOAK_COUNTER_DEADLINE_MS};
@@ -151,7 +151,8 @@ try {
   // The auxiliary manifest deliberately gives each channel message two observers.
   const auditWorkset = () => auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
     auxiliaryTraffic?.channelHashes ?? []);
-  const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
+  const { lsn: walBefore, at: commitWindowStart } = (await pool.query<{ lsn: string; at: Date }>(
+    'SELECT pg_current_wal_lsn()::text lsn, clock_timestamp() AS at')).rows[0]!;
   publication.stage='websocket-readiness';
   const socket = soakSocketUrl(base,socketScope);
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
@@ -243,7 +244,9 @@ try {
   }
   finally { clearInterval(timer);timer=undefined;await readWork; }
   publication.stage='final-verification';
-  const after=await counts(), afterMetrics=await metrics();
+  // The packet writer assigns observation time on this VM after publication.
+  // The independent audit below still searches all partitions for these hashes.
+  const after=await counts(commitWindowStart), afterMetrics=await metrics();
   publication.stage='independent-final-hash-audit';
   const audit = await auditWorkset();
   const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
@@ -311,7 +314,7 @@ try {
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
     settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
       httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct',httpWarmup},
-    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,
+    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,commitWindowStart,
     auxiliaryTraffic:auxiliaryTraffic?{seed:auxiliaryTraffic.seed,cycles:auxiliaryTraffic.cycles,
       intervalMs:auxiliaryTraffic.intervalMs,expected:auxiliaryTraffic.expected,auxiliaryAcknowledgements}:null,
     walBytes,walBytesPerPacket:walBytes/count,

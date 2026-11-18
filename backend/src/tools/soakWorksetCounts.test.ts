@@ -16,7 +16,7 @@ test('workset retains every ACK and auxiliary canonical hash once with an exact 
 
 test('both exact queries retain their deadline and propagate database failures', async () => {
   const queries = [
-    (query: () => Promise<{ rows: unknown[] }>, now: () => number) => countSoakWorkset(query, [], now),
+    (query: () => Promise<{ rows: unknown[] }>, now: () => number) => countSoakWorkset(query, [], { now }),
     (query: () => Promise<{ rows: unknown[] }>, now: () => number) => auditSoakWorksetHashes(query, [], [], [], now),
   ];
   for (const run of queries) {

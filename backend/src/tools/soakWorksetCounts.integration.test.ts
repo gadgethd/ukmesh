@@ -61,7 +61,13 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
       const independent=Object.fromEntries(['packets','paths','facts','ledger'].map((key,index)=>
         [key,fixture.tables[index]!.filter(r=>wanted.has(r.packet_hash)).length]));
       const params=[fixture.wanted,...fixture.tables.map(t=>JSON.stringify(t))];
-      assert.deepEqual((await client.query(native(SOAK_WORKSET_COUNTS_SQL),params)).rows[0],expected,fixture.name);
+      const parentSql = native(SOAK_WORKSET_COUNTS_SQL.replaceAll('$2', '$6'));
+      assert.deepEqual((await client.query(parentSql, [...params, null])).rows[0], expected, fixture.name);
+      if (fixture.name === 'same-observer redelivery is one committed observation') {
+        const afterObservation = new Date('2026-11-15T00:00:01Z');
+        assert.deepEqual((await client.query(parentSql, [...params, afterObservation])).rows[0],
+          { packets: 0, paths: 0, facts: 0, ledger: 0 });
+      }
       // The synthetic ACK uses the multibyte path, auxiliary B has no path.
       const ackHashes = fixture.name.startsWith('missing observation') ? [hash('A'), hash('B')] : [hash('A')];
       const auditSql = SOAK_HASH_AUDIT_SQL.replaceAll('$2', '$6').replaceAll('$3', '$7');
