@@ -156,7 +156,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
           ...MQTT_INTAKE_CONFIG,
           depth: (count) => mqttIngestQueueDepth.set(count),
           observeQueueWait: (seconds) => mqttIntakeQueueWait.observe(seconds),
-          observeAdmission: qos => mqttIntakeDeliveriesTotal.inc({ qos }),
+          observeAdmission: qos => mqttIntakeDeliveriesTotal.inc({ kind: qos === 1 ? 'qos1' : 'qos0' }),
           observeWireAck: (seconds, packet) => {
             mqttWireAckDuration.observe(seconds);
             if (packet.topic !== probeTopic) probe.noteDelivery();

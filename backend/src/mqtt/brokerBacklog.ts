@@ -20,9 +20,10 @@ export function createBrokerBacklogMonitor(client: Pick<MqttClient, 'subscribe'>
     accept(packet: { topic: string; payload: Buffer | string; qos?: number }): boolean {
       const kind = storeTopics.get(packet.topic);
       if (!kind) return false;
+      if (packet.qos !== 0 || packet.payload.length > 16) return true;
       const payload = packet.payload.toString();
       const value = Number(payload);
-      if (packet.qos === 0 && /^\d+$/.test(payload) && Number.isSafeInteger(value)) {
+      if (/^\d+$/.test(payload) && Number.isSafeInteger(value)) {
         mqttBrokerStore.set({ kind }, value);
       }
       return true;

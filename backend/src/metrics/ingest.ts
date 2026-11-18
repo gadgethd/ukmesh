@@ -11,7 +11,7 @@ export const mqttMessagesTotal = new Counter({
 export const mqttIntakeDeliveriesTotal = new Counter({
   name: 'meshcore_mqtt_intake_deliveries_total',
   help: 'MQTT deliveries admitted by transport QoS, including the reserved control topics.',
-  labelNames: ['qos'] as const,
+  labelNames: ['kind'] as const,
   registers: [metricsRegistry],
 });
 
