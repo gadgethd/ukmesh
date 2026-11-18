@@ -151,7 +151,6 @@ try {
   // The auxiliary manifest deliberately gives each channel message two observers.
   const auditWorkset = () => auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
     auxiliaryTraffic?.channelHashes ?? []);
-  let reconciliation: Awaited<ReturnType<typeof auditWorkset>> | undefined;
   const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
   publication.stage='websocket-readiness';
   const socket = soakSocketUrl(base,socketScope);
@@ -233,7 +232,6 @@ try {
       metrics: async () => { await readWork; return metrics(); },
       verifyCommit: async () => {
         const audit = await auditWorkset();
-        reconciliation = audit;
         return audit.mismatchCount === 0
           && (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key =>
             audit.totals[key] - before[key] === expectedDeltas[key]);
@@ -247,7 +245,7 @@ try {
   publication.stage='final-verification';
   const after=await counts(), afterMetrics=await metrics();
   publication.stage='independent-final-hash-audit';
-  const audit = drained && reconciliation ? reconciliation : await auditWorkset();
+  const audit = await auditWorkset();
   const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
     ...audit, passed: audit.mismatchCount === 0
       && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === audit.totals[key]) };
