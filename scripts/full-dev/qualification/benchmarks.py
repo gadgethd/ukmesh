@@ -145,14 +145,17 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
     return record
 
 
-def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
+def reads_pair(run: Path, *, diagnostic_only: bool = False, native_only: bool = False) -> dict:
+    if diagnostic_only and native_only:
+        raise ValueError('native-only qualification requires both measured sources')
     fixture = active_fixture(); scale = fixture['kind']; source = expected_sources()
     if scale not in PROFILE['budgets_ms']: raise ValueError('paired reads require retained1x/10x fixtures')
     context = phase_context(run); batch = uuid.uuid4().hex
     directory = run / f'reads-{scale}-paired-{batch}'
     directory.mkdir(mode=0o700)
     before = time.monotonic(); deadline = before + PROFILE['collection_budget_seconds']; records = []; error = None
-    path = run / ('reads-control.json' if diagnostic_only else 'reads.json')
+    receipt_name = 'reads-control.json' if diagnostic_only else 'reads-native.json' if native_only else 'reads.json'
+    path = run / receipt_name
     prior_value = {} if diagnostic_only or not path.exists() else read_json(path)
     prior = prior_value.get('runs', [])
     prior_batches = prior_value.get('batches', [])
@@ -161,7 +164,8 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
         raise ValueError('previous read batch did not close successfully; archive its evidence first')
     if prior:
         validate_measurements(prior, source)
-        validate_read_batches(prior_value, scales=tuple(sorted({row['scale'] for row in prior})))
+        validate_read_batches(prior_value, scales=tuple(sorted({row['scale'] for row in prior})),
+                              native_only=native_only)
     if prior and any(row['scale'] == scale for row in prior): raise ValueError('this scale already has retained read measurements; archive before another attempt')
     try:
         for step in STEPS:
@@ -187,7 +191,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
     native_elapsed = time.monotonic()-before
     if time.monotonic() >= deadline: error = error or TimeoutError('paired native read collection budget exhausted')
     demands = []; demand_before = time.monotonic(); demand_deadline = demand_before+PROFILE['demand']['collection_budget_seconds']
-    if not diagnostic_only and error is None:
+    if not (diagnostic_only or native_only) and error is None:
         from matched_demand import collect_cohort
         try:
             if not native_read_comparison(records, scales=(scale,))['valid']:
@@ -209,23 +213,27 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
                 if phase_context(run) != context: raise ValueError('runtime drift after fixed-demand cohort')
                 write_json(directory/'demand-progress.json', {'passed': False, 'pending': True, 'runs': demands})
         except BaseException as caught: error = caught
-    comparison = read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only, demand_runs=demands)
+    comparison = (native_read_comparison(records, scales=(scale,)) if native_only else
+                  read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only, demand_runs=demands))
     canonical = None
     if not diagnostic_only:
         try:
             validate_measurements(prior + records, expected_sources())
             validate_measurements(prior_demand + demands, expected_sources())
-            canonical = read_comparison(prior + records, demand_runs=prior_demand + demands)
+            canonical = (native_read_comparison(prior + records) if native_only else
+                         read_comparison(prior + records, demand_runs=prior_demand + demands))
         except BaseException as caught: error = caught
     final, final_context_error = context, None
     try: final = phase_context(run)
     except BaseException as caught:
         error = caught; final_context_error = safe_error(caught)
-    if (diagnostic_only and time.monotonic() >= deadline) or (not diagnostic_only and time.monotonic() >= demand_deadline):
+    closure_deadline = deadline if diagnostic_only or native_only else demand_deadline
+    if time.monotonic() >= closure_deadline:
         error = TimeoutError('paired read collection budget exhausted at final closure')
     stable = final == context and error is None
     result = {'at': utc_now(), 'context': final, 'context_before': context, 'protocol': IDENTITY,
-              'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records, 'demand_runs': demands,
+              'diagnostic_only': diagnostic_only, 'native_only': native_only, 'batch_id': batch,
+              'runs': records, 'demand_runs': demands,
               'collection_seconds': native_elapsed, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
               'demand_collection_seconds': time.monotonic()-demand_before,
               'demand_collection_budget_seconds': PROFILE['demand']['collection_budget_seconds'],
@@ -241,6 +249,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
                  **(canonical or {'passed': False, 'diagnostic_only': False, 'protocol': IDENTITY, 'missing': ['read batch finalization failed']}),
                  'batches': prior_batches + [{'passed': result['passed'], 'scale': scale, 'batch_id': batch,
                     'path': str(directory/'summary.json'), 'sha256': digest(directory/'summary.json')}]}
+        value['native_only'] = native_only
         value['passed'] = stable and value['passed']
         write_json(path, value)
     if error is not None: raise error

@@ -45,6 +45,7 @@ if (!Number.isFinite(budgetMs)||budgetMs<=0) throw new Error('positive lookup bu
 const auxiliaryFile = option(args, 'auxiliary-traffic');
 const auxiliaryTraffic = auxiliaryFile ? await readFullStackTraffic(auxiliaryFile) : undefined;
 const httpWarmup=args.includes('--warmup-reads');
+const advisoryLatency = args.includes('--advisory-read-latency');
 const readerSocket = option(args, 'http-reader-socket');
 if (readerSocket) {
   if (!auxiliaryTraffic || await realpath(readerSocket) !== path.join(path.dirname(output), 'http-reader/reader.sock')
@@ -192,7 +193,7 @@ try {
     try {
       const values=await metrics();
       samples.push({elapsedMs:performance.now()-started,values:Object.fromEntries([...values].filter(([key])=>
-        /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key)))});
+        /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight|mqtt_broker_store|mqtt_intake_deliveries|mqtt_wire_ack_duration_seconds_count/.test(key)))});
     } catch { metricsFailures++; }
   };
   publication.stage='http-warmup';
@@ -228,9 +229,12 @@ try {
   publication.stage='final-verification';
   const after=await counts(), afterMetrics=await metrics();
   publication.stage='independent-final-hash-audit';
-  const independentTotals=await auditSoakWorksetHashes(queryCounts,workset.hashes);
-  const independentAudit={kind:'independent-owned-packet-hash-workset-v1',sha256:workset.countsScope.sha256,
-    totals:independentTotals,passed:(Object.keys(after) as (keyof typeof after)[]).every(key=>after[key]===independentTotals[key])};
+  // Each auxiliary channel message is intentionally received by both synthetic observers.
+  const reconciliation = await auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
+    auxiliaryTraffic?.channelHashes ?? []);
+  const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
+    ...reconciliation, passed: reconciliation.mismatchCount === 0
+      && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === reconciliation.totals[key]) };
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
   const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));
@@ -271,12 +275,19 @@ try {
     return {key,maximum,middleLow,finalLow,growth,plateau,withinBound:maximum<=1024*1024*1024};
   });
   const memoryPassed=memory.length===2&&memory.every(value=>value.plateau&&value.withinBound);
+  const readLatencyPassed = latency.filter(row => row.name !== 'background-charts')
+    .every(row => (row.p95Ms ?? Infinity) <= budgetMs);
+  const brokerDroppedKey = 'meshcore_mqtt_broker_store{kind="dropped"}';
+  const drops = [beforeMetrics.get(brokerDroppedKey), ...samples.map(row => row.values[brokerDroppedKey]),
+    afterMetrics.get(brokerDroppedKey)].filter((value): value is number => value !== undefined);
+  const brokerDropCheck = { observed: drops.length >= 2, first: drops[0] ?? null, last: drops.at(-1) ?? null,
+    unchanged: drops.length >= 2 && drops.every(value => value === drops[0]) };
   const passed=!failure&&drained&&independentAudit.passed&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
-    && (!auxiliaryTraffic || auxiliaryAcknowledgements===auxiliaryTraffic.events.length)
+    && (!auxiliaryTraffic || (auxiliaryAcknowledgements===auxiliaryTraffic.events.length && brokerDropCheck.unchanged))
     && failures.length===0 && metricsFailures===0 && wsErrors===0 && wsUnexpectedCloses===0 && wsOpened && seen.size===count
     && badOutcomes.length===0 && dropped.length===0 && dedupMaximum<=50_000
     && cacheViolations.length===0 && memoryPassed
-    && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
+    && (advisoryLatency || readLatencyPassed);
   await mkdir(output,{recursive:true});
   await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,phase:'complete',
     publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,socketScope,independentAudit,
@@ -293,7 +304,9 @@ try {
     wsPackets:seen.size,wsMissingCount:count-seen.size,
     wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
     wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode,closeReason:wsCloseReason},
-    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,reads,failures,badOutcomes,dropped,
+    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,
+    brokerDropCheck, readLatency: { budgetMs, passed: readLatencyPassed, advisory: advisoryLatency },
+    reads,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));

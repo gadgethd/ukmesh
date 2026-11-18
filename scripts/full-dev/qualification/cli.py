@@ -30,7 +30,13 @@ def main() -> int:
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--traffic-interval-ms", type=int, default=1000)
     parser.add_argument("--health-code")
+    parser.add_argument("--native-only", action="store_true", help="qualify paired native reads separately from fixed-demand stress")
+    parser.add_argument("--reuse-prepared", action="store_true", help="reuse an already converged owned soak fixture")
     args = parser.parse_args()
+    if args.native_only and (args.action != "reads" or not args.paired):
+        parser.error("--native-only requires reads --paired")
+    if args.reuse_prepared and args.action != "soak":
+        parser.error("--reuse-prepared requires soak")
     run = owned_run(args.run, create=args.action == "backup" and not args.run)
     try:
         if args.action == "backup":
@@ -49,7 +55,8 @@ def main() -> int:
             from common import REPO
             if args.paired and args.source_root:
                 raise ValueError('paired reads select sealed/current sources explicitly')
-            result = reads_pair(run) if args.paired else reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
+            result = (reads_pair(run, native_only=args.native_only) if args.paired else
+                      reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src"))
         elif args.action == "operations":
             from operations import operations,operations_pair
             if args.paired and args.source_root:
@@ -68,7 +75,7 @@ def main() -> int:
             result = traffic(run, cycles=args.cycles, interval_ms=args.traffic_interval_ms, health_code=args.health_code)
         elif args.action == "soak":
             from soak import soak
-            result = soak(run, count=args.count, health_code=args.health_code)
+            result = soak(run, count=args.count, health_code=args.health_code, reuse_prepared=args.reuse_prepared)
         elif args.action == "recovery":
             from recovery import recovery
             result = recovery(run)

@@ -155,27 +155,37 @@ def container_samples() -> list[dict]:
     result = []
     for item in inspected:
         pid = item["State"]["Pid"]
-        group = container_cgroup(pid)
-        current = int((group / "memory.current").read_text())
-        stat = key_values(group / "memory.stat")
-        events = key_values(group / "memory.events")
-        io = {"rbytes": 0, "wbytes": 0, "rios": 0, "wios": 0}
-        for line in (group / "io.stat").read_text().splitlines():
-            for field in line.split()[1:]:
-                key, value = field.split("=", 1)
-                if key in io:
-                    io[key] += int(value)
-        result.append({"name": item["Name"].lstrip("/"), "id": item["Id"],
-                       "current_bytes": current,
-                       "working_bytes": max(0, current - stat.get("inactive_file", 0)),
-                       "anon_bytes": stat.get("anon", 0), "file_bytes": stat.get("file", 0),
-                       "oom_kills": events.get("oom_kill", 0), "restarts": item["RestartCount"],
-                       "oom_killed": item["State"]["OOMKilled"],
-                       "started_at": item["State"]["StartedAt"],
-                       "health": item["State"].get("Health", {}).get("Status"),
-                       "cpu": key_values(group / "cpu.stat"), "io": io,
-                       **memory_limit_evidence(group, item["HostConfig"])})
+        # A resident can exit between Docker's process list and cgroup reads.
+        # Its absence remains visible to the required coverage and stability gates.
+        if not pid:
+            continue
+        try:
+            result.append(running_container_sample(item, container_cgroup(pid)))
+        except FileNotFoundError:
+            continue
     return result
+
+
+def running_container_sample(item: dict, group: Path) -> dict:
+    current = int((group / "memory.current").read_text())
+    stat = key_values(group / "memory.stat")
+    events = key_values(group / "memory.events")
+    io = {"rbytes": 0, "wbytes": 0, "rios": 0, "wios": 0}
+    for line in (group / "io.stat").read_text().splitlines():
+        for field in line.split()[1:]:
+            key, value = field.split("=", 1)
+            if key in io:
+                io[key] += int(value)
+    return {"name": item["Name"].lstrip("/"), "id": item["Id"],
+            "current_bytes": current,
+            "working_bytes": max(0, current - stat.get("inactive_file", 0)),
+            "anon_bytes": stat.get("anon", 0), "file_bytes": stat.get("file", 0),
+            "oom_kills": events.get("oom_kill", 0), "restarts": item["RestartCount"],
+            "oom_killed": item["State"]["OOMKilled"],
+            "started_at": item["State"]["StartedAt"],
+            "health": item["State"].get("Health", {}).get("Status"),
+            "cpu": key_values(group / "cpu.stat"), "io": io,
+            **memory_limit_evidence(group, item["HostConfig"])}
 
 
 def database_samples(targets: dict) -> list[dict]:

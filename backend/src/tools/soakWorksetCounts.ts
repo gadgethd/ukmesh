@@ -28,15 +28,41 @@ SELECT (SELECT count(*)::integer FROM observations) AS packets,
   (SELECT count(*)::integer FROM observation_keys k JOIN mesh.ingest_observation_ledger l
     ON l.observation_id=k.observation_id AND l.packet_hash=k.packet_hash AND l.network=k.network) AS ledger`;
 
-/** Once-only final integrity audit also sees orphan/mismatched child UUIDs.
- * Keep this distinct from the indexed parent-key drain polls and their scope. */
+/** Independent hash reconciliation includes children that have lost their parent UUID. */
 export const SOAK_HASH_AUDIT_SQL = `WITH wanted AS MATERIALIZED (
   SELECT DISTINCT packet_hash FROM unnest($1::text[]) AS input(packet_hash)
+), packets AS (
+  SELECT packet_hash, count(*)::integer AS n, count(DISTINCT topic)::integer AS observers
+    FROM mesh.packets JOIN wanted USING(packet_hash) GROUP BY packet_hash
+), paths AS (
+  SELECT packet_hash, count(*)::integer AS n FROM mesh.packet_paths JOIN wanted USING(packet_hash) GROUP BY packet_hash
+), facts AS (
+  SELECT packet_hash, count(*)::integer AS n FROM mesh.multibyte_path_facts JOIN wanted USING(packet_hash) GROUP BY packet_hash
+), ledger AS (
+  SELECT packet_hash, count(*)::integer AS n FROM mesh.ingest_observation_ledger JOIN wanted USING(packet_hash) GROUP BY packet_hash
+), per_hash AS (
+  SELECT w.packet_hash, a.packet_hash IS NOT NULL AS expects_path,
+    1 + (multi.packet_hash IS NOT NULL)::integer AS expected_observers,
+    coalesce(p.observers,0) AS observers, coalesce(p.n,0) AS packets, coalesce(t.n,0) AS paths,
+    coalesce(f.n,0) AS facts, coalesce(l.n,0) AS ledger
+  FROM wanted w
+  LEFT JOIN (SELECT DISTINCT unnest($2::text[]) AS packet_hash) a USING(packet_hash)
+  LEFT JOIN (SELECT DISTINCT unnest($3::text[]) AS packet_hash) multi USING(packet_hash)
+  LEFT JOIN packets p USING(packet_hash)
+  LEFT JOIN paths t USING(packet_hash)
+  LEFT JOIN facts f USING(packet_hash)
+  LEFT JOIN ledger l USING(packet_hash)
+), mismatches AS MATERIALIZED (
+  SELECT packet_hash, packets, paths, facts, ledger, observers, expected_observers FROM per_hash
+  WHERE packets <> expected_observers OR observers <> expected_observers OR ledger <> expected_observers
+    OR paths <> expects_path::integer OR facts <> expects_path::integer
 )
-SELECT (SELECT count(*)::integer FROM mesh.packets p JOIN wanted w USING(packet_hash)) AS packets,
-  (SELECT count(*)::integer FROM mesh.packet_paths p JOIN wanted w USING(packet_hash)) AS paths,
-  (SELECT count(*)::integer FROM mesh.multibyte_path_facts f JOIN wanted w USING(packet_hash)) AS facts,
-  (SELECT count(*)::integer FROM mesh.ingest_observation_ledger l JOIN wanted w USING(packet_hash)) AS ledger`;
+SELECT coalesce(sum(packets),0)::integer AS packets, coalesce(sum(paths),0)::integer AS paths,
+  coalesce(sum(facts),0)::integer AS facts, coalesce(sum(ledger),0)::integer AS ledger,
+  (SELECT count(*)::integer FROM mismatches) AS mismatch_count,
+  (SELECT coalesce(json_agg(m), '[]'::json) FROM
+    (SELECT * FROM mismatches ORDER BY packet_hash LIMIT 20) m) AS mismatches
+FROM per_hash`;
 
 export function soakWorkset(ackHashes: string[], auxiliaryHashes: string[] = []) {
   const normalized = (values: string[]) => [...new Set(values.map(value => {
@@ -44,30 +70,46 @@ export function soakWorkset(ackHashes: string[], auxiliaryHashes: string[] = [])
     return value.toUpperCase();
   }))].sort();
   const ack=normalized(ackHashes),auxiliary=normalized(auxiliaryHashes),hashes=normalized([...ack,...auxiliary]);
-  return { hashes, countsScope: { kind:'owned-packet-derived-observation-workset-v1',
+  return { hashes, ackHashes: ack, countsScope: { kind:'owned-packet-derived-observation-workset-v1',
     hashCount:hashes.length,ackHashCount:ack.length,auxiliaryHashCount:auxiliary.length,
     sha256:createHash('sha256').update(JSON.stringify(hashes),'utf8').digest('hex'),
     description:'All packet observations for owned ACK and auxiliary hashes; paths by distinct natural key; facts/ledger by parent observation UUID plus hash/network. Independent orphan UUID rows without packet parents are outside this scope. Not global totals.' } };
 }
 
-export async function countSoakWorkset(query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>,
-  hashes: string[], now: () => number = () => performance.now()): Promise<SoakTotals> {
-  return exactCounts(query,SOAK_WORKSET_COUNTS_SQL,hashes,now);
+type Query = (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>;
+const totalKeys = ['packets', 'paths', 'facts', 'ledger'] as const;
+
+export async function countSoakWorkset(query: Query, hashes: string[], now = () => performance.now()): Promise<SoakTotals> {
+  return totals(await checkedRow(query, SOAK_WORKSET_COUNTS_SQL, [hashes], now));
 }
 
-export async function auditSoakWorksetHashes(query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>,
-  hashes: string[], now: () => number = () => performance.now()): Promise<SoakTotals> {
-  return exactCounts(query,SOAK_HASH_AUDIT_SQL,hashes,now);
-}
-
-async function exactCounts(query: (sql: string, params: unknown[]) => Promise<{ rows: unknown[] }>,
-  sql:string,hashes:string[],now:()=>number):Promise<SoakTotals>{
-  const began=now();
-  const result=await query(sql,[hashes]);
-  if(now()-began>SOAK_COUNTER_DEADLINE_MS)throw new Error('owned soak counter exceeded30-second logical deadline');
-  const row=result.rows[0] as SoakTotals | undefined;
-  if(!row || (['packets','paths','facts','ledger'] as const).some(key=>!Number.isSafeInteger(row[key])||row[key]<0)) {
-    throw new Error('owned soak counter returned invalid exact totals');
+export async function auditSoakWorksetHashes(query: Query, hashes: string[], ackHashes: string[],
+  dualObserverHashes: string[], now = () => performance.now()) {
+  const row = await checkedRow(query, SOAK_HASH_AUDIT_SQL, [hashes, ackHashes, dualObserverHashes], now);
+  const mismatchCount = row['mismatch_count'];
+  const mismatches = row['mismatches'];
+  if (typeof mismatchCount !== 'number' || !Number.isSafeInteger(mismatchCount) || mismatchCount < 0
+    || mismatchCount > hashes.length || !Array.isArray(mismatches) || mismatches.length !== Math.min(mismatchCount, 20)) {
+    throw new Error('owned soak audit returned invalid reconciliation');
   }
-  return row;
+  return { totals: totals(row), mismatchCount, mismatches };
+}
+
+async function checkedRow(query: Query, sql: string, params: string[][], now: () => number): Promise<Record<string, unknown>> {
+  const began = now();
+  const result = await query(sql, params);
+  if (now() - began > SOAK_COUNTER_DEADLINE_MS) throw new Error('owned soak counter exceeded30-second logical deadline');
+  return (result.rows[0] ?? {}) as Record<string, unknown>;
+}
+
+function totals(row: Record<string, unknown>): SoakTotals {
+  const result = {} as SoakTotals;
+  for (const key of totalKeys) {
+    const value = row[key];
+    if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < 0) {
+      throw new Error('owned soak counter returned invalid exact totals');
+    }
+    result[key] = value;
+  }
+  return result;
 }

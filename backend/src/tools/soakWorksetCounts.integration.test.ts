@@ -36,7 +36,11 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
     const orphan=row(9,hash('B'),'orphan');
     const cases=[
       {name:'empty',wanted:[],tables:[[],[],[],[]]},
+      {name:'missing observation cannot be offset by a duplicate for another hash',wanted:[hash('A'),hash('B')],
+        tables:[[a,b],[a,b],[a,b],[a,b]]},
       {name:'duplicate input hashes and multi-observer rows',wanted:[hash('A'),hash('A')],tables:[[a,b],[a,b],[a,b],[a,b]]},
+      {name:'auxiliary channel reception at two separate observers qualifies',wanted:[hash('B')],dual:[hash('B')],
+        tables:[[aux,{...aux,topic:a.topic,observation_id:b.observation_id}],[],[],[aux,b].map(r=>({...r,packet_hash:hash('B')}))]},
       {name:'same-observer redelivery is one committed observation',wanted:[hash('A'),hash('A')],tables:[[a],[a],[a],[a]]},
       {name:'auxiliary observations have zero path/facts while all ledger rows remain',wanted:[hash('A'),hash('B')],tables:[[a,aux],[a],[a],[a,aux]]},
       {name:'unrelated rows cannot mask missing owned children',wanted:[hash('A')],tables:[[a,unrelated],[a,unrelated],[unrelated],[a,unrelated]]},
@@ -48,7 +52,7 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
       {name:'same-hash orphan observations remain visible to the independent audit',wanted:[hash('A'),hash('A')],tables:[
         [a],[a,{...orphan,packet_hash:hash('A')}],[a,{...orphan,packet_hash:hash('A')}],[a,{...orphan,packet_hash:hash('A')}]]},
       {name:'nullable observer path identity remains stable',wanted:[hash('A')],tables:[[{...a,rx_node_id:null}],[{...a,rx_node_id:''}],[a],[a]]},
-    ] as {name:string;wanted:string[];tables:Row[][]}[];
+    ] as {name:string;wanted:string[];dual?:string[];tables:Row[][]}[];
     for(const fixture of cases){
       const wanted=new Set(fixture.wanted),parents=fixture.tables[0]!.filter(r=>wanted.has(r.packet_hash));
       const paths=new Set(parents.map(natural)),ids=new Set(parents.filter(r=>r.observation_id!==null).map(identity));
@@ -58,7 +62,22 @@ test('read-only VALUES prove packet-derived and independent hash counts across d
         [key,fixture.tables[index]!.filter(r=>wanted.has(r.packet_hash)).length]));
       const params=[fixture.wanted,...fixture.tables.map(t=>JSON.stringify(t))];
       assert.deepEqual((await client.query(native(SOAK_WORKSET_COUNTS_SQL),params)).rows[0],expected,fixture.name);
-      assert.deepEqual((await client.query(native(SOAK_HASH_AUDIT_SQL),params)).rows[0],independent,fixture.name);
+      // The synthetic ACK uses the multibyte path, auxiliary B has no path.
+      const ackHashes = fixture.name.startsWith('missing observation') ? [hash('A'), hash('B')] : [hash('A')];
+      const auditSql = SOAK_HASH_AUDIT_SQL.replaceAll('$2', '$6').replaceAll('$3', '$7');
+      const { mismatch_count, mismatches, ...auditTotals } =
+        (await client.query(native(auditSql), [...params, ackHashes, fixture.dual ?? []])).rows[0];
+      assert.deepEqual(auditTotals, independent, fixture.name);
+      const expectedMismatches = [...wanted].flatMap(packetHash => {
+        const [packets, paths, facts, ledger] = fixture.tables.map(table => table.filter(r => r.packet_hash === packetHash).length);
+        const pathCount = ackHashes.includes(packetHash) ? 1 : 0;
+        const observers = new Set(fixture.tables[0]!.filter(r => r.packet_hash === packetHash).map(r => r.topic)).size;
+        const expected = fixture.dual?.includes(packetHash) ? 2 : 1;
+        return packets !== expected || ledger !== expected || observers !== expected || paths !== pathCount || facts !== pathCount
+          ? [{ packet_hash: packetHash, packets, paths, facts, ledger, observers, expected_observers: expected }] : [];
+      });
+      assert.equal(mismatch_count, expectedMismatches.length, fixture.name);
+      assert.deepEqual(mismatches, expectedMismatches, fixture.name);
       if(fixture.name.includes('orphan'))assert.notDeepEqual(expected,independent,'final orphan audit must remain independent');
     }
   }finally{await client.query('ROLLBACK');client.release();await pool.end();}

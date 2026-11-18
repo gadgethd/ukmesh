@@ -8,12 +8,12 @@ const before = { packets: 100, paths: 100, facts: 100, ledger: 100 };
 const expectedDeltas = { packets: 304, paths: 300, facts: 300, ledger: 304 };
 const committed = { packets: 404, paths: 400, facts: 400, ledger: 404 };
 
-test('the last live frame is required after exact SQL/ingest completion', async () => {
+test('the last live frame gates the expensive SQL check', async () => {
   let now = 0, seen = 299, polls = 0;
   const result = await waitForSoakDrain({ before, expectedDeltas, count: 300, metrics: async () => metrics(),
     counts: async () => { polls++; return committed; }, seenCount: () => seen },
   { now: () => now, pause: async milliseconds => { now += milliseconds; seen = 300; } });
-  assert.equal(polls, 2); assert.deepEqual(result, { drained: true, drainElapsedMs: 1000 });
+  assert.equal(polls, 1); assert.deepEqual(result, { drained: true, drainElapsedMs: 1000 });
 });
 
 test('post-persist work cannot be mistaken for complete live delivery', async () => {

@@ -176,7 +176,7 @@ def read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False, demand
             'companion_comparisons': demand['companion_comparisons']}
 
 
-def validate_read_batches(value, *, scales=('1x', '10x')):
+def validate_read_batches(value, *, scales=('1x', '10x'), native_only=False):
     """A passing comparison cannot replace successful owning batch closure."""
     batches = value.get('batches', [])
     if len(batches) != len(scales) or {item['scale'] for item in batches} != set(scales):
@@ -185,7 +185,12 @@ def validate_read_batches(value, *, scales=('1x', '10x')):
         path = Path(item['path'])
         batch = owned_document(path, item['sha256']); rows = [r for r in value['runs'] if r['scale'] == item['scale']]
         elapsed = batch['collection_seconds']
+        if native_only:
+            comparison = native_read_comparison(rows, scales=(item['scale'],))
+        else:
+            comparison = read_comparison(rows, scales=(item['scale'],), demand_runs=batch.get('demand_runs', []))
         if item.get('passed') is not True or batch.get('passed') is not True or batch.get('diagnostic_only') is not False \
+                or batch.get('native_only', False) is not native_only or (native_only and batch.get('demand_runs')) \
                 or batch['protocol'] != IDENTITY or batch['batch_id'] != item['batch_id'] or batch['runs'] != rows \
                 or batch['context'] != batch['context_before'] or batch['context'] != rows[0]['context'] \
                 or batch.get('errors') or batch.get('final_context_error') \
@@ -194,7 +199,7 @@ def validate_read_batches(value, *, scales=('1x', '10x')):
                 or batch.get('demand_runs') != [r for r in value.get('demand_runs', []) if r['scale'] == item['scale']] \
                 or batch.get('demand_collection_budget_seconds') != PROFILE['demand']['collection_budget_seconds'] \
                 or not number_under_budget(batch.get('demand_collection_seconds'), PROFILE['demand']['collection_budget_seconds']) \
-                or not read_comparison(rows, scales=(item['scale'],), demand_runs=batch.get('demand_runs', []))['passed']:
+                or not comparison['passed']:
             raise ValueError('read batch finalization/source/deadline failed')
 
 

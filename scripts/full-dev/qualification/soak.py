@@ -17,12 +17,12 @@ import uuid
 
 from benchmarks import active_fixture, node_tool
 from companion_reads import CompanionReads
-from common import REPO, STATE, digest, read_json, safe_error, utc_now, write_json
+from common import REPO, STATE, digest, read_json, safe_error, sql, utc_now, write_json
 from context import phase_context
 from probes import inventory
 from loopback_http import http_get
 from resources import sample
-from traffic import verify_companion_acks, verify_typed
+from traffic import hex_list, verify_companion_acks, verify_typed
 from health import create_session, verify_session
 from read_transport import start_reader, stop_reader
 from runtime_logs import collect_logs
@@ -128,10 +128,29 @@ def reserve_ack_sequence(count: int) -> int:
     return value
 
 
+
+def verify_prepared_fixture(database: str, source: Path) -> None:
+    with gzip.open(source / "nodes.csv.gz", "rt", newline="") as file:
+        nodes = [row["node_id"] for row in csv.DictReader(file)]
+    node_ids = hex_list(nodes, 64)
+    # Bulk imports explicitly clear the visibility fence. Reuse requires a
+    # converged retained fixture with the generated identities ready for reads.
+    ready = sql("ukmesh-sample-db", database, "meshcore", f"""SELECT EXISTS (
+      SELECT 1 FROM ops.public_visibility_state v
+      JOIN ops.packet_visibility_materialization_state s USING (singleton)
+      WHERE v.singleton AND v.generation = s.visibility_generation AND v.generation > 0
+      AND (SELECT count(DISTINCT node_id) FROM core.node_identity_nodes
+           WHERE network = 'ukmesh' AND node_id IN ({node_ids})) = {len(nodes)}
+      AND NOT EXISTS (SELECT 1 FROM timescaledb_information.jobs WHERE job_id >= 1000 AND scheduled)
+    )""")
+    if ready.strip() != "t":
+        raise RuntimeError("owned soak fixture requires successful full preparation before reuse")
+
+
 from target_safety import managed_publisher
 
 @managed_publisher
-def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> dict:
+def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse_prepared: bool = False) -> dict:
     if not isinstance(count, int) or not 30 <= count <= 108000:
         raise ValueError("soak count must be 30..108000; final qualification requires 72000")
     fixture = active_fixture()
@@ -143,15 +162,20 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
     database = next(item["database"] for item in fixture["databases"] if item["label"] == "ukmesh")
     source = run / "soak-source"
     sequence = reserve_ack_sequence(count)
-    preparation = [
-        ("generateSampleDataset", ["--data-dir", str(source), "--count", str(count), "--sequence-start", str(sequence)]),
-        ("loadSampleDataset", ["--data-dir", str(source), "--omit-packets", "--fast"]),
-        ("prepareSampleDataset", []),
-    ]
-    for tool, args in preparation:
-        code = node_tool(tool, args, database, run / (tool + ".log"), timeout=1800)
-        if code:
-            raise RuntimeError(tool + " fixture preparation failed")
+    generate = ["--data-dir", str(source), "--count", str(count), "--sequence-start", str(sequence)]
+    if node_tool("generateSampleDataset", generate, database, run / "generateSampleDataset.log"):
+        raise RuntimeError("soak workset generation failed")
+    if reuse_prepared:
+        verify_prepared_fixture(database, source)
+    else:
+        preparation = [
+            ("loadSampleDataset", ["--data-dir", str(source), "--omit-packets", "--fast"]),
+            ("prepareSampleDataset", []),
+        ]
+        for tool, args in preparation:
+            if node_tool(tool, args, database, run / (tool + ".log"), timeout=1800):
+                raise RuntimeError(tool + " fixture preparation failed")
+    write_json(run / "soak-preparation.json", {"fixture": fixture["token"], "reuse_prepared": reuse_prepared})
     auxiliary = run / "auxiliary-source"
     health = create_session(run, fixture, health_code)
     cycles = max(1, min(40, count // 1800))
@@ -194,7 +218,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None) -> di
             "--broker", "ws://127.0.0.1:9002", "--limit", str(count), "--rate", "30",
             "--envelope-format", "observer", "--auxiliary-traffic", str(auxiliary / "traffic.json"),
             "--http-reader-socket", str(reader_socket),
-            '--warmup-reads',
+            '--warmup-reads', '--advisory-read-latency',
             '--invocation-token', invocation,
             "--budget-ms", "100" if fixture["kind"] == "1x" else "250"], database,
             run / "soak.log", timeout=math.ceil(count / 30) + 300)
