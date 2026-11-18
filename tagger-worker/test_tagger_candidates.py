@@ -143,7 +143,7 @@ class CandidatePagingTests(unittest.TestCase):
     def test_privacy_revocation_during_backoff_prevents_another_external_attempt(self):
         self.add('revoked-during-retry', self.cursor_time)
         module = self.worker()
-        def revoke_and_fail(_state):
+        def revoke_and_fail(_sender, _message):
             with self.conn.cursor() as update:
                 update.execute('UPDATE packets SET is_private=true, visibility_ok=false')
             raise RuntimeError('fixture classifier unavailable')
