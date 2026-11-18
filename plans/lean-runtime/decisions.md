@@ -2555,3 +2555,10 @@ qualification. Do not change workloads, timing or acceptance limits.
   predicates as packet detail. The two materialized flags alone can select a
   hidden or differently scoped packet after fixture preparation. Preserve
   the required HTTP success for all eight routes.
+
+## Keep replay preparation from holding two decoded CSV tables
+
+- Reuse the streaming CSV reader for replay inputs. The publisher needs the
+  raw-frame identity lookup and the ordered publication schedule, but it
+  currently retains both expanded source tables while building them. Keep
+  arbitrary input order, original filters, and the same QoS and rate.

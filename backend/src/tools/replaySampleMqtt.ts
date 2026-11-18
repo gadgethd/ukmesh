@@ -18,6 +18,7 @@ import {
   csvJson,
   defaultDataDir,
   flag,
+  gzipCsvRecords,
   option,
   parseIntOption,
   parseTimeMs,
@@ -148,46 +149,48 @@ export function packetReplayEnvelope(row: Row, rawHex: string, format: ReplayEnv
   return envelope;
 }
 
+async function* replayRows(file: string): AsyncGenerator<Row> {
+  let headers: string[] | undefined;
+  for await (const row of gzipCsvRecords(file)) {
+    if (headers) yield rowObject(headers, row);
+    else headers = row;
+  }
+}
+
 async function packetPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number,
   limit?: number, format: ReplayEnvelopeFormat = 'legacy'): Promise<Publish[]> {
-  const [packets, raw] = await Promise.all([
-    readGzipCsv(path.join(directory, 'packets.csv.gz')),
-    readGzipCsv(path.join(directory, 'raw_packets.csv.gz')),
-  ]);
-  {
-    const rawByKey = new Map<string, string>();
-    for (const row of rowsOf(raw)) {
-      rawByKey.set(`${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`, row['raw_hex'] ?? '');
-    }
-    const publishes: Publish[] = [];
-    let missingRaw = 0;
-    for (const row of rowsOf(packets)) {
-      const atMs = Date.parse(row['time'] ?? '');
-      if (!Number.isFinite(atMs)) continue;
-      if (fromMs !== undefined && atMs < fromMs) continue;
-      if (toMs !== undefined && atMs >= toMs) continue;
-      const key = `${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`;
-      const rawHex = rawByKey.get(key);
-      if (!rawHex) {
-        missingRaw += 1;
-        continue;
-      }
-      const topic = rewritePrefix(row['topic'] ?? '', prefix);
-      if (!topic) continue;
-      const envelope = packetReplayEnvelope(row, rawHex, format);
-      publishes.push({
-        atMs,
-        topic,
-        payload: Buffer.from(JSON.stringify(envelope), 'utf8'),
-        label: row['packet_hash'] ?? 'packet',
-      });
-      if (limit !== undefined && publishes.length >= limit) break;
-    }
-    if (missingRaw > 0) {
-      console.warn(`[sample:replay] ${missingRaw} packet rows had no matching raw row`);
-    }
-    return publishes.sort((a, b) => a.atMs - b.atMs);
+  const rawByKey = new Map<string, string>();
+  for await (const row of replayRows(path.join(directory, 'raw_packets.csv.gz'))) {
+    rawByKey.set(`${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`, row['raw_hex'] ?? '');
   }
+  const publishes: Publish[] = [];
+  let missingRaw = 0;
+  for await (const row of replayRows(path.join(directory, 'packets.csv.gz'))) {
+    if (limit !== undefined && publishes.length >= limit) continue;
+    const atMs = Date.parse(row['time'] ?? '');
+    if (!Number.isFinite(atMs)) continue;
+    if (fromMs !== undefined && atMs < fromMs) continue;
+    if (toMs !== undefined && atMs >= toMs) continue;
+    const key = `${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`;
+    const rawHex = rawByKey.get(key);
+    if (!rawHex) {
+      missingRaw += 1;
+      continue;
+    }
+    const topic = rewritePrefix(row['topic'] ?? '', prefix);
+    if (!topic) continue;
+    const envelope = packetReplayEnvelope(row, rawHex, format);
+    publishes.push({
+      atMs,
+      topic,
+      payload: Buffer.from(JSON.stringify(envelope), 'utf8'),
+      label: row['packet_hash'] ?? 'packet',
+    });
+  }
+  if (missingRaw > 0) {
+    console.warn(`[sample:replay] ${missingRaw} packet rows had no matching raw row`);
+  }
+  return publishes.sort((a, b) => a.atMs - b.atMs);
 }
 
 async function statusPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number, limit?: number): Promise<Publish[]> {
