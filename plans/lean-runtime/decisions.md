@@ -2548,3 +2548,10 @@ qualification. Do not change workloads, timing or acceptance limits.
   strategy. Revoke PUBLIC access only on new databases, then let the existing
   selected-target switch grant application roles. Provisioning during clone
   creation would revoke access from the currently selected pair.
+
+## Warm up an actually public packet detail
+
+- Select the soak's sample packet through the same network scope and privacy
+  predicates as packet detail. The two materialized flags alone can select a
+  hidden or differently scoped packet after fixture preparation. Preserve
+  the required HTTP success for all eight routes.

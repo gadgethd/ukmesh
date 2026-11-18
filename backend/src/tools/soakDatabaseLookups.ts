@@ -11,6 +11,7 @@ import pg from 'pg';
 import WebSocket from 'ws';
 import { assertLocalDatabaseUrl, option, readGzipCsv, requiredOption, rowObject } from './sampleData.js';
 import { replaySampleMqtt } from './replaySampleMqtt.js';
+import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
 import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
@@ -141,8 +142,13 @@ try {
   }
   const node = (await pool.query(`SELECT node_id,name FROM core.node_identity_nodes WHERE name NOT LIKE '%🚫%'
     AND role=2 AND lat BETWEEN 5 AND 90 AND network='ukmesh' ORDER BY advert_count DESC,node_id LIMIT 1`)).rows[0];
-  const packet = (await pool.query(`SELECT packet_hash FROM mesh.packets WHERE visibility_ok IS TRUE AND is_private IS NOT TRUE
-    ORDER BY time DESC,packet_hash LIMIT 1`)).rows[0];
+  const publicNetwork = 'ukmesh';
+  const packetScope = buildScopePlaceholders(1, publicNetwork);
+  const packet = (await pool.query<{ packet_hash: string }>(`SELECT p.packet_hash FROM mesh.packets p
+    WHERE TRUE
+      ${buildPacketScopeClause(packetScope, 'p', publicNetwork)}
+      ${buildPublicPacketPrivacyClause('p')}
+    ORDER BY p.time DESC,p.packet_hash LIMIT 1`, packetScope.params)).rows[0];
   const observer = (await pool.query(`SELECT rx_node_id FROM mesh.packets WHERE src_node_id IS NOT NULL AND rx_node_id IS NOT NULL
     AND time>NOW()-INTERVAL '7 days'
     GROUP BY rx_node_id ORDER BY count(*) DESC LIMIT 1`)).rows[0];
