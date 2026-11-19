@@ -2655,3 +2655,9 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - One process in the timed harness accounted for up to 253 MiB of swap. The harness materialized the full packet table for subscription checks and then assembled another list of serialized broker messages.
 - The owned fixture writes paired packet and raw CSV records in chronological order. Verify the full ordered pair list, scope, count, and distinct hashes before publication, then stream the same records through the existing paced MQTT publisher at QoS 1. Retain only the hashes and observations needed for reconciliation. Keep the ordinary replay CLI's ability to join and sort independent files, and include the executable replay helper in the guarded failure receipt.
+
+## Reduce CoreScope memory across retained-history reads
+
+- Share immutable path JSON, parsed paths, and adjacent equal timestamps inside CoreScope's load passes. Packet responses copy the shared path slice before returning it. The hashing pass keeps the original hash formula and reuses the stored canonical hash.
+- Reduce the repeater index under one read lock and reuse prefix deduplication. Keep the timestamp, route, and scope rules. Restore the lock and eviction proof at the published-result boundary and measure the whole reducer.
+- Reuse scratch space for aggregate hop resolution. The distance index reserves a small starting buffer and grows with resolved records. It uses the existing sender lookup to avoid retaining unrelated decoded payloads. The private cold-route probe verifies the 202-to-200 transition against the complete 461,125-row fixture at 512 MiB.
