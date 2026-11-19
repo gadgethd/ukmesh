@@ -176,7 +176,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-async function installQuietFeed(page: Page) {
+async function installQuietFeed(page: Page, deferSnapshot = false) {
   await installMapRoutes(page);
   await installTerrainRoutes(page);
   await page.route('**/api/**', route => {
@@ -188,7 +188,7 @@ async function installQuietFeed(page: Page) {
       ? { version: 1, packetArcs: false, heatmap: false, regionScoping: true, privacyGeneration: 1, refreshAfterSeconds: 30 }
       : path === '/api/stats/charts' ? chartStats : [] });
   });
-  await page.addInitScript(() => {
+  await page.addInitScript(deferSnapshot => {
     localStorage.setItem('meshcore-cookie-consent-v1', '1');
     const count = { formats: 0 };
     Object.assign(window, { feedFormatProbe: count });
@@ -199,18 +199,56 @@ async function installQuietFeed(page: Page) {
     } });
     const locale = Date.prototype.toLocaleString;
     Date.prototype.toLocaleString = function (...args) { count.formats++; return locale.apply(this, args); };
-    const packets = Array.from({ length: 30 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, 'A'), packet_type: 5,
+    const packets = Array.from({ length: 30 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, 'A'),
+      packet_type: deferSnapshot ? i % 5 + 1 : 5,
       time: new Date(Date.now() - i * 1000).toISOString(), observer_iatas: ['ABC'], summary: `[Public] Quiet feed fixture ${i}` }));
     class FixtureWebSocket extends EventTarget {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
       readyState = 0; onopen: ((event: Event) => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
       send() {} close() { this.readyState = 3; }
-      constructor() { super(); setTimeout(() => {
-        this.readyState = 1; this.onopen?.(new Event('open'));
-        this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'initial_state', ts: Date.now(), data: { nodes: [], packets, messages: packets } }) }));
-      }, 0); }
+      constructor() {
+        super();
+        const publish = () => this.onmessage?.(new MessageEvent('message', { data: JSON.stringify({
+          type: 'initial_state', ts: Date.now(), data: { nodes: [], packets, messages: packets },
+        }) }));
+        if (deferSnapshot) Object.assign(window, { publishFeedSnapshot: publish });
+        setTimeout(() => {
+          this.readyState = 1;
+          this.onopen?.(new Event('open'));
+          if (!deferSnapshot) publish();
+        }, 0);
+      }
     }
     Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
+  }, deferSnapshot);
+}
+
+for (const width of [320, 412]) {
+  test(`the first WebSocket snapshot leaves the mobile Feed layout in place at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 823 });
+    await installQuietFeed(page, true);
+    await page.goto('/feed');
+    const stats = page.locator('.uk-feed-stats');
+    await expect(stats.getByRole('status')).toHaveText('Connected · quiet', { timeout: 15_000 });
+    await page.evaluate(async () => { await document.fonts.ready; });
+    const geometry = () => stats.evaluate(panel => {
+      const coordinates = (element: Element) => {
+        const { top, left } = element.getBoundingClientRect();
+        return [top, left];
+      };
+      return {
+        chat: coordinates(document.querySelector('.uk-feed-chat')!),
+        labels: [...panel.querySelectorAll('.uk-feed-stats__label')].map(coordinates),
+      };
+    });
+    const before = await geometry();
+    await page.evaluate(() => (window as unknown as { publishFeedSnapshot(): void }).publishFeedSnapshot());
+    await expect(stats.getByRole('status')).toHaveText('Live');
+    await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
+    const tags = stats.locator('.uk-feed-type-tag');
+    await expect(tags).toHaveCount(5);
+    for (const tag of await tags.all()) await expect(tag).toBeInViewport({ ratio: 1 });
+    expect(await geometry()).toEqual(before);
   });
 }
 
