@@ -13,6 +13,7 @@ from unittest.mock import call, patch
 from fixture_session import restore_lease
 from owned_process import cancellation_scope, run_session
 from target_lease import child_context, target_lease
+from target_observation import IntakeNotQuiescentError, IntakeProof
 from target_safety import InactiveChangingConsumerError
 import fixture_session
 import read_transport
@@ -122,6 +123,48 @@ with target_lease(path=Path(sys.argv[1])):
             self.assertEqual(actions, ['select originals', 'start fixture', 'select originals', 'start originals', 'inventory'])
             receipt = json.loads((evidence / 'resume-fixture.json').read_text())
             self.assertEqual(receipt['fixture'], token)
+
+    def test_restore_retries_through_recent_intake_then_requires_fresh_proof(self):
+        pending = IntakeNotQuiescentError('ukmesh intake is not quiescent')
+        with patch.object(fixture_session, 'restore_originals', side_effect=[pending, None]) as restore, \
+             patch.object(fixture_session.time, 'monotonic', side_effect=[0, 1, 2]), \
+             patch.object(fixture_session.time, 'sleep') as sleep:
+            fixture_session.restore_when_quiescent()
+        self.assertEqual(restore.call_args_list, [call(), call()])
+        sleep.assert_called_once_with(1)
+
+    def test_restore_keeps_deadline_and_refuses_unrelated_failures(self):
+        for failure in (IntakeNotQuiescentError('pending'), ValueError('ownership changed')):
+            with self.subTest(failure=failure), \
+                 patch.object(fixture_session, 'restore_originals', side_effect=failure) as restore, \
+                 patch.object(fixture_session.time, 'monotonic', side_effect=[0, 120]), \
+                 patch.object(fixture_session.time, 'sleep') as sleep:
+                with self.assertRaises(type(failure)) as caught:
+                    fixture_session.restore_when_quiescent()
+                self.assertIs(caught.exception, failure)
+            restore.assert_called_once_with()
+            sleep.assert_not_called()
+
+    def test_restore_avoids_a_new_attempt_at_the_deadline(self):
+        with patch.object(fixture_session, 'restore_originals', side_effect=IntakeNotQuiescentError) as restore, \
+             patch.object(fixture_session.time, 'monotonic', side_effect=[0, 119.5, 120]), \
+             patch.object(fixture_session.time, 'sleep') as sleep:
+            with self.assertRaises(IntakeNotQuiescentError):
+                fixture_session.restore_when_quiescent()
+        restore.assert_called_once_with()
+        sleep.assert_called_once_with(.5)
+
+    def test_busy_intake_is_recoverable_only_before_proof(self):
+        proof = IntakeProof(0, {'ukmesh'})
+        with self.assertRaises(IntakeNotQuiescentError):
+            proof.add({'ukmesh': {'quiescent': False}}, allow_initial_pending=True)
+        with self.assertRaises(ValueError) as malformed:
+            proof.add({'ukmesh': {}}, allow_initial_pending=True)
+        self.assertIs(type(malformed.exception), ValueError)
+        proof.add({'ukmesh': {'quiescent': True, 'probe_last_success': 1}}, allow_initial_pending=True)
+        with self.assertRaises(ValueError) as busy:
+            proof.add({'ukmesh': {'quiescent': False}}, allow_initial_pending=True)
+        self.assertIs(type(busy.exception), ValueError)
 
     def test_reader_recovery_uses_run_labels_and_immutable_container_id(self):
         with tempfile.TemporaryDirectory() as folder:

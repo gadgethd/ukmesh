@@ -14,6 +14,7 @@ from fixtures import bundle, original_values, restore_originals, selection_files
 from owned_process import cancellation_scope, run_session
 from read_transport import recover_reader
 from target_lease import child_context, target_lease
+from target_observation import IntakeNotQuiescentError
 from target_safety import InactiveChangingConsumerError, read_intent
 
 
@@ -46,6 +47,24 @@ def require_running(cancellation: dict) -> None:
         raise InterruptedError('fixture session was interrupted')
 
 
+def restore_when_quiescent() -> None:
+    # An interrupted publisher can leave already accepted traffic to commit.
+    # Start a fresh protected observation while the owned lease is held.
+    # An attempt started before the deadline keeps its own proof deadline.
+    deadline = time.monotonic() + 120
+    while True:
+        try:
+            restore_originals()
+            return
+        except IntakeNotQuiescentError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise
+            time.sleep(min(1, remaining))
+            if time.monotonic() >= deadline:
+                raise
+
+
 def restore(evidence: Path, token: str) -> None:
     # Possible cancellation is latched by the outer scope during recovery.
     # The canonical controller and its fresh readiness probes finish normally.
@@ -66,7 +85,7 @@ def restore(evidence: Path, token: str) -> None:
         if not on_originals and selection.get('token') != token:
             raise ValueError('selected fixture changed during this session')
         try:
-            restore_originals()
+            restore_when_quiescent()
         except InactiveChangingConsumerError:
             if on_originals:
                 raise
@@ -76,7 +95,7 @@ def restore(evidence: Path, token: str) -> None:
             if status:
                 raise RuntimeError(f'canonical fixture restart before restoration failed (exit {status})')
             resumed_at = utc_now()
-            restore_originals()
+            restore_when_quiescent()
         if run_controller('scripts/dev-all.sh', ['start'], recovery):
             raise RuntimeError('canonical original-store start failed')
         if selection_values() != original_values():
