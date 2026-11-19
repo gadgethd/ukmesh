@@ -2,14 +2,19 @@ import { expect, test as base } from '@playwright/test';
 import { fixtures, vectorRoutes } from './basemapFixtures.js';
 
 const test = base.extend({
-  // Cold Chromium contexts can take tens of seconds on the software renderer.
-  // Give context setup its own deadline so the page still has 60s for recovery.
-  context: [async ({ browser, contextOptions, baseURL, serviceWorkers }, use) => {
-    const context = await browser.newContext({ ...contextOptions, baseURL, serviceWorkers });
+  // Start a fresh renderer for each failure scenario. A shared Chromium process
+  // can stall when the next test opens a context after a software WebGL run.
+  context: [async ({ playwright, browserName, launchOptions, headless, contextOptions, baseURL, serviceWorkers }, use) => {
+    const browser = await playwright[browserName].launch({ ...launchOptions, headless });
     try {
-      await use(context);
+      const context = await browser.newContext({ ...contextOptions, baseURL, serviceWorkers });
+      try {
+        await use(context);
+      } finally {
+        await context.close();
+      }
     } finally {
-      await context.close();
+      await browser.close();
     }
   }, { timeout: 45_000 }],
 });
