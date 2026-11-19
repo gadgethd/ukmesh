@@ -2636,3 +2636,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The exact seven-day observer ranking took about 18 seconds in a representative 10× mode. Running it in all 24 subprocesses consumed the collection deadline even after the candidate latency improved.
 - The first mode selects the observer through the existing authenticated read-only session and owns a private receipt. The next three modes create fresh runtime sessions and use that same observer. The controller compares receipt hashes across modes and paired windows, and removes the private file when the window closes. The measured routes, samples, companion cadence and deadline remain the same.
+
+## Reserve memory for the local Redis process
+
+- The full soak reached Redis's 256 MiB cgroup limit and the kernel killed the process. Redis reported no internal limit. The live feed lost its Pub/Sub connection while PostgreSQL continued to commit every observation.
+- Limit accounted Redis memory to 160 MiB and keep `noeviction`. Leave capacity for allocator and client overhead. Check that an owned pressure fixture refuses additional allocations, retains existing data, and still delivers a Pub/Sub message.
