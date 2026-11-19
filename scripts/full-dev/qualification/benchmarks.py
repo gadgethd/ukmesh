@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 import uuid
 
@@ -75,15 +76,21 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
     directory.mkdir(mode=0o700)
     context_before = phase_context(run); modes = []; error = None
     companions = CompanionReads(http_get, cadence_seconds=cadence_seconds)
+    observer_workspace = TemporaryDirectory(prefix='ukmesh-lookup-observer-')
+    observer_receipt = Path(observer_workspace.name) / 'observer.json'
+    observer_workset = None
     try:
         companions.start()
-        for mode in PROFILE['modes']:
+        for index, mode in enumerate(PROFILE['modes']):
             concurrency, cache = mode['concurrency'], mode['cache']
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
             output = directory / f'c{concurrency}-{cache}'
             args = ['--source-root', str(source_root), '--samples', str(PROFILE['samples'][str(concurrency)]),
                     '--trials', str(PROFILE['native_trials']), '--concurrency', str(concurrency), '--cache', cache,
-                    '--output', str(output), '--reference-revision', measured['revision']]
+                    '--output', str(output), '--reference-revision', measured['revision'],
+                    '--observer-receipt', str(observer_receipt)]
+            if index:
+                args.append('--reuse-observer-receipt')
             if label == 'candidate': args += ['--budget-ms', str(PROFILE['budgets_ms'][scale])]
             counters = lookup_query_counters(database)
             companions.set_scope(f'c{concurrency}-{cache}')
@@ -98,11 +105,23 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
                 companions.set_scope('between')
                 query_deltas = lookup_query_deltas(counters, lookup_query_counters(database))
             path = output / 'lookups.json'; value = read_json(path) if path.exists() else {}
-            modes.append({**mode, 'exit_code': code, 'passed': code == 0 and bool(value.get('results'))
+            try:
+                observer_hash = digest(observer_receipt) if code == 0 else None
+            except OSError:
+                observer_hash = None
+            observer_proof = value.get('observerWorkset')
+            observer_verified = (observer_hash is not None
+                and (index == 0 or observer_hash == observer_workset)
+                and isinstance(observer_proof, dict) and observer_proof.get('sha256') == observer_hash
+                and observer_proof.get('reused') is (index > 0))
+            if index == 0 and observer_verified:
+                observer_workset = observer_hash
+            modes.append({**mode, 'exit_code': code, 'passed': code == 0 and observer_verified and bool(value.get('results'))
                 and value.get('sourceIdentity') == measured and value.get('sourceIdentityAfter') == measured
                 and value.get('sourceStable') is True and value.get('passed') is True,
                 'source_identity': value.get('sourceIdentity'), 'source_stable': value.get('sourceStable'),
                 'results': value.get('results', []), 'settings': value.get('settings', {}), 'source': str(path),
+                'observer_workset_verified': observer_verified,
                 'postgresql_query_deltas': query_deltas,
                 'evidence_sha256': digest(path) if path.exists() else None,
                 'timeline_sha256': digest(output/'timeline.json') if (output/'timeline.json').exists() else None})
@@ -111,11 +130,13 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
             if not modes[-1]['passed']: raise RuntimeError('native read window failed; exact partial evidence retained')
             native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured,
-                            'context': context_before},
+                            'context': context_before, 'observer_workset_sha256': observer_workset},
                             {'boundaries': companions.boundaries})
     except BaseException as caught:
         error = caught
     finally:
+        try: observer_workspace.cleanup()
+        except OSError as caught: error = error or caught
         try:
             if companions.origin is not None: companions.set_scope('teardown')
         except BaseException as caught: error = caught
@@ -134,7 +155,8 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
         raw_path = directory / 'companions.json'; write_json(raw_path, raw)
         record = {'at': utc_now(), **identity, 'context_before': context_before,
             'companion_evidence': {'path': str(raw_path), 'sha256': digest(raw_path), 'collector_id': companions.collector_id},
-            'modes': modes, 'companions': totals, 'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)],
+            'modes': modes, 'companions': totals, 'observer_workset_sha256': observer_workset,
+            'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)],
             'passed': error is None and context_before == context and len(modes) == len(PROFILE['modes'])
                 and all(mode['passed'] for mode in modes) and all(v['requests'] >= minimum and v['failures'] == 0 for v in totals.values())}
         write_json(directory / 'summary.json', record)
@@ -195,6 +217,8 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False, native_only: bool = 
                 raise
             records.append(record)
             validate_measurements(records, source)
+            if record.get('observer_workset_sha256') != records[0].get('observer_workset_sha256'):
+                raise ValueError('observer workset differs across paired windows')
             if phase_context(run) != context: raise ValueError('source/runtime/fixture drift after paired window')
             if not record['passed']: raise RuntimeError('paired read window failed')
             write_json(directory / 'progress.json', {'passed': False, 'pending': True, 'protocol': IDENTITY,

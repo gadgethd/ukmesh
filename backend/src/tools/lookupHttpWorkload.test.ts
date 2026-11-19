@@ -1,4 +1,7 @@
 import assert from 'node:assert/strict';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import type { RequestHandler,Router } from 'express';
 import test from 'node:test';
 import { loadLookupHttpWorkload } from './lookupHttpWorkload.js';
@@ -11,15 +14,21 @@ test('shared fixture cases and selected routes retain identities, scopes, conten
   t.after(()=>{for(const key of keys){if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];}});
   process.env['DATABASE_URL']=process.env['MESHCORE_HTTP_DATABASE_URL']='postgresql://fixture@127.0.0.1/lookup_fixture';
   process.env['DATABASE_ROLE_ENFORCEMENT']='false';
+  const directory = await mkdtemp(path.join(os.tmpdir(), 'lookup-observer-test-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
   for(const selected of ['baseline','candidate']){
     const id='1'.repeat(64),packet='2'.repeat(64),observer='3'.repeat(64),events:string[]=[];
     const visible=Array.from({length:1001},()=>({node_id:id}));
-    const query=async(text:string)=>({rows:text.includes('current_setting')?[{current_user:'fixture',session_user:'fixture',database:'lookup_fixture',backend_pid:123,
+    let observerQueries = 0;
+    const query=async(text:string)=>{
+      if (text.includes('SELECT p.rx_node_id')) observerQueries++;
+      return {rows:text.includes('current_setting')?[{current_user:'fixture',session_user:'fixture',database:'lookup_fixture',backend_pid:123,
         transaction_read_only:'on',default_transaction_read_only:'on',statement_timeout:'30s',search_path:'public',superuser:false,bypass_rls:false}]:
       text.includes('SELECT count(*)::text FROM core.nodes')?[{nodes:'3',observations:'20'}]:
       text.includes('FROM core.node_identity_nodes')?[{node_id:id,name:'Visible Name'}]:
       text.includes('SELECT packet_hash FROM mesh.packets')?[{packet_hash:packet}]:
-      text.includes('SELECT p.rx_node_id')?[{rx_node_id:observer}]:[{region:'GB-SCT'}]});
+      text.includes('SELECT p.rx_node_id')?[{rx_node_id:observer}]:[{region:'GB-SCT'}]};
+    };
     const noop:RequestHandler=(_req,_res,next)=>next();
     const modules:Record<string,unknown>={
       'repositories/nodes.ts':{createNodeRepository:()=>({listPublicMapRows:async()=>visible})},
@@ -39,7 +48,17 @@ test('shared fixture cases and selected routes retain identities, scopes, conten
     const fleet=createLookupRequestFleet();
     try{
       const workload=await loadLookupHttpWorkload(async file=>modules[file],{pool:{query},query} as unknown as LookupRuntime);
-      const prepared=await workload.prepare('2026-11-14T00:00:00Z');
+      const snapshot = '2026-11-14T00:00:00Z';
+      const file = path.join(directory, selected + '.json');
+      await assert.rejects(workload.prepare(snapshot, { file, reuse: true }), { code: 'ENOENT' });
+      const prepared=await workload.prepare(snapshot, { file, reuse: false });
+      const reused = await workload.prepare(snapshot, { file, reuse: true });
+      assert.equal(observerQueries, 1);
+      assert.deepEqual(reused.cases, prepared.cases);
+      assert.equal(prepared.observerWorkset.reused, false);
+      assert.deepEqual(reused.observerWorkset, { sha256: prepared.observerWorkset.sha256, reused: true });
+      await writeFile(file, JSON.stringify({ version: 1, database: 'another_fixture', user: 'fixture', observer }));
+      await assert.rejects(workload.prepare(snapshot, { file, reuse: true }), /authenticated lookup fixture/);
       assert.equal(prepared.databaseSetup.http.current_user,'fixture');
       assert.equal(prepared.databaseSetup.http.transaction_read_only,'on');
       assert.equal(prepared.cases.length,12);assert.equal(prepared.cases[9]!.expected,404);

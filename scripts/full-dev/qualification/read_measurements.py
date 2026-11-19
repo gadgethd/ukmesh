@@ -23,6 +23,15 @@ def native_evidence(mode, record, collector=None):
             or mode['source_identity'] != source or mode['source_stable'] is not True \
             or value['results'] != mode['results'] or value['settings'] != mode['settings']:
         raise ValueError('native read result/source differs from its sealed evidence')
+    if 'observer_workset_sha256' in record or 'observer_workset_verified' in mode or 'observerWorkset' in value:
+        workset = record.get('observer_workset_sha256')
+        proof = value.get('observerWorkset')
+        first_mode = PROFILE['modes'][0]
+        reused = mode['concurrency'] != first_mode['concurrency'] or mode['cache'] != first_mode['cache']
+        if not isinstance(workset, str) or not re.fullmatch('[a-f0-9]{64}', workset) \
+                or not isinstance(proof, dict) or proof.get('sha256') != workset or proof.get('reused') is not reused \
+                or mode.get('observer_workset_verified') is not True:
+            raise ValueError('native mode observer proof differs from its window')
     validate_database_identity(value.get('databaseIdentity'), record['context'])
     settings = value['settings']
     wanted = {'samples': PROFILE['samples'][str(mode['concurrency'])], 'trials': PROFILE['native_trials'],
@@ -73,6 +82,7 @@ def native_read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False)
             if len(windows) != len(STEPS):
                 missing.append(scale + '/six-matched-windows'); continue
             batch_ids, window_ids, tokens, context = set(), set(), set(), windows[0]['context']
+            observer_workset = windows[0].get('observer_workset_sha256')
             pooled = {'A': [], 'B': []}; native = {'A': {}, 'B': {}}
             reference_settings, reference_cases, last_finished = {}, {}, None
             for row, step in zip(windows, STEPS):
@@ -85,6 +95,8 @@ def native_read_comparison(runs, *, scales=('1x', '10x'), diagnostic_only=False)
                 label = 'candidate' if diagnostic_only else PROFILE['source_labels'][step['side']]
                 if row['label'] != label or row['context'] != context or row['context_before'] != context:
                     raise ValueError('read source label, fixture or runtime context differs')
+                if row.get('observer_workset_sha256') != observer_workset:
+                    raise ValueError('observer workset differs across paired windows')
                 batch_ids.add(window['batch_id']); window_ids.add(window['id']); tokens.add(row['fixture_token'])
                 raw = measured_companion_data(row, cadence_seconds=PROFILE['companion_cadence_seconds'])
                 collector = raw['collector']

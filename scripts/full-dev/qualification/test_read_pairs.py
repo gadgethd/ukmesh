@@ -221,6 +221,43 @@ class ReadPairs(unittest.TestCase):
         self.assertFalse(value['passed']); self.assertIn('mode interval', value['missing'][0])
         target.write_bytes(original)
 
+    def test_native_observer_proofs_must_match_the_mode_and_paired_workset(self):
+        runs = self.windows(scales=('10x',))
+
+        def set_workset(window, sha256):
+            window['observer_workset_sha256'] = sha256
+            for index, mode in enumerate(window['modes']):
+                file = Path(mode['source'])
+                native = common.read_json(file)
+                native['observerWorkset'] = {'sha256': sha256, 'reused': index > 0}
+                common.write_json(file, native)
+                mode['evidence_sha256'] = common.digest(file)
+                mode['observer_workset_verified'] = True
+
+        for window in runs:
+            set_workset(window, 'a' * 64)
+        self.assertTrue(measured.native_read_comparison(runs, scales=('10x',))['passed'])
+
+        mode = runs[0]['modes'][0]
+        file = Path(mode['source'])
+        native = common.read_json(file)
+        native['observerWorkset']['reused'] = True
+        common.write_json(file, native)
+        mode['evidence_sha256'] = common.digest(file)
+        with self.assertRaisesRegex(ValueError, 'native mode observer proof differs'):
+            measured.native_evidence(mode, runs[0])
+
+        set_workset(runs[0], 'a' * 64)
+        del runs[0]['observer_workset_sha256']
+        with self.assertRaisesRegex(ValueError, 'native mode observer proof differs'):
+            measured.native_evidence(mode, runs[0])
+
+        set_workset(runs[0], 'a' * 64)
+        set_workset(runs[-1], 'b' * 64)
+        result = measured.native_read_comparison(runs, scales=('10x',))
+        self.assertFalse(result['passed'])
+        self.assertIn('observer workset differs across paired windows', result['missing'][0])
+
     def test_report_recomputes_source_and_batch_closure_instead_of_trusting_green(self):
         runs = self.windows(); value = self.complete_summary(runs); common.write_json(self.root/'reads.json', value)
         with patch.object(report, 'REQUIRED', ('reads',)), patch.object(report, 'phase_context', return_value=value['context']), \
@@ -332,7 +369,7 @@ class ReadPairs(unittest.TestCase):
         for label in ('baseline', 'candidate'):
             with self.subTest(label=label):
                 base = self.base
-                collectors, invocations = [], []
+                collectors, invocations, observer_receipts = [], [], []
 
                 class Collector:
                     def __init__(self, request, *, cadence_seconds):
@@ -372,6 +409,15 @@ class ReadPairs(unittest.TestCase):
                     concurrency, cache = int(setting('concurrency')), setting('cache')
                     self.assertEqual((concurrency, cache),
                         tuple(PROFILE['modes'][len(invocations)][key] for key in ('concurrency', 'cache')))
+                    reuse = bool(invocations)
+                    receipt = Path(setting('observer-receipt'))
+                    self.assertEqual('--reuse-observer-receipt' in args, reuse)
+                    if reuse:
+                        self.assertEqual(receipt, observer_receipts[0])
+                    else:
+                        self.assertFalse(receipt.exists())
+                        common.write_json(receipt, {'observer': 'fixture-observer'})
+                    observer_receipts.append(receipt)
                     invocations.append((concurrency, cache))
                     settings = {'samples': int(setting('samples')), 'trials': int(setting('trials')),
                                 'concurrency': concurrency, 'cache': cache}
@@ -384,6 +430,7 @@ class ReadPairs(unittest.TestCase):
                         'timeline': 'timeline.json', 'passed': True,
                         'sourceIdentity': self.sources[label], 'sourceIdentityAfter': self.sources[label],
                         'sourceStable': True, 'databaseIdentity': database_identity(context), 'settings': settings,
+                        'observerWorkset': {'sha256': common.digest(receipt), 'reused': reuse},
                         'results': [{'trial': trial, 'name': 'map', 'samples': settings['samples'], 'p95Ms': 40}
                                     for trial in range(1, settings['trials'] + 1)]}
                     common.write_json(output / 'lookups.json', value)
@@ -406,6 +453,9 @@ class ReadPairs(unittest.TestCase):
                 self.assertEqual(record['context_before'], context)
                 self.assertEqual(record['context'], context)
                 self.assertEqual(len(record['modes']), 4)
+                self.assertFalse(observer_receipts[0].parent.exists())
+                self.assertRegex(record['observer_workset_sha256'], '^[a-f0-9]{64}$')
+                self.assertTrue(all(mode['observer_workset_verified'] for mode in record['modes']))
                 summary = common.read_json(self.root / f'reads-1x-{label}/summary.json')
                 self.assertTrue(summary['passed'])
                 self.assertEqual(summary['errors'], [])

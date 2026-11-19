@@ -2631,3 +2631,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The 10× comparison recorded 334–367 ms of average PostgreSQL execution for broad map and short-search shapes in the candidate. Forced generic plans reproduced about 410 ms of execution. With the same values, custom plans took 7–8 ms. JIT was already disabled.
 - Send broad lookups without candidate IDs as unnamed statements so PostgreSQL plans for the actual scope, cursor and limit. Keep bounded preparation when the SQL first identifies candidate IDs. Both paths retain the complete identity projection and visibility checks.
+
+## Select the native benchmark observer once per read window
+
+- The exact seven-day observer ranking took about 18 seconds in a representative 10× mode. Running it in all 24 subprocesses consumed the collection deadline even after the candidate latency improved.
+- The first mode selects the observer through the existing authenticated read-only session and owns a private receipt. The next three modes create fresh runtime sessions and use that same observer. The controller compares receipt hashes across modes and paired windows, and removes the private file when the window closes. The measured routes, samples, companion cadence and deadline remain the same.
