@@ -2698,3 +2698,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The periodic refresh joined node candidates to broad packet chunks before filtering usable adverts. Under soak traffic it hit the existing 30-second read deadline. Select and project only qualifying adverts first, then retain the same node join and grouped counts. Keep the 30-day window, thresholds, duplicate handling, refresh interval and snapshot budgets.
 - On the retained 10× fixture, both paired orders returned the same digest for all 12 records. Before versus after was 27.39 versus 3.90 seconds in the first order and 14.40 versus 5.00 seconds in the reverse order. The read plans used about 265,000 and 81,000 shared read blocks respectively. These were read-only observations outside qualification.
+
+## Count packet and observer region activity from one grouped scan
+
+- The existing chart summary sorted nearly 950,000 observations to calculate four distinct counts over two keys. Give each region and key one last-seen value. A key was present in a shorter window exactly when its latest observation was in that window. Keep null keys out of the distinct counts while allowing them to contribute to last observation time.
+- Keep the existing seven-day UKMesh and observer input filters, alias resolution, IATA fallback, ordering, and independent region-series query. On the owned fixture, broad and per-observer results matched exactly. Grouping sets wrote 17,886 temporary blocks versus 24,044, with comparable elapsed time. The independent two-scan variant used less temporary space but was slower by more than 30% and was not adopted.

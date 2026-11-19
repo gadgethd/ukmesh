@@ -97,6 +97,28 @@ test('summary preserves presence boundaries, role/privacy rules and internationa
     // Preserve that contract instead of imposing a new row or node-id ordering.
     assert.ok([50.95, 52.52].includes(tied?.last_lat));
     assert.ok([4.35, 13.405].includes(tied?.last_lon));
+
+    await client.query(`INSERT INTO mesh.packets(time, packet_hash, network, topic, rx_node_id, iata)
+      SELECT NOW() - age::interval, packet_hash, 'ukmesh', topic, observer, iata
+      FROM (VALUES
+        ('26 hours', $1::text, 'meshcore/LHR/a/packets', $3::text, 'lhr'),
+        ('1 second', $1, 'meshcore/LHR/b/packets', $4, ' LHR '),
+        ('2 days', $2::text, 'meshcore/LHR/f/packets', $5::text, 'LHR'),
+        ('3 minutes', $2, 'meshcore/unknown/a/packets', $3, NULL),
+        ('1 second', repeat('6', 64), 'meshcore/LHR/invalid/packets', 'invalid', 'LHR'),
+        ('1 second', repeat('7', 64), 'meshcore-test/LHR/a/packets', $3, 'LHR')
+      ) AS fixture(age, packet_hash, topic, observer, iata)`,
+    [key('1'), key('2'), key('A'), key('B'), key('F')]);
+    const chart = await repository.fetchChartsData('ukmesh', undefined);
+    const times = (await client.query(`SELECT (NOW() - INTERVAL '1 second')::text AS lhr,
+      (NOW() - INTERVAL '3 minutes')::text AS unknown`)).rows[0];
+    assert.deepEqual(chart.orSummaryResult.rows, [
+      { iata: 'LHR', packets_24h: '1', packets_7d: '2', active_observers: '1', observers: '2', last_packet_at: times.lhr },
+      { iata: 'UNK', packets_24h: '1', packets_7d: '1', active_observers: '0', observers: '1', last_packet_at: times.unknown },
+    ]);
+    const aliasChart = await repository.fetchChartsData('ukmesh', key('B'));
+    assert.deepEqual(aliasChart.orSummaryResult.rows.map(({ iata, packets_7d, observers }) => [iata, packets_7d, observers]),
+      [['LHR', '1', '1'], ['UNK', '1', '1']]);
   } finally {
     await client.query('ROLLBACK');
     client.release();
