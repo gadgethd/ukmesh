@@ -2595,3 +2595,29 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The larger retained store reached complete packet load and then exhausted the 512 MiB cgroup during the synchronous enrichment prewarm. Keep one compact instant and the advertisement flag per indexed transmission. The reducer compares instants without losing offsets or fractional seconds.
 - Capture sparse transported scope names alongside the other fields while holding the existing store read lock. Preserve the separate scope attribution and time-window rules.
+
+## Serialize CoreScope's high-memory background passes
+
+- Share one cancellable work slot between analytics recomputes and repeater enrichment. Their startup passes could allocate whole-history scratch data at the same time. Keep the individual refresh intervals and response caches.
+- Let waiting work leave on shutdown. Signal every analytics worker before waiting for their completion.
+
+## Keep statistics complete when the packet cache is limited
+
+- Count transmissions and logical observations in one SQLite snapshot when the resident index may omit history. Use the transmission index for zero or one observation, then group repeated observations by their exact observer and path for that transmission.
+- Keep the current physical observation counts for the last hour and day. Exercise both SQLite schemas and keep the resident path for a complete cache.
+
+## Read direct reception evidence across the retained history
+
+- Node health uses a background direct-reception snapshot. A bounded packet cache can omit evidence from that snapshot even while SQLite retains the observations.
+- Feed the same radio evidence reducer from a complete resident store or from bounded SQLite batches. Keep the prior published snapshot when a retained read fails.
+
+## Limit neighbor-graph decoding to authoritative origins
+
+- The full 10× stack passed startup at 512 MiB. CoreScope was OOM-killed just after the first scheduled neighbor-graph refresh began. The startup heap profile showed that graph construction was populating decoded payload caches even for packets that can only contribute last-hop edges.
+- Read origins for advertisements and anonymous requests. Keep last-hop edge construction for every packet type and put scheduled graph construction behind the existing cancellable analytics work slot.
+- Use sustained reads through the first full refresh to verify cgroup memory at the unchanged limit.
+
+## Resume an inactive fixture consumer before restoring targets
+
+- The first 10× read attempt left CoreScope inactive. Target publication correctly refused to switch until the previous consumer could be observed.
+- Classify that refusal before publishing the selection. The fixture supervisor can start the still-selected owned fixture through the launcher and retry the original guarded switch once. Other refusals still require their own diagnosis.
