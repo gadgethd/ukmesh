@@ -134,3 +134,6 @@ Journal allocation remains the host's existing policy; Loki retains its configur
 14-day history. No per-container driver change can recover previously removed
 json-file logs or guarantee delivery through a collector outage. Qualification
 checks actual logging delivery separately from a resolved Compose policy.
+
+The [qualification handoff](lean-runtime-handoff.md) records the verified DEV
+results, open failures and the procedure for the next full-stack run.

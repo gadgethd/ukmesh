@@ -2713,3 +2713,10 @@ qualification. Do not change workloads, timing or acceptance limits.
 ## Retry an apt package replaced during a mirror update
 
 - Hosted Compose CI stopped when apt's signed index selected Ubuntu nginx archives that returned 404 from the package pool. Allow the current bounded retry for that specific package-fetch error. Preserve immediate failure for missing repositories, manifest failures, unsigned or unavailable packages, and application build or test errors.
+
+## Keep one copy of CoreScope's selected observation
+
+- On the 461,125-transmission 10× fixture, CoreScope's selected packet read kept the sampled WAL below 8 MiB. During the 40-minute live replay, web anonymous memory rose from about 421 to 477 MiB before the 512 MiB cgroup OOM at approximately 503,664 transmissions. The isolated ingestor committed all 72,000 ACKs. The canonical restore needed to start the same web consumer temporarily at 640 MiB, then restored all original targets at default limits and passed all 43 inventory checks.
+- Each loaded transmission copies the winning observation's observer labels, signal pointers, path and direction into its permanent record. Keep the winning observation by reference and use the packet store's same longest-path rule, stable ties, cached parsed path and nil fields when there are no observations. Preserve complete history and keep SQL and wire formats as they are.
+- Check selected-observation changes and tie behavior on startup, on the retained SQL path and after late observations. Use a retained snapshot and both Go suites to check packet, graph, live feed and analytics parity. Verify the main packet page in Chromium and measure memory at the complete grown history before repeating the guarded soak. The periodic neighbor graph also carries a transient full snapshot at this scale. Measure it after this storage change before deciding how to reduce that peak.
+- Before DEV integration, a repeat default-limit cold start on 533,245 rows was OOM-killed. On the separate 480,129-row fixture, the exact unfiltered page and the populated Chromium journey passed at 512 MiB. Keep the grown-fixture startup failure open.
