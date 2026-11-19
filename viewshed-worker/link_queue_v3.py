@@ -57,6 +57,9 @@ COMPLETED_RETENTION_MS = max(
         )
     ),
 )
+# PostgreSQL owns the durable receipt. Redis keeps recent completion markers
+# to avoid sending duplicate jobs through the worker again.
+COMPLETED_MAX_JOBS = 32_768
 DEAD_MAX_JOBS = max(
     1, min(10_000, int(os.environ.get("LINK_QUEUE_V3_DEAD_MAX_JOBS", "1000")))
 )
@@ -244,10 +247,14 @@ end
 return count
 """
 
-CLEAN_COMPLETED_SCRIPT = """
-local expired = redis.call('ZRANGEBYSCORE', KEYS[1], '-inf', ARGV[1], 'LIMIT', 0, ARGV[2])
+CLEAN_COMPLETED_SCRIPT = """#!lua flags=allow-oom
+local expired = redis.call('ZCOUNT', KEYS[1], '-inf', ARGV[1])
+local excess = redis.call('ZCARD', KEYS[1]) - tonumber(ARGV[3])
+local take = math.min(tonumber(ARGV[2]), math.max(expired, excess))
+if take <= 0 then return 0 end
+local oldest = redis.call('ZRANGE', KEYS[1], 0, take - 1)
 local count = 0
-for _, job_id in ipairs(expired) do
+for _, job_id in ipairs(oldest) do
   redis.call('ZREM', KEYS[1], job_id)
   if redis.call('HGET', KEYS[2], job_id) == 'complete' then
     local dedupe_key = redis.call('HGET', KEYS[3], job_id)
@@ -636,6 +643,7 @@ def cleanup_completed(client, limit: int = 500) -> int:
             DEDUPE,
             int(time.time() * 1000),
             limit,
+            COMPLETED_MAX_JOBS,
         )
     )
 

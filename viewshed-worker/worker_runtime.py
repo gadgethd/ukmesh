@@ -144,17 +144,17 @@ def worker_loop(settings=None, *, context=None):
                 refresh_support_context(db, context=context)
             if context.settings.WORKER_MODE in ("all", "link"):
                 context.topology.refresh(db)
-                now = time.time()
-                if now - last_link_reap >= 5:
-                    recovered = link_queue_v3.reap(r_client)
-                    if recovered:
-                        log.warning(f"Recovered {recovered} expired link lease(s)")
-                    link_queue_v3.cleanup_completed(r_client)
-                    link_queue_v3.cleanup_dead(r_client)
-                    last_link_reap = now
                 # Drain v3 first. Claim removes a ready entry and installs its
                 # token/lease in one Lua transition.
                 while True:
+                    now = time.time()
+                    if now - last_link_reap >= 5:
+                        link_queue_v3.cleanup_completed(r_client)
+                        recovered = link_queue_v3.reap(r_client)
+                        if recovered:
+                            log.warning(f"Recovered {recovered} expired link lease(s)")
+                        link_queue_v3.cleanup_dead(r_client)
+                        last_link_reap = now
                     claimed = link_queue_v3.claim(r_client)
                     if claimed is None:
                         break

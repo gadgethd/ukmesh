@@ -2641,3 +2641,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The full soak reached Redis's 256 MiB cgroup limit and the kernel killed the process. Redis reported no internal limit. The live feed lost its Pub/Sub connection while PostgreSQL continued to commit every observation.
 - Limit accounted Redis memory to 160 MiB and keep `noeviction`. Leave capacity for allocator and client overhead. Check that an owned pressure fixture refuses additional allocations, retains existing data, and still delivers a Pub/Sub message.
+
+## Bound the Redis cache of completed link jobs
+
+- Active and dead work already have budgets. Completed jobs left four Redis records behind for up to seven days. The owned 10× database contains 365,771 durable job receipts and added 24,055 during the soak.
+- Reap completed Redis markers by age and toward a target of 32,768 entries, including while the ready queue stays busy. Process up to 500 markers every five seconds. Leave active work, leases, dead jobs, and the PostgreSQL receipts intact. A replay outside the recent Redis cache can reach the worker, where the durable receipt prevents a second graph write or notification.
