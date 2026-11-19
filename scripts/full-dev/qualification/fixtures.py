@@ -15,7 +15,7 @@ import tempfile
 import uuid
 
 from backups import ORIGINALS, SQLITE, sqlite_backup
-from common import DB_NAME, REPO, STATE, digest, docker, owned_run, read_json, safe_error, sql, utc_now, write_json
+from common import DB_NAME, MIN_FREE_BYTES, REPO, STATE, digest, docker, owned_run, read_json, safe_error, sql, utc_now, write_json
 
 
 FIXTURES = STATE / "runtime/fixtures"
@@ -175,9 +175,8 @@ def clone_bundle(token: str) -> dict:
             required_bytes += int(sql(row["container"], "postgres", row["user"],
                                      f"SELECT pg_database_size('{database}')"))
         # Leave room for WAL, the first workload and evidence after copying.
-        floor = 10 * 1024**3
         allowance = 512 * 1024**2
-        if shutil.disk_usage(REPO).free < floor + required_bytes + allowance:
+        if shutil.disk_usage(REPO).free < MIN_FREE_BYTES + required_bytes + allowance:
             raise ValueError(f"insufficient free bytes for fixture copy ({required_bytes}) and the 10 GiB floor")
 
         path, result = reserve_bundle(source["kind"], owned_run(source["backup_run"]))

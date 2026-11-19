@@ -63,7 +63,7 @@ class TargetSafety(unittest.TestCase):
     def test_same_store_missing_observability_bootstraps_but_changing_stopped_refuses(self):
         # No read of unsupported old stats is necessary for this same-ref resume.
         self.actual['consumers']['core']['running']=False
-        result=safety.check_start(OLD,snapshot=lambda:self.actual,observe_fn=lambda _:self.fail('must not observe'))
+        result=safety.check_start(OLD,snapshot=lambda:self.actual,observe_fn=lambda _:self.fail('must not observe'),path=self.path)
         self.assertFalse(result['observability_required'])
         intent=new_intent('owned',records(),safety.target_values(NEW),old_targets=safety.target_values(OLD))
         intent['requested_values']=NEW;safety.write_intent(self.path,intent)

@@ -2562,3 +2562,36 @@ qualification. Do not change workloads, timing or acceptance limits.
   raw-frame identity lookup and the ordered publication schedule, but it
   currently retains both expanded source tables while building them. Keep
   arbitrary input order, original filters, and the same QoS and rate.
+
+## Remove whole-history bookkeeping from the RF startup pass
+
+- The resident and retained global readers already visit one transmission per hash. Preserve the existing regional observation traversal and scope behavior, and keep only per-transmission hourly deduplication in the global reducer. The previous shared reducer allocated regional hash sets for the default startup and concatenated each hash with its hour.
+- Record running sums and extrema for RF time and payload-type groups. Those responses do not need a second copy of every SNR value. Keep the full inputs to the exact median, histograms, and existing scatter sampling.
+- Establish startup memory and response parity on the verified 10× SQLite copy before changing the packet-store default. The prior heap sample attributed about 99 MiB to the active RF aggregation.
+
+## Settle owned qualification processes before restoring a fixture
+
+- Run the workload in an owned process session whose supervisor remains available during cancellation. The previous Bash trap and workload shared one signal group, so restoration raced inherited target-lock descriptors.
+- Make the soak's HTTP-reader ownership recoverable before launching Docker. Docker owns the detached helper even if its CLI is interrupted. Use the run's ownership receipt for cleanup after process settlement.
+- Preserve canonical target publication and require the exclusive lease before restoration. A bounded wait lets short nested readiness sessions release inherited descriptors after their own cleanup.
+- Defer cancellation during the canonical selection and start. The controller must close the pending intent before the fixture can be changed again. Keep disk observations in memory until startup settles, then skip the workload and restore if the reserve was lost.
+
+## Separate allocated disk occupancy from bytes written
+
+- Record allocated SQLite bytes, PostgreSQL WAL and temporary file residency, and the selected database size alongside existing cgroup and cumulative counters. The late 10× write burst showed that a WAL position and temp-write counter cannot explain current free space.
+- Keep the minimum disk reserve in the qualification common settings so the host report, fixture copy and guarded workload use the same threshold.
+
+## Attribute map and search database time in their native read windows
+
+- Sample PostgreSQL statement counters immediately before and after each read mode. Bind them to the selected database and HTTP role. Use the existing node-map query annotation and record only query IDs, known shapes, call counts, execution time and block counters.
+- Keep counter observation outside the native HTTP intervals. Leave the current thresholds and response validation in the benchmark. Counter resets, evictions and unavailable telemetry must remain visible in the evidence.
+
+## Keep hop context from retaining unrelated decoded payloads
+
+- The retained 10× startup heap includes about 81 MiB of full decoded maps populated by topology. Hop disambiguation reads the sender pubkey alone.
+- Share the existing decoded cache for packets with a possible key. Exclude JSON that cannot contain the exact property before opening the cache, including a fallback for escaped keys. Preserve every hop and all decoded packet fields.
+
+## Shrink the repeater enrichment snapshot
+
+- The larger retained store reached complete packet load and then exhausted the 512 MiB cgroup during the synchronous enrichment prewarm. Keep one compact instant and the advertisement flag per indexed transmission. The reducer compares instants without losing offsets or fractional seconds.
+- Capture sparse transported scope names alongside the other fields while holding the existing store read lock. Preserve the separate scope attribution and time-window rules.

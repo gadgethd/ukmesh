@@ -395,6 +395,7 @@ class ReadPairs(unittest.TestCase):
                      patch.object(benchmarks, 'inventory', return_value={'passed': True}), \
                      patch.object(benchmarks, 'phase_context', return_value=context), \
                      patch.object(benchmarks, 'CompanionReads', Collector), \
+                     patch.object(benchmarks, 'lookup_query_counters', return_value={'error': 'Unavailable'}), \
                      patch.object(benchmarks, 'node_tool', side_effect=native):
                     record = benchmarks.read_once(self.root, label=label,
                         source_root=Path(self.sources[label]['source_root']))
@@ -409,6 +410,8 @@ class ReadPairs(unittest.TestCase):
                 self.assertTrue(summary['passed'])
                 self.assertEqual(summary['errors'], [])
                 for mode in record['modes']:
+                    self.assertEqual(mode['postgresql_query_deltas'],
+                                     {'before_error': 'Unavailable', 'after_error': 'Unavailable'})
                     native_value = common.read_json(Path(mode['source']))
                     self.assertEqual(native_value['databaseIdentity']['expected']['http']['database'],
                                      context['targets']['ukmesh'])

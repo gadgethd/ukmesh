@@ -17,6 +17,7 @@ from source_identity import expected_sources, identify, validate_measurements
 from read_protocol import IDENTITY, PROFILE, STEPS
 from read_measurements import native_evidence, native_read_comparison, read_comparison, validate_read_batches
 from node_invocation import tool_category, tool_environment
+from resources import lookup_query_counters, lookup_query_deltas
 
 
 def active_fixture() -> dict:
@@ -79,23 +80,34 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
         for mode in PROFILE['modes']:
             concurrency, cache = mode['concurrency'], mode['cache']
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
-            companions.set_scope(f'c{concurrency}-{cache}')
             output = directory / f'c{concurrency}-{cache}'
             args = ['--source-root', str(source_root), '--samples', str(PROFILE['samples'][str(concurrency)]),
                     '--trials', str(PROFILE['native_trials']), '--concurrency', str(concurrency), '--cache', cache,
                     '--output', str(output), '--reference-revision', measured['revision']]
             if label == 'candidate': args += ['--budget-ms', str(PROFILE['budgets_ms'][scale])]
-            code = node_tool('benchmarkLookups', args, database, output.with_suffix('.log'),
-                             timeout=1800 if deadline is None else max(.001, deadline-time.monotonic()))
-            companions.set_scope('between')
+            counters = lookup_query_counters(database)
+            companions.set_scope(f'c{concurrency}-{cache}')
+            native_error = None
+            try:
+                code = node_tool('benchmarkLookups', args, database, output.with_suffix('.log'),
+                                 timeout=1800 if deadline is None else max(.001, deadline-time.monotonic()))
+            except BaseException as caught:
+                native_error = caught
+                code = None
+            finally:
+                companions.set_scope('between')
+                query_deltas = lookup_query_deltas(counters, lookup_query_counters(database))
             path = output / 'lookups.json'; value = read_json(path) if path.exists() else {}
             modes.append({**mode, 'exit_code': code, 'passed': code == 0 and bool(value.get('results'))
                 and value.get('sourceIdentity') == measured and value.get('sourceIdentityAfter') == measured
                 and value.get('sourceStable') is True and value.get('passed') is True,
                 'source_identity': value.get('sourceIdentity'), 'source_stable': value.get('sourceStable'),
                 'results': value.get('results', []), 'settings': value.get('settings', {}), 'source': str(path),
+                'postgresql_query_deltas': query_deltas,
                 'evidence_sha256': digest(path) if path.exists() else None,
                 'timeline_sha256': digest(output/'timeline.json') if (output/'timeline.json').exists() else None})
+            if native_error is not None:
+                raise native_error
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
             if not modes[-1]['passed']: raise RuntimeError('native read window failed; exact partial evidence retained')
             native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured,

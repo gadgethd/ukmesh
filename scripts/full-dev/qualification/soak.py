@@ -24,7 +24,7 @@ from loopback_http import http_get
 from resources import sample
 from traffic import hex_list, verify_companion_acks, verify_typed
 from health import create_session, verify_session
-from read_transport import start_reader, stop_reader
+from read_transport import recover_reader, start_reader
 from runtime_logs import collect_logs
 
 SOAK_PHASES = ('publication', 'delivery', 'drain', 'reconciliation')
@@ -126,7 +126,7 @@ def await_first_sample(ready, result):
         raise RuntimeError('whole-VM sampler did not capture its first complete sample before workload startup')
 
 
-def stop_measurements(worker, health_worker, companions, stop, reader_name):
+def stop_measurements(worker, health_worker, companions, stop, run):
     stop.set()
     try:
         if worker.is_alive(): worker.join(timeout=40)
@@ -135,7 +135,7 @@ def stop_measurements(worker, health_worker, companions, stop, reader_name):
         try:
             if health_worker.is_alive(): health_worker.join(timeout=130)
         finally:
-            stop_reader(reader_name)
+            recover_reader(run, require_alias=True)
 
 
 def reserve_ack_sequence(count: int) -> int:
@@ -235,7 +235,7 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse
                                      name="health-code-qualification", daemon=True)
     companions = CompanionReads(http_get)
     log_started=utc_now()
-    reader_name, reader_socket = start_reader(run)
+    reader_socket = start_reader(run)
     invocation = uuid.uuid4().hex
     prepublication = None
     try:
@@ -256,8 +256,11 @@ def soak(run: Path, *, count: int = 72000, health_code: str | None = None, reuse
             run / "soak.log", timeout=math.ceil(count / 30) + 300)
         prepublication = prepublication_failure(native_output, source, auxiliary, fixture, count, invocation, code)
         if prepublication: health_stop.set()
+    except BaseException:
+        health_stop.set()
+        raise
     finally:
-        companion_results=stop_measurements(worker,health_worker,companions,stop,reader_name)
+        companion_results=stop_measurements(worker,health_worker,companions,stop,run)
     native = read_json(native_output / "soak.json") if (native_output / "soak.json").exists() else {"passed": False}
     stages = phase_receipts(native_output, invocation=invocation, database=database, source=source)
     typed, ack_proof, health_result = verify_persistence(source, auxiliary, fixture, health_result, prepublication)

@@ -1,6 +1,5 @@
 """One nonauthorizing reconnect preparation; target protection remains separate."""
 import json
-from contextlib import contextmanager
 import os
 from pathlib import Path
 import shlex
@@ -13,6 +12,7 @@ import uuid
 
 from common import REPO,STATE,clean_environment,write_json,utc_now
 from target_lease import child_context
+from owned_process import cancellation_scope, spawn_session, settle_session as _settle
 from target_observation import APPS,stable_identities
 sys.path.insert(0,str(REPO/'scripts/companion-dev'))
 from ingest_state import read_core_connection,read_beacon,timestamp
@@ -26,67 +26,13 @@ class Unavailable(RuntimeError):
     """Supported native state is temporarily unavailable, not an empty queue."""
 
 
-@contextmanager
 def _cancellation_scope():
-    """Latch FIRST cancellation without interrupting mandatory settlement/save."""
-    state={'signal':None,'on_cancel':None}
-    def latch(signum,_frame):
-        if state['signal']is None:state['signal']=signum
-    blocked=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGTERM,signal.SIGINT})
-    handlers={}
-    try:
-        for sig in(signal.SIGTERM,signal.SIGINT):handlers[sig]=signal.signal(sig,latch)
-    finally:signal.pthread_sigmask(signal.SIG_SETMASK,blocked)
-    try:yield state
-    finally:
-        # Close the latch-check/handler-restore race. A signal that becomes
-        # pending after this block reaches the restored outer/default handler.
-        blocked=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGTERM,signal.SIGINT})
-        try:
-            if state['signal']is not None:
-                if state['on_cancel']is not None:state['on_cancel']()
-                raise InterruptedError('startup readiness canceled by '+signal.Signals(state['signal']).name)
-        finally:
-            try:
-                for sig,handler in handlers.items():signal.signal(sig,handler)
-            finally:signal.pthread_sigmask(signal.SIG_SETMASK,blocked)
+    return cancellation_scope('startup readiness')
 
 
 def _check_cancellation(state):
-    if state['signal']is not None:raise InterruptedError('startup readiness canceled')
-
-
-def _members(pid):
-    result=[]
-    for path in Path('/proc').iterdir():
-        if not path.name.isdecimal():continue
-        try:
-            fields=(path/'stat').read_text().rsplit(')',1)[1].split()
-            if int(fields[2])==pid and int(fields[3])==pid and fields[0]!='Z':result.append(int(fields[19]))
-        except (FileNotFoundError,ProcessLookupError,PermissionError):continue
-    return result
-
-
-def _settle(child,ticks):
-    try:
-        # The leader is kept unreaped by waitid(WNOWAIT), reserving its PID/PGID.
-        for sig,grace in ((signal.SIGTERM,.2),(signal.SIGKILL,.5)):
-            leader=Path(f'/proc/{child.pid}/stat')
-            if ticks is None or not leader.exists()or int(leader.read_text().rsplit(')',1)[1].split()[19])!=ticks:
-                raise RuntimeError('probe leader identity unavailable')
-            members=_members(child.pid)
-            if not members:break
-            if any(value<ticks for value in members):raise RuntimeError('probe group identity differs')
-            try:os.killpg(child.pid,sig)
-            except ProcessLookupError:pass
-            end=time.monotonic()+grace
-            while _members(child.pid)and time.monotonic()<end:time.sleep(.01)
-        if _members(child.pid):raise RuntimeError('owned probe group not settled')
-    finally:
-        # Even an identity refusal must reap our direct child. Popen.kill polls
-        # its own waitpid state first, so it does not signal an already reaped PID.
-        if child.returncode is None:child.kill()
-        child.wait(timeout=1)
+    if state['signal'] is not None:
+        raise InterruptedError('startup readiness canceled')
 
 
 def _run_owned(argv,deadline,*,cancellation,after_spawn=None,merge_stderr=False,spawn=subprocess.Popen):
@@ -98,18 +44,8 @@ def _run_owned(argv,deadline,*,cancellation,after_spawn=None,merge_stderr=False,
     inherited,descriptors=child_context();child=None;ticks=None
     with tempfile.TemporaryFile()as out,tempfile.TemporaryFile()as err:
         try:
-            previous=signal.pthread_sigmask(signal.SIG_BLOCK,{signal.SIGTERM,signal.SIGINT})
-            try:
-                # The tiny exec wrapper clears the inherited blocked mask in
-                # the child; no unsafe preexec_fn or blocked CLI signals.
-                child_argv=[sys.executable,'-c',
-                    'import os,signal,sys;signal.pthread_sigmask(signal.SIG_SETMASK,());os.execvpe(sys.argv[1],sys.argv[1:],os.environ)',*argv]
-                child=spawn(child_argv,cwd=REPO,env={**clean_environment(),**inherited},pass_fds=descriptors,
-                    start_new_session=True,stdout=out,stderr=subprocess.STDOUT if merge_stderr else err)
-                fields=Path(f'/proc/{child.pid}/stat').read_text().rsplit(')',1)[1].split()
-                if int(fields[2])!=child.pid or int(fields[3])!=child.pid:raise RuntimeError('probe session differs')
-                ticks=int(fields[19])
-            finally:signal.pthread_sigmask(signal.SIG_SETMASK,previous)
+            child,ticks=spawn_session(argv,spawn=spawn,cwd=REPO,env={**clean_environment(),**inherited},
+                pass_fds=descriptors,stdout=out,stderr=subprocess.STDOUT if merge_stderr else err)
             if after_spawn is not None:after_spawn(child)
             _check_cancellation(cancellation)
             while os.waitid(os.P_PID,child.pid,os.WEXITED|os.WNOHANG|os.WNOWAIT)is None:

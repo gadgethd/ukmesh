@@ -14,6 +14,7 @@ import unittest
 from unittest.mock import patch
 
 import startup_readiness as r
+from owned_process import session_members
 import target_safety as safety
 from transition_protocol import new_intent
 from test_target_protocol import records
@@ -225,7 +226,7 @@ class OwnedProbeProcesses(unittest.TestCase):
                 self.assertTrue(marker.exists());raise OSError('injected evidence write failure')
             try:
                 with self.assertRaisesRegex(OSError,'evidence'):r._run([sys.executable,'-c',code,str(marker)],time.monotonic()+5,after_spawn=fail)
-                self.assertIsNotNone(seen[0].returncode);self.assertEqual(r._members(seen[0].pid),[]);self.assertIsNone(foreign.poll())
+                self.assertIsNotNone(seen[0].returncode);self.assertEqual(session_members(seen[0].pid),[]);self.assertIsNone(foreign.poll())
             finally:foreign.kill();foreign.wait()
     def test_first_cancel_during_successful_probe_cleanup_still_reaps_and_fails(self):
         original=r._settle
@@ -238,7 +239,7 @@ class OwnedProbeProcesses(unittest.TestCase):
                 return {'ready':True}
             with self.subTest(signal=sig),patch.object(r,'_settle',side_effect=settle),self.assertRaises(InterruptedError):
                 r.wait_running_consumers(lambda *a,**k:snapshot(),snapshot(),clock=clock,sleep=clock.sleep,probe_fn=probe,save=lambda value:saved.append(deepcopy(value)))
-            self.assertIsNotNone(children[0].returncode);self.assertEqual(r._members(children[0].pid),[])
+            self.assertIsNotNone(children[0].returncode);self.assertEqual(session_members(children[0].pid),[])
             self.assertFalse(saved[-1]['passed']);self.assertEqual(saved[-1]['error'],'InterruptedError')
     def test_term_in_spawn_identity_window_is_delivered_after_proof_and_reaps(self):
         children=[]
@@ -248,7 +249,7 @@ class OwnedProbeProcesses(unittest.TestCase):
         old=signal.signal(signal.SIGTERM,interrupted)
         try:
             with self.assertRaises(InterruptedError):r._run([sys.executable,'-c','import time;time.sleep(20)'],time.monotonic()+5,spawn=spawn)
-            self.assertIsNotNone(children[0].returncode);self.assertEqual(r._members(children[0].pid),[])
+            self.assertIsNotNone(children[0].returncode);self.assertEqual(session_members(children[0].pid),[])
         finally:signal.signal(signal.SIGTERM,old)
 
 

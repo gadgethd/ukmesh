@@ -88,6 +88,20 @@ bash scripts/dev-all.sh qualify inventory
 bash scripts/dev-all.sh qualify smoke
 ```
 
+Use the guarded session for an owned lookup fixture and a single workload.
+Matched 1× and 10× phases can share the evidence directory. Each phase writes
+its own restoration receipt under `fixture-sessions/`.
+
+```sh
+python3 scripts/full-dev/qualification/fixture_session.py \
+  <fixture-token> <evidence-directory> reads --paired --acceptance-profile mqtt-first
+```
+
+An interrupt stops the workload and waits for its owned processes before
+restoring the original stores. During startup, cancellation waits for the
+pending target operation to settle. If startup repeatedly fails, the receipt
+identifies the retained fixture whose canonical start needs to resume.
+
 The executable service inventory and native work oracles must agree with the
 resolved configurations. A running process or HTTP 200 alone does not establish
 completed work. Missing, skipped, stale or mismatched evidence prevents a clean

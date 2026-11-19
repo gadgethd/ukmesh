@@ -286,17 +286,29 @@ class HTTPReaderOwnership(unittest.TestCase):
         calls=[]
         def fake(args,**kwargs):
             calls.append(args)
-            if args[0]=='inspect':return subprocess.CompletedProcess(args,0,json.dumps([self.backend()]).encode(),b'')
+            if args[0] == 'inspect':
+                item = self.backend() if len(calls) == 1 else {
+                    'Id': 'foreign', 'Name': '/foreign', 'Config': {'Labels': {}}, 'Mounts': []}
+                return subprocess.CompletedProcess(args, 0, json.dumps([item]).encode(), b'')
+            if args[0] == 'ps':
+                return subprocess.CompletedProcess(args, 0, b'foreign\n', b'')
             raise subprocess.CalledProcessError(1,args)
         with tempfile.TemporaryDirectory() as directory,patch.object(read_transport,'docker',fake):
             with self.assertRaises(subprocess.CalledProcessError):read_transport.start_reader(Path(directory))
-        self.assertEqual([call[0] for call in calls],['inspect','run'])
+        self.assertEqual([call[0] for call in calls], ['inspect', 'run', 'ps', 'inspect'])
 
     def test_wrong_cleanup_label_never_authorizes_deletion(self):
-        item={'Name':'/ukmesh-owned-http-reader-owned','Config':{'Labels':{}}}
-        with patch.object(read_transport,'docker',return_value=subprocess.CompletedProcess([],0,json.dumps([item]).encode(),b'')) as docker:
-            with self.assertRaisesRegex(ValueError,'ownership marker'):read_transport.stop_reader('ukmesh-owned-http-reader-owned')
-            self.assertEqual(docker.call_count,1)
+        name = 'ukmesh-owned-http-reader-2468abcde123'
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            common.write_json(run / 'http-reader/owner.json', {'name': name, 'started': True})
+            item = {'Id': 'exact-id', 'Name': '/' + name, 'Config': {'Labels': {}}, 'Mounts': []}
+            with patch.object(read_transport, 'docker', side_effect=[
+                    subprocess.CompletedProcess([], 0, b'exact-id', b''),
+                    subprocess.CompletedProcess([], 0, json.dumps([item]).encode(), b'')]) as docker:
+                with self.assertRaisesRegex(ValueError, 'ownership differs'):
+                    read_transport.recover_reader(run)
+                self.assertEqual(docker.call_count, 2)
 
     def test_stopped_backend_is_not_a_client_namespace(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(read_transport,'docker',return_value=
@@ -305,24 +317,30 @@ class HTTPReaderOwnership(unittest.TestCase):
             self.assertEqual(docker.call_count,1)
 
     def test_missing_alias_cannot_keep_a_proven_owned_helper_resident(self):
-        name='ukmesh-owned-http-reader-alias-test'
-        item={'Name':'/'+name,'Config':{'Labels':{'ukmesh.owned-http-reader':name,
-              'ukmesh.http-reader.alias':'/not-owned','ukmesh.http-reader.directory':'/private-run'}}}
-        def fake(args,**kwargs):
-            return subprocess.CompletedProcess(args,0,json.dumps([item]).encode() if args[0]=='inspect' else b'',b'')
-        with patch.object(read_transport,'docker',side_effect=fake) as docker:
-            with self.assertRaisesRegex(ValueError,'reader was removed'):read_transport.stop_reader(name)
-            self.assertEqual(docker.call_args_list[-1].args[0],['rm','-f',name])
+        name = 'ukmesh-owned-http-reader-13579aceb246'
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            path = run / 'http-reader'
+            common.write_json(path / 'owner.json', {'name': name, 'started': True})
+            item = {'Id': 'exact-id', 'Name': '/' + name, 'Config': {'Labels': {
+                'ukmesh.owned-http-reader': name, 'ukmesh.http-reader.alias': str(Path(tempfile.gettempdir()) / name),
+                'ukmesh.http-reader.directory': str(path)}}, 'Mounts': [{'Source':str(path), 'Destination':'/reader'}]}
+            replies = [b'exact-id', json.dumps([item]).encode(), b'']
+            with patch.object(read_transport, 'docker',
+                              side_effect=[subprocess.CompletedProcess([], 0, reply, b'') for reply in replies]) as docker:
+                with self.assertRaisesRegex(ValueError, 'reader was removed'):
+                    read_transport.recover_reader(run, require_alias=True)
+                self.assertEqual(docker.call_args.args[0], ['rm', '-f', 'exact-id'])
 
     def test_reader_is_removed_when_companion_finish_fails_after_partial_start(self):
         worker=Mock();worker.is_alive.return_value=False
         health_worker=Mock();health_worker.is_alive.return_value=False
         companions=Mock();companions.finish.side_effect=RuntimeError('reader failed')
         stop=Mock()
-        with patch.object(soak,'stop_reader') as remove:
+        with patch.object(soak,'recover_reader') as remove:
             with self.assertRaisesRegex(RuntimeError,'reader failed'):
                 soak.stop_measurements(worker,health_worker,companions,stop,'owned-reader')
-            remove.assert_called_once_with('owned-reader');stop.set.assert_called_once()
+            remove.assert_called_once_with('owned-reader', require_alias=True);stop.set.assert_called_once()
         worker.join.assert_not_called();health_worker.join.assert_not_called()
 
 
@@ -502,6 +520,20 @@ class ExecutableInventory(unittest.TestCase):
 
 
 class ResourceAcceptance(unittest.TestCase):
+    def test_lookup_counters_keep_only_completed_role_statements(self):
+        query = {**dict.fromkeys(resources.LOOKUP_COUNTERS, 0), 'shape': 'short-search'}
+        generation = {'stats_reset': 'original', 'deallocations': 0}
+        first = {**generation, 'statements': {'123': {**query, 'calls': 2, 'total_exec_time': 4.5},
+                                             '456': query}}
+        second = {**generation, 'statements': {'123': {**query, 'calls': 3, 'total_exec_time': 12.5},
+                                              '456': query}}
+        self.assertEqual(resources.lookup_query_deltas(first, second),
+                         {'statements': {'123': {**query, 'calls': 1, 'total_exec_time': 8.0}},
+                          'scope': 'selected database and HTTP role, including other sessions and native preparation'})
+        self.assertIn('error', resources.lookup_query_deltas(second, first))
+        self.assertIn('error', resources.lookup_query_deltas(first, {**second, 'deallocations': 1}))
+        self.assertIn('error', resources.lookup_query_deltas(first, {**second, 'statements': {}}))
+
     def sample_workload(self,duration,finished_at):
         test_clock={'now':0.0};ready_at=[]
         base=resource_rows()[0]

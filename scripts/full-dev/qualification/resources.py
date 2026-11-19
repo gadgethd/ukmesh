@@ -7,10 +7,11 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import threading
 import time
 
-from common import REPO, docker, service_manifest, sql, utc_now, write_json
+from common import MIN_FREE_BYTES, REPO, docker, service_manifest, sql, utc_now, write_json
 from context import phase_context
 from fixtures import current_targets
 
@@ -93,6 +94,7 @@ def host_sample() -> dict:
             "swap_in_bytes_total": vm["pswpin"] * page_size,
             "swap_out_bytes_total": vm["pswpout"] * page_size,
             "disk_free_bytes": shutil.disk_usage(REPO).free,
+            "disk_device": REPO.stat().st_dev,
             "load_average": list(os.getloadavg()),
             "cpu_ticks": [int(value) for value in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]}
 
@@ -186,9 +188,12 @@ def sqlite_sizes(directory: Path) -> dict:
     sizes = {}
     for label, filename in (("database_bytes", "analyzer.db"), ("wal_bytes", "analyzer.db-wal")):
         try:
-            sizes[label] = (directory / filename).stat().st_size
+            info = (directory / filename).stat()
+            sizes[label] = info.st_size
+            sizes[label.removesuffix("_bytes") + "_allocated_bytes"] = info.st_blocks * 512
         except FileNotFoundError:
             sizes[label] = 0
+            sizes[label.removesuffix("_bytes") + "_allocated_bytes"] = 0
     return sizes
 
 
@@ -229,6 +234,9 @@ def database_samples(targets: dict) -> list[dict]:
                      AND state IS DISTINCT FROM 'idle' AND wait_event_type IS NOT NULL
                    GROUP BY wait_event_type) waits),
           'deadlocks', (SELECT deadlocks FROM pg_stat_database WHERE datname=current_database()),
+          'database_bytes', pg_database_size(current_database()),
+          'wal_file_bytes', (SELECT coalesce(sum(size),0) FROM pg_ls_waldir()),
+          'temp_file_bytes', (SELECT coalesce(sum(size),0) FROM pg_ls_tmpdir()),
           'temp_bytes', (SELECT temp_bytes FROM pg_stat_database WHERE datname=current_database()),
           'wal_bytes_position', pg_wal_lsn_diff(pg_current_wal_lsn(),'0/0'),
           'checkpoints_timed', (SELECT checkpoints_timed FROM pg_stat_bgwriter),
@@ -238,6 +246,50 @@ def database_samples(targets: dict) -> list[dict]:
           'fsync', current_setting('fsync'), 'synchronous_commit', current_setting('synchronous_commit'))""")
         records.append({"name": label, **json.loads(value)})
     return records
+
+
+LOOKUP_COUNTERS = ('calls', 'total_exec_time', 'shared_blks_hit', 'shared_blks_read',
+                   'temp_blks_read', 'temp_blks_written')
+
+
+def lookup_query_counters(database: str) -> dict:
+    """Observe only the selected fixture's application-role map and search SQL."""
+    try:
+        return json.loads(sql('ukmesh-sample-db', database, 'meshcore', """SELECT json_build_object(
+          'stats_reset', info.stats_reset, 'deallocations', info.dealloc,
+          'statements', (SELECT coalesce(jsonb_object_agg(queryid::text, jsonb_build_object(
+            'shape', CASE WHEN strpos(query, 'core.node_literal_search_text') > 0 THEN 'indexed-search'
+                          WHEN strpos(query, 'STRPOS(LOWER(COALESCE(n.name') > 0 THEN 'short-search'
+                          ELSE 'map-or-cursor' END,
+            'calls', calls, 'total_exec_time', total_exec_time, 'shared_blks_hit', shared_blks_hit,
+            'shared_blks_read', shared_blks_read, 'temp_blks_read', temp_blks_read,
+            'temp_blks_written', temp_blks_written)), '{}'::jsonb)
+          FROM pg_stat_statements
+          WHERE dbid = (SELECT oid FROM pg_database WHERE datname = current_database())
+            AND userid = (SELECT oid FROM pg_roles WHERE rolname = 'meshcore_api')
+            AND toplevel AND query LIKE '/* ukmesh:node-map */ %'))
+          FROM pg_stat_statements_info info""", timeout=5))
+    except (subprocess.SubprocessError, ValueError, OSError) as error:
+        return {'error': type(error).__name__}
+
+
+def lookup_query_deltas(before: dict, after: dict) -> dict:
+    if 'error' in before or 'error' in after:
+        return {'before_error': before.get('error'), 'after_error': after.get('error')}
+    if any(before[key] != after[key] for key in ('stats_reset', 'deallocations')):
+        return {'error': 'PostgreSQL statement counters changed generation'}
+    if not before['statements'].keys() <= after['statements'].keys():
+        return {'error': 'a tracked PostgreSQL statement disappeared'}
+    rows = {}
+    for query_id, counters in after['statements'].items():
+        prior = before['statements'].get(query_id, {})
+        delta = {key: counters[key] - prior.get(key, 0) for key in LOOKUP_COUNTERS}
+        if any(value < 0 for value in delta.values()):
+            return {'error': 'PostgreSQL statement counters decreased'}
+        if delta['calls']:
+            rows[query_id] = {'shape': counters['shape'], **delta}
+    return {'scope': 'selected database and HTTP role, including other sessions and native preparation',
+            'statements': rows}
 
 
 def evaluate(samples: list[dict], *, duration: float, warmup: float,
@@ -287,7 +339,7 @@ def evaluate(samples: list[dict], *, duration: float, warmup: float,
     deadlocks = any(item["deadlocks"] > database_start[item["name"]]["deadlocks"] for item in database_rows)
     checks = {"headroom": headroom >= .95, "runtime_memory": memory_peak <= 3072 * MIB,
               "swap_growth": swap_growth <= 128 * MIB, "swap_churn": not sustained_swap,
-              "stable_containers": not unstable, "disk_headroom": disk_min >= 10 * 1024 ** 3,
+              "stable_containers": not unstable, "disk_headroom": disk_min >= MIN_FREE_BYTES,
               "complete_duration": actual_duration >= duration * .98,
               "complete_resident_coverage": complete_coverage,
               "healthy_resident_services": healthy_coverage,
