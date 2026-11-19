@@ -8,10 +8,11 @@ import { initSpamDetector } from './spamDetector.js';
 import { installDurableMqttIntake } from './durableIntake.js';
 import { createDeliveryProbe, type DeliveryHealth } from './deliveryProbe.js';
 import { deliveryProbeTopics } from './deliveryProbeTopics.js';
+import { createBrokerBacklogMonitor } from './brokerBacklog.js';
 import { connectPersistentMqtt, subscribePersistentTopics } from './persistentClient.js';
 import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
-import { mqttIntakeQueueWait, mqttWireAckDuration, mqttIngestQueueDepth, mqttIngestOutcomesTotal, mqttDeliveryProbeEnabled, mqttDeliveryProbeHealthy, mqttDeliveryProbeLastSuccess, mqttDeliveryProbeRecoveries } from '../metrics/ingest.js';
+import { mqttIntakeDeliveriesTotal, mqttIntakeQueueWait, mqttWireAckDuration, mqttIngestQueueDepth, mqttIngestOutcomesTotal, mqttDeliveryProbeEnabled, mqttDeliveryProbeHealthy, mqttDeliveryProbeLastSuccess, mqttDeliveryProbeRecoveries } from '../metrics/ingest.js';
 
 export type MqttRuntimeStatus = {
   state: 'starting' | 'connected' | 'disconnected' | 'reconnecting' | 'error';
@@ -121,6 +122,9 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
       mqttDeliveryProbeEnabled.set(1);
       let previousRecoveries = 0;
       const probeTopic = probeTopics.topic;
+      const brokerBacklog = process.env['MQTT_BROKER_BACKLOG_MONITOR'] === 'true'
+        ? createBrokerBacklogMonitor(client)
+        : undefined;
       const probe = createDeliveryProbe({
         topic: probeTopic,
         publish: (nonce) => {
@@ -146,13 +150,17 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
       probeTimer.unref();
       deliveryProbes.push({ probe, timer: probeTimer });
       durableIntakes.push(installDurableMqttIntake(client,
-        (packet) => probe.accept(packet) ? Promise.resolve() : processor.process(packet),
+        (packet) => probe.accept(packet) || brokerBacklog?.accept(packet) ? Promise.resolve() : processor.process(packet),
         (error) => reportMqttIngestFailure(client, error),
         {
           ...MQTT_INTAKE_CONFIG,
           depth: (count) => mqttIngestQueueDepth.set(count),
           observeQueueWait: (seconds) => mqttIntakeQueueWait.observe(seconds),
-          observeWireAck: (seconds) => mqttWireAckDuration.observe(seconds),
+          observeAdmission: qos => mqttIntakeDeliveriesTotal.inc({ kind: qos === 1 ? 'qos1' : 'qos0' }),
+          observeWireAck: (seconds, packet) => {
+            mqttWireAckDuration.observe(seconds);
+            if (packet.topic !== probeTopic) probe.noteDelivery();
+          },
         },
       ));
 
@@ -169,7 +177,10 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         });
         if (probeTopics.subscription) topicFilters.push(probeTopics.subscription);
         subscribePersistentTopics(client, topicFilters, {
-          ready: probe.connect,
+          ready: () => {
+            probe.connect();
+            brokerBacklog?.subscribe();
+          },
           failed: error => reportMqttIngestFailure(client, error),
           subscribed: topic => console.log(`[mqtt] subscribed to ${topic}${connectionLabel}`),
         });

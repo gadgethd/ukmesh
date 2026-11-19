@@ -15,6 +15,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"sync"
@@ -37,21 +38,23 @@ type gpuJobResult struct {
 	err     string
 }
 
-type jobProgress struct{ done, total int }
+type pendingGPUJob struct {
+	id          string
+	resultBytes int
+	result      chan gpuJobResult
+	done, total int
+	hasProgress bool
+}
 
 type gpuBroker struct {
-	mu       sync.Mutex
-	conn     *websocket.Conn
-	writeMu  sync.Mutex // serializes writes to conn, separate from mu so a slow write doesn't block status/pending bookkeeping
-	pending  map[string]chan gpuJobResult
-	progress map[string]jobProgress // updated as Progress frames arrive, read by /gpu/progress; cleared once a job is delivered
-	hello    gpujob.Hello           // zero value = unknown, either never reported or the current worker predates Hello — see setHello
+	mu      sync.Mutex
+	conn    *websocket.Conn
+	writeMu sync.Mutex // serializes writes to conn without blocking status reads
+	pending *pendingGPUJob
+	hello   gpujob.Hello // zero value = unknown
 }
 
-var broker = &gpuBroker{
-	pending:  make(map[string]chan gpuJobResult),
-	progress: make(map[string]jobProgress),
-}
+var broker = &gpuBroker{}
 
 // workerReadTimeout is how long the broker will wait for ANY frame from a
 // connected worker before treating the connection as dead. Comfortably
@@ -62,6 +65,7 @@ var broker = &gpuBroker{
 // connection. The worker reconnects on its own, so a false positive here
 // costs one reconnect, not a lost worker.
 const workerReadTimeout = 6 * time.Minute
+const workerControlLimit = 16 << 10
 
 // Default is generous (30 min), not a few seconds' safety margin: a large
 // Precision-tier job on a worker with a cold DEM tile cache can spend
@@ -98,21 +102,29 @@ func (b *gpuBroker) connected() bool {
 // falls back to CPU. Seen in production: a worker reconnected at 03:25 and
 // was still being reported disconnected five hours later, with a whole
 // Precision tier running on CPU at roughly 13x the wall-clock cost.
-func (b *gpuBroker) clearConnIf(c *websocket.Conn) bool {
+func (b *gpuBroker) clearConnIf(c *websocket.Conn, reason string) bool {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.conn != c {
 		return false // a newer connection already took over — leave it alone
 	}
+	b.clearConnLocked(reason)
+	return true
+}
+
+func (b *gpuBroker) clearConnLocked(reason string) {
 	b.conn = nil
 	b.hello = gpujob.Hello{}
-	return true
+	b.finishPendingLocked(gpuJobResult{err: reason})
 }
 
 func (b *gpuBroker) setConn(c *websocket.Conn) (old *websocket.Conn) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	old = b.conn
+	if old != nil && old != c {
+		b.finishPendingLocked(gpuJobResult{err: "worker connection replaced"})
+	}
 	b.conn = c
 	// A new (or no) connection means whatever was previously reported is no
 	// longer trustworthy — a replacement worker could be a different box
@@ -127,204 +139,249 @@ func (b *gpuBroker) setConn(c *websocket.Conn) (old *websocket.Conn) {
 // heartbeat — read by handleGPUStatus (and from there by compute.Engine's
 // chunk-budget auto-sizing) and by the analytics endpoint's hardware panel
 // and memory-sample collection.
-func (b *gpuBroker) setHello(h gpujob.Hello) {
+func (b *gpuBroker) setHello(c *websocket.Conn, h gpujob.Hello) {
 	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn != c {
+		return
+	}
 	b.hello = h
-	b.mu.Unlock()
+	recordGPUWorkerHardware(h)
 }
 
 func (b *gpuBroker) getHello() gpujob.Hello {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.hello
+	h, _ := b.workerStatus()
+	return h
 }
 
-func (b *gpuBroker) getAvailableBytes() uint64 {
+func (b *gpuBroker) workerStatus() (gpujob.Hello, bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.hello.AvailableBytes
+	return b.hello, b.conn != nil
 }
 
-// failAllPending is called when the worker connection is lost — any job
-// still awaiting a result from it needs to fail now rather than have
-// /gpu/submit hang until its own timeout, since there's no longer any
-// chance of an answer arriving.
-func (b *gpuBroker) failAllPending(reason string) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	for id, ch := range b.pending {
-		ch <- gpuJobResult{err: reason}
-		delete(b.pending, id)
-		delete(b.progress, id)
+func (b *gpuBroker) finishPendingLocked(result gpuJobResult) {
+	if b.pending != nil {
+		b.pending.result <- result
+		b.pending = nil
 	}
 }
 
-func (b *gpuBroker) deliver(id string, margins []byte, errMsg string) {
+func (b *gpuBroker) pendingFor(c *websocket.Conn, id string) *pendingGPUJob {
 	b.mu.Lock()
-	ch, ok := b.pending[id]
-	if ok {
-		delete(b.pending, id)
+	defer b.mu.Unlock()
+	if b.conn == c && b.pending != nil && b.pending.id == id {
+		return b.pending
 	}
-	delete(b.progress, id)
-	b.mu.Unlock()
-	if ok {
-		ch <- gpuJobResult{margins: margins, err: errMsg}
+	return nil
+}
+
+func (b *gpuBroker) deliver(c *websocket.Conn, pending *pendingGPUJob, result gpuJobResult) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if b.conn == c && b.pending == pending {
+		b.finishPendingLocked(result)
 	}
 }
 
 // setProgress records the latest (done, total) reported for an in-flight
 // job — see handleGPUProgress, polled by internal/compute's remote-dispatch
 // path while it waits on /gpu/submit.
-func (b *gpuBroker) setProgress(id string, done, total int) {
+func (b *gpuBroker) setProgress(c *websocket.Conn, p gpujob.Progress) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	// Only meaningful for a job this broker actually still considers
-	// in-flight — a stray/late Progress frame for an already-delivered (or
-	// never-submitted) job ID shouldn't resurrect a map entry nothing will
-	// ever clean up.
-	if _, ok := b.pending[id]; ok {
-		b.progress[id] = jobProgress{done: done, total: total}
+	if b.conn == c && b.pending != nil && b.pending.id == p.ID {
+		b.pending.done = p.Done
+		b.pending.total = p.Total
+		b.pending.hasProgress = true
 	}
 }
 
 func (b *gpuBroker) getProgress(id string) (done, total int, ok bool) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	p, ok := b.progress[id]
-	return p.done, p.total, ok
+	if b.pending == nil || b.pending.id != id {
+		return 0, 0, false
+	}
+	return b.pending.done, b.pending.total, b.pending.hasProgress
 }
 
 // submit sends job to the connected worker and blocks until a result
 // arrives or timeout elapses. Returns an error (never blocks forever) if
 // no worker is connected, the send fails, or nothing comes back in time.
 func (b *gpuBroker) submit(job gpujob.Job, timeout time.Duration) ([]byte, error) {
+	const maxInt = int(^uint(0) >> 1)
+	if job.ID == "" || job.ImageWidth <= 0 || job.ImageHeight <= 0 || job.ImageWidth > maxInt/4/job.ImageHeight {
+		return nil, fmt.Errorf("invalid GPU job ID or raster dimensions")
+	}
+	body, err := json.Marshal(job)
+	if err != nil {
+		return nil, fmt.Errorf("encoding job: %w", err)
+	}
+
 	b.mu.Lock()
 	conn := b.conn
 	if conn == nil {
 		b.mu.Unlock()
 		return nil, fmt.Errorf("no GPU worker connected")
 	}
-	resultCh := make(chan gpuJobResult, 1)
-	b.pending[job.ID] = resultCh
+	if b.pending != nil {
+		b.mu.Unlock()
+		return nil, fmt.Errorf("remote GPU worker is busy")
+	}
+	pending := &pendingGPUJob{
+		id:          job.ID,
+		resultBytes: 4 * job.ImageWidth * job.ImageHeight,
+		result:      make(chan gpuJobResult, 1),
+	}
+	b.pending = pending
 	b.mu.Unlock()
 
-	body, err := json.Marshal(job)
-	if err != nil {
-		b.mu.Lock()
-		delete(b.pending, job.ID)
-		b.mu.Unlock()
-		return nil, fmt.Errorf("encoding job: %w", err)
-	}
-
 	b.writeMu.Lock()
+	_ = conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 	writeErr := conn.WriteMessage(websocket.TextMessage, body)
+	_ = conn.SetWriteDeadline(time.Time{})
 	b.writeMu.Unlock()
 	if writeErr != nil {
-		b.mu.Lock()
-		delete(b.pending, job.ID)
-		b.mu.Unlock()
+		b.clearConnIf(conn, "worker write failed")
+		_ = conn.Close()
 		return nil, fmt.Errorf("sending job to worker: %w", writeErr)
 	}
 
+	var result gpuJobResult
 	select {
-	case res := <-resultCh:
-		if res.err != "" {
-			return nil, fmt.Errorf("worker reported: %s", res.err)
-		}
-		return res.margins, nil
+	case result = <-pending.result:
 	case <-time.After(timeout):
+		// The worker has no cancellation message. End this connection rather
+		// than queue new work behind a timed out job on the same socket.
 		b.mu.Lock()
-		delete(b.pending, job.ID)
+		if b.conn == conn && b.pending == pending {
+			b.clearConnLocked("worker job timed out")
+			b.mu.Unlock()
+			_ = conn.Close()
+			return nil, fmt.Errorf("timed out after %s waiting for worker", timeout)
+		}
 		b.mu.Unlock()
-		return nil, fmt.Errorf("timed out after %s waiting for worker", timeout)
+		result = <-pending.result // a result or connection teardown won the race
+	}
+	if result.err != "" {
+		return nil, fmt.Errorf("worker reported: %s", result.err)
+	}
+	return result.margins, nil
+}
+
+func (b *gpuBroker) readLoop(conn *websocket.Conn) {
+	defer conn.Close()
+	err := b.readWorkerMessages(conn)
+	if b.clearConnIf(conn, fmt.Sprintf("worker disconnected: %v", err)) {
+		log.Printf("gpubroker: worker disconnected: %v", err)
 	}
 }
 
-// readLoop owns one worker connection for its lifetime. Two kinds of JSON
-// text frame arrive: zero or more Progress frames while a job is still
-// computing, then exactly one terminal Result frame, immediately followed
-// (only if Result.Error is empty) by one binary frame of raw little-endian
-// float32 margins. Strict ordering is safe here specifically because only
-// one job is ever in flight at a time (see the package comment).
-func (b *gpuBroker) readLoop(conn *websocket.Conn) {
-	defer conn.Close()
-	// The worker sends a Hello heartbeat every helloInterval (2 min) for
-	// the life of the connection, plus progress frames while a job is
-	// running — so silence for well past that means this connection is
-	// dead even if the OS hasn't worked that out yet. Without a deadline a
-	// half-open socket can sit here for hours, which is what let the
-	// clobber described on clearConnIf go unnoticed for so long. Refreshed
-	// after every frame below.
-	_ = conn.SetReadDeadline(time.Now().Add(workerReadTimeout))
+func (b *gpuBroker) readWorkerMessages(conn *websocket.Conn) error {
 	conn.SetPongHandler(func(string) error {
 		return conn.SetReadDeadline(time.Now().Add(workerReadTimeout))
 	})
+	var awaiting *pendingGPUJob
+	var sawInterleavedHello bool
 	for {
-		msgType, data, err := conn.ReadMessage()
-		if err != nil {
-			// Only tear down the shared state if this connection is still
-			// the registered one — see clearConnIf.
-			if b.clearConnIf(conn) {
-				log.Printf("gpubroker: worker disconnected: %v", err)
-				b.failAllPending(fmt.Sprintf("worker disconnected: %v", err))
-			} else {
-				log.Printf("gpubroker: stale worker connection closed (%v) — a newer one is already registered, leaving it alone", err)
-			}
-			return
+		limit := workerControlLimit
+		if awaiting != nil {
+			limit = max(limit, awaiting.resultBytes)
 		}
-		_ = conn.SetReadDeadline(time.Now().Add(workerReadTimeout))
-		if msgType != websocket.TextMessage {
+		conn.SetReadLimit(int64(limit))
+		if err := conn.SetReadDeadline(time.Now().Add(workerReadTimeout)); err != nil {
+			return err
+		}
+		msgType, message, err := conn.NextReader()
+		if err != nil {
+			return err
+		}
+		if awaiting != nil && msgType == websocket.BinaryMessage {
+			if b.pendingFor(conn, awaiting.id) != awaiting {
+				return fmt.Errorf("no pending job for worker result")
+			}
+			margins, err := readMargins(message, awaiting.resultBytes)
+			if err != nil {
+				return err
+			}
+			b.deliver(conn, awaiting, gpuJobResult{margins: margins})
+			awaiting = nil
 			continue
 		}
+		if msgType != websocket.TextMessage {
+			return fmt.Errorf("unexpected binary frame from GPU worker")
+		}
 
+		data, err := io.ReadAll(io.LimitReader(message, workerControlLimit+1))
+		if err != nil {
+			return err
+		}
+		if len(data) > workerControlLimit {
+			return fmt.Errorf("GPU worker control message exceeds %d bytes", workerControlLimit)
+		}
 		var head struct {
 			Kind string `json:"kind"`
 		}
 		if err := json.Unmarshal(data, &head); err != nil {
-			log.Printf("gpubroker: malformed message from worker: %v", err)
-			continue
+			return fmt.Errorf("malformed GPU worker control message: %w", err)
+		}
+		if awaiting != nil {
+			// Existing workers serialize their heartbeat writes with each
+			// result message separately, so one Hello can arrive between them.
+			if head.Kind != gpujob.KindHello || sawInterleavedHello {
+				return fmt.Errorf("expected binary GPU margins after result")
+			}
+			sawInterleavedHello = true
 		}
 
-		if head.Kind == gpujob.KindHello {
+		switch head.Kind {
+		case gpujob.KindHello:
 			var h gpujob.Hello
 			if err := json.Unmarshal(data, &h); err != nil {
-				log.Printf("gpubroker: malformed hello frame from worker: %v", err)
-				continue
+				return fmt.Errorf("malformed GPU worker hello: %w", err)
 			}
-			b.setHello(h)
-			recordGPUWorkerHardware(h)
-			continue
-		}
-
-		if head.Kind == gpujob.KindProgress {
+			b.setHello(conn, h)
+		case gpujob.KindProgress:
 			var p gpujob.Progress
 			if err := json.Unmarshal(data, &p); err != nil {
-				log.Printf("gpubroker: malformed progress frame from worker: %v", err)
+				return fmt.Errorf("malformed GPU worker progress: %w", err)
+			}
+			b.setProgress(conn, p)
+		case gpujob.KindResult, "":
+			var result gpujob.Result
+			if err := json.Unmarshal(data, &result); err != nil {
+				return fmt.Errorf("malformed GPU worker result: %w", err)
+			}
+			pending := b.pendingFor(conn, result.ID)
+			if pending == nil {
+				return fmt.Errorf("no pending job for worker result")
+			}
+			if result.Error != "" {
+				b.deliver(conn, pending, gpuJobResult{err: result.Error})
 				continue
 			}
-			b.setProgress(p.ID, p.Done, p.Total)
-			continue
+			awaiting, sawInterleavedHello = pending, false
+		default:
+			return fmt.Errorf("unknown GPU worker message kind")
 		}
-
-		var result gpujob.Result
-		if err := json.Unmarshal(data, &result); err != nil {
-			log.Printf("gpubroker: malformed result from worker: %v", err)
-			continue
-		}
-		if result.Error != "" {
-			b.deliver(result.ID, nil, result.Error)
-			continue
-		}
-		_, margins, err := conn.ReadMessage()
-		if err != nil {
-			if old := b.setConn(nil); old == conn {
-				log.Printf("gpubroker: worker disconnected mid-result: %v", err)
-			}
-			b.failAllPending(fmt.Sprintf("worker disconnected mid-result: %v", err))
-			return
-		}
-		b.deliver(result.ID, margins, "")
 	}
+}
+
+func readMargins(message io.Reader, expected int) ([]byte, error) {
+	margins := make([]byte, expected)
+	if _, err := io.ReadFull(message, margins); err != nil {
+		return nil, fmt.Errorf("reading %d GPU margin bytes: %w", expected, err)
+	}
+	var extra [1]byte
+	_, err := io.ReadFull(message, extra[:])
+	if err == nil {
+		return nil, fmt.Errorf("GPU margin result exceeds %d bytes", expected)
+	}
+	if err != io.EOF {
+		return nil, fmt.Errorf("checking end of GPU margin result: %w", err)
+	}
+	return margins, nil
 }
 
 // handleGPUWorkerConnect upgrades a WebSocket connection from a remote GPU
@@ -409,10 +466,10 @@ func handleGPUProgress(w http.ResponseWriter, r *http.Request) {
 // compute.Engine's chunk-budget auto-sizing, the rest by the analytics
 // endpoint's hardware panel.
 func handleGPUStatus(w http.ResponseWriter, r *http.Request) {
-	h := broker.getHello()
+	h, connected := broker.workerStatus()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]any{
-		"worker_connected": broker.connected(),
+		"worker_connected": connected,
 		"available_bytes":  h.AvailableBytes,
 		"total_bytes":      h.TotalBytes,
 		"cpu_model":        h.CPUModel,

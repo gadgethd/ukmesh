@@ -19,6 +19,10 @@ QUEUES=('meshcore_mqtt_ingest_active','meshcore_mqtt_ingest_queue_depth',
 SECONDS=45
 
 
+class IntakeNotQuiescentError(ValueError):
+    """A live owner still reports pending intake work."""
+
+
 def stable_identities(snapshot):
     return {name:{key:row.get(key) for key in ('container_id','started_at','pid','image_id','running','refs')}
             for name,row in snapshot['consumers'].items() if row['refs']}
@@ -28,8 +32,13 @@ class IntakeProof:
     def __init__(self,started,required):
         self.started=started;self.required=set(required);self.first={};self.last={};self.core_times=set();self.reads=0
 
-    def add(self,observations):
+    def add(self,observations,*,allow_initial_pending=False):
         if set(observations)!=self.required:raise ValueError('all live intake owners must report; missing is not zero')
+        if allow_initial_pending and self.reads == 0 and all(
+                type(value.get('quiescent')) is bool for value in observations.values()):
+            pending = next((name for name, value in observations.items() if value['quiescent'] is False), None)
+            if pending is not None:
+                raise IntakeNotQuiescentError(pending + ' intake is not quiescent')
         for name,value in observations.items():
             if value.get('quiescent') is not True:raise ValueError(name+' intake is not quiescent')
             old=self.first.setdefault(name,value)
@@ -120,7 +129,7 @@ def observe(snapshot_reader,*,apps=read_apps,broker=broker_observation,clock=tim
     required={app for app,name in APPS.items() if initial['consumers'].get(name,{}).get('running') is True}
     tracker=IntakeProof(started_wall,required)
     # Fail missing/unsupported app state before creating even a clean observer client.
-    tracker.add(apps(initial,deadline))
+    tracker.add(apps(initial,deadline),allow_initial_pending=True)
     with ThreadPoolExecutor(max_workers=1) as worker:
         pending=worker.submit(broker,deadline)
         while True:

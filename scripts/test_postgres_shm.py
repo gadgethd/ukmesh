@@ -144,6 +144,59 @@ services:
             self.assertEqual(result.returncode, 1)
             self.assertIn("ERROR", result.stderr)
 
+    def test_extends_inherits_shm_and_rejects_unsafe_overrides(self):
+        self.compose()
+        for override in ("", "    shm_size: 64m\n", "    shm_size: !reset 1g\n", "    ipc: host\n"):
+            with self.subTest(override=override):
+                self.write("dev/compose.yml", """
+services:
+  local-db:
+    extends: {file: ../compose.yml, service: db}
+""" + override)
+                rows = CHECK.audit(self.root)["inventory"]
+                derived = next(row for row in rows if row["service"] == "local-db")
+                self.assertTrue(derived["postgres"])
+                self.assertEqual(derived["status"], "at risk" if override else "safe")
+
+    def test_extends_keeps_inherited_shm_mount_and_ipc(self):
+        self.compose(extra="    ipc: host\n    volumes: ['/tmp/manual:/dev/shm']\n")
+        self.write("derived.yml", """
+services:
+  intermediate:
+    extends: {file: compose.yml, service: db}
+  inherited:
+    extends: {service: intermediate}
+    volumes: [fixture:/var/lib/postgresql/data]
+  replaced:
+    extends: {service: intermediate}
+    ipc: private
+    volumes: !override [fixture:/var/lib/postgresql/data]
+""")
+        rows = {row["service"]: row for row in CHECK.audit(self.root)["inventory"]}
+        self.assertIn("/dev/shm mount masks", rows["inherited"]["reason"])
+        self.assertIn("IPC bypasses", rows["inherited"]["reason"])
+        self.assertEqual(rows["replaced"]["status"], "safe")
+
+    def test_nested_extends_resolves_paths_from_each_declaring_file(self):
+        self.write("shared/policy.yml", "services: {db: {image: 'postgres:17', shm_size: 1g}}")
+        self.write("stacks/layer.yml", "services: {middle: {extends: {file: ../shared/policy.yml, service: db}}}")
+        self.write("compose.yml", "services: {local: {extends: {file: stacks/layer.yml, service: middle}}}")
+        report = CHECK.audit(self.root)
+        self.assertEqual(report["errors"], [])
+        self.assertTrue(all(row["postgres"] and row["status"] == "safe" for row in report["inventory"]))
+
+    def test_extends_rejects_cycles_missing_refs_and_ignored_files(self):
+        self.compose()
+        self.write(".gitignore", "ignored.yml\n")
+        self.write("ignored.yml", "services: {db: {image: 'postgres:17', shm_size: 1g}}")
+        for reference in ("{service: child}", "{service: absent}",
+                          "{file: ignored.yml, service: db}",
+                          "{file: ../compose.yml, service: db}"):
+            with self.subTest(reference=reference):
+                self.write("derived.yml", f"services: {{child: {{extends: {reference}}}}}")
+                with self.assertRaisesRegex(ValueError, "circular extends|missing Git-visible"):
+                    CHECK.audit(self.root)
+
     def test_empty_inventory_is_an_error(self):
         self.assertIn("no PostgreSQL", CHECK.audit(self.root)["errors"][0])
 

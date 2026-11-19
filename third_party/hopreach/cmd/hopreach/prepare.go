@@ -142,10 +142,14 @@ func writeCronFile(yc yconfig.Config, configPath string) error {
 }
 
 func renderCronFile(yc yconfig.Config, configPath string) string {
-	return fmt.Sprintf(
+	content := fmt.Sprintf(
 		"HOPREACH_CONFIG=%s\n"+
 			"%s root /app/hopreach -scheduled >> /var/log/fetch.log 2>&1\n"+
 			"17 4 * * * root /app/hopreach-shareapi -prune >> /var/log/prune.log 2>&1\n",
 		configPath, yc.Schedule.Cron,
 	)
+	if yc.GPU.Mode == "remote" {
+		content += "*/5 * * * * root /app/hopreach -resume-remote >> /var/log/fetch.log 2>&1\n"
+	}
+	return content
 }

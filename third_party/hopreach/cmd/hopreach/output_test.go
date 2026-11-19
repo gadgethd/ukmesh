@@ -64,7 +64,7 @@ func TestPreviousCoverageSurvivesAcrossRuns(t *testing.T) {
 	dir := t.TempDir()
 	metaPath := filepath.Join(dir, "meta.json")
 
-	if got := previousCoverage(dir); got != nil {
+	if got := readPreviousMeta(dir).Coverage; got != nil {
 		t.Fatalf("expected nil for a genuine first run (no meta.json yet), got %+v", got)
 	}
 
@@ -75,7 +75,7 @@ func TestPreviousCoverageSurvivesAcrossRuns(t *testing.T) {
 	}
 
 	write(`not valid json`)
-	if got := previousCoverage(dir); got != nil {
+	if got := readPreviousMeta(dir).Coverage; got != nil {
 		t.Errorf("expected nil for unparseable meta.json, got %+v", got)
 	}
 
@@ -84,7 +84,7 @@ func TestPreviousCoverageSurvivesAcrossRuns(t *testing.T) {
 	// whatever tiles it named, since those tiles are real regardless of
 	// whether the run that made them ever finished.
 	write(`{"complete":false,"coverage":{"standard":{"tiles":[{"image":"coverage-0-0.png"}]}}}`)
-	got := previousCoverage(dir)
+	got := readPreviousMeta(dir).Coverage
 	if got == nil || got.Standard == nil {
 		t.Fatalf("expected a non-nil Standard coverage from an incomplete meta.json, got %+v", got)
 	}
@@ -146,7 +146,7 @@ func TestPreviousScopeCoverageSurvivesAcrossRuns(t *testing.T) {
 	dir := t.TempDir()
 	metaPath := filepath.Join(dir, "meta.json")
 
-	if got := previousScopeCoverage(dir); got != nil {
+	if got := readPreviousMeta(dir).ScopeCoverage; got != nil {
 		t.Fatalf("expected nil for a genuine first run (no meta.json yet), got %+v", got)
 	}
 
@@ -157,12 +157,12 @@ func TestPreviousScopeCoverageSurvivesAcrossRuns(t *testing.T) {
 	}
 
 	write(`not valid json`)
-	if got := previousScopeCoverage(dir); got != nil {
+	if got := readPreviousMeta(dir).ScopeCoverage; got != nil {
 		t.Errorf("expected nil for unparseable meta.json, got %+v", got)
 	}
 
 	write(`{"complete":false,"scope_coverage":{"#fif":{"tiles":[{"image":"coverage-scope-fif-0-0.png"}]}}}`)
-	got := previousScopeCoverage(dir)
+	got := readPreviousMeta(dir).ScopeCoverage
 	if got == nil || got["#fif"] == nil {
 		t.Fatalf("expected a non-nil #fif entry from an incomplete meta.json, got %+v", got)
 	}
@@ -181,7 +181,7 @@ func TestPreviousNodeCoverageSurvivesAcrossGlobalRuns(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "meta.json"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := previousNodeCoverage(dir)
+	got := readPreviousMeta(dir).NodeCoverage
 	if got[key] == nil || got[key].Standard == nil || len(got[key].Standard.Tiles) != 1 {
 		t.Fatalf("node coverage was not preserved: %+v", got[key])
 	}

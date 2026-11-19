@@ -18,6 +18,7 @@ import {
   csvJson,
   defaultDataDir,
   flag,
+  gzipCsvRecords,
   option,
   parseIntOption,
   parseTimeMs,
@@ -78,7 +79,8 @@ async function connect(broker: string, username?: string, password?: string): Pr
 
 async function publishAll(
   client: MqttClient,
-  publishes: readonly Publish[],
+  publishes: readonly Publish[] | AsyncIterable<Publish>,
+  count: number,
   speed: number,
   qos: 0 | 1,
   concurrency: number,
@@ -88,7 +90,6 @@ async function publishAll(
   let failed = 0;
   let index = 0;
   const started = Date.now();
-  const firstAt = publishes[0]?.atMs ?? 0;
 
   const send = async (publish: Publish): Promise<void> => {
     try {
@@ -105,11 +106,12 @@ async function publishAll(
     }
     if ((sent + failed) % 2000 === 0) {
       const elapsed = Math.max(1, Date.now() - started);
-      console.log(`[sample:replay] ${sent + failed}/${publishes.length} (${Math.round((sent + failed) / (elapsed / 1000))}/s)`);
+      console.log(`[sample:replay] ${sent + failed}/${count} (${Math.round((sent + failed) / (elapsed / 1000))}/s)`);
     }
   };
 
   if (speed <= 0) {
+    if (!('length' in publishes)) throw new Error('streamed replay requires a positive speed');
     const workers = Array.from({ length: Math.max(1, concurrency) }, async () => {
       while (index < publishes.length) {
         const publish = publishes[index]!;
@@ -121,7 +123,9 @@ async function publishAll(
     return { sent, failed };
   }
 
-  for (const publish of publishes) {
+  let firstAt: number | undefined;
+  for await (const publish of publishes) {
+    firstAt ??= publish.atMs;
     const target = started + (publish.atMs - firstAt) / speed;
     await sleep(target - Date.now());
     await send(publish);
@@ -148,46 +152,90 @@ export function packetReplayEnvelope(row: Row, rawHex: string, format: ReplayEnv
   return envelope;
 }
 
+async function* replayRows(file: string, required?: readonly string[]): AsyncGenerator<Row> {
+  let headers: string[] | undefined;
+  for await (const row of gzipCsvRecords(file)) {
+    if (headers) {
+      if (required && row.length !== headers.length) throw new Error('paired replay CSV width mismatch');
+      yield rowObject(headers, row);
+    } else {
+      if (required?.some(key => row.indexOf(key) < 0 || row.indexOf(key) !== row.lastIndexOf(key))) {
+        throw new Error('paired replay requires unique input columns');
+      }
+      headers = row;
+    }
+  }
+}
+
+/** Owned soak inputs are written together and replayed in their verified order. */
+export async function* pairedReplayPackets(directory: string, count: number) {
+  const keys = ['time', 'packet_hash', 'rx_node_id'];
+  const packets = replayRows(path.join(directory, 'packets.csv.gz'), [...keys, 'topic', 'network']);
+  const rawPackets = replayRows(path.join(directory, 'raw_packets.csv.gz'), [...keys, 'raw_hex']);
+  let previousTime = -Infinity;
+  try {
+    for (let index = 0; index < count; index++) {
+      const [packet, raw] = await Promise.all([packets.next(), rawPackets.next()]);
+      if (packet.done || raw.done) throw new Error('paired replay requires every requested row');
+      const row = packet.value;
+      const rawHex = raw.value['raw_hex'];
+      const atMs = Date.parse(row['time'] ?? '');
+      if (!Number.isFinite(atMs) || atMs < previousTime || !row['topic'] || !rawHex
+        || !keys.every(key => row[key] === raw.value[key])) {
+        throw new Error(`unmatched or unordered paired replay row ${index + 1}`);
+      }
+      previousTime = atMs;
+      yield { row, atMs, rawHex };
+    }
+    const [packet, raw] = await Promise.all([packets.next(), rawPackets.next()]);
+    if (!packet.done || !raw.done) throw new Error('paired replay requires exactly the requested rows');
+  } finally {
+    await Promise.all([packets.return(undefined), rawPackets.return(undefined)]);
+  }
+}
+
+async function* pairedPublishes(directory: string, count: number, format: ReplayEnvelopeFormat) {
+  for await (const { row, atMs, rawHex } of pairedReplayPackets(directory, count)) {
+    const envelope = packetReplayEnvelope(row, rawHex, format);
+    yield { atMs, topic: row['topic']!, label: row['packet_hash']!,
+      payload: Buffer.from(JSON.stringify(envelope), 'utf8') };
+  }
+}
+
 async function packetPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number,
   limit?: number, format: ReplayEnvelopeFormat = 'legacy'): Promise<Publish[]> {
-  const [packets, raw] = await Promise.all([
-    readGzipCsv(path.join(directory, 'packets.csv.gz')),
-    readGzipCsv(path.join(directory, 'raw_packets.csv.gz')),
-  ]);
-  {
-    const rawByKey = new Map<string, string>();
-    for (const row of rowsOf(raw)) {
-      rawByKey.set(`${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`, row['raw_hex'] ?? '');
-    }
-    const publishes: Publish[] = [];
-    let missingRaw = 0;
-    for (const row of rowsOf(packets)) {
-      const atMs = Date.parse(row['time'] ?? '');
-      if (!Number.isFinite(atMs)) continue;
-      if (fromMs !== undefined && atMs < fromMs) continue;
-      if (toMs !== undefined && atMs >= toMs) continue;
-      const key = `${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`;
-      const rawHex = rawByKey.get(key);
-      if (!rawHex) {
-        missingRaw += 1;
-        continue;
-      }
-      const topic = rewritePrefix(row['topic'] ?? '', prefix);
-      if (!topic) continue;
-      const envelope = packetReplayEnvelope(row, rawHex, format);
-      publishes.push({
-        atMs,
-        topic,
-        payload: Buffer.from(JSON.stringify(envelope), 'utf8'),
-        label: row['packet_hash'] ?? 'packet',
-      });
-      if (limit !== undefined && publishes.length >= limit) break;
-    }
-    if (missingRaw > 0) {
-      console.warn(`[sample:replay] ${missingRaw} packet rows had no matching raw row`);
-    }
-    return publishes.sort((a, b) => a.atMs - b.atMs);
+  const rawByKey = new Map<string, string>();
+  for await (const row of replayRows(path.join(directory, 'raw_packets.csv.gz'))) {
+    rawByKey.set(`${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`, row['raw_hex'] ?? '');
   }
+  const publishes: Publish[] = [];
+  let missingRaw = 0;
+  for await (const row of replayRows(path.join(directory, 'packets.csv.gz'))) {
+    if (limit !== undefined && publishes.length >= limit) continue;
+    const atMs = Date.parse(row['time'] ?? '');
+    if (!Number.isFinite(atMs)) continue;
+    if (fromMs !== undefined && atMs < fromMs) continue;
+    if (toMs !== undefined && atMs >= toMs) continue;
+    const key = `${row['time']}|${row['packet_hash']}|${row['rx_node_id']}`;
+    const rawHex = rawByKey.get(key);
+    if (!rawHex) {
+      missingRaw += 1;
+      continue;
+    }
+    const topic = rewritePrefix(row['topic'] ?? '', prefix);
+    if (!topic) continue;
+    const envelope = packetReplayEnvelope(row, rawHex, format);
+    publishes.push({
+      atMs,
+      topic,
+      payload: Buffer.from(JSON.stringify(envelope), 'utf8'),
+      label: row['packet_hash'] ?? 'packet',
+    });
+  }
+  if (missingRaw > 0) {
+    console.warn(`[sample:replay] ${missingRaw} packet rows had no matching raw row`);
+  }
+  return publishes.sort((a, b) => a.atMs - b.atMs);
 }
 
 async function statusPublishes(directory: string, prefix: string | undefined, fromMs?: number, toMs?: number, limit?: number): Promise<Publish[]> {
@@ -234,6 +282,28 @@ async function statusPublishes(directory: string, prefix: string | undefined, fr
   return publishes.sort((a, b) => a.atMs - b.atMs);
 }
 
+async function publishReplay(broker: string, publishes: readonly Publish[] | AsyncIterable<Publish>,
+  count: number, speed: number, qos: 0 | 1, concurrency: number, format: ReplayEnvelopeFormat,
+  username?: string, password?: string): Promise<void> {
+  const client = await connect(broker, username, password);
+  try {
+    const { sent, failed } = await publishAll(client, publishes, count, speed, qos, concurrency, format);
+    console.log(`[sample:replay] done: sent=${sent} failed=${failed}`);
+    if (failed > 0) throw new Error(`${failed} MQTT publications failed`);
+    if (sent !== count) throw new Error(`expected ${count} MQTT acknowledgements, received ${sent}`);
+  } finally {
+    await client.endAsync();
+  }
+}
+
+export async function replayPairedSoakPackets(directory: string, broker: URL, count: number, speed: number): Promise<void> {
+  if (!isLoopback(broker) || !Number.isSafeInteger(count) || count < 1 || !Number.isFinite(speed) || speed <= 0) {
+    throw new Error('paired replay requires a loopback broker, positive count and speed');
+  }
+  console.log(`[sample:replay] ${count} paired packet messages`);
+  await publishReplay(broker.href, pairedPublishes(directory, count, 'observer'), count, speed, 1, 1, 'observer');
+}
+
 export async function replaySampleMqtt(args: string[]): Promise<void> {
   const directory = path.resolve(option(args, 'data-dir') ?? defaultDataDir());
   const envelopeFormat = option(args, 'envelope-format') ?? 'legacy';
@@ -275,18 +345,10 @@ export async function replaySampleMqtt(args: string[]): Promise<void> {
   );
   if (dryRun) return;
 
-  const client = await connect(
-    brokerText,
+  await publishReplay(brokerText, publishes, publishes.length, speed, qos, concurrency, envelopeFormat,
     option(args, 'username'),
     option(args, 'password'),
   );
-  try {
-    const result = await publishAll(client, publishes, speed, qos as 0 | 1, concurrency, envelopeFormat);
-    console.log(`[sample:replay] done: sent=${result.sent} failed=${result.failed}`);
-    if (result.failed > 0) throw new Error(`${result.failed} MQTT publications failed`);
-  } finally {
-    await client.endAsync();
-  }
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

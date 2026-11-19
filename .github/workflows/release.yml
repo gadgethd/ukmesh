@@ -101,8 +101,9 @@ jobs:
             context: third_party/hopreach
             file: third_party/hopreach/Dockerfile
             build_args: |
-              VERSION=v0.1.32-ukmesh.4
-              SOURCE_REVISION=58b2eb9ccdadd2e1b5e54c7548e48f92cc526119
+              VERSION=v0.1.32-ukmesh.5
+              SOURCE_REVISION=${{ github.sha }}
+              SOURCE_REPOSITORY=https://github.com/gadgethd/ukmesh
           - component: mosquitto-reloader
             image: meshcore-mosquitto-reloader
             context: .
@@ -138,7 +139,7 @@ jobs:
           labels: |
             org.opencontainers.image.revision=${{ env.SOURCE_REVISION }}
             io.ukmesh.release.version=${{ steps.identity.outputs.version }}
-            ${{ matrix.component == 'hopreach' && 'org.opencontainers.image.source=https://github.com/gadgethd/hopreach' || '' }}
+            ${{ matrix.component == 'hopreach' && 'org.opencontainers.image.source=https://github.com/gadgethd/ukmesh' || '' }}
             ${{ matrix.component == 'hopreach' && 'org.opencontainers.image.licenses=AGPL-3.0-only WITH Commons-Clause' || '' }}
           tags: |
             type=sha,format=long

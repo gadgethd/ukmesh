@@ -27,16 +27,17 @@ cp "$script_dir/fixtures/vacuum-compose.yml" "$compose_file"
 export COMPOSE_FILE="$compose_file"
 export COMPOSE_PROJECT_NAME="$project_name"
 docker compose up -d timescaledb >/dev/null
-for _ in $(seq 1 60); do
-  if docker compose logs --no-color timescaledb 2>/dev/null \
-      | grep -q 'PostgreSQL init process complete' \
-    && docker compose exec -T timescaledb pg_isready -U meshcore -d meshcore >/dev/null 2>&1; then
+for attempt in $(seq 1 60); do
+  # The image's temporary initialization server only listens on a Unix socket.
+  if docker compose exec -T timescaledb pg_isready -h 127.0.0.1 -t 1 -U meshcore -d meshcore >/dev/null 2>&1; then
     break
+  fi
+  if (( attempt == 60 )); then
+    echo 'Maintenance fixture PostgreSQL did not become ready on TCP' >&2
+    exit 1
   fi
   sleep 0.5
 done
-docker compose logs --no-color timescaledb | grep -q 'PostgreSQL init process complete'
-docker compose exec -T timescaledb pg_isready -U meshcore -d meshcore >/dev/null
 
 docker compose exec -T timescaledb psql -X -v ON_ERROR_STOP=1 -U meshcore -d meshcore <<'SQL'
 CREATE EXTENSION IF NOT EXISTS timescaledb;

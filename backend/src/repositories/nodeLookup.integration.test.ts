@@ -71,6 +71,44 @@ test('indexed node projections and search retain canonical view results for alia
   }
   const generation = (await pool.query('SELECT generation::text FROM ops.public_visibility_state WHERE singleton')).rows[0].generation;
   await convergePacketVisibility(pool, { apply: true, expectedGeneration: generation });
+
+  await t.test('observer scope switches proofs with the current packet visibility state', async () => {
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      const repository = createNodeRepository((sql, params) => client.query(sql, params));
+      const observer = networkFilters('ukmesh', key('2'));
+      const ids = async () => (await repository.listPublicMapRows(
+        ['node_id'], observer, snapshot, null, 100,
+      )).map(row => row['node_id']);
+
+      await client.query(`INSERT INTO mesh.packets(packet_hash,rx_node_id,src_node_id,topic,topic_prefix,network,
+        packet_type,path_hash_size_bytes,path_hashes,visibility_ok,is_private)
+        VALUES($1,$2,$3,'meshcore/ZZZ/fixture/packets','meshcore','ukmesh',3,1,ARRAY['DD'],TRUE,FALSE)`,
+      [key('D'), key('2'), key('A')]);
+      const visible = await ids();
+      assert.ok(visible.includes(key('A')), 'the public reception contributes its source');
+      assert.ok(visible.includes(key('4')), 'the aliased source retains its canonical identity');
+
+      await client.query(`INSERT INTO ops.privacy_rematerialization_queue(node_id,network,target,status)
+        VALUES ($1,'ukmesh','packets','pending')`, [key('D')]);
+      for (const status of ['pending', 'processing', 'failed']) {
+        await client.query(`UPDATE ops.privacy_rematerialization_queue SET status=$1
+          WHERE node_id=$2 AND target='packets'`, [status, key('D')]);
+        assert.deepEqual(await ids(), visible.filter(id => id !== key('A')),
+          `the queued private path prefix remains fenced while ${status}`);
+      }
+
+      await client.query('DELETE FROM ops.privacy_rematerialization_queue WHERE node_id=$1 AND target=\'packets\'', [key('D')]);
+      assert.deepEqual(await ids(), visible, 'clearing the queue restores eligible sources');
+      await client.query(`UPDATE ops.public_visibility_state SET generation=generation+1 WHERE singleton`);
+      assert.deepEqual(await ids(), visible.filter(id => id === key('1')),
+        'stale packet materialization preserves only the observer identity');
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
   const original = (await pool.query('SELECT * FROM core.node_identity_nodes ORDER BY node_id')).rows;
   const fast = (await pool.query(`SELECT * FROM ${publicIdentityNodeSourceSql()} n ORDER BY node_id`)).rows;
   assert.deepEqual(fast, original, 'every column, representative and aggregate matches the existing view');
@@ -256,7 +294,7 @@ test('indexed node projections and search retain canonical view results for alia
   for (const network of ['ukmesh', 'northeast', 'test']) for (const observer of [undefined, key('2')])
   for (const region of network==='ukmesh'&&!observer?[undefined,'lookup_test']:[undefined]) {
     const filters = networkFilters(network, observer, region?{region}:undefined);
-    for (const search of [undefined, 'Canonical', 'Former', '%', '_', '\\', '100%_', '%_\\', 'café', 'aaffb', 'A', 'missing', 'Wide']) {
+    for (const search of [undefined, 'Canonical', 'Former', '%', '_', '\\', '100%_', '%_\\', 'café', 'aaffb', 'A', 'missing', 'Wide', 'Canonical\u001f1']) {
       for (const cursor of [null, key('4')]) {
         const snapshotParam = filters.params.length + 1, cursorParam = snapshotParam + 1;
         const limitParam = cursorParam + 1, searchParam = limitParam + 1;

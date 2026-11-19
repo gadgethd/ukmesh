@@ -162,7 +162,7 @@ func runNodeQueue() {
 }
 
 // runNodeJob returns true when the job is finished (completed or failed
-// permanently) and false when it should be retried after a busy report.
+// permanently) and false for a busy calculator or parked remote dispatch.
 func runNodeJob(job nodeJob) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), nodeJobTimeout)
 	defer cancel()
@@ -174,6 +174,9 @@ func runNodeJob(job nodeJob) bool {
 
 	if ctx.Err() == context.DeadlineExceeded {
 		log.Printf("%s%s: timed out after %s", nodeLogPrefix, shortKey(job.publicKey), nodeJobTimeout)
+		if cfg.GPU.Mode == "remote" {
+			return !retryNodeJob(job, "remote dispatch timed out")
+		}
 		return true
 	}
 
@@ -185,13 +188,8 @@ func runNodeJob(job nodeJob) bool {
 		_ = json.Unmarshal([]byte(line), &result)
 	}
 
-	if result.State == "busy" {
-		if time.Since(job.queuedAt) < nodeBusyMaxWait {
-			log.Printf("%s%s: calculator busy with another run, will retry", nodeLogPrefix, shortKey(job.publicKey))
-			return false
-		}
-		log.Printf("%s%s: gave up after %s (calculator still busy)", nodeLogPrefix, shortKey(job.publicKey), nodeBusyMaxWait)
-		return true
+	if result.State == "busy" || result.State == "parked" {
+		return !retryNodeJob(job, result.Message)
 	}
 	if runErr != nil {
 		log.Printf("%s%s: failed: %v %s", nodeLogPrefix, shortKey(job.publicKey), runErr, strings.TrimSpace(stderr.String()))
@@ -199,6 +197,15 @@ func runNodeJob(job nodeJob) bool {
 	}
 	log.Printf("%s%s: %s %s", nodeLogPrefix, shortKey(job.publicKey), result.State, result.Message)
 	return true
+}
+
+func retryNodeJob(job nodeJob, reason string) bool {
+	if time.Since(job.queuedAt) < nodeBusyMaxWait {
+		log.Printf("%s%s: %s, will retry", nodeLogPrefix, shortKey(job.publicKey), reason)
+		return true
+	}
+	log.Printf("%s%s: gave up after %s (%s)", nodeLogPrefix, shortKey(job.publicKey), nodeBusyMaxWait, reason)
+	return false
 }
 
 // lastJSONLine finds the calculator's single JSON result line. Progress

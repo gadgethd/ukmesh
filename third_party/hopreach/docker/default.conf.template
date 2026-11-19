@@ -81,21 +81,7 @@ server {
         proxy_pass http://127.0.0.1:8081;
     }
 
-    # Remote GPU worker WebSocket endpoint (cmd/hopreach-shareapi's
-    # gpubroker routes) — the one part of that process that genuinely
-    # needs to be reachable from outside this host, since the worker runs
-    # on a separate machine behind its own NAT and connects in. Real auth
-    # (remote_worker.token, a bearer token) happens inside shareapi itself;
-    # this is just the WebSocket upgrade plumbing. shareapi refuses to
-    # even register this route if no token is configured, so an
-    # unconfigured deployment just 404s here.
-    location /gpu-worker {
-        proxy_pass http://127.0.0.1:8081;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 3600s;
-    }
+    include /etc/nginx/snippets/hopreach-gpu-worker.conf;
 
     # Same-origin proxy to the configured CoreScope instance, so the
     # planning tools can fetch real observed neighbour data
@@ -106,4 +92,12 @@ server {
         proxy_set_header Host $proxy_host;
         proxy_ssl_server_name on;
     }
+}
+
+# UKMesh binds this listener to loopback and forwards it privately to the
+# remote worker. The planner, analytics and broker submit API stay separate.
+server {
+    listen 8083;
+    include /etc/nginx/snippets/hopreach-gpu-worker.conf;
+    location / { return 404; }
 }

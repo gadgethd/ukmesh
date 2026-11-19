@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from tempfile import TemporaryDirectory
 import time
 import uuid
 
@@ -17,6 +18,7 @@ from source_identity import expected_sources, identify, validate_measurements
 from read_protocol import IDENTITY, PROFILE, STEPS
 from read_measurements import native_evidence, native_read_comparison, read_comparison, validate_read_batches
 from node_invocation import tool_category, tool_environment
+from resources import lookup_query_counters, lookup_query_deltas
 
 
 def active_fixture() -> dict:
@@ -74,36 +76,67 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
     directory.mkdir(mode=0o700)
     context_before = phase_context(run); modes = []; error = None
     companions = CompanionReads(http_get, cadence_seconds=cadence_seconds)
+    observer_workspace = TemporaryDirectory(prefix='ukmesh-lookup-observer-')
+    observer_receipt = Path(observer_workspace.name) / 'observer.json'
+    observer_workset = None
     try:
         companions.start()
-        for mode in PROFILE['modes']:
+        for index, mode in enumerate(PROFILE['modes']):
             concurrency, cache = mode['concurrency'], mode['cache']
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
-            companions.set_scope(f'c{concurrency}-{cache}')
             output = directory / f'c{concurrency}-{cache}'
             args = ['--source-root', str(source_root), '--samples', str(PROFILE['samples'][str(concurrency)]),
                     '--trials', str(PROFILE['native_trials']), '--concurrency', str(concurrency), '--cache', cache,
-                    '--output', str(output), '--reference-revision', measured['revision']]
+                    '--output', str(output), '--reference-revision', measured['revision'],
+                    '--observer-receipt', str(observer_receipt)]
+            if index:
+                args.append('--reuse-observer-receipt')
             if label == 'candidate': args += ['--budget-ms', str(PROFILE['budgets_ms'][scale])]
-            code = node_tool('benchmarkLookups', args, database, output.with_suffix('.log'),
-                             timeout=1800 if deadline is None else max(.001, deadline-time.monotonic()))
-            companions.set_scope('between')
+            counters = lookup_query_counters(database)
+            companions.set_scope(f'c{concurrency}-{cache}')
+            native_error = None
+            try:
+                code = node_tool('benchmarkLookups', args, database, output.with_suffix('.log'),
+                                 timeout=1800 if deadline is None else max(.001, deadline-time.monotonic()))
+            except BaseException as caught:
+                native_error = caught
+                code = None
+            finally:
+                companions.set_scope('between')
+                query_deltas = lookup_query_deltas(counters, lookup_query_counters(database))
             path = output / 'lookups.json'; value = read_json(path) if path.exists() else {}
-            modes.append({**mode, 'exit_code': code, 'passed': code == 0 and bool(value.get('results'))
+            try:
+                observer_hash = digest(observer_receipt) if code == 0 else None
+            except OSError:
+                observer_hash = None
+            observer_proof = value.get('observerWorkset')
+            observer_verified = (observer_hash is not None
+                and (index == 0 or observer_hash == observer_workset)
+                and isinstance(observer_proof, dict) and observer_proof.get('sha256') == observer_hash
+                and observer_proof.get('reused') is (index > 0))
+            if index == 0 and observer_verified:
+                observer_workset = observer_hash
+            modes.append({**mode, 'exit_code': code, 'passed': code == 0 and observer_verified and bool(value.get('results'))
                 and value.get('sourceIdentity') == measured and value.get('sourceIdentityAfter') == measured
                 and value.get('sourceStable') is True and value.get('passed') is True,
                 'source_identity': value.get('sourceIdentity'), 'source_stable': value.get('sourceStable'),
                 'results': value.get('results', []), 'settings': value.get('settings', {}), 'source': str(path),
+                'observer_workset_verified': observer_verified,
+                'postgresql_query_deltas': query_deltas,
                 'evidence_sha256': digest(path) if path.exists() else None,
                 'timeline_sha256': digest(output/'timeline.json') if (output/'timeline.json').exists() else None})
+            if native_error is not None:
+                raise native_error
             if deadline is not None and time.monotonic() >= deadline: raise TimeoutError('paired read collection budget exhausted')
             if not modes[-1]['passed']: raise RuntimeError('native read window failed; exact partial evidence retained')
             native_evidence(modes[-1], {'label': label, 'scale': scale, 'measured_source': measured,
-                            'context': context_before},
+                            'context': context_before, 'observer_workset_sha256': observer_workset},
                             {'boundaries': companions.boundaries})
     except BaseException as caught:
         error = caught
     finally:
+        try: observer_workspace.cleanup()
+        except OSError as caught: error = error or caught
         try:
             if companions.origin is not None: companions.set_scope('teardown')
         except BaseException as caught: error = caught
@@ -122,7 +155,8 @@ def read_once(run: Path, *, label: str, source_root: Path, directory: Path | Non
         raw_path = directory / 'companions.json'; write_json(raw_path, raw)
         record = {'at': utc_now(), **identity, 'context_before': context_before,
             'companion_evidence': {'path': str(raw_path), 'sha256': digest(raw_path), 'collector_id': companions.collector_id},
-            'modes': modes, 'companions': totals, 'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)],
+            'modes': modes, 'companions': totals, 'observer_workset_sha256': observer_workset,
+            'errors': [] if error is None else [type(error).__name__+': '+safe_error(error)],
             'passed': error is None and context_before == context and len(modes) == len(PROFILE['modes'])
                 and all(mode['passed'] for mode in modes) and all(v['requests'] >= minimum and v['failures'] == 0 for v in totals.values())}
         write_json(directory / 'summary.json', record)
@@ -145,14 +179,17 @@ def reads(run: Path, *, label: str, source_root: Path) -> dict:
     return record
 
 
-def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
+def reads_pair(run: Path, *, diagnostic_only: bool = False, native_only: bool = False) -> dict:
+    if diagnostic_only and native_only:
+        raise ValueError('native-only qualification requires both measured sources')
     fixture = active_fixture(); scale = fixture['kind']; source = expected_sources()
     if scale not in PROFILE['budgets_ms']: raise ValueError('paired reads require retained1x/10x fixtures')
     context = phase_context(run); batch = uuid.uuid4().hex
     directory = run / f'reads-{scale}-paired-{batch}'
     directory.mkdir(mode=0o700)
     before = time.monotonic(); deadline = before + PROFILE['collection_budget_seconds']; records = []; error = None
-    path = run / ('reads-control.json' if diagnostic_only else 'reads.json')
+    receipt_name = 'reads-control.json' if diagnostic_only else 'reads-native.json' if native_only else 'reads.json'
+    path = run / receipt_name
     prior_value = {} if diagnostic_only or not path.exists() else read_json(path)
     prior = prior_value.get('runs', [])
     prior_batches = prior_value.get('batches', [])
@@ -161,7 +198,8 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
         raise ValueError('previous read batch did not close successfully; archive its evidence first')
     if prior:
         validate_measurements(prior, source)
-        validate_read_batches(prior_value, scales=tuple(sorted({row['scale'] for row in prior})))
+        validate_read_batches(prior_value, scales=tuple(sorted({row['scale'] for row in prior})),
+                              native_only=native_only)
     if prior and any(row['scale'] == scale for row in prior): raise ValueError('this scale already has retained read measurements; archive before another attempt')
     try:
         for step in STEPS:
@@ -179,6 +217,8 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
                 raise
             records.append(record)
             validate_measurements(records, source)
+            if record.get('observer_workset_sha256') != records[0].get('observer_workset_sha256'):
+                raise ValueError('observer workset differs across paired windows')
             if phase_context(run) != context: raise ValueError('source/runtime/fixture drift after paired window')
             if not record['passed']: raise RuntimeError('paired read window failed')
             write_json(directory / 'progress.json', {'passed': False, 'pending': True, 'protocol': IDENTITY,
@@ -187,7 +227,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
     native_elapsed = time.monotonic()-before
     if time.monotonic() >= deadline: error = error or TimeoutError('paired native read collection budget exhausted')
     demands = []; demand_before = time.monotonic(); demand_deadline = demand_before+PROFILE['demand']['collection_budget_seconds']
-    if not diagnostic_only and error is None:
+    if not (diagnostic_only or native_only) and error is None:
         from matched_demand import collect_cohort
         try:
             if not native_read_comparison(records, scales=(scale,))['valid']:
@@ -209,23 +249,27 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
                 if phase_context(run) != context: raise ValueError('runtime drift after fixed-demand cohort')
                 write_json(directory/'demand-progress.json', {'passed': False, 'pending': True, 'runs': demands})
         except BaseException as caught: error = caught
-    comparison = read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only, demand_runs=demands)
+    comparison = (native_read_comparison(records, scales=(scale,)) if native_only else
+                  read_comparison(records, scales=(scale,), diagnostic_only=diagnostic_only, demand_runs=demands))
     canonical = None
     if not diagnostic_only:
         try:
             validate_measurements(prior + records, expected_sources())
             validate_measurements(prior_demand + demands, expected_sources())
-            canonical = read_comparison(prior + records, demand_runs=prior_demand + demands)
+            canonical = (native_read_comparison(prior + records) if native_only else
+                         read_comparison(prior + records, demand_runs=prior_demand + demands))
         except BaseException as caught: error = caught
     final, final_context_error = context, None
     try: final = phase_context(run)
     except BaseException as caught:
         error = caught; final_context_error = safe_error(caught)
-    if (diagnostic_only and time.monotonic() >= deadline) or (not diagnostic_only and time.monotonic() >= demand_deadline):
+    closure_deadline = deadline if diagnostic_only or native_only else demand_deadline
+    if time.monotonic() >= closure_deadline:
         error = TimeoutError('paired read collection budget exhausted at final closure')
     stable = final == context and error is None
     result = {'at': utc_now(), 'context': final, 'context_before': context, 'protocol': IDENTITY,
-              'diagnostic_only': diagnostic_only, 'batch_id': batch, 'runs': records, 'demand_runs': demands,
+              'diagnostic_only': diagnostic_only, 'native_only': native_only, 'batch_id': batch,
+              'runs': records, 'demand_runs': demands,
               'collection_seconds': native_elapsed, 'collection_budget_seconds': PROFILE['collection_budget_seconds'],
               'demand_collection_seconds': time.monotonic()-demand_before,
               'demand_collection_budget_seconds': PROFILE['demand']['collection_budget_seconds'],
@@ -241,6 +285,7 @@ def reads_pair(run: Path, *, diagnostic_only: bool = False) -> dict:
                  **(canonical or {'passed': False, 'diagnostic_only': False, 'protocol': IDENTITY, 'missing': ['read batch finalization failed']}),
                  'batches': prior_batches + [{'passed': result['passed'], 'scale': scale, 'batch_id': batch,
                     'path': str(directory/'summary.json'), 'sha256': digest(directory/'summary.json')}]}
+        value['native_only'] = native_only
         value['passed'] = stable and value['passed']
         write_json(path, value)
     if error is not None: raise error

@@ -256,6 +256,7 @@ type nodeCoverageMeta struct {
 	DatasetID      string        `json:"dataset_id"`
 	RunID          string        `json:"run_id"`
 	State          string        `json:"state"` // computing | available | failed
+	WaitingForGPU  bool          `json:"waiting_for_gpu,omitempty"`
 	PositionStatus string        `json:"position_status"`
 	LastHeard      *string       `json:"last_heard,omitempty"`
 	Lat            float64       `json:"lat"`
@@ -310,16 +311,9 @@ type meta struct {
 	Run *coverageRunInfo `json:"run,omitempty"`
 }
 
-func runID(outputDir string) string {
-	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
-	if err == nil {
-		var previous struct {
-			Complete bool             `json:"complete"`
-			Run      *coverageRunInfo `json:"run"`
-		}
-		if json.Unmarshal(data, &previous) == nil && !previous.Complete && previous.Run != nil && previous.Run.ID != "" {
-			return previous.Run.ID
-		}
+func runID(previous meta) string {
+	if !previous.Complete && previous.Run != nil && previous.Run.ID != "" {
+		return previous.Run.ID
 	}
 	var random [8]byte
 	if _, err := rand.Read(random[:]); err == nil {
@@ -403,59 +397,16 @@ func lastGeneratedAt(outputDir string) (time.Time, bool) {
 	return t, true
 }
 
-// previousCoverage reads whatever coverage tiles the last run wrote (if
-// any) — used to seed a fresh run's own meta.json before any tier in *this*
-// run has been recomputed, so a visitor loading the page mid-run still sees
-// the last real coverage instead of nothing, right up until each tier's own
-// writeTier call replaces it. Unlike lastGeneratedAt, this deliberately does
-// NOT check Complete: even a previous run that crashed partway through can
-// have left real, valid tiles on disk for whichever tiers it did finish
-// before failing, and those PNG files are still genuinely there, untouched,
-// regardless of whether the run that made them ever reached its own end.
-func previousCoverage(outputDir string) *coverageOutputs {
+// readPreviousMeta retains named tiers and their tiles together. An incomplete
+// run still owns usable tiles, but its partial tier must resume its checkpoint
+// even when those tiles were updated inside the current freshness window.
+func readPreviousMeta(outputDir string) meta {
 	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
-	if err != nil {
-		return nil
+	var previous meta
+	if err != nil || json.Unmarshal(data, &previous) != nil {
+		return meta{}
 	}
-	var m struct {
-		Coverage *coverageOutputs `json:"coverage"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil
-	}
-	return m.Coverage
-}
-
-// previousScopeCoverage is previousCoverage's counterpart for ScopeCoverage —
-// same rationale (seed a fresh run's meta.json with the last run's real
-// tiles so mid-run visitors still see something), same deliberate omission
-// of a Complete check for the same reason.
-func previousScopeCoverage(outputDir string) map[string]*coverageMeta {
-	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
-	if err != nil {
-		return nil
-	}
-	var m struct {
-		ScopeCoverage map[string]*coverageMeta `json:"scope_coverage"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil
-	}
-	return m.ScopeCoverage
-}
-
-func previousNodeCoverage(outputDir string) map[string]*nodeCoverageMeta {
-	data, err := os.ReadFile(filepath.Join(outputDir, "meta.json"))
-	if err != nil {
-		return nil
-	}
-	var m struct {
-		NodeCoverage map[string]*nodeCoverageMeta `json:"node_coverage"`
-	}
-	if err := json.Unmarshal(data, &m); err != nil {
-		return nil
-	}
-	return m.NodeCoverage
+	return previous
 }
 
 type imageResult struct {

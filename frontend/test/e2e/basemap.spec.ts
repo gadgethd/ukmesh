@@ -1,5 +1,23 @@
-import { expect, test } from '@playwright/test';
+import { expect, test as base } from '@playwright/test';
 import { fixtures, vectorRoutes } from './basemapFixtures.js';
+
+const test = base.extend({
+  // Start a fresh renderer for each failure scenario. A shared Chromium process
+  // can stall when the next test opens a context after a software WebGL run.
+  context: [async ({ playwright, browserName, launchOptions, headless, contextOptions, baseURL, serviceWorkers }, use) => {
+    const browser = await playwright[browserName].launch({ ...launchOptions, headless });
+    try {
+      const context = await browser.newContext({ ...contextOptions, baseURL, serviceWorkers });
+      try {
+        await use(context);
+      } finally {
+        await context.close();
+      }
+    } finally {
+      await browser.close();
+    }
+  }, { timeout: 45_000 }],
+});
 
 test.beforeEach(async ({ page }) => fixtures(page));
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,8 +10,32 @@ import (
 	"time"
 
 	"hopreach/internal/analytics"
+	"hopreach/internal/compute"
 	"hopreach/internal/corescope"
 )
+
+func TestRemoteRunParksWithoutReplacingAvailableCoverage(t *testing.T) {
+	output := t.TempDir()
+	content := `{"complete":true,"coverage":{"standard":{"tiles":[{"image":"tiles/standard/0-0.png"}]}}}`
+	metaPath := filepath.Join(output, "meta.json")
+	if err := os.WriteFile(metaPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg := appConfig{outputDir: output, gpuMode: "remote", forceRecompute: true, demCacheDir: t.TempDir()}
+	if err := run(cfg); !errors.Is(err, compute.ErrRemoteParked) {
+		t.Fatalf("missing broker: %v", err)
+	}
+	if contents, err := os.ReadFile(metaPath); err != nil || string(contents) != content {
+		t.Fatalf("parked run changed available metadata: %v, %s", err, contents)
+	}
+	if !remoteRunParked(output) {
+		t.Fatal("parked run did not persist a recovery trigger")
+	}
+	cfg.resumeRemote = true
+	if err := run(cfg); err != nil || !remoteRunParked(output) {
+		t.Fatalf("recovery tick without a worker changed parked status: %v", err)
+	}
+}
 
 // TestCleanStaleGridScratch is the regression test for a real production
 // incident: a box's disk filled to 69% because 13 crashed runs (OOM kills,

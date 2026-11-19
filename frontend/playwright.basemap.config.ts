@@ -17,8 +17,8 @@ export default defineConfig({
     },
   },
   projects: [
-    { name: 'basemap-desktop', use: { ...devices['Desktop Chrome'], viewport: { width: 900, height: 650 } } },
-    { name: 'basemap-mobile', use: { ...devices['Pixel 7'], deviceScaleFactor: 1 } },
+    { name: 'basemap-desktop', use: { contextOptions: { ...devices['Desktop Chrome'], viewport: { width: 900, height: 650 } } } },
+    { name: 'basemap-mobile', use: { contextOptions: { ...devices['Pixel 7'], deviceScaleFactor: 1 } } },
   ],
   webServer: {
     command: 'npm run preview -- --host 127.0.0.1 --port 4180',

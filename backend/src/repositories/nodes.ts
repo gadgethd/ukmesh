@@ -187,32 +187,27 @@ export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
       const limitParameter = cursorParameter + 1;
       const searchParameter = `$${limitParameter + 1}`;
       const patternParameter = `$${limitParameter + 2}`;
-      const narrowSearch = search && search.length >= 3;
-      const literalPattern = search ? `%${search.replace(/[\\%_]/g, '\\$&')}%` : undefined;
+      const narrowSearch = search !== undefined && search.length >= 3;
+      const literalPattern = narrowSearch ? `%${search.replace(/[\\%_]/g, '\\$&')}%` : undefined;
       const candidateMatch = (expression: string) => `LOWER(${expression}) LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)`;
       // Candidate matches may include a non-representative alias. Reapply the
       // original substring/history predicate below after hydrating the entire
       // identity, so this optimisation cannot change search results.
-      const candidates = search ? `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
+      const searchCandidates = narrowSearch ? `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
         FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
           ON a.source_node_id = UPPER(BTRIM(raw.node_id))
-        WHERE ${candidateMatch("COALESCE(raw.name, '')")}
-          OR ${candidateMatch('UPPER(BTRIM(raw.node_id))')}
-          OR ${candidateMatch("COALESCE(raw.iata, '')")}
+        WHERE core.node_literal_search_text(raw.name, raw.node_id, raw.iata)
+          LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)
         UNION SELECT canonical_node_id FROM core.node_identity_aliases
           WHERE STRPOS(LOWER(canonical_node_id), LOWER(${searchParameter})) > 0
         UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(h.node_id)))
           FROM core.node_name_history h JOIN core.nodes raw ON raw.node_id = h.node_id
           LEFT JOIN core.node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(raw.node_id))
-          WHERE ${candidateMatch('h.name')}`
-        : `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
-          FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
-            ON a.source_node_id = UPPER(BTRIM(raw.node_id))`;
+          WHERE ${candidateMatch('h.name')}` : undefined;
       const scopedCandidates = filters.nodeCandidates;
-      const candidateIds = scopedCandidates
-        ? (narrowSearch ? `SELECT node_id FROM (${scopedCandidates.idsSql}) scope_ids
-            WHERE node_id IN (${candidates})` : scopedCandidates.idsSql)
-        : narrowSearch ? candidates : undefined;
+      const candidateIds = scopedCandidates && searchCandidates
+        ? `SELECT node_id FROM (${scopedCandidates.idsSql}) scope_ids WHERE node_id IN (${searchCandidates})`
+        : scopedCandidates?.idsSql ?? searchCandidates;
       const searchCondition = search ? `AND (
         STRPOS(LOWER(COALESCE(n.name, '')), LOWER(${searchParameter})) > 0
         OR STRPOS(LOWER(n.node_id), LOWER(${searchParameter})) > 0
@@ -261,7 +256,8 @@ export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
           LIMIT $${limitParameter}`,
         [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : []), ...(narrowSearch ? [literalPattern] : [])],
         undefined,
-        BOUNDED_READ_PREPARATION,
+        // Broad reads need a plan based on the bound scope, cursor and limit.
+        candidateIds ? BOUNDED_READ_PREPARATION : undefined,
       );
       return result.rows;
     },

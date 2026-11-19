@@ -164,7 +164,8 @@ services:
       MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
       MQTT_INGEST_CONNECTIONS: ${MQTT_INGEST_CONNECTIONS:-1}
       MQTT_INGEST_SHARE_GROUP: ${MQTT_INGEST_SHARE_GROUP:-meshcore-ingest}
-      MQTT_INGEST_FLUSH_MS: ${MQTT_INGEST_FLUSH_MS:-10}
+      MQTT_INGEST_FLUSH_MS: ${MQTT_INGEST_FLUSH_MS:-0}
+      MQTT_BROKER_BACKLOG_MONITOR: ${MQTT_BROKER_BACKLOG_MONITOR:-false}
       # The 30s lifecycle deadline reserves 25s for MQTT disconnect and queue drain.
       MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
       MQTT_INGEST_MODE: ${MQTT_INGEST_MODE:-durable}
@@ -535,9 +536,7 @@ services:
       db-migrate:
         condition: service_completed_successfully
 
-  # Canonical whole-region RF calculator. HopReach owns propagation and
-  # raster output; UK Mesh supplies only the internal data adapter, versioned
-  # boundary, orchestration profile, and native map consumer.
+  # Coordinate and publish RF coverage using the private remote GPU worker.
   hopreach:
     <<: *internal-hosts
     image: ${HOPREACH_IMAGE:-meshcore-analytics-hopreach:local}
@@ -545,19 +544,22 @@ services:
       context: ./third_party/hopreach
       dockerfile: Dockerfile
       args:
-        VERSION: v0.1.32-ukmesh.4
-        SOURCE_REVISION: ${HOPREACH_SOURCE_REVISION:-58b2eb9ccdadd2e1b5e54c7548e48f92cc526119}
+        VERSION: v0.1.32-ukmesh.5-dev
+        SOURCE_REVISION: ${HOPREACH_SOURCE_REVISION:-${SOURCE_REVISION:-local}}
+        SOURCE_REPOSITORY: https://github.com/gadgethd/ukmesh
     restart: always
     logging: *service-journal
-    cpus: ${HOPREACH_CPUS:-2.0}
-    mem_limit: &hopreach-memory "${HOPREACH_MEMORY_LIMIT:-768m}"
+    cpus: ${HOPREACH_CPUS:-1.0}
+    mem_limit: &hopreach-memory "${HOPREACH_MEMORY_LIMIT:-512m}"
     memswap_limit: *hopreach-memory
     environment:
       HOPREACH_CONFIG: /config/config.yaml
-      GOMAXPROCS: ${HOPREACH_CPU_WORKERS:-2}
+      GOMAXPROCS: ${HOPREACH_CPU_WORKERS:-1}
+    ports:
+      - "127.0.0.1:${HOPREACH_GPU_WORKER_PORT:-19101}:8083"
     volumes:
       - rf_coverage_data:/data
-      - ./rf-coverage/config.ukmesh.yaml:/config/config.yaml:ro
+      - ${HOPREACH_CONFIG_PATH:-./rf-coverage/config.ukmesh.yaml}:/config/config.yaml:ro
       - ./rf-coverage/boundaries/uk-operational-v1.geojson:/config/uk-operational-v1.geojson:ro
     depends_on:
       backend:

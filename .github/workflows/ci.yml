@@ -68,6 +68,7 @@ jobs:
         timeout-minutes: 4
         run: |
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_startup_readiness.py -v
+          python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_session.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p 'test_target_*.py' -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_companion_ingest_state.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_node_invocation.py -v
@@ -117,6 +118,11 @@ jobs:
         # unrelated suite.
         run: timeout 300s npm run test:migration-integration
       - run: npm run test:ingest-integration
+      - name: Replay compressed packet identity on TimescaleDB
+        run: |
+          test_file=src/tools/backfillIdentity.compressed.test.ts
+          TEST_BACKFILL_DATABASE_URL="$TEST_INGEST_DATABASE_URL" timeout 180s node --import tsx --test --test-reporter=tap "$test_file" | tee compressed-identity.tap
+          node scripts/assert-audit-tests-ran.mjs compressed-identity.tap "$test_file" --min-tests=13
       - name: Verify observer replay timestamps
         run: node --import tsx --test src/db/statusSampleTime.integration.test.ts src/mqtt/statusTelemetry.integration.test.ts
       - run: timeout 330s npm run test:privacy-integration

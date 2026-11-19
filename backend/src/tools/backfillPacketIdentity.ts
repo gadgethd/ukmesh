@@ -12,16 +12,22 @@ import pg from 'pg';
  * Compressed (columnstore) chunks hold the oldest history — the rows most in
  * need of a backfill — so every chunk in the hypertable is enumerated. A
  * compressed chunk is decompressed before it is read and updated, and is
- * recompressed as soon as its last row has been processed. Decompressions are
- * persisted in the state row before any read, so a crash or a `--limit` stop
- * can be recovered: `finally` recompresses everything this run (or a crashed
- * predecessor) decompressed, and a resumed run never decompresses a chunk that
- * is already decompressed.
+ * recompressed as soon as its last row has been processed. Ownership of a
+ * decompression is persisted *before* `decompress_chunk` runs, so a crash at
+ * the worst possible instant cannot leave an untracked decompressed chunk:
+ * the next run sees the marker, adopts the chunk and recompresses it.
  *
- * The completion claim is structural: `packets_complete` is written only when
- * every enumerated chunk was read to exhaustion. Otherwise the run records
- * `packets_partial`, the unvisited chunks, and how many of them hold
- * compressed data. Per-chunk results are persisted in the state row.
+ * The high-water mark is this run's snapshot, recomputed on every run. A
+ * persisted `high_water` is only a record of what has been offered to the
+ * backfill; it is never a permanent ceiling, because rows ingested after the
+ * first run must still be eligible.
+ *
+ * Completion is structural and fail-closed: `packets_complete` is written
+ * only when every enumerated chunk was read to exhaustion *and* every chunk
+ * that was compressed at the start of the run is compressed again. A
+ * decompress, recompress or marker-persistence failure aborts the run and
+ * records `failed`; it is never downgraded to a note. Anything short of that
+ * records `packets_partial` with the unvisited chunks.
  */
 
 type Row = {
@@ -47,6 +53,20 @@ type State = {
   last_hash: string | null;
   last_rx_node_id: string | null;
   decompressed_chunks: string[];
+};
+
+/**
+ * Optional observation seam used by the regression tests. The callback fires
+ * immediately before the named operation, so throwing from it exercises the
+ * same failure path as the operation itself failing.
+ */
+export type BackfillEvent =
+  | { type: 'persist-decompressed'; phase: 'decompress-intent' | 'after-recompress' | 'final'; chunks: string[] }
+  | { type: 'decompress'; chunk: string }
+  | { type: 'recompress'; chunk: string; phase: 'per-chunk' | 'final' };
+
+export type BackfillHooks = {
+  onEvent?: (event: BackfillEvent) => void;
 };
 
 type Chunk = {
@@ -175,6 +195,48 @@ function dsn(): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Highest row this run may touch.
+ *
+ * The persisted `high_water` used to be initialised once and then applied as a
+ * permanent `time <= high_water` ceiling. Rows ingested after that instant
+ * were therefore invisible to every later run, while the run still reported
+ * `packets_complete`. The ceiling must be recomputed from the table on every
+ * run: `high_water` is a watermark of what has been *offered* to the backfill,
+ * not an immutable upper bound. Rows that arrive after this snapshot are left
+ * for the next run.
+ */
+async function eligibleHighWater(client: pg.PoolClient): Promise<string | null> {
+  const result = await client.query<{ high_water: string | null }>(`
+    SELECT max(time)::text AS high_water FROM mesh.packets
+     WHERE packet_uid IS NULL AND length(packet_hash) = 64
+  `);
+  return result.rows[0]?.high_water ?? null;
+}
+
+/** Verify every chunk this run handled is compressed again before completion. */
+async function assertRecompressed(
+  client: pg.PoolClient,
+  results: ChunkResult[],
+): Promise<void> {
+  const expected = results.filter((entry) => entry.compressed_at_start || entry.decompressed_by_run);
+  if (expected.length === 0) return;
+  const catalog = await client.query<{ key: string; compressed: boolean }>(`
+    SELECT chunk_schema || '.' || chunk_name AS key, is_compressed AS compressed
+      FROM timescaledb_information.chunks
+     WHERE hypertable_schema = 'mesh' AND hypertable_name = 'packets'
+  `);
+  const compressed = new Map(catalog.rows.map((row) => [row.key, row.compressed]));
+  const left = expected
+    .filter((entry) => compressed.get(chunkKey(entry)) !== true)
+    .map((entry) => chunkKey(entry));
+  if (left.length > 0) {
+    throw new Error(
+      `refusing to claim completion: ${left.length} chunk(s) that were compressed at the start of this run are still decompressed (${left.join(', ')})`,
+    );
+  }
 }
 
 async function loadState(client: pg.PoolClient): Promise<State> {
@@ -455,8 +517,10 @@ export async function backfillPackets(
   dryRun: boolean,
   limit: number,
   since: string | null,
+  hooks: BackfillHooks = {},
 ): Promise<BackfillResult> {
   const client = await pool.connect();
+  const emit = (event: BackfillEvent): void => hooks.onEvent?.(event);
   const total: Counts = { selected: 0, resolved: 0, unresolved: 0, mismatch: 0 };
   const unresolvedReasons: Record<string, number> = {};
   const results: ChunkResult[] = [];
@@ -476,19 +540,17 @@ export async function backfillPackets(
     if (state.last_time && !state.last_observation_id) {
       state = await migrateLegacyCheckpoint(client, state, dryRun);
     }
-    if (!state.high_water) {
-      const highWater = await client.query<{ high_water: string | null }>(`
-        SELECT max(time)::text AS high_water FROM mesh.packets
-         WHERE packet_uid IS NULL AND length(packet_hash) = 64
-      `);
-      state = { ...state, high_water: highWater.rows[0]?.high_water ?? null };
-      if (!dryRun) {
-        await client.query(`
-          UPDATE ops.packet_identity_backfill_state
-             SET high_water = $1::timestamptz, status = 'running', updated_at = NOW()
-           WHERE singleton
-        `, [state.high_water]);
-      }
+    // The ceiling is this run's snapshot, never the persisted value. Advancing
+    // it before the first read (and persisting it, except in a dry run) is what
+    // makes a pre-existing high_water unable to hide newer eligible rows.
+    const runHighWater = await eligibleHighWater(client);
+    state = { ...state, high_water: runHighWater };
+    if (!dryRun) {
+      await client.query(`
+        UPDATE ops.packet_identity_backfill_state
+           SET high_water = $1::timestamptz, status = 'running', updated_at = NOW()
+         WHERE singleton
+      `, [state.high_water]);
     }
     // A dry run never writes and never holds decompressions, so a marker left
     // by a crashed real run is reported but not acted on.
@@ -538,7 +600,23 @@ export async function backfillPackets(
       }
 
       if (chunk.compressed && !dryRun) {
+        // Ownership is durable *before* the destructive step. If the process
+        // dies after `decompress_chunk` commits but before the next statement,
+        // the marker already names this chunk, so the resumed run reclaims it
+        // and recompresses it. Persisting afterwards left an untracked
+        // decompression that no later run could see.
+        owned.add(key);
         try {
+          emit({ type: 'persist-decompressed', phase: 'decompress-intent', chunks: [...owned] });
+          await persistDecompressed(client, owned);
+        } catch (error) {
+          owned.delete(key);
+          throw new Error(
+            `cannot record decompression ownership for chunk ${key}: ${errorMessage(error)}. Aborting before decompressing it.`,
+          );
+        }
+        try {
+          emit({ type: 'decompress', chunk: key });
           await decompressChunk(client, chunk);
         } catch (error) {
           result.note = 'decompress-failed';
@@ -547,10 +625,6 @@ export async function backfillPackets(
           );
         }
         result.decompressed_by_run = true;
-        owned.add(key);
-        // Persist before reading so a crash cannot leave an unowned
-        // decompression behind.
-        await persistDecompressed(client, owned);
       }
 
       if (limit > 0 && total.selected >= limit) {
@@ -668,19 +742,66 @@ export async function backfillPackets(
 
       if (result.complete && owned.has(key)) {
         try {
+          emit({ type: 'recompress', chunk: key, phase: 'per-chunk' });
           await recompressChunk(client, chunk);
           owned.delete(key);
           result.recompressed = true;
+          emit({ type: 'persist-decompressed', phase: 'after-recompress', chunks: [...owned] });
           await persistDecompressed(client, owned);
         } catch (error) {
+          // Never swallow this: a chunk left decompressed while the run still
+          // reports completion is the false-positive the tool exists to avoid.
+          result.complete = false;
           result.note = `recompress-failed: ${errorMessage(error)}`;
           console.error(JSON.stringify({ recompress_failed: key, error: errorMessage(error) }));
+          if (!dryRun) {
+            await recordChunkResults(client, results, countSkippedCompressed(results));
+          }
+          throw new Error(`cannot recompress chunk ${key}: ${errorMessage(error)}. Aborting so completion is not claimed.`);
         }
       }
       if (!dryRun) {
         skippedCompressed = countSkippedCompressed(results);
         await recordChunkResults(client, results, skippedCompressed);
       }
+    }
+
+    // Final recompression happens before the completion claim, not in
+    // `finally` after it. A failure here must abort the run: writing
+    // `packets_complete` while a chunk is still decompressed is precisely the
+    // false positive this tool must not produce.
+    if (!dryRun) {
+      const recompressFailures: string[] = [];
+      for (const key of [...owned]) {
+        try {
+          emit({ type: 'recompress', chunk: key, phase: 'final' });
+          await recompressChunk(client, chunksByKey.get(key) ?? parseChunkKey(key));
+          owned.delete(key);
+          const entry = results.find((candidate) => chunkKey(candidate) === key);
+          if (entry) entry.recompressed = true;
+        } catch (error) {
+          recompressFailures.push(`${key}: ${errorMessage(error)}`);
+        }
+      }
+      if (recompressFailures.length > 0) {
+        try {
+          await recordChunkResults(client, results, countSkippedCompressed(results));
+        } catch {
+          // The failure itself is the signal; the marker is still durable.
+        }
+        throw new Error(
+          `cannot recompress ${recompressFailures.length} chunk(s) decompressed by this run: ${recompressFailures.join('; ')}. Completion is not claimed.`,
+        );
+      }
+      try {
+        emit({ type: 'persist-decompressed', phase: 'final', chunks: [...owned] });
+        await persistDecompressed(client, owned);
+      } catch (error) {
+        throw new Error(
+          `cannot persist the decompression marker after recompression: ${errorMessage(error)}. Completion is not claimed.`,
+        );
+      }
+      await assertRecompressed(client, results);
     }
 
     const incomplete = results.filter((entry) => !entry.complete);
@@ -740,24 +861,36 @@ export async function backfillPackets(
     }
     throw error;
   } finally {
+    let cleanupFailure: Error | null = null;
     if (lockHeld) {
-      // Recompress everything this run (or a crashed predecessor) decompressed.
-      // Compressed chunks are the only ones in `owned`, so an ingest-time chunk
-      // is never converted to columnstore by the backfill.
+      // Best-effort recovery for an aborted run: recompress everything still
+      // owned. A failure here is not swallowed — if the run would otherwise
+      // have returned, it is turned into a failed run so no caller can read a
+      // success from a table left with decompressed chunks.
       for (const key of [...owned]) {
         try {
           const chunk = chunksByKey.get(key) ?? parseChunkKey(key);
+          emit({ type: 'recompress', chunk: key, phase: 'final' });
           await recompressChunk(client, chunk);
           owned.delete(key);
           const result = results.find((entry) => chunkKey(entry) === key);
           if (result) result.recompressed = true;
         } catch (error) {
+          cleanupFailure ??= new Error(
+            `cannot recompress chunk ${key} during cleanup: ${errorMessage(error)}`,
+          );
           console.error(JSON.stringify({ recompress_failed: key, error: errorMessage(error) }));
         }
       }
       try {
-        if (!dryRun) await persistDecompressed(client, owned);
+        if (!dryRun && (owned.size > 0 || failure !== null)) {
+          emit({ type: 'persist-decompressed', phase: 'final', chunks: [...owned] });
+          await persistDecompressed(client, owned);
+        }
       } catch (error) {
+        cleanupFailure ??= new Error(
+          `cannot persist the decompression marker during cleanup: ${errorMessage(error)}`,
+        );
         console.error(JSON.stringify({ persist_decompressed_failed: errorMessage(error) }));
       }
       if (failure instanceof Error) {
@@ -774,6 +907,7 @@ export async function backfillPackets(
     } else {
       client.release();
     }
+    if (cleanupFailure && failure === null) throw cleanupFailure;
   }
 }
 

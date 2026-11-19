@@ -25,6 +25,9 @@
   "runtime": {
     "maxMemoryMB": 256
   },
+  "analytics": {
+    "pauseWhenIdle": true
+  },
   "map": {
     "tiles": {
       "darkDefault": "osm-dark",

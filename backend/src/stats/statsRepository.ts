@@ -247,23 +247,33 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   ) {
     const filters = networkFilters(network, observer, { includePrivacy: false });
     return queryFn(`
+      WITH observations AS (
+        SELECT COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
+          p.packet_hash,
+          COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS observer_id,
+          p.time
+        FROM mesh.packets p
+        LEFT JOIN core.node_identity_aliases rx_alias
+          ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+        WHERE p.time > NOW() - INTERVAL '7 days'
+          AND p.rx_node_id IS NOT NULL
+          AND p.rx_node_id <> ''
+          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
+          ${filters.packetsAlias('p')}
+      ), region_activity AS (
+        SELECT iata, packet_hash, observer_id, GROUPING(packet_hash) AS observer_group, MAX(time) AS last_seen
+        FROM observations
+        GROUP BY GROUPING SETS ((iata, packet_hash), (iata, observer_id))
+      )
       SELECT
-        COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
-        COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
-        COUNT(DISTINCT p.packet_hash) AS packets_7d,
-        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))))
-          FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
-        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS observers,
-        MAX(p.time)::text AS last_packet_at
-      FROM mesh.packets p
-      LEFT JOIN core.node_identity_aliases rx_alias
-        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-      WHERE p.time > NOW() - INTERVAL '7 days'
-        AND p.rx_node_id IS NOT NULL
-        AND p.rx_node_id <> ''
-        AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
-        ${filters.packetsAlias('p')}
-      GROUP BY 1
+        iata,
+        COUNT(packet_hash) FILTER (WHERE observer_group = 0 AND last_seen > NOW() - INTERVAL '24 hours') AS packets_24h,
+        COUNT(packet_hash) FILTER (WHERE observer_group = 0) AS packets_7d,
+        COUNT(observer_id) FILTER (WHERE observer_group = 1 AND last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
+        COUNT(observer_id) FILTER (WHERE observer_group = 1) AS observers,
+        MAX(last_seen)::text AS last_packet_at
+      FROM region_activity
+      GROUP BY iata
       ORDER BY packets_7d DESC, iata ASC
     `, filters.params);
   }

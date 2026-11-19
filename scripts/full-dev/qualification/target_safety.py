@@ -35,6 +35,10 @@ INTENT=STATE/'runtime/target-intent.json'
 VALUES={'UKMESH_DATABASE':'ukmesh','OWNER_DATABASE':'owner','BEACON_DATABASE':'beacon','CORESCOPE_DATA_DIR':'corescope'}
 
 
+class InactiveChangingConsumerError(ValueError):
+    """The previous store must be resumed before publishing a changed target."""
+
+
 def target_values(values):
     if set(values)!=set(VALUES) or any(not isinstance(v,str) or not v or any(c in v for c in '\n\r\0') for v in values.values()):
         raise ValueError('complete literal target values required')
@@ -155,7 +159,8 @@ def select(values,previous_values,commit,*,snapshot=inspect_snapshot,observe_fn=
                           old_selection=old_selection,requested_selection=deepcopy(requested_selection))
             assessed=assess_intent(intent,actual['consumers'],requested)
         if changing(actual,requested):
-            if not assessed['may_observe']:raise ValueError('stopped changing consumer; resume previous retained store')
+            if not assessed['may_observe']:
+                raise InactiveChangingConsumerError('stopped changing consumer; resume previous retained store')
             assert_no_publishers()
             proof=observe_fn(snapshot)
             if proof.get('passed') is not True:raise ValueError('target protection observation refused')

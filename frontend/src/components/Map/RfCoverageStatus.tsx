@@ -41,15 +41,21 @@ export function RfCoverageStatus({
   const product = nodePublicKey ? nodeEntry?.standard : meta?.coverage?.[tier];
   const nodeState = nodePublicKey ? rfNodeCoverageState(meta, nodePublicKey) : null;
   const eta = formatRfEta(progress?.eta_seconds);
-  const running = !!progress && progress.stage !== 'done' && progress.stage !== 'error';
+  const waitingForGpu = progress?.stage === 'waiting_for_gpu';
+  const running = !!progress && !waitingForGpu && progress.stage !== 'done' && progress.stage !== 'error';
   const failed = nodePublicKey
     ? nodeState === 'error'
-    : progress?.stage === 'error'
+    : !waitingForGpu && (progress?.stage === 'error'
       || !!meta?.run?.failure
-      || meta?.run?.tiers?.[tier]?.state === 'failed';
+      || meta?.run?.tiers?.[tier]?.state === 'failed');
 
   return (
     <section className="rf-coverage-status" aria-label="RF coverage status">
+      {!nodePublicKey && waitingForGpu && (
+        <div className="rf-coverage-progress" role="status">
+          Waiting for the GPU worker. {product && 'Showing the last published coverage.'}
+        </div>
+      )}
       {!nodePublicKey && running && (
         <div className="rf-coverage-progress" role="status">
           <strong>{stageLabel(progress.stage)}</strong>
@@ -60,9 +66,11 @@ export function RfCoverageStatus({
       )}
       {nodePublicKey && nodeState === 'pending' && (
         <div className="rf-coverage-progress" role="status">
-          {nodeEntry?.state === 'computing'
-            ? 'Calculating RF footprint...'
-            : 'Repeater coverage is pending an on-demand calculation.'}
+          {nodeEntry?.waiting_for_gpu
+            ? 'Waiting for the GPU worker to calculate the repeater footprint.'
+            : nodeEntry?.state === 'computing'
+              ? 'Calculating RF footprint...'
+              : 'Repeater coverage is pending an on-demand calculation.'}
         </div>
       )}
       {failed && (
@@ -115,12 +123,12 @@ export function RfCoverageStatus({
         ) : (
           <p className="rf-coverage-waiting">
             {nodePublicKey
-              ? nodeEntry?.state === 'computing'
-                ? 'Calculating RF footprint...'
-                : nodeEntry?.state === 'failed'
-                  ? 'Coverage could not be computed for this repeater.'
-                  : 'Coverage is pending an on-demand calculation.'
-              : 'Standard coverage is being prepared.'}
+              ? nodeEntry?.state === 'failed'
+                ? 'Coverage could not be computed for this repeater.'
+                : 'Coverage will appear after the repeater footprint is published.'
+              : waitingForGpu
+                ? 'Coverage will appear after the worker connects and publishes tiles.'
+                : 'Standard coverage is being prepared.'}
           </p>
         )}
       </div>

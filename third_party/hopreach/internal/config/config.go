@@ -222,7 +222,8 @@ type CalibrationConfig struct {
 type GPUConfig struct {
 	// Mode is "auto" (use GPU if a compatible device verifies against CPU,
 	// else CPU), "cpu" (skip the GPU probe entirely), or "gpu" (force GPU,
-	// hard error instead of falling back).
+	// hard error instead of falling back), or "remote" (require the remote
+	// worker and keep published output while it is unavailable).
 	Mode   string          `yaml:"mode"`
 	Remote GPURemoteConfig `yaml:"remote"`
 }
@@ -463,9 +464,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("coverage.precision_min_free_disk_gb must not be negative")
 	}
 	switch c.GPU.Mode {
-	case "auto", "cpu", "gpu":
+	case "auto", "cpu", "gpu", "remote":
 	default:
-		return fmt.Errorf("gpu.mode must be \"auto\", \"cpu\", or \"gpu\", got %q", c.GPU.Mode)
+		return fmt.Errorf("gpu.mode must be \"auto\", \"cpu\", \"gpu\", or \"remote\", got %q", c.GPU.Mode)
 	}
 	return nil
 }

@@ -13,15 +13,8 @@ import { isPermanentPersistenceError } from '../platform/persistenceErrors.js';
 import { observationIdentityKey } from './observationIdentity.js';
 
 const MAX_BATCH_SIZE = 50;
-/**
- * How long a batch may wait for company before flushing. The historical fixed
- * 50ms wait taxed every singleton batch, and a strictly serial ingest loop
- * produces nothing else. 0 flushes as soon as an entry is enqueued.
- */
-// Durable MQTT delivery is serial: the 2k local replay measured singleton
-// batches at both settings. Immediate flush removes idle wait without changing
-// the transaction, retry, queue or acknowledgement boundaries. Operators may
-// still select a collection interval for concurrent producers.
+// MQTT intake serializes each topic through commit, so a collection timer
+// cannot add the next delivery from a busy topic to the current batch.
 const FLUSH_INTERVAL_MS = boundedEnvInteger('MQTT_INGEST_FLUSH_MS', 0, 0, 1_000);
 /**
  * Upper bound on entries waiting to be persisted. Reaching it refuses new

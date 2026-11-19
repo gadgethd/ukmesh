@@ -51,4 +51,5 @@ for value in '' '1.9' 'garbage'; do
     echo 'Python invalid queue limit unexpectedly succeeded' >&2; exit 1
   fi
 done
+consumer trim-completed
 printf 'Cross-language link-v3 contract passed.\n'

@@ -19,8 +19,10 @@ test('multibyte fact backfill keys every observation row instead of packet hashe
   assert.match(sql, /p\.observation_id IS NOT NULL/);
   assert.match(sql, /ON CONFLICT \(observation_id\)/);
   assert.doesNotMatch(sql, /ON CONFLICT \(packet_hash\)/);
-  assert.match(sql, /distinct_hashes AS MATERIALIZED/);
+  assert.match(sql, /identity_nodes AS MATERIALIZED/);
   assert.match(sql, /node_prefixes AS MATERIALIZED/);
+  assert.match(sql, /FROM unnest\(trimmed\.hops\) WITH ORDINALITY/);
+  assert.doesNotMatch(sql, /source_rows AS MATERIALIZED|hop_eval AS MATERIALIZED/);
   assert.doesNotMatch(sql, /meshcore_decode_multibyte_path/);
 });
 

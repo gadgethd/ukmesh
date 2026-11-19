@@ -242,7 +242,10 @@ func TestMarginsChunkedMatchesUnchunked(t *testing.T) {
 
 	e := New() // no local GPU, no remote broker configured — forces the CPU path both sides go through
 	e.SetChunkBudgetBytes(testBudgetBytes)
-	want := e.Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	want, err := e.Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := e.MarginsChunked(bounds, zoom, t.TempDir(), srv.URL, client, sites, imageWidth, imageHeight, rangeKm, p, 1, nil)
 	if err != nil {
@@ -691,7 +694,10 @@ func TestComputeTileFallsBackAndResplitsWhenRemoteFails(t *testing.T) {
 	}
 	defer refGrid.Close()
 	refEngine := New()
-	want := refEngine.Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	want, err := refEngine.Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// Under test: a broker that reports a worker connected with a huge
 	// available-memory figure (so planning genuinely picks a large,
@@ -769,7 +775,10 @@ func TestComputeTileLocalRecursivelyResplitsWhenTooBigForBudget(t *testing.T) {
 		t.Fatalf("loading reference grid: %v", err)
 	}
 	defer refGrid.Close()
-	want := New().Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	want, err := New().Margins(refGrid, sites, bounds, imageWidth, imageHeight, rangeKm, p, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	// The whole region as a single "planned" tile, same shape planTiles
 	// itself would build for one tile spanning the entire bounds.

@@ -13,6 +13,7 @@ from common import owned_run, safe_error, utc_now, write_json
 
 
 def main() -> int:
+    from report import ACCEPTANCE_PROFILES
     parser = argparse.ArgumentParser(description=__doc__, epilog=
         "all refreshes service inventory and validates the complete collected run; "
         "explicit stages own traffic, fixture preparation and timed measurements.")
@@ -30,7 +31,15 @@ def main() -> int:
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--traffic-interval-ms", type=int, default=1000)
     parser.add_argument("--health-code")
+    parser.add_argument("--native-only", action="store_true", help="qualify paired native reads separately from fixed-demand stress")
+    parser.add_argument("--reuse-prepared", action="store_true", help="reuse an already converged owned soak fixture")
+    parser.add_argument("--acceptance-profile", choices=ACCEPTANCE_PROFILES, default="full-stack",
+                        help="mqtt-first requires matched native reads; fixed-demand and mixed-read latency remain advisory")
     args = parser.parse_args()
+    if args.native_only and (args.action != "reads" or not args.paired):
+        parser.error("--native-only requires reads --paired")
+    if args.reuse_prepared and args.action != "soak":
+        parser.error("--reuse-prepared requires soak")
     run = owned_run(args.run, create=args.action == "backup" and not args.run)
     try:
         if args.action == "backup":
@@ -49,7 +58,10 @@ def main() -> int:
             from common import REPO
             if args.paired and args.source_root:
                 raise ValueError('paired reads select sealed/current sources explicitly')
-            result = reads_pair(run) if args.paired else reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src")
+            if args.acceptance_profile == 'mqtt-first' and not args.paired:
+                raise ValueError('mqtt-first reads require --paired')
+            result = (reads_pair(run, native_only=args.native_only or args.acceptance_profile == 'mqtt-first') if args.paired else
+                      reads(run, label=args.label, source_root=args.source_root or REPO / "backend/src"))
         elif args.action == "operations":
             from operations import operations,operations_pair
             if args.paired and args.source_root:
@@ -68,18 +80,19 @@ def main() -> int:
             result = traffic(run, cycles=args.cycles, interval_ms=args.traffic_interval_ms, health_code=args.health_code)
         elif args.action == "soak":
             from soak import soak
-            result = soak(run, count=args.count, health_code=args.health_code)
+            result = soak(run, count=args.count, health_code=args.health_code, reuse_prepared=args.reuse_prepared,
+                          acceptance_profile=args.acceptance_profile)
         elif args.action == "recovery":
             from recovery import recovery
             result = recovery(run)
         elif args.action == "report":
             from report import report
-            result = report(run)
+            result = report(run, acceptance_profile=args.acceptance_profile)
         else:
             from probes import inventory
             from report import report
             inventory(run)
-            result = report(run)
+            result = report(run, acceptance_profile=args.acceptance_profile)
         print(json.dumps({"action": args.action, "run": str(run), "passed": result["passed"]}))
         return 0 if result["passed"] else 1
     except Exception as error:

@@ -16,6 +16,14 @@ export class SoakPublication {
   ackPublished:number|null=0;
   auxiliaryPublished:number|null=0;
   stage='input-validation';
+  readonly completedPhases: Partial<Record<'publication' | 'delivery' | 'drain' | 'reconciliation', Record<string, unknown>>> = {};
+
+  complete(phase: keyof SoakPublication['completedPhases'], details: Record<string, unknown>) {
+    if (this.completedPhases[phase]) throw new Error('soak phase already recorded');
+    const receipt = { ...details, version: 1, phase };
+    this.completedPhases[phase] = receipt;
+    return receipt;
+  }
 
   begin(): void {
     this.publicationStarted=true;this.ackPublished=null;this.auxiliaryPublished=null;this.stage='publication';
@@ -24,7 +32,7 @@ export class SoakPublication {
   failure(context:Record<string,unknown>,error:unknown) {
     return {...context,version:1,passed:false,phase:this.publicationStarted?'publication':'pre-publication',
       publicationStarted:this.publicationStarted,ackPublished:this.ackPublished,
-      auxiliaryPublished:this.auxiliaryPublished,stage:this.stage,
+      auxiliaryPublished:this.auxiliaryPublished,stage:this.stage,completedPhases:this.completedPhases,
       error:{name:error instanceof Error?error.name:'Error',message:error instanceof Error?error.message:String(error),
         ...(error&&typeof error==='object'&&'code' in error?{code:String(error.code)}:{}),...socketFailureDetails(error)}};
   }

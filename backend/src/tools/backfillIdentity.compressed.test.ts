@@ -4,16 +4,17 @@ import { createHash, randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import test, { type TestContext } from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
+import { backfillPackets, type BackfillEvent } from './backfillPacketIdentity.js';
 
 /**
  * Regression tests for the G2 defect: the identity backfill only enumerated
  * `is_compressed = FALSE` chunks, processed 1,860,579 of 3,796,145 eligible
  * rows, and still wrote `packets_complete`.
  *
- * These run against a real TimescaleDB (CI uses
- * `timescale/timescaledb:latest-pg16`): a genuine hypertable with one
- * compressed and one uncompressed chunk. `TEST_BACKFILL_DATABASE_URL` must
- * point at a throwaway loopback database.
+ * These run against a genuine TimescaleDB hypertable with one compressed and
+ * one uncompressed chunk. `TEST_BACKFILL_DATABASE_URL` identifies a local
+ * Timescale server on which the fixture can create disposable databases.
  *
  * Revert lines each test is built to catch:
  *  - packetChunks() back to `AND is_compressed = FALSE`          → (a), (b), (d)
@@ -25,12 +26,12 @@ import pg from 'pg';
 const databaseUrl = process.env['TEST_BACKFILL_DATABASE_URL'];
 const skip = databaseUrl
   ? false
-  : 'real TimescaleDB required: set TEST_BACKFILL_DATABASE_URL to a throwaway loopback database';
+  : 'real TimescaleDB required: set TEST_BACKFILL_DATABASE_URL to a loopback Timescale server';
 
 const backendRoot = fileURLToPath(new URL('../..', import.meta.url));
 const toolPath = fileURLToPath(new URL('./backfillPacketIdentity.ts', import.meta.url));
 
-type Fixture = pg.Pool;
+type Fixture = pg.Pool & { fixtureUrl: string };
 
 function wireFixture(fill: number): { hash: string; rawHex: string } {
   const body = Buffer.alloc(8, fill);
@@ -86,32 +87,13 @@ INSERT INTO ops.packet_identity_backfill_state (singleton) VALUES (TRUE);
 
 async function prepare(t: TestContext): Promise<Fixture> {
   assert.ok(databaseUrl, 'TEST_BACKFILL_DATABASE_URL is required');
-  const endpoint = new URL(databaseUrl);
-  assert.ok(
-    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname),
-    'only an isolated loopback test database is permitted',
-  );
-  const pool = new pg.Pool({ connectionString: databaseUrl, max: 2 });
-  t.after(async () => { await pool.end(); });
+  const fixture = await createDisposableDatabase(t, databaseUrl, 'identity_compressed');
+  const pool = Object.assign(new pg.Pool({ connectionString: fixture.url, max: 2 }), {
+    fixtureUrl: fixture.url,
+  });
+  fixture.addCleanup(() => pool.end());
 
-  const version = await pool.query<{ extversion: string }>(
-    `SELECT extversion FROM pg_extension WHERE extname = 'timescaledb'`,
-  );
-  assert.ok(version.rows[0], 'TEST_BACKFILL_DATABASE_URL must point at a TimescaleDB database');
-
-  const strays = await pool.query<{ table_schema: string }>(
-    `SELECT table_schema FROM information_schema.tables
-      WHERE table_schema NOT IN ('pg_catalog', 'information_schema', 'mesh', 'ops')
-        AND table_schema NOT LIKE 'pg\\_%'
-        AND table_schema NOT LIKE '\\_timescaledb%'
-        AND table_schema NOT LIKE 'timescaledb\\_%'`,
-  );
-  assert.equal(strays.rowCount, 0, 'refusing to run: the target database already holds other tables');
-
-  await pool.query(`
-    DROP SCHEMA IF EXISTS mesh CASCADE;
-    DROP SCHEMA IF EXISTS ops CASCADE;
-  `);
+  await pool.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
   await pool.query(FIXTURE_SQL);
   await pool.query(`SELECT create_hypertable('mesh.packets', 'time', chunk_time_interval => INTERVAL '1 day')`);
   // Production settings from migration 051.
@@ -162,12 +144,11 @@ type BackfillRun = {
   summary: BackfillSummary | undefined;
 };
 
-function runBackfill(args: string[]): Promise<BackfillRun> {
-  assert.ok(databaseUrl);
+function runBackfill(pool: Fixture, args: string[]): Promise<BackfillRun> {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, ['--import', 'tsx', toolPath, ...args], {
       cwd: backendRoot,
-      env: { ...process.env, BACKFILL_DATABASE_URL: databaseUrl },
+      env: { ...process.env, BACKFILL_DATABASE_URL: pool.fixtureUrl },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     let stdout = '';
@@ -269,7 +250,7 @@ test(
     const before = await chunkStates(pool);
     assert.deepEqual(before.map((chunk) => chunk.compressed), [true, false], 'fixture: one compressed, one not');
 
-    const run = await runBackfill(['--batch-size', '2']);
+    const run = await runBackfill(pool, ['--batch-size', '2']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 6);
@@ -332,7 +313,7 @@ test(
 
     // batch-size 1 forces one batch per row: the pre-fix tool stopped after the
     // first batch of each chunk and reported 2.
-    const run = await runBackfill(['--dry-run', '--batch-size', '1']);
+    const run = await runBackfill(pool, ['--dry-run', '--batch-size', '1']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 6, 'a dry run must visit every batch of every chunk');
@@ -374,7 +355,7 @@ test(
     await insertPacket(pool, { time: '2026-03-03 00:00:01+00', hash: truncated.hash, rawHex: '0100' });
     await compressChunkStartingAt(pool, '2026-03-01 00:00:00+00');
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 3);
@@ -411,7 +392,7 @@ test(
     await insertPacket(pool, { time: '2026-04-03 00:00:01+00', hash: later.hash, rawHex: later.rawHex });
     await compressChunkStartingAt(pool, '2026-04-03 00:00:00+00');
 
-    const limited = await runBackfill(['--batch-size', '10', '--limit', '1']);
+    const limited = await runBackfill(pool, ['--batch-size', '10', '--limit', '1']);
     assert.equal(limited.code, 0, limited.stderr);
     assert.ok(limited.summary, limited.stdout);
     assert.equal(limited.summary.selected, 1, '--limit 1 stops after the first row');
@@ -431,7 +412,7 @@ test(
     assert.deepEqual(compressedAfterLimit.map((chunk) => chunk.compressed), [false, true],
       'a chunk the limit never reached must not be left decompressed');
 
-    const resumed = await runBackfill(['--batch-size', '10']);
+    const resumed = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(resumed.code, 0, resumed.stderr);
     assert.ok(resumed.summary, resumed.stdout);
     assert.equal(resumed.summary.selected, 1, 'the resumed run picks up the remaining row');
@@ -463,7 +444,7 @@ test(
     }
     await compressChunkStartingAt(pool, '2026-05-01 00:00:00+00');
 
-    const run = await runBackfill(['--batch-size', '1', '--limit', '1']);
+    const run = await runBackfill(pool, ['--batch-size', '1', '--limit', '1']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 1);
@@ -514,7 +495,7 @@ test(
              resolved = 1, batch_count = 1
     `, [recent.hash]);
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.selected, 2, 'the compressed chunk must be re-read despite the cursor');
@@ -559,7 +540,7 @@ test(
       [key],
     );
 
-    const run = await runBackfill(['--batch-size', '10']);
+    const run = await runBackfill(pool, ['--batch-size', '10']);
     assert.equal(run.code, 0, run.stderr);
     assert.ok(run.summary, run.stdout);
     assert.equal(run.summary.resolved, 2);
@@ -570,5 +551,269 @@ test(
 
     const chunks = await chunkStates(pool);
     assert.equal(chunks[0]?.compressed, true);
+  },
+);
+
+async function stateRow(pool: Fixture): Promise<{
+  status: string;
+  status_reason: string | null;
+  high_water: string | null;
+  decompressed_chunks: string[];
+}> {
+  const result = await pool.query(`
+    SELECT status, status_reason, high_water::text AS high_water, decompressed_chunks
+      FROM ops.packet_identity_backfill_state
+  `);
+  return result.rows[0]!;
+}
+
+async function chunkKeys(pool: Fixture): Promise<string[]> {
+  const result = await pool.query<{ key: string }>(`
+    SELECT chunk_schema || '.' || chunk_name AS key
+      FROM timescaledb_information.chunks
+     WHERE hypertable_name = 'packets'
+     ORDER BY range_start
+  `);
+  return result.rows.map((row) => row.key);
+}
+
+/**
+ * A pre-existing non-NULL high_water used to be applied forever: rows newer
+ * than it were invisible while the run still reported `packets_complete`.
+ * The run snapshot must replace it every time.
+ */
+test(
+  'a stale non-NULL high_water does not hide later eligible rows',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const old = wireFixture(0xc1);
+    const recent = wireFixture(0xc2);
+    await insertPacket(pool, { time: '2026-09-01 00:00:01+00', hash: old.hash, rawHex: old.rawHex });
+    await insertPacket(pool, { time: '2026-09-03 00:00:01+00', hash: recent.hash, rawHex: recent.rawHex });
+    await compressChunkStartingAt(pool, '2026-09-01 00:00:00+00');
+
+    await pool.query(`
+      UPDATE ops.packet_identity_backfill_state
+         SET status = 'packets_complete', high_water = '2026-09-01 00:00:00+00'::timestamptz,
+             last_time = NULL, last_observation_id = NULL
+    `);
+
+    const run = await runBackfill(pool, ['--batch-size', '10']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.ok(run.summary, run.stdout);
+    assert.equal(run.summary.selected, 2, 'the row above the stale high_water must be selected');
+    assert.equal(run.summary.resolved, 2);
+    assert.equal(run.summary.status, 'packets_complete');
+
+    const state = await stateRow(pool);
+    assert.equal(state.status, 'packets_complete');
+    const advanced = await pool.query<{ same: boolean }>(
+      `SELECT high_water = '2026-09-03 00:00:01+00'::timestamptz AS same
+         FROM ops.packet_identity_backfill_state`,
+    );
+    assert.equal(advanced.rows[0]!.same, true, 'the watermark must advance to this run snapshot');
+    const unresolved = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM mesh.packets WHERE packet_uid IS NULL',
+    );
+    assert.equal(unresolved.rows[0]!.n, '0');
+  },
+);
+
+/**
+ * A resumed cursor must still see an eligible row that arrived after the
+ * checkpoint and after the previous high_water.
+ */
+test(
+  'a resumed cursor does not hide a late eligible row above the old watermark',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const a = wireFixture(0xd1);
+    const b = wireFixture(0xd2);
+    const c = wireFixture(0xd3);
+    const late = wireFixture(0xd4);
+    await insertPacket(pool, { time: '2026-10-01 00:00:01+00', hash: a.hash, rawHex: a.rawHex });
+    await insertPacket(pool, { time: '2026-10-01 00:00:02+00', hash: b.hash, rawHex: b.rawHex });
+    await insertPacket(pool, { time: '2026-10-03 00:00:01+00', hash: c.hash, rawHex: c.rawHex });
+    await compressChunkStartingAt(pool, '2026-10-01 00:00:00+00');
+
+    // The first two rows are already resolved; the checkpoint sits at the last
+    // of them and the old watermark equals the checkpoint instant.
+    await pool.query(`
+      UPDATE mesh.packets SET packet_uid = decode(packet_hash, 'hex')
+       WHERE time <= '2026-10-01 00:00:02+00'::timestamptz
+    `);
+    const checkpoint = await pool.query<{ time: string; observation_id: string }>(`
+      SELECT time::text AS time, observation_id::text AS observation_id
+        FROM mesh.packets WHERE packet_hash = $1
+    `, [b.hash]);
+    await pool.query(`
+      UPDATE ops.packet_identity_backfill_state
+         SET status = 'packets_complete', high_water = $1::timestamptz,
+             last_time = $1::timestamptz, last_observation_id = $2::uuid
+    `, [checkpoint.rows[0]!.time, checkpoint.rows[0]!.observation_id]);
+
+    // Arrives after the checkpoint and above the old high_water.
+    await insertPacket(pool, { time: '2026-10-04 00:00:01+00', hash: late.hash, rawHex: late.rawHex });
+
+    const run = await runBackfill(pool, ['--batch-size', '10']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.ok(run.summary, run.stdout);
+    assert.equal(run.summary.selected, 2, 'both the unseen row and the late row must be selected');
+    assert.equal(run.summary.resolved, 2);
+    assert.equal(run.summary.status, 'packets_complete');
+    const advanced = await pool.query<{ same: boolean }>(
+      `SELECT high_water = '2026-10-04 00:00:01+00'::timestamptz AS same
+         FROM ops.packet_identity_backfill_state`,
+    );
+    assert.equal(advanced.rows[0]!.same, true);
+    const unresolved = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM mesh.packets WHERE packet_uid IS NULL',
+    );
+    assert.equal(unresolved.rows[0]!.n, '0');
+  },
+);
+
+/**
+ * The crash window: ownership must be durable before `decompress_chunk`
+ * commits, so a process that dies immediately after decompression is still
+ * recoverable by the next run.
+ */
+test(
+  'decompression ownership is persisted before the chunk is decompressed',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const rows = [0xe1, 0xe2].map(wireFixture);
+    for (let index = 0; index < rows.length; index += 1) {
+      await insertPacket(pool, {
+        time: `2026-11-01 00:00:0${index + 1}+00`, hash: rows[index]!.hash, rawHex: rows[index]!.rawHex,
+      });
+    }
+    await compressChunkStartingAt(pool, '2026-11-01 00:00:00+00');
+
+    const events: BackfillEvent[] = [];
+    const result = await backfillPackets(pool, 10, false, 0, null, {
+      onEvent: (event) => { events.push(event); },
+    });
+    assert.equal(result.status, 'packets_complete');
+    const persisted = events.findIndex(
+      (event) => event.type === 'persist-decompressed' && event.phase === 'decompress-intent',
+    );
+    const decompressed = events.findIndex((event) => event.type === 'decompress');
+    assert.ok(persisted >= 0, 'the run must announce the decompression intent');
+    assert.ok(decompressed > persisted, 'the marker must be persisted before the chunk is decompressed');
+
+    const chunks = await chunkStates(pool);
+    assert.equal(chunks[0]?.compressed, true, 'the chunk must be compressed again');
+    const state = await stateRow(pool);
+    assert.deepEqual(state.decompressed_chunks, []);
+  },
+);
+
+/** A marker write failure must abort before the chunk is modified. */
+test(
+  'a decompression-ownership persist failure leaves the chunk compressed and fails the run',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const row = wireFixture(0xf1);
+    await insertPacket(pool, { time: '2026-12-01 00:00:01+00', hash: row.hash, rawHex: row.rawHex });
+    await compressChunkStartingAt(pool, '2026-12-01 00:00:00+00');
+
+    await assert.rejects(
+      backfillPackets(pool, 10, false, 0, null, {
+        onEvent: (event) => {
+          if (event.type === 'persist-decompressed' && event.phase === 'decompress-intent') {
+            throw new Error('injected marker write failure');
+          }
+        },
+      }),
+      /cannot record decompression ownership/,
+    );
+
+    const chunks = await chunkStates(pool);
+    assert.equal(chunks[0]?.compressed, true, 'the chunk must not be decompressed without a durable marker');
+    const state = await stateRow(pool);
+    assert.equal(state.status, 'failed');
+    assert.match(state.status_reason ?? '', /cannot record decompression ownership/);
+  },
+);
+
+/** A per-chunk recompression failure must not be swallowed. */
+test(
+  'a per-chunk recompress failure fails the run instead of claiming completion',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const rows = [0x101, 0x102].map(wireFixture);
+    for (let index = 0; index < rows.length; index += 1) {
+      await insertPacket(pool, {
+        time: `2027-01-01 00:00:0${index + 1}+00`, hash: rows[index]!.hash, rawHex: rows[index]!.rawHex,
+      });
+    }
+    await compressChunkStartingAt(pool, '2027-01-01 00:00:00+00');
+
+    let injected = false;
+    await assert.rejects(
+      backfillPackets(pool, 10, false, 0, null, {
+        onEvent: (event) => {
+          if (!injected && event.type === 'recompress' && event.phase === 'per-chunk') {
+            injected = true;
+            throw new Error('injected per-chunk recompress failure');
+          }
+        },
+      }),
+      /cannot recompress chunk .*Aborting so completion is not claimed/,
+    );
+
+    const state = await stateRow(pool);
+    assert.equal(state.status, 'failed', 'a recompress failure must never leave packets_complete');
+    assert.match(state.status_reason ?? '', /cannot recompress chunk/);
+    assert.deepEqual(state.decompressed_chunks, [], 'cleanup must reclaim the decompression');
+    const chunks = await chunkStates(pool);
+    assert.equal(chunks[0]?.compressed, true);
+    const resolved = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM mesh.packets WHERE packet_uid IS NOT NULL',
+    );
+    assert.equal(resolved.rows[0]!.n, '2');
+  },
+);
+
+/** A final recompression failure must abort before completion is written. */
+test(
+  'a final recompress failure fails the run and keeps the chunk owned',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const rows = [0x111, 0x112].map(wireFixture);
+    for (let index = 0; index < rows.length; index += 1) {
+      await insertPacket(pool, {
+        time: `2027-02-01 00:00:0${index + 1}+00`, hash: rows[index]!.hash, rawHex: rows[index]!.rawHex,
+      });
+    }
+    await compressChunkStartingAt(pool, '2027-02-01 00:00:00+00');
+
+    await assert.rejects(
+      // batch/limit 1 leaves the chunk incomplete, so its recompression is
+      // deferred to the final pass.
+      backfillPackets(pool, 1, false, 1, null, {
+        onEvent: (event) => {
+          if (event.type === 'recompress' && event.phase === 'final') {
+            throw new Error('injected final recompress failure');
+          }
+        },
+      }),
+      /cannot recompress 1 chunk\(s\) decompressed by this run/,
+    );
+
+    const state = await stateRow(pool);
+    assert.equal(state.status, 'failed');
+    assert.match(state.status_reason ?? '', /cannot recompress 1 chunk\(s\)/);
+    const keys = await chunkKeys(pool);
+    assert.deepEqual(state.decompressed_chunks, keys, 'the marker must keep the unrecompressed chunk owned');
+    const chunks = await chunkStates(pool);
+    assert.equal(chunks[0]?.compressed, false, 'the injected failure must leave the chunk decompressed');
   },
 );

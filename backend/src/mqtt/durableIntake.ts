@@ -21,7 +21,8 @@ export function installDurableMqttIntake(
   options: {
     maxItems?: number; maxBytes?: number; concurrency?: number; depth?: (count: number) => void;
     observeQueueWait?: (seconds: number) => void;
-    observeWireAck?: (seconds: number) => void;
+    observeAdmission?: (qos: 0 | 1) => void;
+    observeWireAck?: (seconds: number, packet: Packet) => void;
   } = {},
 ) {
   const wire = client as unknown as { _sendPacket: Send };
@@ -64,7 +65,9 @@ export function installDurableMqttIntake(
           if (!job.ack) throw new Error('MQTT_DURABLE_ACK_MISSING');
           originalSend(job.ack, (error) => {
             if (error) fail(job, error);
-            else options.observeWireAck?.(Number(process.hrtime.bigint() - job.admittedAt) / 1e9);
+            else if (client.stream === job.stream) {
+              options.observeWireAck?.(Number(process.hrtime.bigint() - job.admittedAt) / 1e9, job.packet);
+            }
           });
         }
       }).catch((cause: unknown) => fail(job, cause)).finally(() => {
@@ -108,6 +111,7 @@ export function installDurableMqttIntake(
     pending.push(job);
     count += 1;
     bytes += size;
+    options.observeAdmission?.(incoming.qos);
     update();
     callback();
     pump();

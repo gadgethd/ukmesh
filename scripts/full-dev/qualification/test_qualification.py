@@ -35,6 +35,7 @@ import core_projection
 import source_identity
 import context
 import operations
+import cli
 from unittest.mock import Mock
 from test_role_evidence import database_identity, role_context
 
@@ -189,6 +190,36 @@ class ActualTargetOwnership(unittest.TestCase):
         self.assertEqual(profile('lean_1x_owned'),profile('lean_10x_owned'))
 
 
+class FixtureCloneProtection(unittest.TestCase):
+    def test_selected_fixture_cannot_be_cloned(self):
+        source = {"kind": "1x", "databases": [{"database": "owned"}]}
+        with patch.object(fixtures, "target_lease", return_value=nullcontext()), \
+                patch.object(fixtures, "publication_lease", return_value=nullcontext()), \
+                patch.object(fixtures, "bundle", return_value=source), \
+                patch.object(fixtures, "current_targets", return_value={"ukmesh": "owned"}), \
+                patch.object(fixtures, "docker") as docker:
+            with self.assertRaisesRegex(ValueError, "restore original targets"):
+                fixtures.clone_bundle("owned")
+            docker.assert_not_called()
+
+    def test_clone_keeps_disk_floor_before_starting_any_database(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            (directory / "analyzer.db").write_bytes(b"sqlite fixture")
+            source = {"kind": "10x", "corescope_data_dir": temporary,
+                      "databases": [{"database": "owned", "container": "local", "user": "owner"}]}
+            with patch.object(fixtures, "target_lease", return_value=nullcontext()), \
+                    patch.object(fixtures, "publication_lease", return_value=nullcontext()), \
+                    patch.object(fixtures, "bundle", return_value=source), \
+                    patch.object(fixtures, "current_targets", return_value={"ukmesh": "original"}), \
+                    patch.object(fixtures, "sql", return_value=str(8 * 1024**3)), \
+                    patch.object(fixtures.shutil, "disk_usage", return_value=Mock(free=16 * 1024**3)), \
+                    patch.object(fixtures, "reserve_bundle") as reserve:
+                with self.assertRaisesRegex(ValueError, "10 GiB floor"):
+                    fixtures.clone_bundle("owned")
+                reserve.assert_not_called()
+
+
 class LookupSourceEvidence(unittest.TestCase):
     def test_all_measurements_require_the_sealed_baseline_and_current_candidate(self):
         expected={label:{'source_root':'/'+label,'sha256':label,'revision':'ref','files':2}
@@ -255,17 +286,29 @@ class HTTPReaderOwnership(unittest.TestCase):
         calls=[]
         def fake(args,**kwargs):
             calls.append(args)
-            if args[0]=='inspect':return subprocess.CompletedProcess(args,0,json.dumps([self.backend()]).encode(),b'')
+            if args[0] == 'inspect':
+                item = self.backend() if len(calls) == 1 else {
+                    'Id': 'foreign', 'Name': '/foreign', 'Config': {'Labels': {}}, 'Mounts': []}
+                return subprocess.CompletedProcess(args, 0, json.dumps([item]).encode(), b'')
+            if args[0] == 'ps':
+                return subprocess.CompletedProcess(args, 0, b'foreign\n', b'')
             raise subprocess.CalledProcessError(1,args)
         with tempfile.TemporaryDirectory() as directory,patch.object(read_transport,'docker',fake):
             with self.assertRaises(subprocess.CalledProcessError):read_transport.start_reader(Path(directory))
-        self.assertEqual([call[0] for call in calls],['inspect','run'])
+        self.assertEqual([call[0] for call in calls], ['inspect', 'run', 'ps', 'inspect'])
 
     def test_wrong_cleanup_label_never_authorizes_deletion(self):
-        item={'Name':'/ukmesh-owned-http-reader-owned','Config':{'Labels':{}}}
-        with patch.object(read_transport,'docker',return_value=subprocess.CompletedProcess([],0,json.dumps([item]).encode(),b'')) as docker:
-            with self.assertRaisesRegex(ValueError,'ownership marker'):read_transport.stop_reader('ukmesh-owned-http-reader-owned')
-            self.assertEqual(docker.call_count,1)
+        name = 'ukmesh-owned-http-reader-2468abcde123'
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            common.write_json(run / 'http-reader/owner.json', {'name': name, 'started': True})
+            item = {'Id': 'exact-id', 'Name': '/' + name, 'Config': {'Labels': {}}, 'Mounts': []}
+            with patch.object(read_transport, 'docker', side_effect=[
+                    subprocess.CompletedProcess([], 0, b'exact-id', b''),
+                    subprocess.CompletedProcess([], 0, json.dumps([item]).encode(), b'')]) as docker:
+                with self.assertRaisesRegex(ValueError, 'ownership differs'):
+                    read_transport.recover_reader(run)
+                self.assertEqual(docker.call_count, 2)
 
     def test_stopped_backend_is_not_a_client_namespace(self):
         with tempfile.TemporaryDirectory() as directory,patch.object(read_transport,'docker',return_value=
@@ -274,24 +317,30 @@ class HTTPReaderOwnership(unittest.TestCase):
             self.assertEqual(docker.call_count,1)
 
     def test_missing_alias_cannot_keep_a_proven_owned_helper_resident(self):
-        name='ukmesh-owned-http-reader-alias-test'
-        item={'Name':'/'+name,'Config':{'Labels':{'ukmesh.owned-http-reader':name,
-              'ukmesh.http-reader.alias':'/not-owned','ukmesh.http-reader.directory':'/private-run'}}}
-        def fake(args,**kwargs):
-            return subprocess.CompletedProcess(args,0,json.dumps([item]).encode() if args[0]=='inspect' else b'',b'')
-        with patch.object(read_transport,'docker',side_effect=fake) as docker:
-            with self.assertRaisesRegex(ValueError,'reader was removed'):read_transport.stop_reader(name)
-            self.assertEqual(docker.call_args_list[-1].args[0],['rm','-f',name])
+        name = 'ukmesh-owned-http-reader-13579aceb246'
+        with tempfile.TemporaryDirectory() as directory:
+            run = Path(directory)
+            path = run / 'http-reader'
+            common.write_json(path / 'owner.json', {'name': name, 'started': True})
+            item = {'Id': 'exact-id', 'Name': '/' + name, 'Config': {'Labels': {
+                'ukmesh.owned-http-reader': name, 'ukmesh.http-reader.alias': str(Path(tempfile.gettempdir()) / name),
+                'ukmesh.http-reader.directory': str(path)}}, 'Mounts': [{'Source':str(path), 'Destination':'/reader'}]}
+            replies = [b'exact-id', json.dumps([item]).encode(), b'']
+            with patch.object(read_transport, 'docker',
+                              side_effect=[subprocess.CompletedProcess([], 0, reply, b'') for reply in replies]) as docker:
+                with self.assertRaisesRegex(ValueError, 'reader was removed'):
+                    read_transport.recover_reader(run, require_alias=True)
+                self.assertEqual(docker.call_args.args[0], ['rm', '-f', 'exact-id'])
 
     def test_reader_is_removed_when_companion_finish_fails_after_partial_start(self):
         worker=Mock();worker.is_alive.return_value=False
         health_worker=Mock();health_worker.is_alive.return_value=False
         companions=Mock();companions.finish.side_effect=RuntimeError('reader failed')
         stop=Mock()
-        with patch.object(soak,'stop_reader') as remove:
+        with patch.object(soak,'recover_reader') as remove:
             with self.assertRaisesRegex(RuntimeError,'reader failed'):
                 soak.stop_measurements(worker,health_worker,companions,stop,'owned-reader')
-            remove.assert_called_once_with('owned-reader');stop.set.assert_called_once()
+            remove.assert_called_once_with('owned-reader', require_alias=True);stop.set.assert_called_once()
         worker.join.assert_not_called();health_worker.join.assert_not_called()
 
 
@@ -471,6 +520,20 @@ class ExecutableInventory(unittest.TestCase):
 
 
 class ResourceAcceptance(unittest.TestCase):
+    def test_lookup_counters_keep_only_completed_role_statements(self):
+        query = {**dict.fromkeys(resources.LOOKUP_COUNTERS, 0), 'shape': 'short-search'}
+        generation = {'stats_reset': 'original', 'deallocations': 0}
+        first = {**generation, 'statements': {'123': {**query, 'calls': 2, 'total_exec_time': 4.5},
+                                             '456': query}}
+        second = {**generation, 'statements': {'123': {**query, 'calls': 3, 'total_exec_time': 12.5},
+                                              '456': query}}
+        self.assertEqual(resources.lookup_query_deltas(first, second),
+                         {'statements': {'123': {**query, 'calls': 1, 'total_exec_time': 8.0}},
+                          'scope': 'selected database and HTTP role, including other sessions and native preparation'})
+        self.assertIn('error', resources.lookup_query_deltas(second, first))
+        self.assertIn('error', resources.lookup_query_deltas(first, {**second, 'deallocations': 1}))
+        self.assertIn('error', resources.lookup_query_deltas(first, {**second, 'statements': {}}))
+
     def sample_workload(self,duration,finished_at):
         test_clock={'now':0.0};ready_at=[]
         base=resource_rows()[0]
@@ -561,15 +624,61 @@ class ResourceAcceptance(unittest.TestCase):
 
 
 class EvidenceAcceptance(unittest.TestCase):
+    def test_cli_selects_profile_explicitly_without_changing_the_full_stack_default(self):
+        with patch.object(cli, 'owned_run', return_value=Path('/unused-owned-run')), \
+                patch.object(soak, 'soak', return_value={'passed': True}) as operation, patch('builtins.print'):
+            for flags, expected in (([], 'full-stack'), (['--acceptance-profile', 'mqtt-first'], 'mqtt-first')):
+                with patch('sys.argv', ['qualification', 'soak', '--count', '300', *flags]):
+                    self.assertEqual(cli.main(), 0)
+                    self.assertEqual(operation.call_args.kwargs['acceptance_profile'], expected)
+
     def test_cold_route_failures_or_missing_warmup_cannot_disappear_from_soak_evidence(self):
         value={'passed':True,'settings':{'count':72000,'rate':30,'httpConcurrency':8},'drained':True,
                'wsPackets':72000,'logs_passed':True,'socketReadiness':{'initialState':True,'unexpectedCloses':0},
+               'acceptance_profile':'full-stack','readLatency':{'passed':True,'advisory':False},
                'warmupReads':[{'status':200} for _ in range(8)]}
         self.assertFalse(report.phase_check('soak',value)[0])
         value['settings']['httpWarmup']=True
         self.assertTrue(report.phase_check('soak',value)[0])
         value['warmupReads'][0]['status']=503
         self.assertFalse(report.phase_check('soak',value)[0])
+
+    def test_mqtt_first_keeps_latency_advisory_but_cannot_qualify_as_full_stack(self):
+        value = {'passed': True, 'acceptance_profile': 'mqtt-first',
+                 'settings': {'count': 72000, 'rate': 30, 'httpConcurrency': 8, 'httpWarmup': True},
+                 'drained': True, 'wsPackets': 72000, 'logs_passed': True,
+                 'socketReadiness': {'initialState': True, 'unexpectedCloses': 0},
+                 'warmupReads': [{'status': 200} for _ in range(8)],
+                 'readLatency': {'passed': False, 'advisory': True}}
+        self.assertTrue(report.phase_check('soak', value, acceptance_profile='mqtt-first')[0])
+        self.assertFalse(report.phase_check('soak', value)[0])
+        for changed in ({'drained': False}, {'wsPackets': 71999}, {'logs_passed': False},
+                        {'acceptance_profile': 'full-stack'}, {'readLatency': {'passed': False, 'advisory': False}}):
+            with self.subTest(changed=changed):
+                self.assertFalse(report.phase_check('soak', {**value, **changed}, acceptance_profile='mqtt-first')[0])
+
+    def test_phase_receipts_keep_exact_native_bytes_and_refuse_other_invocations(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'native-soak'
+            source = Path(temporary) / 'source'
+            expected = {'version': 1, 'invocationToken': 'owned', 'database': 'lean_1x_owned',
+                        'outputDirectory': str(output), 'dataDirectory': str(source),
+                        'toolSha256': common.digest(common.REPO / 'backend/src/tools/soakDatabaseLookups.ts')}
+            for phase in soak.SOAK_PHASES:
+                common.write_json(output / ('phase-' + phase + '.json'), {**expected, 'phase': phase, 'passed': True})
+            before = {p.name: p.read_bytes() for p in output.iterdir()}
+            records = soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)
+            self.assertTrue(all(row['passed'] for row in records))
+            self.assertEqual(before, {p.name: p.read_bytes() for p in output.iterdir()})
+            self.assertFalse(any(row['passed'] for row in soak.phase_receipts(
+                output, invocation='other', database='lean_1x_owned', source=source)))
+            (output / 'phase-reconciliation.json').unlink()
+            partial = soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)
+            self.assertTrue(all(row['passed'] for row in partial[:3]))
+            self.assertFalse(partial[-1]['passed'])
+            changed = {**expected, 'phase': 'publication', 'passed': True, 'toolSha256': 'old-source'}
+            common.write_json(output / 'phase-publication.json', changed)
+            self.assertFalse(soak.phase_receipts(output, invocation='owned', database='lean_1x_owned', source=source)[0]['passed'])
 
     def test_missing_phases_and_short_soak_fail_even_with_passed_flag(self):
         self.assertFalse(report.phase_check("soak", {"passed": True, "settings": {"count": 30, "rate": 30,

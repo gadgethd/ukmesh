@@ -49,6 +49,7 @@ export type RfNodeCoverage = {
   fresh_until?: string;
   completed_tiles?: number;
   total_tiles?: number;
+  waiting_for_gpu?: boolean;
   standard?: RfCoverageTier;
   failure?: string;
 };

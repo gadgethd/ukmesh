@@ -91,14 +91,17 @@ func marginsToImage(margins []float32, imageWidth, imageHeight int, p propagatio
 // pixels wide (height follows bounds' real-world aspect ratio). progress is
 // called periodically with (rowsDone, totalRows). Uses engine's configured
 // backend (local GPU, remote GPU, or CPU).
-func Raster(engine *compute.Engine, grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, imageWidth int, p propagation.Params, maxAlpha uint8, progress func(done, total int)) *image.NRGBA {
+func Raster(engine *compute.Engine, grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, imageWidth int, p propagation.Params, maxAlpha uint8, progress func(done, total int)) (*image.NRGBA, error) {
 	width, height := dimensions(bounds, imageWidth)
 	if width == 0 {
-		return nil
+		return nil, nil
 	}
 	rangeKm := propagation.LinkBudgetMaxRangeKm(p)
-	margins := engine.Margins(grid, sites, bounds, width, height, rangeKm, p, progress)
-	return marginsToImage(margins, width, height, p, maxAlpha)
+	margins, err := engine.Margins(grid, sites, bounds, width, height, rangeKm, p, progress)
+	if err != nil {
+		return nil, err
+	}
+	return marginsToImage(margins, width, height, p, maxAlpha), nil
 }
 
 // dimensions returns the raster pixel dimensions for imageWidth covering
@@ -126,10 +129,10 @@ func dimensions(bounds propagation.Bounds, imageWidth int) (width, height int) {
 // before colouring, so the extra detail shows up as proper anti-aliasing
 // (smoother, more accurate edges) rather than inflating the size of the PNG
 // actually sent to browsers. supersample<=1 behaves exactly like Raster.
-func RasterSupersampled(engine *compute.Engine, grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, servedWidth, supersample int, p propagation.Params, maxAlpha uint8, progress func(done, total int)) *image.NRGBA {
+func RasterSupersampled(engine *compute.Engine, grid *demgrid.Grid, sites []propagation.Site, bounds propagation.Bounds, servedWidth, supersample int, p propagation.Params, maxAlpha uint8, progress func(done, total int)) (*image.NRGBA, error) {
 	servedW, servedH := dimensions(bounds, servedWidth)
 	if servedW == 0 {
-		return nil
+		return nil, nil
 	}
 	if supersample < 1 {
 		supersample = 1
@@ -137,9 +140,12 @@ func RasterSupersampled(engine *compute.Engine, grid *demgrid.Grid, sites []prop
 	computeW, computeH := servedW*supersample, servedH*supersample
 
 	rangeKm := propagation.LinkBudgetMaxRangeKm(p)
-	margins := engine.Margins(grid, sites, bounds, computeW, computeH, rangeKm, p, progress)
+	margins, err := engine.Margins(grid, sites, bounds, computeW, computeH, rangeKm, p, progress)
+	if err != nil {
+		return nil, err
+	}
 	margins, _, _ = compute.DownsampleMargins(margins, computeW, computeH, supersample)
-	return marginsToImage(margins, servedW, servedH, p, maxAlpha)
+	return marginsToImage(margins, servedW, servedH, p, maxAlpha), nil
 }
 
 // RasterSupersampledChunked is RasterSupersampled for regions too large to

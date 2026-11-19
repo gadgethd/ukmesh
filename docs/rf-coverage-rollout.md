@@ -4,11 +4,12 @@ Status: implemented and release-gated for production rollout.
 
 Evidence date: 2026-08-02
 
-Canonical model: the public UK Mesh HopReach tag
+The vendored model is based on the public UK Mesh HopReach tag
 [`v0.1.32-ukmesh.4`](https://github.com/gadgethd/hopreach/tree/v0.1.32-ukmesh.4)
 at commit `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119`, based directly on upstream
-v0.1.32 commit `61efac0b4678f55496fe08f53eda0c79eb18655b`. The tagged tree is vendored
-at `third_party/hopreach`.
+v0.1.32 commit `61efac0b4678f55496fe08f53eda0c79eb18655b`. The corresponding
+source for the remote coordinator is the vendored tree in the UKMesh
+integration revision. [Source offer](../rf-coverage/SOURCE-OFFER.md)
 
 ## Release invariants
 
@@ -19,9 +20,8 @@ at `third_party/hopreach`.
 - Use digest-pinned backend, HopReach, and app images built by the signed
   release workflow. Confirm the backend/app revision label is the integration
   release commit. The release workflow also binds HopReach's OCI revision label
-  to that integration commit; its calculator source/version is the unchanged
-  vendored `58b2eb9ccdadd2e1b5e54c7548e48f92cc526119` / `v0.1.32-ukmesh.4`.
-  Verify both the signed integration inventory and the vendored source pin.
+  to that integration commit. Verify the signed integration inventory and
+  confirm the OCI source points to the UKMesh repository.
 - Do not enable calibrated variants. The production profile deliberately has
   `calibration.enabled: false`; evidence validation is a separate rollout.
 - Do not reduce range, node count, terrain zoom, supersampling, or RF fidelity
@@ -58,10 +58,27 @@ start only after Standard is live, the free-disk gate passes, and then uses
 publication tile computes against every transmitter within the unchanged
 link-budget maximum range. Tiles and checkpoints are atomically replaced.
 
-The calculator owns a singleton lock, nightly schedule, persistent DEM cache,
-input signature, and resumable checkpoint. During recomputation the app serves
-the previous last-known-good set plus newly completed current tiles. A failed
-or restarted run therefore cannot blank the layer.
+The coordinator owns a singleton lock, nightly schedule, transmitter terrain
+cache, input signature, and resumable checkpoint. The GPU worker owns raster
+terrain and propagation. During recomputation the app serves
+the previous last-known-good set plus newly completed current tiles. When the
+worker is unavailable the coordinator reports that it is waiting and retries
+due work with its checkpoint intact.
+
+## Pair a private GPU worker
+
+- In DEV, put a generated 64-character hexadecimal token in
+  `plans/lean-runtime/runtime/hopreach-worker.token` with mode `0600` and
+  restart HopReach with `bash scripts/dev-all.sh restart hopreach`. A main
+  Compose deployment can provide an operator-owned configuration file via
+  `HOPREACH_CONFIG_PATH` with the matching `remote_worker.token`.
+- Forward the VM's loopback port `19101` to the GPU machine over an
+  authenticated private tunnel. Use the forwarded `/gpu-worker` WebSocket
+  URL and the same `GPU_WORKER_TOKEN` in the worker's private environment.
+  The exposed listener serves just that WebSocket path. The job submit,
+  progress, plan and admin routes stay on their existing internal listeners.
+- The dashboard can start before the worker connects. Keep any existing
+  output volume in place so the app can serve its last published tiles.
 
 ## Preflight
 
@@ -92,7 +109,7 @@ docker system df
 docker compose config --images
 ```
 
-The default calculator limit is four CPUs, `GOMAXPROCS=4`, and 8 GiB memory.
+The default coordinator limit is one CPU, `GOMAXPROCS=1`, and 512 MiB memory.
 Precision additionally requires the configured 8 GiB free inside `/data`.
 
 ## Deployment order
@@ -104,9 +121,9 @@ Precision additionally requires the configured 8 GiB free inside `/data`.
    calculator network namespace, confirm `GET /hopreach/healthz`, node
    pagination, and one bounded bulk-link request. Confirm the same paths are
    unavailable through the public app origin.
-3. Deploy `hopreach`. Watch its logs and `/data/output/progress.json`; do not
-   wait for the whole UK before proceeding. Confirm a valid `meta.json` and at
-   least one atomically readable Standard PNG exist.
+3. Deploy `hopreach` with a private GPU worker connection. Watch its logs and
+   `/data/output/progress.json`. Confirm a valid `meta.json` and at least one
+   atomically readable Standard PNG exist.
 4. Deploy `app-ukmesh` built with `VITE_RF_COVERAGE_ENABLED=true`. The Nginx
    contract exposes only metadata, progress, and numeric Standard/Precision
    PNG paths from the read-only shared volume.

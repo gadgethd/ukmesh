@@ -20,6 +20,7 @@ REPO = Path(__file__).resolve().parents[3]
 STATE = REPO / "plans/lean-runtime"
 EVIDENCE = STATE / "qualification"
 MANIFEST = REPO / "scripts/full-dev/services.json"
+MIN_FREE_BYTES = 10 * 2**30
 DB_NAME = re.compile(r"lean_(?:verify|fixture|1x|10x|soak|owner|beacon)_[a-z0-9_]{1,38}\Z")
 
 
@@ -50,13 +51,17 @@ def command(args: list[str], *, data: bytes | None = None,
                           cwd=REPO, timeout=timeout, check=check)
 
 
+def docker_group_command(args: list[str]) -> list[str]:
+    # sg receives shell code. Quote each argument for that shell.
+    return ["sg", "docker", "-c", shlex.join(args)]
+
+
 def docker(args: list[str], *, data: bytes | None = None,
            timeout: float = 120, check: bool = True,
            input_stream: BinaryIO | None = None,
            output_stream: BinaryIO | None = None,
            merge_stderr: bool = False) -> subprocess.CompletedProcess[bytes]:
-    # sg receives shell code, so quote every argument, including SQL and paths.
-    return command(["sg", "docker", "-c", shlex.join(["docker", "--host", "unix:///var/run/docker.sock", *args])],
+    return command(docker_group_command(["docker", "--host", "unix:///var/run/docker.sock", *args]),
                    data=data, timeout=timeout, check=check,
                    input_stream=input_stream, output_stream=output_stream, merge_stderr=merge_stderr)
 

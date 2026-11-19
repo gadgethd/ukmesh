@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"image"
 	"log"
 	"math"
 	"net/http"
@@ -301,7 +303,30 @@ func recordLocalHardwareInfo(outputDir string, engine *compute.Engine) {
 	}
 }
 
+const remoteParkedStage = "waiting_for_gpu"
+
+func coverageFailure(err error) string {
+	if errors.Is(err, compute.ErrRemoteParked) {
+		return "Waiting for the remote GPU worker. Published tiles remain available."
+	}
+	return err.Error()
+}
+
+func remoteRunParked(outputDir string) bool {
+	data, err := os.ReadFile(filepath.Join(outputDir, "progress.json"))
+	var progress struct {
+		Stage string `json:"stage"`
+	}
+	return err == nil && json.Unmarshal(data, &progress) == nil && progress.Stage == remoteParkedStage
+}
+
 func run(cfg appConfig) (err error) {
+	if cfg.resumeRemote {
+		if cfg.gpuMode != "remote" || !remoteRunParked(cfg.outputDir) {
+			return nil
+		}
+		cfg.forceRecompute, cfg.scheduled = true, true
+	}
 	ctx := context.Background()
 	startedAt := time.Now()
 	var tierRecords []analytics.TierRecord
@@ -372,6 +397,11 @@ func run(cfg appConfig) (err error) {
 			return nil
 		}
 	}
+	engine := cfg.coverageEngine()
+	workerErr := engine.RequireWorker()
+	if cfg.resumeRemote && workerErr != nil {
+		return nil // Keep the parked progress and avoid recording empty retry runs.
+	}
 	didRun = true
 	runsPath = analyticsPath(cfg.outputDir, "runs.jsonl")
 	markerPath = analyticsPath(cfg.outputDir, "in_progress.json")
@@ -380,35 +410,38 @@ func run(cfg appConfig) (err error) {
 		log.Printf("analytics: could not write in-progress marker: %v", merr)
 	}
 
-	engine := compute.New()
-	engine.Setup(cfg.gpuMode)
-	engine.SetRemote(cfg.gpuBrokerAddr, cfg.demTileURLBase)
-	if cfg.coveragePrecisionChunkBudgetMB > 0 {
-		engine.SetChunkBudgetBytes(float64(cfg.coveragePrecisionChunkBudgetMB) * 1_000_000)
-	}
 	recordLocalHardwareInfo(cfg.outputDir, engine)
 
 	httpClient := &http.Client{Timeout: cfg.timeout}
 	if err := os.MkdirAll(cfg.outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
-	activeRunID := runID(cfg.outputDir)
+	previous := readPreviousMeta(cfg.outputDir)
+	activeRunID := runID(previous)
 	prog := progress.New(cfg.outputDir)
 	prog.SetRunID(activeRunID)
 	engine.SetProgress(prog) // read by engine.Margins to report which backend is serving the current pass
+	defer func() {
+		if errors.Is(err, compute.ErrRemoteParked) {
+			prog.Update(remoteParkedStage, 0, 1, coverageFailure(err))
+		}
+	}()
+	if workerErr != nil {
+		return workerErr
+	}
 	prog.Update("fetching_repeaters", 0, 1, "Fetching repeater list from CoreScope")
 
 	boundaryCacheDir := filepath.Join(cfg.demCacheDir, "boundary")
 	region, err := geo.LoadBoundary(cfg.regionBoundaryPath, cfg.regionBoundaryURL, boundaryCacheDir, httpClient)
 	if err != nil {
-		prog.Update("error", 0, 0, err.Error())
+		prog.Update("error", 0, 0, coverageFailure(err))
 		return err
 	}
 
 	client := corescope.NewClient(cfg.apiURL, httpClient)
 	nodes, err := client.FetchRepeaters(ctx)
 	if err != nil {
-		prog.Update("error", 0, 0, err.Error())
+		prog.Update("error", 0, 0, coverageFailure(err))
 		return err
 	}
 
@@ -432,14 +465,14 @@ func run(cfg appConfig) (err error) {
 		// deployments and position calibration. UK Mesh's production path needs
 		// only bounded site-height bins here; each raster loads its own padded
 		// geographic chunks later.
-		needWholeStandardGrid := !cfg.coverageProgressive || cfg.calibrationEnabled || cfg.scopeObservationEnabled
+		needWholeStandardGrid := cfg.calibrationEnabled || (!engine.RemoteOnly() && (!cfg.coverageProgressive || cfg.scopeObservationEnabled))
 		if needWholeStandardGrid {
 			demBounds := demgrid.Bounds{South: bounds.South, North: bounds.North, West: bounds.West, East: bounds.East}
 			grid, err = demgrid.Load(demBounds, cfg.demZoom, cfg.demCacheDir, cfg.demTileURLBase, httpClient, func(done, total int) {
 				prog.Update("loading_terrain", done, total, fmt.Sprintf("Fetching elevation tiles (%d/%d)", done, total))
 			})
 			if err != nil {
-				prog.Update("error", 0, 0, err.Error())
+				prog.Update("error", 0, 0, coverageFailure(err))
 				return err
 			}
 			defer grid.Close()
@@ -453,7 +486,7 @@ func run(cfg appConfig) (err error) {
 				prog.Update("loading_terrain", done, total, fmt.Sprintf("Fetching transmitter terrain (%d/%d)", done, total))
 			})
 			if err != nil {
-				prog.Update("error", 0, 0, err.Error())
+				prog.Update("error", 0, 0, coverageFailure(err))
 				return err
 			}
 		}
@@ -530,7 +563,7 @@ func run(cfg appConfig) (err error) {
 
 	geoPath := filepath.Join(cfg.outputDir, "repeaters.geojson")
 	if err := writeJSONFile(geoPath, fc); err != nil {
-		prog.Update("error", 0, 0, err.Error())
+		prog.Update("error", 0, 0, coverageFailure(err))
 		return fmt.Errorf("writing %s: %w", geoPath, err)
 	}
 
@@ -560,9 +593,9 @@ func run(cfg appConfig) (err error) {
 		// tier this run skips (GPU-gated and unavailable, say) or hasn't
 		// gotten to yet still shows its last known-good tiles instead of
 		// briefly vanishing for anyone loading the page mid-run.
-		Coverage:      previousCoverage(cfg.outputDir),
-		ScopeCoverage: previousScopeCoverage(cfg.outputDir),
-		NodeCoverage:  previousNodeCoverage(cfg.outputDir),
+		Coverage:      previous.Coverage,
+		ScopeCoverage: previous.ScopeCoverage,
+		NodeCoverage:  previous.NodeCoverage,
 	}
 	// previousCoverage is nil on a genuine first run (or when the last
 	// meta.json never got a coverage tier — e.g. an earlier run died before
@@ -576,6 +609,11 @@ func run(cfg appConfig) (err error) {
 	if !cfg.calibrationEnabled {
 		m.Coverage.Calibrated = nil
 		m.Coverage.CalibratedPrecision = nil
+	}
+	if !previous.Complete && previous.Run != nil {
+		for name, state := range previous.Run.Tiers {
+			m.Run.Tiers[name] = state
+		}
 	}
 	metaPath := filepath.Join(cfg.outputDir, "meta.json")
 	updateRunTotals := func() {
@@ -594,7 +632,7 @@ func run(cfg appConfig) (err error) {
 	// immediately, without waiting for any coverage tier — the tiers below
 	// each rewrite this same file as soon as they're individually ready.
 	if err := writeMeta(); err != nil {
-		prog.Update("error", 0, 0, err.Error())
+		prog.Update("error", 0, 0, coverageFailure(err))
 		return fmt.Errorf("writing %s: %w", metaPath, err)
 	}
 
@@ -650,13 +688,25 @@ func run(cfg appConfig) (err error) {
 	// already ran a few hours ago" — the exact scenario a deploy-time
 	// restart or an /admin/recompute call hits.
 	// Scheduled mode instead reuses only tiers completed since its cron slot.
-	shouldComputeTier := func(existing *coverageMeta) bool {
-		return tierNeedsCompute(cfg, existing, time.Now())
+	shouldComputeTier := func(name string, existing *coverageMeta) bool {
+		return incompleteTier(previous, name) || tierNeedsCompute(cfg, existing, time.Now())
+	}
+	allowTier := func(requiresGPU bool) bool {
+		// Remote mode has one preflight and every dispatch must succeed remotely.
+		// A disconnect mid-run is a parked job, not a silently skipped tier.
+		return engine.RemoteOnly() || !requiresGPU || engine.Available()
+	}
+	rasterStandard := func(sites []propagation.Site, bounds propagation.Bounds, update func(int, int)) (*image.NRGBA, error) {
+		if engine.RemoteOnly() {
+			return coverage.RasterSupersampledChunked(engine, bounds, cfg.demZoom, cfg.demCacheDir, cfg.demTileURLBase,
+				httpClient, sites, cfg.coverageImageWidth, 1, cfg.propagation, cfg.coverageMaxAlpha, update)
+		}
+		return coverage.Raster(engine, grid, sites, bounds, cfg.coverageImageWidth, cfg.propagation, cfg.coverageMaxAlpha, update)
 	}
 
 	if haveBounds {
-		gpuOK := !cfg.standardRequiresGPU || engine.Available()
-		if gpuOK && shouldComputeTier(m.Coverage.Standard) {
+		gpuOK := allowTier(cfg.standardRequiresGPU)
+		if gpuOK && shouldComputeTier("standard", m.Coverage.Standard) {
 			tierStart := time.Now()
 			prog.Update("computing_coverage", 0, 1, "Computing terrain-aware coverage")
 			const standardNote = "Terrain-aware estimate: free-space path loss + single-knife-edge diffraction over real elevation data (earth curvature included). Does not model foliage or buildings, and assumes one dominant obstruction per path."
@@ -687,11 +737,11 @@ func run(cfg appConfig) (err error) {
 				)
 				if tierErr != nil {
 					state := m.Run.Tiers["standard"]
-					state.State, state.Failure = "failed", tierErr.Error()
+					state.State, state.Failure = "failed", coverageFailure(tierErr)
 					m.Run.Tiers["standard"] = state
-					m.Run.Failure = tierErr.Error()
+					m.Run.Failure = coverageFailure(tierErr)
 					_ = writeMeta()
-					prog.Update("error", state.CompletedTiles, state.TotalTiles, tierErr.Error())
+					prog.Update("error", state.CompletedTiles, state.TotalTiles, coverageFailure(tierErr))
 					recordTier("standard", tierStart, tierErr)
 					return tierErr
 				}
@@ -702,14 +752,19 @@ func run(cfg appConfig) (err error) {
 					return err
 				}
 			} else {
-				raster := coverage.Raster(engine, grid, sites, bounds, cfg.coverageImageWidth, cfg.propagation, cfg.coverageMaxAlpha,
+				raster, err := rasterStandard(sites, bounds,
 					func(done, total int) {
 						prog.Update("computing_coverage", done, total, fmt.Sprintf("Computing coverage: row %d/%d", done, total))
 					})
+				if err != nil {
+					prog.Update("error", 0, 0, coverageFailure(err))
+					recordTier("standard", tierStart, err)
+					return err
+				}
 				img := &imageResult{raster: raster, bounds: bounds}
 				if err := writeTier("coverage", img, standardNote,
 					func(cm *coverageMeta) { m.Coverage.Standard = cm }); err != nil {
-					prog.Update("error", 0, 0, err.Error())
+					prog.Update("error", 0, 0, coverageFailure(err))
 					recordTier("standard", tierStart, err)
 					return err
 				}
@@ -736,7 +791,7 @@ func run(cfg appConfig) (err error) {
 		// observeRepeaterScopes — default_scope alone is sparse in practice),
 		// so there'd be nothing meaningful to split by.
 		if cfg.scopeObservationEnabled && len(knownRegionNames) > 0 {
-			if !cfg.standardRequiresGPU || engine.Available() {
+			if allowTier(cfg.standardRequiresGPU) {
 				tierStart := time.Now()
 				for i, scopeName := range knownRegionNames {
 					prog.Update("computing_scope_coverage", i, len(knownRegionNames), fmt.Sprintf("Computing per-scope coverage (%d/%d): %s", i+1, len(knownRegionNames), scopeName))
@@ -752,7 +807,7 @@ func run(cfg appConfig) (err error) {
 					if len(scopeSites) == 0 {
 						continue
 					}
-					if !shouldComputeTier(m.ScopeCoverage[scopeName]) {
+					if !tierNeedsCompute(cfg, m.ScopeCoverage[scopeName], time.Now()) {
 						log.Printf("coverage: per-scope coverage for %s already computed today — skipping recompute (pass -force-all-tiers to override)", scopeName)
 						continue // seeded m.ScopeCoverage[scopeName] (from previousScopeCoverage) is left as-is
 					}
@@ -760,10 +815,15 @@ func run(cfg appConfig) (err error) {
 					if !ok {
 						continue
 					}
-					scopeRaster := coverage.Raster(engine, grid, scopeSites, scopeBounds, cfg.coverageImageWidth, cfg.propagation, cfg.coverageMaxAlpha, nil)
+					scopeRaster, err := rasterStandard(scopeSites, scopeBounds, nil)
+					if err != nil {
+						prog.Update("error", 0, 0, coverageFailure(err))
+						recordTier("scope_coverage", tierStart, err)
+						return err
+					}
 					tiles, err := coverage.WriteTiles(cfg.outputDir, "coverage-scope-"+scopeSlug(scopeName), scopeRaster, scopeBounds)
 					if err != nil {
-						prog.Update("error", 0, 0, err.Error())
+						prog.Update("error", 0, 0, coverageFailure(err))
 						recordTier("scope_coverage", tierStart, err)
 						return fmt.Errorf("writing per-scope coverage tiles for %s: %w", scopeName, err)
 					}
@@ -773,7 +833,7 @@ func run(cfg appConfig) (err error) {
 					}
 					m.ScopeCoverage[scopeName] = &cm
 					if err := writeMeta(); err != nil {
-						prog.Update("error", 0, 0, err.Error())
+						prog.Update("error", 0, 0, coverageFailure(err))
 						recordTier("scope_coverage", tierStart, err)
 						return fmt.Errorf("writing %s: %w", metaPath, err)
 					}
@@ -791,19 +851,24 @@ func run(cfg appConfig) (err error) {
 		// even without rendering a full calibrated coverage raster. Only
 		// the raster itself (which goes through engine.Margins/GPU) is
 		// gated.
-		calibratedGpuOK := cfg.calibrationEnabled && (!cfg.calibratedRequiresGPU || engine.Available())
-		if cfg.calibrationEnabled && calibratedGpuOK && shouldComputeTier(m.Coverage.Calibrated) {
+		calibratedGpuOK := cfg.calibrationEnabled && (allowTier(cfg.calibratedRequiresGPU))
+		if cfg.calibrationEnabled && calibratedGpuOK && shouldComputeTier("calibrated", m.Coverage.Calibrated) {
 			tierStart := time.Now()
 			prog.Update("computing_coverage_calibrated", 0, 1, "Computing coverage from calibrated positions")
-			calibratedRaster := coverage.Raster(engine, grid, calibratedSites, bounds, cfg.coverageImageWidth, cfg.propagation, cfg.coverageMaxAlpha,
+			calibratedRaster, err := rasterStandard(calibratedSites, bounds,
 				func(done, total int) {
 					prog.Update("computing_coverage_calibrated", done, total, fmt.Sprintf("Computing calibrated coverage: row %d/%d", done, total))
 				})
+			if err != nil {
+				prog.Update("error", 0, 0, coverageFailure(err))
+				recordTier("calibrated", tierStart, err)
+				return err
+			}
 			calibratedImg := &imageResult{raster: calibratedRaster, bounds: bounds}
 			if err := writeTier("coverage-calibrated", calibratedImg,
 				"As above, but positions are nudged (within a bounded radius) toward wherever the terrain model best explains each repeater's actually-observed reach data. See each repeater's calibration_offset_m/calibration_score_before/calibration_score_after properties.",
 				func(cm *coverageMeta) { m.Coverage.Calibrated = cm }); err != nil {
-				prog.Update("error", 0, 0, err.Error())
+				prog.Update("error", 0, 0, coverageFailure(err))
 				recordTier("calibrated", tierStart, err)
 				return err
 			}
@@ -822,17 +887,17 @@ func run(cfg appConfig) (err error) {
 			grid.Close()
 		}
 
-		precisionGpuOK := !cfg.precisionRequiresGPU || engine.Available()
-		calibratedPrecisionGpuOK := cfg.calibrationEnabled && (!cfg.calibratedPrecisionRequiresGPU || engine.Available())
+		precisionGpuOK := allowTier(cfg.precisionRequiresGPU)
+		calibratedPrecisionGpuOK := cfg.calibrationEnabled && (allowTier(cfg.calibratedPrecisionRequiresGPU))
 		// Folds the same-day freshness check in here too (not just the GPU
 		// gate) — so when both precision tiers already ran today, the
 		// entire high-resolution terrain fetch below is skipped as well,
 		// not just the raster compute itself. This is the expensive case
 		// the whole shouldComputeTier mechanism exists for.
-		precisionNeedsCompute := shouldComputeTier(m.Coverage.Precision)
+		precisionNeedsCompute := shouldComputeTier("precision", m.Coverage.Precision)
 		standardLive := m.Coverage.Standard != nil && len(m.Coverage.Standard.Tiles) > 0
 		precisionAllowed := precisionGpuOK && precisionNeedsCompute && standardLive
-		calibratedPrecisionAllowed := cfg.calibrationEnabled && calibratedPrecisionGpuOK && shouldComputeTier(m.Coverage.CalibratedPrecision)
+		calibratedPrecisionAllowed := cfg.calibrationEnabled && calibratedPrecisionGpuOK && shouldComputeTier("calibrated_precision", m.Coverage.CalibratedPrecision)
 		if precisionAllowed && cfg.coveragePrecisionMinFreeDiskGB > 0 {
 			minimumBytes := uint64(cfg.coveragePrecisionMinFreeDiskGB * 1024 * 1024 * 1024)
 			outputFree, outputErr := sysinfo.FreeDiskBytes(cfg.outputDir)
@@ -886,7 +951,7 @@ func run(cfg appConfig) (err error) {
 				prog.Update("loading_precision_terrain", done, total, fmt.Sprintf("Fetching Precision transmitter terrain (%d/%d)", done, total))
 			})
 			if err != nil {
-				prog.Update("error", 0, 0, err.Error())
+				prog.Update("error", 0, 0, coverageFailure(err))
 				return err
 			}
 
@@ -932,11 +997,11 @@ func run(cfg appConfig) (err error) {
 					)
 					if tierErr != nil {
 						state := m.Run.Tiers["precision"]
-						state.State, state.Failure = "failed", tierErr.Error()
+						state.State, state.Failure = "failed", coverageFailure(tierErr)
 						m.Run.Tiers["precision"] = state
-						m.Run.Failure = tierErr.Error()
+						m.Run.Failure = coverageFailure(tierErr)
 						_ = writeMeta()
-						prog.Update("error", state.CompletedTiles, state.TotalTiles, tierErr.Error())
+						prog.Update("error", state.CompletedTiles, state.TotalTiles, coverageFailure(tierErr))
 						recordTier("precision", tierStart, tierErr)
 						return tierErr
 					}
@@ -952,14 +1017,14 @@ func run(cfg appConfig) (err error) {
 							prog.Update("computing_coverage_precision", done, total, fmt.Sprintf("Computing precision coverage: %d%%", done*100/total))
 						})
 					if err != nil {
-						prog.Update("error", 0, 0, err.Error())
+						prog.Update("error", 0, 0, coverageFailure(err))
 						recordTier("precision", tierStart, err)
 						return err
 					}
 					precisionImg := &imageResult{raster: precisionRaster, bounds: bounds}
 					if err := writeTier("coverage-precision", precisionImg, precisionNote,
 						func(cm *coverageMeta) { cm.DEMZoom = cfg.coveragePrecisionDemZoom; m.Coverage.Precision = cm }); err != nil {
-						prog.Update("error", 0, 0, err.Error())
+						prog.Update("error", 0, 0, coverageFailure(err))
 						recordTier("precision", tierStart, err)
 						return err
 					}
@@ -985,7 +1050,7 @@ func run(cfg appConfig) (err error) {
 						prog.Update("computing_coverage_calibrated_precision", done, total, fmt.Sprintf("Computing calibrated precision coverage: %d%%", done*100/total))
 					})
 				if err != nil {
-					prog.Update("error", 0, 0, err.Error())
+					prog.Update("error", 0, 0, coverageFailure(err))
 					recordTier("calibrated_precision", tierStart, err)
 					return err
 				}
@@ -993,7 +1058,7 @@ func run(cfg appConfig) (err error) {
 				if err := writeTier("coverage-calibrated-precision", calibratedPrecisionImg,
 					"Same model and calibrated positions as Calibrated, rendered at a much higher pixel resolution for a sharper result.",
 					func(cm *coverageMeta) { m.Coverage.CalibratedPrecision = cm }); err != nil {
-					prog.Update("error", 0, 0, err.Error())
+					prog.Update("error", 0, 0, coverageFailure(err))
 					recordTier("calibrated_precision", tierStart, err)
 					return err
 				}
@@ -1005,7 +1070,7 @@ func run(cfg appConfig) (err error) {
 	m.Complete = true
 	m.CompletedAt = time.Now().UTC().Format(time.RFC3339)
 	if err := writeMeta(); err != nil {
-		prog.Update("error", 0, 0, err.Error())
+		prog.Update("error", 0, 0, coverageFailure(err))
 		return fmt.Errorf("writing %s: %w", metaPath, err)
 	}
 

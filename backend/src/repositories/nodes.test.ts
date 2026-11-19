@@ -43,15 +43,31 @@ test('public map projects path evidence as the effective seen and online state',
     null,
     101,
   ]);
-  assert.equal(capturedHint, BOUNDED_READ_PREPARATION);
+  assert.equal(capturedHint, undefined);
 
   const firstSql = capturedSql;
   await repository.listPublicMapRows(['node_id', 'last_seen', 'is_online'], networkFilters('ukmesh'),
     snapshot, 'A'.repeat(64), 100);
   assert.equal(capturedSql, firstSql, 'nullable-cursor OR remains the identical SQL shape');
   assert.deepEqual(capturedParams, [['ukmesh', 'northeast', 'teesside'], snapshot, 'A'.repeat(64), 101]);
+  assert.equal(capturedHint, undefined);
+
+  await repository.listPublicMapRows(['node_id'], networkFilters('ukmesh'), snapshot, null, 100, 'a');
+  assert.equal(capturedHint, undefined);
   await repository.listAllNodeIds();
   assert.equal(capturedHint, undefined, 'other repository reads do not opt in');
+});
+
+test('candidate map lookups retain bounded statement preparation', async () => {
+  const hints: Array<StatementHint | undefined> = [];
+  const repository = createNodeRepository(async (_sql, _params, _signal, hint) => {
+    hints.push(hint);
+    return { rows: [] };
+  });
+  const snapshot = '2026-08-03T12:00:00.000Z';
+  await repository.listPublicMapRows(['node_id'], networkFilters('ukmesh'), snapshot, null, 100, 'test');
+  await repository.listPublicMapRows(['node_id'], networkFilters('ukmesh', 'A'.repeat(64)), snapshot, null, 100);
+  assert.deepEqual(hints, [BOUNDED_READ_PREPARATION, BOUNDED_READ_PREPARATION]);
 });
 
 test('node links preserve metrics and fetch one scoped aggregate for the entire peer set', async () => {

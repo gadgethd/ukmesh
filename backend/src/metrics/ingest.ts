@@ -8,6 +8,20 @@ export const mqttMessagesTotal = new Counter({
   registers: [metricsRegistry],
 });
 
+export const mqttIntakeDeliveriesTotal = new Counter({
+  name: 'meshcore_mqtt_intake_deliveries_total',
+  help: 'MQTT deliveries admitted by transport QoS, including the reserved control topics.',
+  labelNames: ['kind'] as const,
+  registers: [metricsRegistry],
+});
+
+export const mqttBrokerStore = new Gauge({
+  name: 'meshcore_mqtt_broker_store',
+  help: 'Broker-wide stored messages, stored bytes, and cumulative drops from Mosquitto system topics.',
+  labelNames: ['kind'] as const,
+  registers: [metricsRegistry],
+});
+
 export const mqttDeliveryProbeHealthy = new Gauge({
   name: 'meshcore_mqtt_delivery_probe_healthy',
   help: 'Whether the ingest session has successfully received its QoS 1 delivery probe.',

@@ -107,6 +107,25 @@ groups:
   - name: meshcore-queues-and-workers
     interval: 15s
     rules:
+      - alert: MqttBrokerBacklog
+        expr: (meshcore_mqtt_broker_store{kind="messages"} > 5000) or (meshcore_mqtt_broker_store{kind="bytes"} > 8388608)
+        for: 20s
+        labels:
+          severity: warning
+        annotations:
+          summary: MQTT broker storage exceeds half of the smallest qualified queue budget
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttbrokerbacklog
+
+      - alert: MqttBrokerDroppedDeliveries
+        expr: increase(meshcore_mqtt_broker_store{kind="dropped"}[5m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: MQTT broker reported dropped deliveries
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttbrokerbacklog
+
       - alert: MqttIngestQueueDepthHigh
         expr: meshcore_mqtt_ingest_queue_depth > 800
         for: 5m

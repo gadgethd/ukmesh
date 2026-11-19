@@ -1,9 +1,45 @@
+import { createHash } from 'node:crypto';
+import { constants } from 'node:fs';
+import { open, writeFile } from 'node:fs/promises';
 import express, { Router } from 'express';
+import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { withLookupTrial, readLookupSessionIdentity } from './lookupBenchmarkSession.js';
-import type { LookupRuntime, LookupSourceLoader, LookupCacheModule } from './lookupBenchmarkSession.js';
+import type { LookupRuntime, LookupSourceLoader, LookupCacheModule, LookupSessionIdentity } from './lookupBenchmarkSession.js';
 import type { LookupHttpCase } from './lookupHttpRequests.js';
 
 type Caches = ReturnType<LookupCacheModule['createApiCaches']>;
+type ObserverReceipt = { file: string; reuse: boolean };
+
+async function lookupObserver(query: LookupRuntime['pool']['query'], session: LookupSessionIdentity,
+  receipt?: ObserverReceipt) {
+  let body: string;
+  if (receipt?.reuse) {
+    const file = await open(receipt.file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    try {
+      const stat = await file.stat();
+      if (!stat.isFile() || stat.size > 8192 || (stat.mode & 0o077) !== 0) {
+        throw new Error('invalid private observer receipt');
+      }
+      body = await file.readFile('utf8');
+    } finally { await file.close(); }
+  } else {
+    const observer = (await query(`SELECT p.rx_node_id FROM mesh.packets p
+      WHERE p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE AND p.rx_node_id IS NOT NULL
+      AND p.network <> 'test' AND p.time > NOW() - INTERVAL '7 days'
+      GROUP BY p.rx_node_id ORDER BY count(*) DESC, p.rx_node_id LIMIT 1`)).rows[0]?.rx_node_id;
+    if (typeof observer !== 'string' || !observer) throw new Error('public observer required');
+    body = JSON.stringify({ version: 1, database: session.database, user: session.current_user, observer });
+    if (receipt) await writeFile(receipt.file, body, { flag: 'wx', mode: 0o600 });
+  }
+  const value = JSON.parse(body) as { version?: unknown; database?: unknown; user?: unknown; observer?: unknown } | null;
+  if (value?.version !== 1 || value.database !== session.database || value.user !== session.current_user
+    || typeof value.observer !== 'string' || !value.observer) {
+    throw new Error('observer receipt differs from the authenticated lookup fixture');
+  }
+  return { observer: value.observer, observerWorkset: {
+    sha256: createHash('sha256').update(body).digest('hex'), reused: receipt?.reuse === true,
+  } };
+}
 
 /** Selected-source routes, fixture identities and public cases have one owner. */
 export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: LookupRuntime) {
@@ -19,7 +55,7 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
   const cacheModule = await load('api/bootstrap/caches.ts') as LookupCacheModule;
   const query = runtime.pool.query.bind(runtime.pool);
   return {
-    async prepare(snapshotOverride?: string) {
+    async prepare(snapshotOverride?: string, observerReceipt?: ObserverReceipt) {
     const databaseSetup = { http: await readLookupSessionIdentity(runtime.query, 'http') };
     const counts = (await query(`SELECT (SELECT count(*)::text FROM core.nodes) nodes,
       (SELECT count(*)::text FROM mesh.packets) observations,
@@ -36,14 +72,13 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
       AND n.node_id = ANY($1::text[])
       ORDER BY n.advert_count DESC, n.node_id LIMIT 1`, [visible.map((node: {node_id: string}) => node.node_id)])).rows[0];
     if (!identity) throw new Error('public linked identity required');
-    const packet = (await query(`SELECT packet_hash FROM mesh.packets WHERE visibility_ok IS TRUE
-      AND is_private IS NOT TRUE ORDER BY time DESC, packet_hash LIMIT 1`)).rows[0];
+    const packetScope = buildScopePlaceholders(1, 'ukmesh');
+    const packet = (await query(`SELECT p.packet_hash FROM mesh.packets p WHERE TRUE
+      ${buildPacketScopeClause(packetScope, 'p', 'ukmesh')}
+      ${buildPublicPacketPrivacyClause('p')}
+      ORDER BY p.time DESC, p.packet_hash LIMIT 1`, packetScope.params)).rows[0];
     if (!packet) throw new Error('public packet required');
-    const observer = (await query(`SELECT p.rx_node_id FROM mesh.packets p
-      WHERE p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE AND p.rx_node_id IS NOT NULL
-      AND p.network <> 'test' AND p.time > NOW() - INTERVAL '7 days'
-      GROUP BY p.rx_node_id ORDER BY count(*) DESC, p.rx_node_id LIMIT 1`)).rows[0]?.rx_node_id;
-    if (!observer) throw new Error('public observer required');
+    const { observer, observerWorkset } = await lookupObserver(query, databaseSetup.http, observerReceipt);
     const map = `/api/nodes/map?network=ukmesh&snapshot=${encodeURIComponent(snapshot)}&limit=1000`;
     const cases: LookupHttpCase[] = [
       { name: 'map-page', route: map, populated: true },
@@ -65,7 +100,7 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
       const cursor = Buffer.from(JSON.stringify({ version: 1, nodeId: visible[999].node_id })).toString('base64url');
       cases.push({ name: 'map-next-page', route: map + '&cursor=' + cursor, populated: true });
     }
-      return { counts, snapshot, cases, regionEnabled, databaseSetup };
+      return { counts, snapshot, cases, regionEnabled, databaseSetup, observerWorkset };
     },
     withTrial<T>(work: (port: number, caches: Caches) => Promise<T>): Promise<T> {
       return withLookupTrial(cacheModule, async ({ caches, ownRoutes, listen }) => {

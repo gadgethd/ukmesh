@@ -2,21 +2,23 @@
 import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import http from 'node:http';
 import { realpath, stat } from 'node:fs/promises';
 import pg from 'pg';
 import WebSocket from 'ws';
-import { assertLocalDatabaseUrl, option, readGzipCsv, requiredOption, rowObject } from './sampleData.js';
-import { replaySampleMqtt } from './replaySampleMqtt.js';
+import { assertLocalDatabaseUrl, option, requiredOption } from './sampleData.js';
+import { replayPairedSoakPackets, replaySampleMqtt } from './replaySampleMqtt.js';
+import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
 import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
-import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
+import { readReplayInput, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
 import { waitForSoakDrain } from './soakDrain.js';
-import { auditSoakWorksetHashes, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
+import { auditSoakWorksetHashes, auditSoakWorksetParents, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
 import { SoakPublication, soakInvocationToken } from './soakPublication.js';
 
 const publication = new SoakPublication();
@@ -45,6 +47,7 @@ if (!Number.isFinite(budgetMs)||budgetMs<=0) throw new Error('positive lookup bu
 const auxiliaryFile = option(args, 'auxiliary-traffic');
 const auxiliaryTraffic = auxiliaryFile ? await readFullStackTraffic(auxiliaryFile) : undefined;
 const httpWarmup=args.includes('--warmup-reads');
+const advisoryLatency = args.includes('--advisory-read-latency');
 const readerSocket = option(args, 'http-reader-socket');
 if (readerSocket) {
   if (!auxiliaryTraffic || await realpath(readerSocket) !== path.join(path.dirname(output), 'http-reader/reader.sock')
@@ -77,12 +80,8 @@ if (auxiliaryTraffic) for (const key of ['packets', 'paths', 'facts', 'ledger'] 
 }
 const manifest = JSON.parse(await readFile(path.join(directory, 'fixture.json'), 'utf8'));
 if (!manifest.synthetic || manifest.count !== count) throw new Error('matching invented fixture required');
-const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
-const hashes = table.rows.map(row => rowObject(table.headers,row)['packet_hash']!);
-const expected = new Set(hashes);
-if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
+const { hashes, expected, socketScope } = await readReplayInput(directory, count, auxiliaryTraffic !== undefined);
 const workset=soakWorkset(hashes,auxiliaryTraffic?.ukmeshHashes);
-const socketScope=soakSocketScope(table.headers,table.rows,count,auxiliaryTraffic!==undefined);
 if(auxiliaryTraffic){
   const invocationToken=soakInvocationToken(option(args,'invocation-token'));
   const checksum=async(file:string)=>createHash('sha256').update(await readFile(file)).digest('hex');
@@ -91,7 +90,8 @@ if(auxiliaryTraffic){
     toolSha256:await checksum(fileURLToPath(import.meta.url)),helperSha256:{
       publication:await checksum(fileURLToPath(new URL('./soakPublication'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
       counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
-      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
+      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      replay:await checksum(fileURLToPath(new URL('./replaySampleMqtt'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
       fixture:await checksum(path.join(directory,'fixture.json')),packets:await checksum(path.join(directory,'packets.csv.gz')),
       raw:await checksum(path.join(directory,'raw_packets.csv.gz')),auxiliary:await checksum(auxiliaryFile!)}};
   failureOutput=output;
@@ -109,8 +109,8 @@ async function metrics() {
     return match ? [[match[1]!,Number(match[2])]] : [];
   }));
 }
-async function counts() {
-  return countSoakWorkset(queryCounts,workset.hashes);
+async function counts(since?: Date) {
+  return countSoakWorkset(queryCounts, workset.hashes, since ? { since } : {});
 }
 function queryCounts(text:string,values:unknown[]) {
   const config:pg.QueryConfig & {query_timeout:number}={text,values,query_timeout:SOAK_COUNTER_DEADLINE_MS};
@@ -122,6 +122,16 @@ const reads: {name: string; ms: number; startElapsedMs: number; slot: number; bu
 const seen = new Set<string>();
 let ws: WebSocket | undefined, readWork: Promise<void> | undefined, timer: ReturnType<typeof setInterval> | undefined;
 let failure: unknown;
+let started = performance.now();
+// Four small receipts preserve completed work if a later database check fails.
+// Delivery is recorded once at the last live frame, rather than after drain SQL.
+function recordPhase(phase: keyof SoakPublication['completedPhases'], details: Record<string, unknown>) {
+  const receipt = publication.complete(phase, { ...failureContext, at: new Date().toISOString(),
+    elapsedMs: performance.now() - started, countsScope: workset.countsScope, socketScope,
+    publicationStarted: publication.publicationStarted, ...details });
+  mkdirSync(output, { recursive: true });
+  writeFileSync(path.join(output, `phase-${phase}.json`), JSON.stringify(receipt, null, 2) + '\n', { mode: 0o600 });
+}
 try {
   for (let index=0; index<hashes.length; index+=3000) {
     const existing = await pool.query('SELECT 1 FROM mesh.packets WHERE packet_hash=ANY($1::text[]) LIMIT 1',[hashes.slice(index,index+3000)]);
@@ -129,8 +139,13 @@ try {
   }
   const node = (await pool.query(`SELECT node_id,name FROM core.node_identity_nodes WHERE name NOT LIKE '%🚫%'
     AND role=2 AND lat BETWEEN 5 AND 90 AND network='ukmesh' ORDER BY advert_count DESC,node_id LIMIT 1`)).rows[0];
-  const packet = (await pool.query(`SELECT packet_hash FROM mesh.packets WHERE visibility_ok IS TRUE AND is_private IS NOT TRUE
-    ORDER BY time DESC,packet_hash LIMIT 1`)).rows[0];
+  const publicNetwork = 'ukmesh';
+  const packetScope = buildScopePlaceholders(1, publicNetwork);
+  const packet = (await pool.query<{ packet_hash: string }>(`SELECT p.packet_hash FROM mesh.packets p
+    WHERE TRUE
+      ${buildPacketScopeClause(packetScope, 'p', publicNetwork)}
+      ${buildPublicPacketPrivacyClause('p')}
+    ORDER BY p.time DESC,p.packet_hash LIMIT 1`, packetScope.params)).rows[0];
   const observer = (await pool.query(`SELECT rx_node_id FROM mesh.packets WHERE src_node_id IS NOT NULL AND rx_node_id IS NOT NULL
     AND time>NOW()-INTERVAL '7 days'
     GROUP BY rx_node_id ORDER BY count(*) DESC LIMIT 1`)).rows[0];
@@ -147,7 +162,11 @@ try {
   ];
   publication.stage='baseline-counts';
   const before = await counts(), beforeMetrics = await metrics();
-  const walBefore = (await pool.query('SELECT pg_current_wal_lsn()::text lsn')).rows[0].lsn;
+  // The auxiliary manifest deliberately gives each channel message two observers.
+  const auditWorkset = () => auditSoakWorksetHashes(queryCounts, workset.hashes, workset.ackHashes,
+    auxiliaryTraffic?.channelHashes ?? []);
+  const { lsn: walBefore, at: commitWindowStart } = (await pool.query<{ lsn: string; at: Date }>(
+    'SELECT pg_current_wal_lsn()::text lsn, clock_timestamp() AS at')).rows[0]!;
   publication.stage='websocket-readiness';
   const socket = soakSocketUrl(base,socketScope);
   ws = new WebSocket(socket,{origin:'http://127.0.0.1:5173'});
@@ -159,12 +178,17 @@ try {
     try {
       for (const line of bytes.toString().split('\n').filter(Boolean)) {
         const value=JSON.parse(line), hash=value.data?.packetHash;
-        if (value.type==='packet' && expected.has(hash)) seen.add(hash);
+        if (value.type==='packet' && expected.has(hash)) {
+          seen.add(hash);
+          if (seen.size === count && !publication.completedPhases.delivery) {
+            recordPhase('delivery', { passed: true, wsPackets: seen.size, expectedPackets: count });
+          }
+        }
       }
     } catch {wsErrors++;}
   });
   await waitForInitialState(ws);
-  let started=performance.now();
+  started=performance.now();
   let lastBackground=0, metricsFailures=0, measuredBurstOrdinal=0;
   const warmupReads: typeof reads = [];
   const readBurst=async(target=reads,measureMetrics=true)=>{
@@ -192,7 +216,7 @@ try {
     try {
       const values=await metrics();
       samples.push({elapsedMs:performance.now()-started,values:Object.fromEntries([...values].filter(([key])=>
-        /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight/.test(key)))});
+        /resident_memory|heap_size_used|eventloop|queue_depth|mqtt_ingest_active|cache_entries|cache_bytes|mqtt_dedup_entries|mqtt_pre_resolve_history_entries|mqtt_post_persist_inflight|mqtt_broker_store|mqtt_intake_deliveries|mqtt_wire_ack_duration_seconds_count/.test(key)))});
     } catch { metricsFailures++; }
   };
   publication.stage='http-warmup';
@@ -210,27 +234,58 @@ try {
   let acknowledgedMs=0,drained=false,drainElapsedMs=0,auxiliaryAcknowledgements=0;
   const auxiliaryController = new AbortController();
   let auxiliaryWork: Promise<void> | undefined;
+  let drainStarted: number | undefined;
   try {
     publication.begin(); // BEFORE either publisher can send, even if its promise later rejects.
     auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
       .then(sent => { auxiliaryAcknowledgements = sent; publication.auxiliaryPublished=sent; }) : undefined;
-    await Promise.all([auxiliaryWork,
-      replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
-        '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
-    acknowledgedMs=performance.now()-started;
+    const ackWork = auxiliaryTraffic
+      ? replayPairedSoakPackets(directory, broker, count, rate)
+      : replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
+        '--envelope-format',envelopeFormat]);
+    await Promise.all([auxiliaryWork, ackWork.then(()=>{publication.ackPublished=count;})]);
+    drainStarted = performance.now();
+    acknowledgedMs=drainStarted-started;
+    recordPhase('publication', { passed: true, acknowledgedMs, ackPublished: publication.ackPublished,
+      auxiliaryPublished: publication.auxiliaryPublished });
     publication.stage='drain';
-    ({drained,drainElapsedMs}=await waitForSoakDrain({before,expectedDeltas,count,metrics,counts,seenCount:()=>seen.size}));
+    // Publication has completed. Let the last mixed read burst settle inside
+    // the same drain deadline before starting the exact reconciliation.
+    clearInterval(timer);
+    timer = undefined;
+    ({drained,drainElapsedMs}=await waitForSoakDrain({
+      count, acknowledgedAt: drainStarted, seenCount: () => seen.size,
+      metrics: async () => { await readWork; return metrics(); },
+      verifyCommit: async () => {
+        const audit = await auditSoakWorksetParents(queryCounts, workset.hashes, workset.ackHashes,
+          auxiliaryTraffic?.channelHashes ?? [], commitWindowStart);
+        return audit.mismatchCount === 0
+          && (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key =>
+            audit.totals[key] === expectedDeltas[key]);
+      },
+    }));
+    recordPhase('drain', { passed: drained, drainElapsedMs, wsPackets: seen.size });
   } catch (error) {
     failure=error; auxiliaryController.abort();
     if (auxiliaryWork) await auxiliaryWork.catch(() => undefined);
+    if (drainStarted !== undefined && !publication.completedPhases.drain) {
+      recordPhase('drain', { passed: false, drainElapsedMs: performance.now() - drainStarted,
+        wsPackets: seen.size, error: { name: error instanceof Error ? error.name : 'Error' } });
+    }
   }
   finally { clearInterval(timer);timer=undefined;await readWork; }
   publication.stage='final-verification';
-  const after=await counts(), afterMetrics=await metrics();
+  // The packet writer assigns observation time on this VM after publication.
+  // The independent audit below still searches all partitions for these hashes.
+  const after=await counts(commitWindowStart), afterMetrics=await metrics();
   publication.stage='independent-final-hash-audit';
-  const independentTotals=await auditSoakWorksetHashes(queryCounts,workset.hashes);
-  const independentAudit={kind:'independent-owned-packet-hash-workset-v1',sha256:workset.countsScope.sha256,
-    totals:independentTotals,passed:(Object.keys(after) as (keyof typeof after)[]).every(key=>after[key]===independentTotals[key])};
+  const audit = await auditWorkset();
+  const independentAudit = { kind: 'independent-owned-packet-hash-workset-v2', sha256: workset.countsScope.sha256,
+    ...audit, passed: audit.mismatchCount === 0
+      && (Object.keys(after) as (keyof typeof after)[]).every(key => after[key] === audit.totals[key]) };
+  recordPhase('reconciliation', { passed: independentAudit.passed &&
+    (Object.keys(expectedDeltas) as (keyof typeof expectedDeltas)[]).every(key => after[key] - before[key] === expectedDeltas[key]),
+    before, after, expectedDeltas, independentAudit });
   const elapsedMs=performance.now()-started;
   const walBytes=Number((await pool.query('SELECT pg_wal_lsn_diff(pg_current_wal_lsn(),$1)::text bytes',[walBefore])).rows[0].bytes);
   const deltas=Object.fromEntries(Object.entries(after).map(([key,value])=>[key,value-before[key as keyof typeof before]]));
@@ -271,12 +326,19 @@ try {
     return {key,maximum,middleLow,finalLow,growth,plateau,withinBound:maximum<=1024*1024*1024};
   });
   const memoryPassed=memory.length===2&&memory.every(value=>value.plateau&&value.withinBound);
+  const readLatencyPassed = latency.filter(row => row.name !== 'background-charts')
+    .every(row => (row.p95Ms ?? Infinity) <= budgetMs);
+  const brokerDroppedKey = 'meshcore_mqtt_broker_store{kind="dropped"}';
+  const drops = [beforeMetrics.get(brokerDroppedKey), ...samples.map(row => row.values[brokerDroppedKey]),
+    afterMetrics.get(brokerDroppedKey)].filter((value): value is number => value !== undefined);
+  const brokerDropCheck = { observed: drops.length >= 2, first: drops[0] ?? null, last: drops.at(-1) ?? null,
+    unchanged: drops.length >= 2 && drops.every(value => value === drops[0]) };
   const passed=!failure&&drained&&independentAudit.passed&&Object.entries(deltas).every(([key,value])=>value===expectedDeltas[key as keyof typeof expectedDeltas])
-    && (!auxiliaryTraffic || auxiliaryAcknowledgements===auxiliaryTraffic.events.length)
+    && (!auxiliaryTraffic || (auxiliaryAcknowledgements===auxiliaryTraffic.events.length && brokerDropCheck.unchanged))
     && failures.length===0 && metricsFailures===0 && wsErrors===0 && wsUnexpectedCloses===0 && wsOpened && seen.size===count
     && badOutcomes.length===0 && dropped.length===0 && dedupMaximum<=50_000
     && cacheViolations.length===0 && memoryPassed
-    && latency.filter(row=>row.name!=='background-charts').every(row=>(row.p95Ms??Infinity)<=budgetMs);
+    && (advisoryLatency || readLatencyPassed);
   await mkdir(output,{recursive:true});
   await writeFile(path.join(output,'soak.json'),JSON.stringify({version:1,at:new Date().toISOString(),passed,phase:'complete',
     publicationStarted:publication.publicationStarted,guardCompleted,countsScope:workset.countsScope,socketScope,independentAudit,
@@ -286,14 +348,16 @@ try {
     diffSha256:createHash('sha256').update(execFileSync('git',['diff','HEAD'])).digest('hex'),
     settings:{count,rate,budgetMs,httpConcurrency:8,readIntervalMs:5000,backgroundIntervalMs:60000,fixture:manifest,envelopeFormat,
       httpTransport:readerSocket?'owned-backend-namespace-8-loopback-clients':'direct',httpWarmup},
-    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,
+    elapsedMs,acknowledgedMs,warmupMs,warmupReads,drained,drainElapsedMs,before,after,deltas,expectedDeltas,commitWindowStart,
     auxiliaryTraffic:auxiliaryTraffic?{seed:auxiliaryTraffic.seed,cycles:auxiliaryTraffic.cycles,
       intervalMs:auxiliaryTraffic.intervalMs,expected:auxiliaryTraffic.expected,auxiliaryAcknowledgements}:null,
     walBytes,walBytesPerPacket:walBytes/count,
     wsPackets:seen.size,wsMissingCount:count-seen.size,
     wsMissing:hashes.flatMap((hash,index)=>seen.has(hash)?[]:[{index,hash}]).slice(0,20),
     wsErrors,socketReadiness:{opened:wsOpened,initialState:true,unexpectedCloses:wsUnexpectedCloses,closeCode:wsCloseCode,closeReason:wsCloseReason},
-    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,reads,failures,badOutcomes,dropped,
+    metricsFailures,dedupMaximum,cacheViolations,memory,memoryPassed,latency,
+    brokerDropCheck, readLatency: { budgetMs, passed: readLatencyPassed, advisory: advisoryLatency },
+    reads,failures,badOutcomes,dropped,
     beforeMetrics:Object.fromEntries(beforeMetrics),afterMetrics:Object.fromEntries(afterMetrics),samples,
     error:failure instanceof Error?failure.message:failure?String(failure):null},null,2)+'\n');
   console.log(JSON.stringify({passed,elapsedMs,deltas,wsPackets:seen.size,httpFailures:failures.length,output}));

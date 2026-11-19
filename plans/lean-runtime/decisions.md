@@ -2441,3 +2441,282 @@ qualification. Do not change workloads, timing or acceptance limits.
   Native compatibility and artifact proofs do not replace the pending full CI
   retry, final source bindings or integrated qualification. Keep all existing
   resource, database, backup, RF, permission and performance criteria.
+
+## Qualify the remote GPU default on the four-core DEV VM
+
+- Give the coordinator one remote-only compute policy for scheduled coverage
+  and on-demand footprints. DEV currently clears the broker address and the
+  chunk dispatcher can fall through to local terrain and propagation. Preserve
+  the model, scheduling, checkpoints and published output while making a
+  disconnected worker an observable, recoverable job failure.
+- Validate effective PostgreSQL service policies at the existing inspection
+  boundary. The guard rejects the shared service inheritance before it can
+  check the inherited floor, and Beacon's capacity is below that floor.
+  Keep the actual Beacon container memory limit fixed.
+- Use the migration loader's names and checksums to check both replay ledgers.
+  The tests maintained a second migration head and now fail before exercising
+  the preserved grants and legacy schema moves.
+- Classify known fixture-only scan findings at their owning file and exact
+  value, keeping full-history scanning. Fix the affected frontend dependency
+  at the root of its graph, with a reviewed and pinned source backport if
+  upstream has no suitable release. The full audit remains required.
+- Compare feature contracts against GitHub main and the merged DEV revision
+  separately. Use the same fixtures for matched performance runs and keep
+  the database and RF artifacts owned by the existing lifecycle boundaries.
+- Reuse the loopback disposable database helper for compressed replay and run
+  it with TimescaleDB. The plain PostgreSQL audit job has a different schema
+  contract. Exercise the real launcher lease in the operator script test and
+  stub only the fixture and container inventory boundaries.
+- Bound Chromium context setup separately in the production basemap tests.
+  The CI trace spent 32 seconds creating a context. Keep the recovery
+  deadline, assertions and normal pointer action in the test body.
+
+## Reduce buffer reads on 10× search and observer maps
+
+- Give current name, raw ID and IATA candidate discovery one indexed text
+  expression. Three GIN probes repeat work on the same index. Preserve the
+  canonical-ID and former-name candidates and exact matching after identity
+  hydration. Keep the earlier index usable by the sealed baseline and by
+  clients rolling back to earlier builds.
+- Let observer scope use a covering index on publicly eligible packet flags
+  when the current visibility generation is fully materialized and the packet
+  rematerialization queue is clear. The current query discovers sources from
+  the same index and then revisits every source to prove visibility. Reuse the
+  original packet-level checks during rematerialization and preserve the
+  observer's own identity, network scope and seven-day membership rules.
+- Verify identical rows before comparing timings. The single-scan experiment
+  with the whole privacy predicate lost SkipScan and read the packet heap.
+  Keep the separate indexed proof during recovery and measure the extra index
+  writes under the existing full ingest workload.
+
+## Keep retained CoreScope history independent of cache size
+
+- Give the retained packet reader ownership of pagination, totals, and page
+  hydration under one SQLite snapshot. The old time-only fallback treats
+  unbounded queries and late observations as cache-complete, skips radio
+  filters, and can silently return partial rows after a database error.
+- Reuse the packet filters and the page formatters at the history boundary.
+  The old fallback has independent definitions of channel and node matching
+  and a second set of response fields. Resolve linked metadata once per
+  request and return errors before sending a partial result.
+- Move per-observation radio data to the observation read path. The global
+  map duplicates SQLite and grows independently of packet eviction. Keep the
+  radio-stint fallback used by single-radio observers and earlier schemas.
+- Keep the DEV cap off until retained packet details, VCR and history consumers
+  pass with actual eviction. The cap cannot safely turn a cache miss into
+  a historical miss.
+
+## Record MQTT qualification outcomes at their owning stages
+
+- Save publication, delivery, drain and final reconciliation evidence as the
+  corresponding work completes. A later SQL timeout currently hides timings
+  and counters from earlier work, even though the failure receipt shows the
+  exact stage.
+- Use the existing matched-read validators to close the MQTT-first profile.
+  Keep fixed 80 RPS and mixed-read latency visible as advisory and bind all
+  required phases to the same source, runtime profile and intended fixtures.
+
+## Attribute swap without changing the qualification gates
+
+- Count qualification processes separately from resident services. Host swap
+  counters show movement but cannot identify the process or tell whether a
+  process moved swap traffic and paged back in between samples. Record
+  harness PSS and SwapPss alongside the existing resident and host evidence.
+- Measure the selected CoreScope SQLite store and WAL during the workload,
+  and capture PostgreSQL wait classes without query text. The previous
+  evidence combined disk I/O and backend waits into broad counters while
+  two SQLite processes shared one retained store.
+
+## Prove exact timed drain through committed parent keys
+
+- Reuse the parent-key checks inside the timed drain and keep the global hash
+  audit for final independent reconciliation. The drain and final checks
+  currently repeat the same global scans of path history and the ledger.
+  Check each hash and reception count during drain so missing packets cannot
+  cancel out duplicate observations in aggregate totals. The final global
+  scan still detects orphan children outside the publication window.
+
+## Clone retained fixtures through their existing ownership gate
+
+- Copy an unused, validated fixture under the target publication lease and
+  verify its SQLite snapshot. The restore path creates a new logical fixture
+  from backups, which cannot reproduce the enlarged CoreScope history and
+  already-converged PostgreSQL baseline together. Keep source fixtures and
+  original stores available for comparison.
+- Check free space against all three PostgreSQL stores, SQLite, and a write
+  allowance before creating any database. Use PostgreSQL's file-copy
+  strategy. Revoke PUBLIC access only on new databases, then let the existing
+  selected-target switch grant application roles. Provisioning during clone
+  creation would revoke access from the currently selected pair.
+
+## Warm up an actually public packet detail
+
+- Select the soak's sample packet through the same network scope and privacy
+  predicates as packet detail. The two materialized flags alone can select a
+  hidden or differently scoped packet after fixture preparation. Preserve
+  the required HTTP success for all eight routes.
+
+## Keep replay preparation from holding two decoded CSV tables
+
+- Reuse the streaming CSV reader for replay inputs. The publisher needs the
+  raw-frame identity lookup and the ordered publication schedule, but it
+  currently retains both expanded source tables while building them. Keep
+  arbitrary input order, original filters, and the same QoS and rate.
+
+## Remove whole-history bookkeeping from the RF startup pass
+
+- The resident and retained global readers already visit one transmission per hash. Preserve the existing regional observation traversal and scope behavior, and keep only per-transmission hourly deduplication in the global reducer. The previous shared reducer allocated regional hash sets for the default startup and concatenated each hash with its hour.
+- Record running sums and extrema for RF time and payload-type groups. Those responses do not need a second copy of every SNR value. Keep the full inputs to the exact median, histograms, and existing scatter sampling.
+- Establish startup memory and response parity on the verified 10× SQLite copy before changing the packet-store default. The prior heap sample attributed about 99 MiB to the active RF aggregation.
+
+## Settle owned qualification processes before restoring a fixture
+
+- Run the workload in an owned process session whose supervisor remains available during cancellation. The previous Bash trap and workload shared one signal group, so restoration raced inherited target-lock descriptors.
+- Make the soak's HTTP-reader ownership recoverable before launching Docker. Docker owns the detached helper even if its CLI is interrupted. Use the run's ownership receipt for cleanup after process settlement.
+- Preserve canonical target publication and require the exclusive lease before restoration. A bounded wait lets short nested readiness sessions release inherited descriptors after their own cleanup.
+- Defer cancellation during the canonical selection and start. The controller must close the pending intent before the fixture can be changed again. Keep disk observations in memory until startup settles, then skip the workload and restore if the reserve was lost.
+
+## Separate allocated disk occupancy from bytes written
+
+- Record allocated SQLite bytes, PostgreSQL WAL and temporary file residency, and the selected database size alongside existing cgroup and cumulative counters. The late 10× write burst showed that a WAL position and temp-write counter cannot explain current free space.
+- Keep the minimum disk reserve in the qualification common settings so the host report, fixture copy and guarded workload use the same threshold.
+
+## Attribute map and search database time in their native read windows
+
+- Sample PostgreSQL statement counters immediately before and after each read mode. Bind them to the selected database and HTTP role. Use the existing node-map query annotation and record only query IDs, known shapes, call counts, execution time and block counters.
+- Keep counter observation outside the native HTTP intervals. Leave the current thresholds and response validation in the benchmark. Counter resets, evictions and unavailable telemetry must remain visible in the evidence.
+
+## Keep hop context from retaining unrelated decoded payloads
+
+- The retained 10× startup heap includes about 81 MiB of full decoded maps populated by topology. Hop disambiguation reads the sender pubkey alone.
+- Share the existing decoded cache for packets with a possible key. Exclude JSON that cannot contain the exact property before opening the cache, including a fallback for escaped keys. Preserve every hop and all decoded packet fields.
+
+## Shrink the repeater enrichment snapshot
+
+- The larger retained store reached complete packet load and then exhausted the 512 MiB cgroup during the synchronous enrichment prewarm. Keep one compact instant and the advertisement flag per indexed transmission. The reducer compares instants without losing offsets or fractional seconds.
+- Capture sparse transported scope names alongside the other fields while holding the existing store read lock. Preserve the separate scope attribution and time-window rules.
+
+## Serialize CoreScope's high-memory background passes
+
+- Share one cancellable work slot between analytics recomputes and repeater enrichment. Their startup passes could allocate whole-history scratch data at the same time. Keep the individual refresh intervals and response caches.
+- Let waiting work leave on shutdown. Signal every analytics worker before waiting for their completion.
+
+## Keep statistics complete when the packet cache is limited
+
+- Count transmissions and logical observations in one SQLite snapshot when the resident index may omit history. Use the transmission index for zero or one observation, then group repeated observations by their exact observer and path for that transmission.
+- Keep the current physical observation counts for the last hour and day. Exercise both SQLite schemas and keep the resident path for a complete cache.
+
+## Read direct reception evidence across the retained history
+
+- Node health uses a background direct-reception snapshot. A bounded packet cache can omit evidence from that snapshot even while SQLite retains the observations.
+- Feed the same radio evidence reducer from a complete resident store or from bounded SQLite batches. Keep the prior published snapshot when a retained read fails.
+
+## Limit neighbor-graph decoding to authoritative origins
+
+- The full 10× stack passed startup at 512 MiB. CoreScope was OOM-killed just after the first scheduled neighbor-graph refresh began. The startup heap profile showed that graph construction was populating decoded payload caches even for packets that can only contribute last-hop edges.
+- Read origins for advertisements and anonymous requests. Keep last-hop edge construction for every packet type and put scheduled graph construction behind the existing cancellable analytics work slot.
+- Use sustained reads through the first full refresh to verify cgroup memory at the unchanged limit.
+
+## Resume an inactive fixture consumer before restoring targets
+
+- The first 10× read attempt left CoreScope inactive. Target publication correctly refused to switch until the previous consumer could be observed.
+- Classify that refusal before publishing the selection. The fixture supervisor can start the still-selected owned fixture through the launcher and retry the original guarded switch once. Other refusals still require their own diagnosis.
+
+## Wait for the maintenance fixture's final PostgreSQL listener
+
+- Hosted CI stopped before the maintenance fixture executed its seed SQL. The fixture checked log text and probed a Unix socket, which is also used by the image's temporary initialization server.
+- Use one bounded TCP readiness probe for the final server. The dry run, signed apply, and idempotent retry continue to use the existing maintenance command and safety gates.
+
+## Plan broad node lookups with the supplied values
+
+- The 10× comparison recorded 334–367 ms of average PostgreSQL execution for broad map and short-search shapes in the candidate. Forced generic plans reproduced about 410 ms of execution. With the same values, custom plans took 7–8 ms. JIT was already disabled.
+- Send broad lookups without candidate IDs as unnamed statements so PostgreSQL plans for the actual scope, cursor and limit. Keep bounded preparation when the SQL first identifies candidate IDs. Both paths retain the complete identity projection and visibility checks.
+
+## Select the native benchmark observer once per read window
+
+- The exact seven-day observer ranking took about 18 seconds in a representative 10× mode. Running it in all 24 subprocesses consumed the collection deadline even after the candidate latency improved.
+- The first mode selects the observer through the existing authenticated read-only session and owns a private receipt. The next three modes create fresh runtime sessions and use that same observer. The controller compares receipt hashes across modes and paired windows, and removes the private file when the window closes. The measured routes, samples, companion cadence and deadline remain the same.
+
+## Reserve memory for the local Redis process
+
+- The full soak reached Redis's 256 MiB cgroup limit and the kernel killed the process. Redis reported no internal limit. The live feed lost its Pub/Sub connection while PostgreSQL continued to commit every observation.
+- Limit accounted Redis memory to 160 MiB and keep `noeviction`. Leave capacity for allocator and client overhead. Check that an owned pressure fixture refuses additional allocations, retains existing data, and still delivers a Pub/Sub message.
+
+## Bound the Redis cache of completed link jobs
+
+- Active and dead work already have budgets. Completed jobs left four Redis records behind for up to seven days. The owned 10× database contains 365,771 durable job receipts and added 24,055 during the soak.
+- Reap completed Redis markers by age and toward a target of 32,768 entries, including while the ready queue stays busy. Process up to 500 markers every five seconds. Leave active work, leases, dead jobs, and the PostgreSQL receipts intact. A replay outside the recent Redis cache can reach the worker, where the durable receipt prevents a second graph write or notification.
+
+## Isolate basemap failure scenarios at the browser process
+
+- Two hosted runs stalled while opening a new context in the Chromium process already used for the preceding WebGL test. Launch Chromium for each scenario, keep one worker, and close each context before closing its browser so Playwright can record failure artifacts. Keep the renderer options, assertions, and deadlines.
+
+## Stream the owned soak replay input
+
+- One process in the timed harness accounted for up to 253 MiB of swap. The harness materialized the full packet table for subscription checks and then assembled another list of serialized broker messages.
+- The owned fixture writes paired packet and raw CSV records in chronological order. Verify the full ordered pair list, scope, count, and distinct hashes before publication, then stream the same records through the existing paced MQTT publisher at QoS 1. Retain only the hashes and observations needed for reconciliation. Keep the ordinary replay CLI's ability to join and sort independent files, and include the executable replay helper in the guarded failure receipt.
+
+## Reduce CoreScope memory across retained-history reads
+
+- Share immutable path JSON, parsed paths, and adjacent equal timestamps inside CoreScope's load passes. Packet responses copy the shared path slice before returning it. The hashing pass keeps the original hash formula and reuses the stored canonical hash.
+- Reduce the repeater index under one read lock and reuse prefix deduplication. Keep the timestamp, route, and scope rules. Restore the lock and eviction proof at the published-result boundary and measure the whole reducer.
+- Reuse scratch space for aggregate hop resolution. The distance index reserves a small starting buffer and grows with resolved records. It uses the existing sender lookup to avoid retaining unrelated decoded payloads. The private cold-route probe verifies the 202-to-200 transition against the complete 461,125-row fixture at 512 MiB.
+
+## Handle process exit during resource sampling
+
+- The soak collector stopped when Linux returned `ESRCH` while a process was disappearing. Skip `/proc` traversal for an empty native process set. Treat `ESRCH` like a missing process file in the per-process reads. Missing required containers still fail resident coverage and stability, and surviving containers still supply their effective cgroup limits.
+
+## Wait for accepted traffic to settle after cancelling a replay
+
+- The disk guard stopped the owned publisher while UKMesh was still committing queued traffic. Restore now retries an explicit busy reading from the initial intake check. It holds the existing lease, starts retries within the 120-second drain budget and runs full protection before publishing the original selection. Malformed evidence and refusals after protection starts still stop the attempt.
+
+## Resolve multibyte paths without storing expanded observation sets
+
+- An eight-day statistics refresh used more than 2 GiB of PostgreSQL temporary space on the owned 10× fixture. It materialized the full observation set at several steps and joined expanded hops back by observation ID.
+- Build the canonical identity projection and its prefix dictionary once per statement. Reduce each observation's hops in order and stream the resolved facts into the existing upsert. Keep receiver-role trimming, ambiguity and repeated-node checks, and the privacy generation and coverage update in the same statement.
+- The matched read-only projection returned the same two result digests across 53,737 rows. The complete eight-day read-only plan processed 715,587 rows with 5,850 temporary blocks written. The disposable PostgreSQL test exercised the fact writes and privacy fence.
+
+## Filter the independent soak audit in each source table
+
+- The final reconciliation exceeded its 30-second deadline after all 72,000 ACK packets were acknowledged, delivered live and drained. The audit joined the materialized wanted hashes to four complete sources. Each source can use the same hash array as a direct membership filter before aggregation.
+- Keep the independent counts across all partitions and retain matching children with no packet parent. The wanted set still owns missing hashes, observer expectations and mismatch output. Keep the same 30-second deadline and the separate parent-linked ingest-drain proof.
+- After restoring the original stores, both read-only queries returned all 72,160 observations and ledger records, all 72,000 paths and facts, and zero mismatches on the retained fixture. The direct filter took 7.76 seconds and the subsequent join took 12.17 seconds. This ordered diagnostic does not replace the timed run. The native PostgreSQL oracle still covers duplicate inputs, auxiliary observers, missing hashes and unrelated rows, and children with no matching parent.
+
+## Select a scoped packet for the shared lookup workloads
+
+- The first 1× baseline window stopped when its positive packet-detail case returned 404. The latest row with two public flags was outside the UKMesh network scope. Both sealed source versions choose the same public, in-scope packet when using the route's predicates.
+- Use the production packet scope and privacy builders for the shared packet selection, as the soak already does. Keep the packet-detail route, required 200 and separate missing-packet 404 case, cache modes, source seals, and demand deadlines.
+
+## Reduce scoped region rows as PostgreSQL returns them
+
+- During the 10× soak the scheduled rebuild added about 217 MiB of anonymous memory. It held the full scoped SQL result, a second packet-to-region map and arrays of unattributed packets. The read-only worker-role diagnostic returned the same 249,868 ordered rows with either transport. Fetch batches of 2,048 reached 150,296 KiB RSS versus 403,244 KiB for the array, with elapsed times of 26.86 and 28.80 seconds respectively.
+- Preserve the scoped SQL, history, ordered paths and capacity sentinel. Use the reader connection the region job already budgets and finish it before publishing on the advisory-lock connection. Keep one statement budget across the reader's database calls and the existing outer process deadline.
+- Reduce each row once with the capped identity metadata. Add unknown rows to the existing greedy clusters in packet order and perform merges and cluster ID assignment after the final row. The five-table publication and generation checks remain in their current transaction.
+- The full read-only rebuilds matched the digest of every value destined for publication. Both processed 249,868 packets, decoded 215,112, and produced 387 memberships, 8,718 classifications and 15 clusters. Peak RSS fell from 549,216 to 244,172 KiB. Elapsed time was 77.13 seconds for the previous rebuild and 69.66 seconds for the bounded one, measured in that order on the same fixture. The native publication suite also verified the empty and over-capacity cases, visibility changes, deadline and claim cleanup.
+
+## Limit the established spam refresh to eligible adverts before grouping
+
+- The periodic refresh joined node candidates to broad packet chunks before filtering usable adverts. Under soak traffic it hit the existing 30-second read deadline. Select and project only qualifying adverts first, then retain the same node join and grouped counts. Keep the 30-day window, thresholds, duplicate handling, refresh interval and snapshot budgets.
+- On the retained 10× fixture, both paired orders returned the same digest for all 12 records. Before versus after was 27.39 versus 3.90 seconds in the first order and 14.40 versus 5.00 seconds in the reverse order. The read plans used about 265,000 and 81,000 shared read blocks respectively. These were read-only observations outside qualification.
+
+## Count packet and observer region activity from one grouped scan
+
+- The existing chart summary sorted nearly 950,000 observations to calculate four distinct counts over two keys. Give each region and key one last-seen value. A key was present in a shorter window exactly when its latest observation was in that window. Keep null keys out of the distinct counts while allowing them to contribute to last observation time.
+- Keep the existing seven-day UKMesh and observer input filters, alias resolution, IATA fallback, ordering, and independent region-series query. On the owned fixture, broad and per-observer results matched exactly. Grouping sets wrote 17,886 temporary blocks versus 24,044, with comparable elapsed time. The independent two-scan variant used less temporary space but was slower by more than 30% and was not adopted.
+
+## Shorten the CoreScope default packet read transaction
+
+- The next soak stopped at the 10 GiB reserve. The CoreScope WAL exceeded 870 MiB while SQLite had backfilled over 99% of its frames. The server held active WAL read locks, and the recorded read marks advanced. During this workload each default packet page rescanned all transmissions for its exact total before fetching 20 rows.
+- For the unfiltered page, count the whole table by its compact index and subtract the union of invalid row IDs from indexed blank and null checks. Preserve both existing validity checks, the exact count and page snapshot, and the existing predicate for every filtered page. A nullable legacy corpus excludes the same invalid combinations and counts overlapping exclusions once.
+- The six alternating-order pairs agreed at 480,129 rows, with medians of 51.89 and 1.83 ms. The route now uses the indexed count in CoreScope `610cba2d`. The focused retained packet tests and the full Go server suite passed. The WAL and whole-VM resource effect still require the integrated workload.
+
+## Retry an apt package replaced during a mirror update
+
+- Hosted Compose CI stopped when apt's signed index selected Ubuntu nginx archives that returned 404 from the package pool. Allow the current bounded retry for that specific package-fetch error. Preserve immediate failure for missing repositories, manifest failures, unsigned or unavailable packages, and application build or test errors.
+
+## Keep one copy of CoreScope's selected observation
+
+- On the 461,125-transmission 10× fixture, CoreScope's selected packet read kept the sampled WAL below 8 MiB. During the 40-minute live replay, web anonymous memory rose from about 421 to 477 MiB before the 512 MiB cgroup OOM at approximately 503,664 transmissions. The isolated ingestor committed all 72,000 ACKs. The canonical restore needed to start the same web consumer temporarily at 640 MiB, then restored all original targets at default limits and passed all 43 inventory checks.
+- Each loaded transmission copies the winning observation's observer labels, signal pointers, path and direction into its permanent record. Keep the winning observation by reference and use the packet store's same longest-path rule, stable ties, cached parsed path and nil fields when there are no observations. Preserve complete history and keep SQL and wire formats as they are.
+- Check selected-observation changes and tie behavior on startup, on the retained SQL path and after late observations. Use a retained snapshot and both Go suites to check packet, graph, live feed and analytics parity. Verify the main packet page in Chromium and measure memory at the complete grown history before repeating the guarded soak. The periodic neighbor graph also carries a transient full snapshot at this scale. Measure it after this storage change before deciding how to reduce that peak.
+- Before DEV integration, a repeat default-limit cold start on 533,245 rows was OOM-killed. On the separate 480,129-row fixture, the exact unfiltered page and the populated Chromium journey passed at 512 MiB. Keep the grown-fixture startup failure open.

@@ -102,6 +102,38 @@ class EffectiveMemoryEvidence(unittest.TestCase):
             self.assertIsNone(got['swap_processes']['2'])
             self.assertFalse(got['swap_coverage_complete'])
 
+    def test_process_family_survives_an_exiting_process(self):
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            for pid in ('1', '2', '3'):
+                (root / pid).mkdir()
+
+            def status(path):
+                if path.parent.name == '2':
+                    raise ProcessLookupError(3, 'No such process')
+                return {'PPid': int(path.parent.name == '3')}
+
+            with patch.object(resources, 'key_values', side_effect=status):
+                self.assertEqual(resources.process_family({1}, proc_root=root), {1, 3})
+            self.assertEqual(resources.process_family(set(), proc_root=root / 'absent'), set())
+
+    def test_process_exit_still_fails_required_resident_coverage(self):
+        item = {'Name': '/api', 'State': {'Pid': 123}}
+        def docker(args):
+            output = b'id\n' if args == ['ps', '-q'] else json.dumps([item]).encode()
+            return type('Result', (), {'stdout': output})()
+
+        with patch.object(resources, 'docker', side_effect=docker), patch.object(
+                resources, 'container_cgroup', side_effect=ProcessLookupError(3, 'No such process')):
+            missing = resources.container_samples()
+        self.assertEqual(missing, [])
+        rows = resource_rows()
+        rows[-1]['containers'] = missing
+        result = resources.evaluate(rows, duration=2400, warmup=120, required_containers={'api'})
+        self.assertFalse(result['passed'])
+        self.assertFalse(result['checks']['complete_resident_coverage'])
+        self.assertEqual(result['unstable_containers'], ['api'])
+
     def test_acceptance_checks_effective_caps_and_keeps_host_swap_thresholds(self):
         rows=resource_rows();self.assertTrue(resources.evaluate(rows,duration=2400,warmup=120)['passed'])
         for key,value in [('effective_swap_max','max'),('effective_swap_max',1024),('effective_memory_max',1),

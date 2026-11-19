@@ -128,6 +128,13 @@ class FakeClient {
     }
     if (text.includes('timescaledb_information.chunks')) {
       if (this.env.holdChunks) await this.env.holdChunks;
+      if (text.includes('AS key') && text.includes('is_compressed AS compressed')) {
+        const rows = this.env.chunks.map((chunk) => {
+          const key = `${chunk.schema}.${chunk.name}`;
+          return { key, compressed: chunk.compressed || this.env.recompressed.has(key) };
+        });
+        return { rows: rows as T[], rowCount: rows.length };
+      }
       return { rows: this.env.chunks as T[], rowCount: this.env.chunks.length };
     }
     if (text.includes('FROM ops.packet_identity_backfill_state')) {
@@ -423,8 +430,8 @@ test('a compressed chunk is decompressed once and recompressed after its rows ar
   const markerIndex = client.queries.findIndex((query) => query.sql.includes('decompressed_chunks = $1::text[]'));
   const firstBegin = client.queries.findIndex((query) => query.sql === 'BEGIN');
   assert.ok(
-    decompressIndex >= 0 && markerIndex > decompressIndex && firstBegin > markerIndex,
-    'the decompression must be persisted before the chunk is read',
+    markerIndex >= 0 && decompressIndex > markerIndex && firstBegin > decompressIndex,
+    'ownership must be persisted before the chunk is decompressed, and the chunk must be read only afterwards',
   );
 });
 

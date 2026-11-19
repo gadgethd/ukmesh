@@ -63,6 +63,18 @@ func tierNeedsCompute(cfg appConfig, previous *coverageMeta, now time.Time) bool
 	return !tierFreshToday(previous, now)
 }
 
+func incompleteTier(previous meta, name string) bool {
+	if previous.Complete || previous.Run == nil {
+		return false
+	}
+	switch previous.Run.Tiers[name].State {
+	case "computing", "failed":
+		return true
+	default:
+		return false
+	}
+}
+
 // generated_at is written before computing, so it cannot identify a run that
 // crossed the cron slot. New metadata records completion explicitly; legacy
 // metadata can recover the finish time from its successful analytics record.

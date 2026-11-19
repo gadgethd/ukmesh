@@ -18,4 +18,9 @@ func TestPrepareCronUsesScheduledMode(t *testing.T) {
 	if cfg := toAppConfig(yc); cfg.scheduleCron != yc.Schedule.Cron || cfg.scheduled {
 		t.Fatalf("cron must reach the due check without opting ordinary runs into scheduled mode: %+v", cfg)
 	}
+	yc.GPU.Mode = "remote"
+	want += "*/5 * * * * root /app/hopreach -resume-remote >> /var/log/fetch.log 2>&1\n"
+	if got := renderCronFile(yc, "/config/config.yaml"); got != want {
+		t.Fatalf("remote cron file = %q, want %q", got, want)
+	}
 }

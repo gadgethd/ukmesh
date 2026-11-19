@@ -18,11 +18,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 
+	"hopreach/internal/compute"
 	yconfig "hopreach/internal/config"
 	"hopreach/internal/sysinfo"
 )
@@ -33,6 +35,7 @@ type commandFlags struct {
 	forceAllTiers bool
 	prepare       bool
 	scheduled     bool
+	resumeRemote  bool
 	node          string
 }
 
@@ -43,6 +46,7 @@ func registerFlags(fs *flag.FlagSet) *commandFlags {
 	fs.BoolVar(&opts.forceAllTiers, "force-all-tiers", false, "also recompute every tier regardless of same-day freshness (implies -force); use after a config change that invalidates existing output, not for a routine restart/deploy")
 	fs.BoolVar(&opts.prepare, "prepare", false, "render config.js, nginx's site config, and the cron file from config.yaml, then exit")
 	fs.BoolVar(&opts.scheduled, "scheduled", false, "wait up to one hour for the calculator lock and refresh unless a run completed since the latest daily cron slot")
+	fs.BoolVar(&opts.resumeRemote, "resume-remote", false, "resume a parked remote GPU run when the worker is available")
 	fs.StringVar(&opts.node, "node", "", "compute standard-tier coverage for one 64-hex repeater public key, then exit")
 	return opts
 }
@@ -61,6 +65,9 @@ func main() {
 	}
 	if opts.scheduled && (opts.prepare || opts.node != "") {
 		log.Fatal("hopreach: -scheduled cannot be used with -prepare or -node")
+	}
+	if opts.resumeRemote && (opts.prepare || opts.node != "" || opts.scheduled || opts.force || opts.forceAllTiers) {
+		log.Fatal("hopreach: -resume-remote must run on its own")
 	}
 	var nodePublicKey string
 	if opts.node != "" {
@@ -110,6 +117,7 @@ func main() {
 	cfg.forceRecompute = opts.force || opts.forceAllTiers
 	cfg.forceAllTiers = opts.forceAllTiers
 	cfg.scheduled = opts.scheduled
+	cfg.resumeRemote = opts.resumeRemote
 	if nodePublicKey != "" {
 		result, runErr := runNode(cfg, nodePublicKey)
 		if encodeErr := json.NewEncoder(os.Stdout).Encode(result); encodeErr != nil {
@@ -122,6 +130,10 @@ func main() {
 		return
 	}
 	if err := run(cfg); err != nil {
+		if errors.Is(err, compute.ErrRemoteParked) {
+			log.Printf("hopreach: %v; keeping the current coverage", err)
+			os.Exit(3)
+		}
 		log.Fatalf("hopreach: %v", err)
 	}
 }

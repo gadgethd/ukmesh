@@ -1,43 +1,74 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 import type WebSocket from 'ws';
-import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
+import { readReplayInput, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
 import { SoakPublication } from './soakPublication.js';
 
 const receiver='0102'+'11'.repeat(30);
-const columns=['packet_hash','rx_node_id','network'];
+const date='2026-11-14T00:00:00.000Z';
+const next='2026-11-14T00:00:01.000Z';
+const topic=`meshcore/LHR/${receiver}/packets`;
+const packetColumns='time,packet_hash,rx_node_id,network,topic';
+const rawColumns='time,packet_hash,rx_node_id,raw_hex';
+function writeInput(directory: string, packets: string[], raw: string[], headers = packetColumns) {
+  return Promise.all([
+    writeFile(path.join(directory,'packets.csv.gz'), gzipSync([headers,...packets].join('\n')+'\n')),
+    writeFile(path.join(directory,'raw_packets.csv.gz'), gzipSync([rawColumns,...raw].join('\n')+'\n')),
+  ]);
+}
 
-test('full-stack scope verifies all72000 ACK rows without changing their count or input',()=>{
-  const rows=Array.from({length:72000},(_,index)=>[String(index),receiver,'ukmesh']);
-  const before=rows[71999]!.slice();
-  const scope=soakSocketScope(columns,rows,72000,true);
-  assert.deepEqual(scope,{network:'ukmesh',observer:receiver,ackRows:72000});
-  assert.equal(rows.length,72000);assert.deepEqual(rows[71999],before);
-  const socket=soakSocketUrl(new URL('http://127.0.0.1:3100/'),scope);
-  assert.equal(socket.href,'ws://127.0.0.1:3100/ws?network=ukmesh&observer='+receiver);
-  rows[71999]=['last',receiver.slice(0,-1)+'g','ukmesh'];
-  assert.throws(()=>soakSocketScope(columns,rows,72000,true),/valid receiver/,'the last row is also checked');
+test('full-stack input validates paired ACK rows and preserves their identities and scope',async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'ukmesh-soak-socket-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const caseReceiver='AB'.repeat(32);
+  const packets=[`${date},a,${caseReceiver},ukmesh,${topic}`,`${next},b,${caseReceiver.toLowerCase()},ukmesh,${topic}`];
+  const raw=[`${date},a,${caseReceiver},000A`,`${next},b,${caseReceiver.toLowerCase()},000B`];
+  await writeInput(directory,packets,raw);
+  const { hashes, expected, socketScope }=await readReplayInput(directory,2,true);
+  assert.deepEqual(hashes,['a','b']);
+  assert.deepEqual(expected,new Set(hashes));
+  assert.deepEqual(socketScope,{network:'ukmesh',observer:caseReceiver.toLowerCase(),ackRows:2});
+  const socket=soakSocketUrl(new URL('http://127.0.0.1:3100/'),socketScope);
+  assert.equal(socket.href,'ws://127.0.0.1:3100/ws?network=ukmesh&observer='+caseReceiver.toLowerCase());
+  await assert.rejects(readReplayInput(directory,3,true),/every requested row/);
+  await assert.rejects(readReplayInput(directory,1,true),/exactly the requested rows/);
+  await writeInput(directory,packets,[...raw].reverse());
+  await assert.rejects(readReplayInput(directory,2,true),/unmatched or unordered/);
+  await writeInput(directory,[...packets].reverse(),[...raw].reverse());
+  await assert.rejects(readReplayInput(directory,2,true),/unmatched or unordered/);
 });
 
-test('mixed, absent, invalid receivers, wrong networks and incomplete ACK sets refuse scoped connection',()=>{
-  for(const invalid of ['',receiver.slice(1),'z'.repeat(64),' '+receiver]){
-    assert.throws(()=>soakSocketScope(columns,[['hash',invalid,'ukmesh']],1,true),/valid receiver/);
+test('invalid scope, duplicate input columns and duplicate hashes refuse publication',async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'ukmesh-soak-socket-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const first=`${date},a,${receiver},ukmesh,${topic}`;
+  const firstRaw=`${date},a,${receiver},000A`;
+  for(const [lastReceiver,network,error] of [
+    ['', 'ukmesh', /valid receiver/], ['z'.repeat(64), 'ukmesh', /valid receiver/],
+    ['22'.repeat(32), 'ukmesh', /same receiver/], [receiver, 'test', /ukmesh on every row/],
+  ] as const){
+    await writeInput(directory,[first,`${next},b,${lastReceiver},${network},${topic}`],
+      [firstRaw,`${next},b,${lastReceiver},000B`]);
+    await assert.rejects(readReplayInput(directory,2,true),error);
   }
-  assert.throws(()=>soakSocketScope(columns,[['a',receiver,'ukmesh'],['b','22'.repeat(32),'ukmesh']],2,true),/same receiver/);
-  for(const network of ['', 'test', 'UKMESH'])assert.throws(()=>soakSocketScope(columns,[['a',receiver,network]],1,true),/ukmesh on every row/);
-  assert.throws(()=>soakSocketScope(['packet_hash'],[['a']],1,true),/receiver and network columns/);
-  assert.throws(()=>soakSocketScope(['rx_node_id','network','rx_node_id'],[[receiver,'ukmesh','22'.repeat(32)]],1,true),/unique receiver/);
-  assert.throws(()=>soakSocketScope(columns,[['a',receiver,'ukmesh']],72000,true),/every requested row/);
-  assert.throws(()=>soakSocketScope(columns,[],0,true),/every requested row/);
-  assert.deepEqual(soakSocketScope(columns,[['a','AB'.repeat(32),'ukmesh'],['b','ab'.repeat(32),'ukmesh']],2,true),
-    {network:'ukmesh',observer:'ab'.repeat(32),ackRows:2});
+  await writeInput(directory,[first,`${next},a,${receiver},ukmesh,${topic}`],[firstRaw,`${next},a,${receiver},000B`]);
+  await assert.rejects(readReplayInput(directory,2,true),/distinct hashes/);
+  await writeInput(directory,[first],[firstRaw],packetColumns+',rx_node_id');
+  await assert.rejects(readReplayInput(directory,1,true),/unique input columns/);
 });
 
-test('standalone calls preserve their existing unscoped network subscription',()=>{
-  const scope=soakSocketScope([],[],72000,false);
-  assert.deepEqual(scope,{network:'ukmesh',observer:null,ackRows:72000});
-  assert.equal(soakSocketUrl(new URL('http://127.0.0.1:3101/anything'),scope).href,'ws://127.0.0.1:3101/ws?network=ukmesh');
+test('standalone calls preserve their existing unscoped network subscription',async t=>{
+  const directory=await mkdtemp(path.join(os.tmpdir(),'ukmesh-soak-socket-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  await writeInput(directory,['a'],[],'packet_hash');
+  const { socketScope }=await readReplayInput(directory,1,false);
+  assert.deepEqual(socketScope,{network:'ukmesh',observer:null,ackRows:1});
+  assert.equal(soakSocketUrl(new URL('http://127.0.0.1:3101/anything'),socketScope).href,'ws://127.0.0.1:3101/ws?network=ukmesh');
 });
 
 test('open alone cannot start replay; real initial_state completes readiness and releases listeners', async () => {

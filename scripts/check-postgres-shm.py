@@ -7,6 +7,7 @@ or contacts a database. Custom PostgreSQL images must set x-postgres: true.
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import shlex
@@ -26,14 +27,21 @@ class ComposeLoader(yaml.SafeLoader):
     """Understand Compose tags without executing or resolving any host config."""
 
 
+class OverrideList(list):
+    pass
+
+
+class OverrideMapping(dict):
+    pass
+
+
 def compose_tag(loader, node):
-    if isinstance(node, yaml.MappingNode):
-        return loader.construct_mapping(node)
-    if isinstance(node, yaml.SequenceNode):
-        return loader.construct_sequence(node)
-    # !reset always restores the default, regardless of the supplied value.
     if node.tag == "!reset":
         return None
+    if isinstance(node, yaml.MappingNode):
+        return OverrideMapping(loader.construct_mapping(node))
+    if isinstance(node, yaml.SequenceNode):
+        return OverrideList(loader.construct_sequence(node))
     return loader.construct_scalar(node)
 
 
@@ -84,25 +92,112 @@ def git_yaml_paths(root):
     })
 
 
+def merge_environment(parent, child):
+    def entries(value):
+        if isinstance(value, list):
+            if not all(isinstance(entry, str) for entry in value):
+                raise ValueError("extends environment list entries must be strings")
+            return {key: item if separator else None for key, separator, item in
+                    (entry.partition("=") for entry in value)}
+        if not isinstance(value, dict):
+            raise ValueError("extends environment must be a mapping or list")
+        return value
+
+    if child is None or isinstance(child, (OverrideList, OverrideMapping)):
+        return child
+    return {**entries(parent or {}), **entries(child)}
+
+
+def volume_target(mount):
+    if isinstance(mount, dict):
+        target = mount.get("target")
+    elif isinstance(mount, str):
+        parts = mount.split(":")
+        target = parts[0] if len(parts) == 1 else parts[1]
+    else:
+        target = None
+    if not isinstance(target, str) or not target.startswith("/"):
+        raise ValueError("extends volumes require a literal Linux container target")
+    return target
+
+
+def merge_policy(parent, child):
+    """Apply extends rules for the values used by the shared-memory audit."""
+    policy = {**parent, **child}
+    if "environment" in child:
+        policy["environment"] = merge_environment(parent.get("environment"), child["environment"])
+    for key in ("volumes", "tmpfs"):
+        value = child.get(key)
+        if value is None or isinstance(value, OverrideList) or key not in parent:
+            continue
+        inherited = parent[key] or []
+        if key == "volumes":
+            if not isinstance(inherited, list) or not isinstance(value, list):
+                raise ValueError("extends volumes must be lists")
+            policy[key] = list({volume_target(mount): mount for mount in [*inherited, *value]}.values())
+        else:
+            parent_mounts = [inherited] if isinstance(inherited, str) else inherited
+            child_mounts = [value] if isinstance(value, str) else value
+            if not isinstance(parent_mounts, list) or not isinstance(child_mounts, list):
+                raise ValueError("extends tmpfs must be a string or list")
+            policy[key] = [*parent_mounts, *child_mounts]
+    return policy
+
+
+def service_policy(documents, main_path, name):
+    chain, seen = [], set()
+    path = main_path
+    while True:
+        key = (path, name)
+        if key in seen:
+            raise ValueError(f"{main_path}: circular extends at {path}:{name}")
+        seen.add(key)
+        services = documents.get(path, {}).get("services")
+        service = services.get(name) if isinstance(services, dict) else None
+        if not isinstance(service, dict):
+            raise ValueError(f"{main_path}: missing Git-visible service {path}:{name}")
+        if "extends" not in service:
+            break
+        reference = service["extends"]
+        if (not isinstance(reference, dict) or set(reference) - {"file", "service"}
+                or not isinstance(reference.get("service"), str) or not reference["service"]
+                or "$" in reference["service"]):
+            raise ValueError(f"{path}:{name}: extends requires a literal service mapping")
+        chain.append({key: value for key, value in service.items() if key != "extends"})
+        if "file" in reference:
+            filename = reference["file"]
+            if not isinstance(filename, str) or not filename or "$" in filename or Path(filename).is_absolute():
+                raise ValueError(f"{path}:{name}: extends file must be a relative Git-visible path")
+            # Nested references are relative to the file declaring them.
+            path = Path(os.path.normpath(path.parent / filename))
+        name = reference["service"]
+    for override in reversed(chain):
+        service = merge_policy(service, override)
+    return service
+
+
 def load_services(root):
-    rows = []
-    compose_files = []
+    rows, compose_files, documents = [], [], {}
+    root = root.resolve()
     for path in git_yaml_paths(root):
         # A tracked deletion must not silently remove an inventory entry.
-        document = yaml.load((root / path).read_text(), Loader=ComposeLoader) or {}
+        source = root / path
+        if source.resolve() != source or not source.is_file():
+            raise ValueError(f"{path}: Git-visible YAML must be a regular file without symlinks")
+        document = yaml.load(source.read_text(), Loader=ComposeLoader) or {}
         if not isinstance(document, dict):
             continue
         if "include" in document:
             raise ValueError(f"{path}: Compose include needs explicit guard support")
+        documents[path] = document
+    for path, document in documents.items():
         services = document.get("services")
         if isinstance(services, dict):
             compose_files.append(str(path))
             for name, service in services.items():
                 if not isinstance(service, dict):
                     raise ValueError(f"{path}:{name}: expected a service mapping")
-                if "extends" in service:
-                    raise ValueError(f"{path}:{name}: extends needs explicit guard support")
-                rows.append((str(path), str(name), "compose", service))
+                rows.append((str(path), str(name), "compose", service_policy(documents, path, name)))
         if ".github/workflows" in path.as_posix():
             for job_name, job in (document.get("jobs") or {}).items():
                 for name, service in (job.get("services") or {}).items():

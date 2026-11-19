@@ -134,6 +134,12 @@ export function clusterUnattributedPackets(
   packets: readonly UnattributedPacket[],
   options: UnattributedClusterOptions = {},
 ): UnattributedClusterResult {
+  const clusterer = createUnattributedClusterer(options);
+  for (const packet of packets) clusterer.add(packet);
+  return clusterer.finish();
+}
+
+export function createUnattributedClusterer(options: UnattributedClusterOptions = {}) {
   const radiusKm = options.radiusKm ?? DEFAULT_CLUSTER_RADIUS_KM;
   const minPackets = options.minPackets ?? DEFAULT_CLUSTER_MIN_PACKETS;
   const maxTopNodes = options.maxTopNodes ?? DEFAULT_CLUSTER_MAX_TOP_NODES;
@@ -141,11 +147,11 @@ export function clusterUnattributedPackets(
   const working: WorkingCluster[] = [];
   let unlocatedPackets = 0;
 
-  for (const packet of packets) {
+  function add(packet: UnattributedPacket): void {
     const located = packet.nodes.filter(isLocatable);
     if (located.length === 0) {
       unlocatedPackets += 1;
-      continue;
+      return;
     }
     const unique = new Map<string, LocatedNode>();
     for (const node of located) {
@@ -191,59 +197,63 @@ export function clusterUnattributedPackets(
     if (last != null && (target.lastMs == null || last > target.lastMs)) target.lastMs = last;
   }
 
-  // Greedy assignment can leave two clusters that overlap; merge until stable.
-  let merged = true;
-  while (merged) {
-    merged = false;
-    outer: for (let a = 0; a < working.length; a += 1) {
-      const centreA = centreOf(working[a]!);
-      for (let b = a + 1; b < working.length; b += 1) {
-        const centreB = centreOf(working[b]!);
-        if (haversineKm(centreA.lat, centreA.lon, centreB.lat, centreB.lon) <= radiusKm) {
-          absorb(working[a]!, working[b]!);
-          working.splice(b, 1);
-          merged = true;
-          break outer;
+  function finish(): UnattributedClusterResult {
+    // Greedy assignment can leave two clusters that overlap; merge until stable.
+    let merged = true;
+    while (merged) {
+      merged = false;
+      outer: for (let a = 0; a < working.length; a += 1) {
+        const centreA = centreOf(working[a]!);
+        for (let b = a + 1; b < working.length; b += 1) {
+          const centreB = centreOf(working[b]!);
+          if (haversineKm(centreA.lat, centreA.lon, centreB.lat, centreB.lon) <= radiusKm) {
+            absorb(working[a]!, working[b]!);
+            working.splice(b, 1);
+            merged = true;
+            break outer;
+          }
         }
       }
     }
+
+    const kept = working.filter((cluster) => cluster.packets >= minPackets);
+    const discardedPackets = working
+      .filter((cluster) => cluster.packets < minPackets)
+      .reduce((sum, cluster) => sum + cluster.packets, 0);
+
+    kept.sort((a, b) => b.packets - a.packets || b.weight - a.weight);
+
+    const clusters: UnattributedCluster[] = kept.map((cluster, index) => {
+      const centre = centreOf(cluster);
+      const topNodes: UnattributedClusterNode[] = [...cluster.nodes.values()]
+        .sort((a, b) => b.count - a.count || a.node.nodeId.localeCompare(b.node.nodeId))
+        .slice(0, maxTopNodes)
+        .map((entry) => ({
+          nodeId: entry.node.nodeId,
+          name: entry.node.name ?? null,
+          lat: round5(entry.node.lat),
+          lon: round5(entry.node.lon),
+          packets: entry.count,
+        }));
+      return {
+        id: `u${index + 1}`,
+        lat: round5(centre.lat),
+        lon: round5(centre.lon),
+        packets: cluster.packets,
+        nodeCount: cluster.nodes.size,
+        firstSeen: toIso(cluster.firstMs),
+        lastSeen: toIso(cluster.lastMs),
+        topNodes,
+      };
+    });
+
+    return {
+      clusters,
+      clusteredPackets: clusters.reduce((sum, cluster) => sum + cluster.packets, 0),
+      unlocatedPackets,
+      discardedPackets,
+    };
   }
 
-  const kept = working.filter((cluster) => cluster.packets >= minPackets);
-  const discardedPackets = working
-    .filter((cluster) => cluster.packets < minPackets)
-    .reduce((sum, cluster) => sum + cluster.packets, 0);
-
-  kept.sort((a, b) => b.packets - a.packets || b.weight - a.weight);
-
-  const clusters: UnattributedCluster[] = kept.map((cluster, index) => {
-    const centre = centreOf(cluster);
-    const topNodes: UnattributedClusterNode[] = [...cluster.nodes.values()]
-      .sort((a, b) => b.count - a.count || a.node.nodeId.localeCompare(b.node.nodeId))
-      .slice(0, maxTopNodes)
-      .map((entry) => ({
-        nodeId: entry.node.nodeId,
-        name: entry.node.name ?? null,
-        lat: round5(entry.node.lat),
-        lon: round5(entry.node.lon),
-        packets: entry.count,
-      }));
-    return {
-      id: `u${index + 1}`,
-      lat: round5(centre.lat),
-      lon: round5(centre.lon),
-      packets: cluster.packets,
-      nodeCount: cluster.nodes.size,
-      firstSeen: toIso(cluster.firstMs),
-      lastSeen: toIso(cluster.lastMs),
-      topNodes,
-    };
-  });
-
-  return {
-    clusters,
-    clusteredPackets: clusters.reduce((sum, cluster) => sum + cluster.packets, 0),
-    unlocatedPackets,
-    discardedPackets,
-  };
+  return { add, finish };
 }

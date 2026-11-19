@@ -46,6 +46,30 @@ test('flowing QoS 0 cannot hide a stalled QoS 1 session; recovery preserves the 
   assert.equal(published.length, 4, 'healthy sessions continue being probed');
 });
 
+test('QoS 1 completions defer probe recovery while the session is making progress', () => {
+  let time = 0;
+  let reconnects = 0;
+  const probe = createDeliveryProbe({
+    topic: 'owned/probe',
+    now: () => time,
+    nonce: () => 'nonce',
+    publish: () => {},
+    reconnect: () => { reconnects++; },
+    changed: () => {},
+  });
+  probe.connect();
+  time = 45_000;
+  probe.noteDelivery();
+  time = 60_000;
+  probe.tick();
+  assert.equal(reconnects, 0);
+  assert.equal(probe.status().lastSuccessAt, null, 'ordinary deliveries cannot certify the reserved nonce');
+  time = 105_000;
+  probe.tick();
+  assert.equal(reconnects, 1);
+  assert.equal(probe.status().state, 'stalled');
+});
+
 test('a stalled delivery path overrides a healthy cached overview and clears on recovery', () => {
   const overview = { status: 'healthy', incidents: [], components: { ingest: { status: 'ok' } } };
   const health = { state: 'stalled' as const, lastSuccessAt: null, recoveries: 1 };

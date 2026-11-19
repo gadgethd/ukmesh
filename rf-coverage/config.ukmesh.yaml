@@ -77,13 +77,9 @@ calibration:
   reach_days: 14
 
 gpu:
-  mode: cpu
+  mode: remote
   remote:
-    broker_addr: "100.127.15.104:19100"
-    max_in_flight: 2
-    # P11 (2026-10-25): after 240 min of non-busy errors the run is PARKED
-    # (ErrRemoteParked, exit 3) with its checkpoint intact — never CPU.
-    retry_error_stall_minutes: 240
+    broker_addr: "127.0.0.1:8081"
 
 schedule:
   # Nightly whole-region recomputation. Each tier still skips itself when

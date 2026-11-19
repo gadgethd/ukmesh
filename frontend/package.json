@@ -49,6 +49,7 @@
     "@types/react-dom": "^19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "lighthouse": "13.6.0",
+    "picomatch": "file:vendor/picomatch-4.0.8-ukmesh.1.tgz",
     "postcss": "8.5.28",
     "puppeteer-core": "25.17.0",
     "terser": "5.51.2",
@@ -58,6 +59,7 @@
     "ws": "8.22.2"
   },
   "overrides": {
+    "picomatch": "$picomatch",
     "postcss": "8.5.28"
   }
 }

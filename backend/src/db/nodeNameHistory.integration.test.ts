@@ -25,12 +25,14 @@ test('name retention and search execute the production write paths, migration, i
   timeout: 120_000,
 }, async t => {
   const { PGlite } = await import(moduleUrl!);
-  const db = await PGlite.create();
+  const { pg_trgm } = await import(new URL('./contrib/pg_trgm.js', moduleUrl!).href);
+  const db = await PGlite.create({ extensions: { pg_trgm } });
   t.after(() => db.close());
   await db.exec(`
     CREATE SCHEMA core;
     CREATE SCHEMA mesh;
     CREATE SCHEMA ops;
+    CREATE EXTENSION pg_trgm WITH SCHEMA public;
     -- Post-move DDL in the applied migrations is unqualified. Resolve it into
     -- the core namespace: the write paths and repository SQL are core/mesh
     -- qualified and a public-only search_path cannot stand in for them.
@@ -87,7 +89,7 @@ test('name retention and search execute the production write paths, migration, i
   for (const name of ['137_node_lookup_index.sql', '138_indexed_identity_lookup.sql',
     '140_legacy_prefix_lookup.sql', '141_inline_identity_lookup.sql', '142_cover_normalized_node_lookup.sql',
     '146_public_map_order_lookup.sql', '149_legacy_normalized_lookup.sql',
-    '150_share_normalized_lookup_order.sql']) {
+    '150_share_normalized_lookup_order.sql', '155_index_public_map_candidates.sql']) {
     await db.exec(`BEGIN; ${await readFile(new URL(`./migrations/${name}`, import.meta.url), 'utf8')} COMMIT;`);
   }
   assert.equal((await db.query('SELECT * FROM core.node_name_history')).rows.length, 0, 'migration must not backfill nodes');

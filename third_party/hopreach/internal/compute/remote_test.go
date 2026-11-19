@@ -1,7 +1,9 @@
 package compute
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,81 @@ import (
 	"hopreach/internal/progress"
 	"hopreach/internal/propagation"
 )
+
+func TestRequiredRemoteDispatchParksWithoutLocalFallback(t *testing.T) {
+	bounds := propagation.Bounds{South: 56.3, North: 56.4, West: -3.7, East: -3.6}
+	sites := []propagation.Site{{Lat: 56.35, Lon: -3.65, TxHeightM: 1}}
+	params := propagation.Params{FrequencyMHz: 868, MaxRangeKm: 50}
+	for _, state := range []string{"unconfigured", "disconnected", "timeout", "oversized", "connected"} {
+		t.Run(state, func(t *testing.T) {
+			e := New()
+			e.Setup("remote")
+			var terrainReads atomic.Int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("/gpu/status", func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]bool{"worker_connected": state != "disconnected"})
+			})
+			mux.HandleFunc("/gpu/submit", func(w http.ResponseWriter, r *http.Request) {
+				var job gpujob.Job
+				if err := json.NewDecoder(r.Body).Decode(&job); err != nil {
+					http.Error(w, "invalid test job", http.StatusBadRequest)
+					return
+				}
+				switch state {
+				case "disconnected":
+					http.Error(w, "worker disconnected", http.StatusServiceUnavailable)
+				case "timeout":
+					<-r.Context().Done()
+				default:
+					n := job.ImageWidth * job.ImageHeight
+					if state == "oversized" {
+						n++
+					}
+					_, _ = w.Write(gpujob.Float32ToBytesLE(make([]float32, n)))
+				}
+			})
+			mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+				terrainReads.Add(1)
+				http.Error(w, "local terrain must not be fetched", http.StatusInternalServerError)
+			})
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			if state != "unconfigured" {
+				e.SetRemote(strings.TrimPrefix(server.URL, "http://"), server.URL)
+			}
+			if state == "timeout" {
+				e.remoteTimeout = 50 * time.Millisecond
+			}
+			if err := e.RequireWorker(); errors.Is(err, ErrRemoteParked) != (state == "unconfigured" || state == "disconnected") {
+				t.Fatalf("availability for %s: %v", state, err)
+			}
+			calls := []func() ([]float32, error){
+				func() ([]float32, error) {
+					return e.Margins(stubGrid(11), sites, bounds, 8, 8, 40, params, nil)
+				},
+				func() ([]float32, error) {
+					return e.MarginsChunked(bounds, 11, t.TempDir(), server.URL, server.Client(), sites, 8, 8, 40, params, 2, nil)
+				},
+			}
+			for _, raster := range calls {
+				got, err := raster()
+				if state == "connected" {
+					if err != nil || len(got) == 0 {
+						t.Fatalf("remote raster: %d margins, %v", len(got), err)
+					}
+				} else if len(got) != 0 || !errors.Is(err, ErrRemoteParked) {
+					t.Fatalf("failed dispatch must park without a raster: %d margins, %v", len(got), err)
+				}
+				if state == "timeout" && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("broker deadline was not propagated: %v", err)
+				}
+			}
+			if terrainReads.Load() != 0 {
+				t.Fatalf("read local terrain %d times", terrainReads.Load())
+			}
+		})
+	}
+}
 
 // TestMarginsRemotePollsProgress simulates a broker whose /gpu/submit call
 // takes a while and whose /gpu/progress endpoint reports increasing values

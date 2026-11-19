@@ -42,6 +42,23 @@ class ClassificationTests(unittest.TestCase):
                     self.assertTrue(RETRY.retryable("apt", message))
                     self.assertTrue(RETRY.retryable("build", f"#12 {message}\n{prefix}{APT_FAILURE}"))
 
+    def test_removed_apt_pool_archive_can_retry_without_masking_permanent_errors(self):
+        error = ("E: Failed to fetch http://security.ubuntu.com/ubuntu/pool/main/n/nginx/"
+                 "nginx_1.28.3-2ubuntu1.13_amd64.deb  404  Not Found [IP: 91.189.91.83 80]")
+        build = f"#53 71.77 {error}\ntarget hopreach: failed to solve: {APT_FAILURE}"
+        self.assertTrue(RETRY.retryable("apt", error))
+        self.assertTrue(RETRY.retryable("build", build))
+        self.assertFalse(RETRY.retryable("pull", error))
+        self.assertFalse(RETRY.retryable("build", build.replace("exit code: 100", "exit code: 1")))
+        self.assertFalse(RETRY.retryable("apt", error + "\nE: Unable to locate package missing"))
+        self.assertFalse(RETRY.retryable("apt", error.replace("pool/main/n/nginx/", "dists/resolute/")))
+        cleanup = " && rm -rf /var/lib/apt/lists/* /etc/nginx/sites-enabled/default"
+        self.assertTrue(RETRY.retryable("build", build.replace("install -y curl", "install -y curl" + cleanup)))
+        for ending in (" && npm run build", "; python -m unittest", " && rm -rf /work && go test ./..."):
+            with self.subTest(ending=ending):
+                mixed = build.replace("install -y curl", "install -y curl" + ending)
+                self.assertFalse(RETRY.retryable("build", mixed))
+
     def test_permanent_acquisition_errors(self):
         for message in (
             "401 Unauthorized", "pull access denied", "manifest unknown", "404 Not Found",

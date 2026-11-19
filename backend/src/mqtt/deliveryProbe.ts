@@ -20,7 +20,7 @@ export function createDeliveryProbe(options: {
 }) {
   const now = options.now ?? Date.now;
   let connected = false;
-  let pending: { nonce: string; deadline: number } | null = null;
+  let pending: { nonce: string; progressAt: number } | null = null;
   let nextProbeAt = 0;
   let nextRecoveryAt = 0;
   let health: DeliveryHealth = { state: 'starting', lastSuccessAt: null, recoveries: 0 };
@@ -31,7 +31,7 @@ export function createDeliveryProbe(options: {
   const tick = () => {
     if (!connected) return;
     const time = now();
-    if (pending && time >= pending.deadline) {
+    if (pending && time - pending.progressAt >= (options.timeoutMs ?? 60_000)) {
       change('stalled');
       if (time >= nextRecoveryAt) {
         nextRecoveryAt = time + (options.recoveryCooldownMs ?? 300_000);
@@ -42,7 +42,7 @@ export function createDeliveryProbe(options: {
       return;
     }
     if (!pending && time >= nextProbeAt) {
-      pending = { nonce: (options.nonce ?? randomUUID)(), deadline: time + (options.timeoutMs ?? 60_000) };
+      pending = { nonce: (options.nonce ?? randomUUID)(), progressAt: time };
       nextProbeAt = time + (options.intervalMs ?? 30_000);
       options.publish(pending.nonce);
     }
@@ -51,6 +51,11 @@ export function createDeliveryProbe(options: {
     connect() { connected = true; pending = null; nextProbeAt = 0; tick(); },
     disconnect() { connected = false; pending = null; },
     tick,
+    // Real QoS 1 completions establish transport progress while the probe
+    // waits behind queued deliveries. Only its own nonce certifies the probe.
+    noteDelivery() {
+      if (connected && pending) pending.progressAt = now();
+    },
     accept(packet: { topic: string; payload: Buffer | string; qos?: number; retain?: boolean }) {
       if (packet.topic !== options.topic) return false;
       // Retained, forged, or late probes cannot certify the current session.

@@ -18,6 +18,10 @@ import { loadLookupHttpWorkload } from './lookupHttpWorkload.js';
 
 const args = process.argv.slice(2);
 const { source, output, samples, concurrency, trials, cache, budgetMs } = lookupBenchmarkOptions(args);
+const observerReceiptFile = option(args, 'observer-receipt');
+const reuseObserverReceipt = args.includes('--reuse-observer-receipt');
+if (reuseObserverReceipt && !observerReceiptFile) throw new Error('observer receipt required for reuse');
+const observerReceipt = observerReceiptFile ? { file: observerReceiptFile, reuse: reuseObserverReceipt } : undefined;
 const timeline = new LookupTimeline();
 let completed = false;
 try {
@@ -71,7 +75,8 @@ await withLookupSource(source, async (load, runtime) => {
   const report: LookupResult[] = [];
 
   try {
-    const { counts, snapshot, cases, regionEnabled, databaseSetup } = await workloadRoutes.prepare(option(args, 'snapshot'));
+    const { counts, snapshot, cases, regionEnabled, databaseSetup, observerWorkset } =
+      await workloadRoutes.prepare(option(args, 'snapshot'), observerReceipt);
     const selected = option(args, 'cases')?.split(',');
     if (selected?.some(name => !cases.some(item => item.name === name))) throw new Error('unknown lookup case');
     const cpuBefore = process.cpuUsage(), resourceStarted = performance.now();
@@ -132,7 +137,8 @@ await withLookupSource(source, async (load, runtime) => {
       settings: { samples, trials, concurrency, cache, clients: fleet.clientCount, productionRateLimits: true, regionEnabled,
         responseValidation: LOOKUP_RESPONSE_VALIDATION_LIMITS,
         scope: 'ukmesh', note: 'Actual public routers, pool size and privacy delivery gates; excludes unrelated background services. Cache-miss bursts may coalesce identical work.' },
-      timeline: 'timeline.json', results: report, queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
+      timeline: 'timeline.json', observerWorkset, results: report,
+      queries: [...captured.values()].map(({ params: _params, ...rest }) => rest), plans,
     }, null, 2) + '\n');
     if (!sourceStable) throw new Error('lookup source changed during the benchmark; see saved evidence');
     if (budgetMs !== undefined && report.some(result => result.p95Ms > budgetMs)) {

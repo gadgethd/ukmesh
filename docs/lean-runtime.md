@@ -13,7 +13,7 @@ For a larger host, the main Compose file accepts `BACKEND_MEMORY_LIMIT`,
 ```sh
 BACKEND_MEMORY_LIMIT=2g DATABASE_POOL_MAX=12 WORKER_DATABASE_POOL_MAX=3 \
 PATH_RESOLVE_WORKERS=2 \
-HOPREACH_CPUS=4 HOPREACH_MEMORY_LIMIT=1536m \
+HOPREACH_CPUS=2 HOPREACH_MEMORY_LIMIT=768m \
 ALLOY_MEMORY_LIMIT=256m ALLOY_GOMEMLIMIT=192MiB \
 docker compose --env-file /dev/null -f docker-compose.yml config --quiet
 ```
@@ -57,6 +57,12 @@ built assets. `stop` stops consumers before infrastructure and retains stores.
 The migration, data initialization and historical link-backfill jobs complete
 and exit; successful exit is their expected healthy state.
 
+HopReach's coordinator uses one CPU and a 512 MiB container limit by default.
+The remote worker computes Standard, Precision and repeater footprints.
+The VM retains publication, checkpoints and the last published tiles. See
+[worker pairing and recovery](rf-coverage-rollout.md) for the private ingress
+and credential setup.
+
 Local overrides provide fixture credentials, owned storage and loopback
 ingress. Tagging and alert delivery use the local test endpoint, and Health
 Check uses the public `#test` channel on the local broker. The public tunnel is
@@ -81,6 +87,20 @@ bash scripts/dev-all.sh qualify backup
 bash scripts/dev-all.sh qualify inventory
 bash scripts/dev-all.sh qualify smoke
 ```
+
+Use the guarded session for an owned lookup fixture and a single workload.
+Matched 1× and 10× phases can share the evidence directory. Each phase writes
+its own restoration receipt under `fixture-sessions/`.
+
+```sh
+python3 scripts/full-dev/qualification/fixture_session.py \
+  <fixture-token> <evidence-directory> reads --paired --acceptance-profile mqtt-first
+```
+
+An interrupt stops the workload and waits for its owned processes before
+restoring the original stores. During startup, cancellation waits for the
+pending target operation to settle. If startup repeatedly fails, the receipt
+identifies the retained fixture whose canonical start needs to resume.
 
 The executable service inventory and native work oracles must agree with the
 resolved configurations. A running process or HTTP 200 alone does not establish
@@ -114,3 +134,6 @@ Journal allocation remains the host's existing policy; Loki retains its configur
 14-day history. No per-container driver change can recover previously removed
 json-file logs or guarantee delivery through a collector outage. Qualification
 checks actual logging delivery separately from a resolved Compose policy.
+
+The [qualification handoff](lean-runtime-handoff.md) records the verified DEV
+results, open failures and the procedure for the next full-stack run.

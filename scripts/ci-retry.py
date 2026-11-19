@@ -25,9 +25,33 @@ PERMANENT = re.compile(
     r"|has no installation candidate|unmet dependencies|held broken packages",
     re.IGNORECASE,
 )
+APT_PACKAGE_404 = re.compile(
+    r"\bE: Failed to fetch https?://\S+/pool/\S+\.deb(?:\?\S*)?[ \t]+404[ \t]+Not Found\b",
+    re.IGNORECASE,
+)
+APT_COMMAND = re.compile(r"apt-get(?:\s+[A-Za-z0-9_:.=+/@%-]+)+")
+APT_LAYER = re.compile(r'process "/bin/sh -c (.+)" did not complete successfully:')
+APT_CLEANUP_PATHS = {"/var/lib/apt/lists/*", "/etc/nginx/sites-enabled/default"}
+
+
+def apt_only_layer(failure):
+    captured = APT_LAYER.search(failure)
+    if not captured:
+        return False
+    commands = [command.strip() for command in captured[1].split("&&")]
+    if not APT_COMMAND.fullmatch(commands[0]):
+        return False
+    for command in commands[1:]:
+        if APT_COMMAND.fullmatch(command):
+            continue
+        words = command.split()
+        if len(words) <= 2 or words[:2] != ["rm", "-rf"] or not set(words[2:]) <= APT_CLEANUP_PATHS:
+            return False
+    return True
 
 
 def retryable(kind, output):
+    apt_package_fetch = kind == "apt"
     if kind == "build":
         # BuildKit repeats the causal failure in its final ERROR line. Ignore
         # earlier network warnings from stages that succeeded or were cancelled.
@@ -40,13 +64,16 @@ def retryable(kind, output):
         if 'process "' in failure:
             # Only apt-only layers may be replayed. Never retry npm/go builds,
             # dependency audits, test failures, or a shell layer containing both.
-            if not re.search(r'process "/bin/sh -c apt-get\b', failure):
+            if not apt_only_layer(failure):
                 return False
+            apt_package_fetch = bool(re.search(r"\bexit code: 100\s*$", failure))
             evidence = output
         else:
             evidence = failure
     else:
         evidence = output
+    if apt_package_fetch and APT_PACKAGE_404.search(evidence):
+        return not PERMANENT.search(APT_PACKAGE_404.sub("", evidence))
     return bool(TRANSIENT.search(evidence)) and not PERMANENT.search(evidence)
 
 

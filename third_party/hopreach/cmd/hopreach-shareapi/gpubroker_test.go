@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,234 +14,241 @@ import (
 	"hopreach/internal/gpujob"
 )
 
+func TestBrokerAcceptsOnlyOneInFlightJob(t *testing.T) {
+	existing := &pendingGPUJob{id: "existing"}
+	b := &gpuBroker{conn: &websocket.Conn{}, pending: existing}
+	job := gpujob.Job{ID: "second", ImageWidth: 1, ImageHeight: 1}
+	if _, err := b.submit(job, time.Second); err == nil || !strings.Contains(err.Error(), "busy") {
+		t.Fatalf("a second submission must report busy: %v", err)
+	}
+	if b.pending != existing {
+		t.Fatal("the second submission interfered with the existing job")
+	}
+}
+
 func TestBrokerProgressTracking(t *testing.T) {
-	b := &gpuBroker{
-		pending:  make(map[string]chan gpuJobResult),
-		progress: make(map[string]jobProgress),
+	conn := &websocket.Conn{}
+	b := &gpuBroker{conn: conn}
+	b.setProgress(conn, gpujob.Progress{ID: "unknown", Done: 5, Total: 10})
+	if _, _, ok := b.getProgress("unknown"); ok {
+		t.Error("tracked progress for an unknown job")
 	}
 
-	// A Progress frame for a job the broker doesn't consider in-flight
-	// (nothing in pending) must not create a lingering entry — e.g. a
-	// stray/late frame for an already-delivered job.
-	b.setProgress("unknown-job", 5, 10)
-	if _, _, ok := b.getProgress("unknown-job"); ok {
-		t.Error("expected no progress tracked for a job that was never marked pending")
+	first := &pendingGPUJob{id: "job-1", result: make(chan gpuJobResult, 1)}
+	b.pending = first
+	b.setProgress(conn, gpujob.Progress{ID: first.id, Done: 3, Total: 10})
+	if done, total, ok := b.getProgress(first.id); !ok || done != 3 || total != 10 {
+		t.Fatalf("getProgress = (%d, %d, %v), want (3, 10, true)", done, total, ok)
 	}
-
-	// Once a job is registered as pending (as submit() does before writing
-	// it to the worker), progress updates for it should be tracked.
-	ch := make(chan gpuJobResult, 1)
-	b.pending["job-1"] = ch
-	b.setProgress("job-1", 3, 10)
-	done, total, ok := b.getProgress("job-1")
-	if !ok || done != 3 || total != 10 {
-		t.Fatalf("getProgress after setProgress = (%d, %d, %v), want (3, 10, true)", done, total, ok)
-	}
-
-	b.setProgress("job-1", 7, 10)
-	done, _, _ = b.getProgress("job-1")
-	if done != 7 {
+	b.setProgress(conn, gpujob.Progress{ID: first.id, Done: 7, Total: 10})
+	if done, _, _ := b.getProgress(first.id); done != 7 {
 		t.Errorf("expected progress to update to 7, got %d", done)
 	}
 
-	// deliver (a completed job, success or failure) must clear its
-	// progress entry so it doesn't linger forever.
-	go func() { <-ch }() // drain so deliver doesn't block
-	b.deliver("job-1", []byte{1, 2, 3, 4}, "")
-	if _, _, ok := b.getProgress("job-1"); ok {
-		t.Error("expected progress entry to be cleared after deliver")
+	b.deliver(conn, first, gpuJobResult{margins: []byte{1, 2, 3, 4}})
+	if _, _, ok := b.getProgress(first.id); ok {
+		t.Error("expected progress to be cleared after delivery")
 	}
 
-	// failAllPending (worker disconnected) must clear progress for every
-	// still-pending job, not just leave it to be found later.
-	ch2 := make(chan gpuJobResult, 1)
-	b.pending["job-2"] = ch2
-	b.setProgress("job-2", 1, 5)
-	go func() { <-ch2 }()
-	b.failAllPending("worker disconnected")
-	if _, _, ok := b.getProgress("job-2"); ok {
-		t.Error("expected progress entry to be cleared after failAllPending")
+	second := &pendingGPUJob{id: "job-2", result: make(chan gpuJobResult, 1)}
+	b.pending = second
+	b.setProgress(conn, gpujob.Progress{ID: second.id, Done: 1, Total: 5})
+	b.clearConnIf(conn, "worker disconnected")
+	if _, _, ok := b.getProgress(second.id); ok {
+		t.Error("expected progress to be cleared after disconnect")
 	}
 }
 
-// TestBrokerAvailableBytesResetsOnNewConnection is the regression test for
-// a real correctness concern in the memory-auto-sizing feature: a worker's
-// self-reported available memory (gpujob.Hello) must not linger past that
-// specific connection, since a replacement worker connecting later could be
-// an entirely different box with different RAM — stale data here would
-// size tiles against the wrong box's memory, exactly the kind of mismatch
-// this feature exists to prevent.
-func TestBrokerAvailableBytesResetsOnNewConnection(t *testing.T) {
-	b := &gpuBroker{
-		pending:  make(map[string]chan gpuJobResult),
-		progress: make(map[string]jobProgress),
+func TestReplacedWorkerCannotChangeLiveState(t *testing.T) {
+	first, second := &websocket.Conn{}, &websocket.Conn{}
+	b := &gpuBroker{conn: first}
+	b.setHello(first, gpujob.Hello{AvailableBytes: 4_700_000_000})
+	if got := b.getHello().AvailableBytes; got != 4_700_000_000 {
+		t.Fatalf("first Hello available bytes = %d", got)
 	}
-
-	if got := b.getAvailableBytes(); got != 0 {
-		t.Fatalf("getAvailableBytes() on a fresh broker = %d, want 0 (unknown)", got)
-	}
-
-	b.setHello(gpujob.Hello{AvailableBytes: 4_700_000_000})
-	if got := b.getAvailableBytes(); got != 4_700_000_000 {
-		t.Fatalf("getAvailableBytes() after setHello = %d, want 4700000000", got)
-	}
-
-	// A new connection (setConn) — whether it's the same worker
-	// reconnecting or a genuinely different box — must not carry the old
-	// figure forward until (if ever) that new connection sends its own
-	// Hello.
-	b.setConn(nil)
-	if got := b.getAvailableBytes(); got != 0 {
-		t.Errorf("getAvailableBytes() after setConn = %d, want reset to 0 (unknown)", got)
-	}
-}
-
-// TestStaleConnectionTeardownLeavesNewerConnectionRegistered is the
-// regression test for a real production incident: a whole Precision tier
-// ran on CPU for hours at roughly 13x the wall-clock cost, because the
-// broker reported no worker connected while the worker's own log showed it
-// connected and idle.
-//
-// The sequence: the worker's socket half-opens, the worker notices, gives
-// up and reconnects, and the new connection registers. Some time later —
-// whenever the OS finally gives up on the old socket — the OLD read loop
-// wakes up and tears down. It used to clear the registration
-// unconditionally (`if old := b.setConn(nil); old == conn` cleared first
-// and only *logged* conditionally), so the stale loop wiped the live
-// connection on its way out. Nothing ever re-registered it, because from
-// the worker's point of view it was already connected.
-func TestStaleConnectionTeardownLeavesNewerConnectionRegistered(t *testing.T) {
-	b := &gpuBroker{
-		pending:  make(map[string]chan gpuJobResult),
-		progress: make(map[string]jobProgress),
-	}
-
-	// Two distinct connections. Real *websocket.Conn values aren't needed —
-	// the broker only ever compares them by identity.
-	first := &websocket.Conn{}
-	second := &websocket.Conn{}
-
-	if old := b.setConn(first); old != nil {
-		t.Fatalf("setConn on a fresh broker returned old = %v, want nil", old)
-	}
-	// The worker reconnects; the new connection takes over.
+	oldJob := &pendingGPUJob{id: "reused-id", resultBytes: 4, result: make(chan gpuJobResult, 1)}
+	b.pending = oldJob
 	if old := b.setConn(second); old != first {
-		t.Fatalf("setConn returned old = %v, want the first connection", old)
+		t.Fatal("replacement did not return the first connection")
 	}
-	if !b.connected() {
-		t.Fatal("precondition: broker should report connected after the reconnect")
+	if got := <-oldJob.result; got.err != "worker connection replaced" {
+		t.Fatalf("replaced job result = %+v", got)
 	}
-
-	// Now the stale first connection's read loop finally errors out.
-	if cleared := b.clearConnIf(first); cleared {
-		t.Error("clearConnIf(first) reported that it cleared the registration — the stale connection must not touch the newer one")
-	}
-	if !b.connected() {
-		t.Fatal("the live (second) connection was torn down by the stale first one's cleanup — this is the production bug")
+	if got := b.getHello().AvailableBytes; got != 0 {
+		t.Fatalf("inherited the old Hello: %d", got)
 	}
 
-	// And the live connection must still be able to tear itself down.
-	if cleared := b.clearConnIf(second); !cleared {
-		t.Error("clearConnIf(second) should clear its own registration")
-	}
-	if b.connected() {
-		t.Error("broker still reports connected after the live connection cleared itself")
-	}
-}
+	newJob := &pendingGPUJob{id: oldJob.id, resultBytes: 8, result: make(chan gpuJobResult, 1)}
+	b.pending = newJob
+	b.setHello(second, gpujob.Hello{AvailableBytes: 2_000})
+	b.setProgress(second, gpujob.Progress{ID: newJob.id, Done: 1, Total: 2})
 
-// A stale teardown must not fail the CURRENT connection's in-flight jobs
-// either — those belong to the worker that's still connected and still
-// working on them.
-func TestStaleConnectionTeardownDoesNotFailLiveJobs(t *testing.T) {
-	b := &gpuBroker{
-		pending:  make(map[string]chan gpuJobResult),
-		progress: make(map[string]jobProgress),
+	b.setHello(first, gpujob.Hello{AvailableBytes: 1_000})
+	b.setProgress(first, gpujob.Progress{ID: newJob.id, Done: 2, Total: 2})
+	b.deliver(first, newJob, gpuJobResult{err: "late reply"})
+	b.deliver(second, oldJob, gpuJobResult{err: "late job"})
+	if b.pendingFor(first, newJob.id) != nil || b.pendingFor(second, newJob.id) != newJob {
+		t.Fatal("result dimensions were exposed to the wrong worker")
 	}
-	first := &websocket.Conn{}
-	second := &websocket.Conn{}
-	b.setConn(first)
-	b.setConn(second)
-
-	ch := make(chan gpuJobResult, 1)
-	b.pending["job-live"] = ch
-
-	// Mirrors readLoop's error path for the stale connection: failAllPending
-	// is only reached when clearConnIf reports it actually cleared.
-	if b.clearConnIf(first) {
-		b.failAllPending("worker disconnected")
+	if b.clearConnIf(first, "obsolete worker disconnected") || !b.connected() {
+		t.Fatal("stale connection removed the active worker")
 	}
 
+	if got := b.getHello().AvailableBytes; got != 2_000 {
+		t.Errorf("stale Hello replaced live memory with %d", got)
+	}
+	if done, total, ok := b.getProgress(newJob.id); done != 1 || total != 2 || !ok {
+		t.Errorf("stale Progress changed live job to (%d, %d, %v)", done, total, ok)
+	}
 	select {
-	case got := <-ch:
-		t.Fatalf("in-flight job was failed by a stale connection's teardown: %+v", got)
+	case got := <-newJob.result:
+		t.Fatalf("live job received a stale result: %+v", got)
 	default:
 	}
+	if !b.clearConnIf(second, "live worker disconnected") || b.connected() {
+		t.Fatal("live connection failed to unregister itself")
+	}
 }
 
-// End-to-end version of the two tests above, driving the real HTTP handler
-// and real websocket connections rather than calling clearConnIf directly —
-// so it covers handleGPUWorkerConnect and readLoop as actually wired, which
-// is where the production bug lived.
-//
-// Reproduces the exact production sequence: a worker's socket half-opens,
-// the worker gives up and reconnects (registering a second connection),
-// and only afterwards does the first connection's read loop notice and
-// tear down. The broker must still report a worker connected.
 func TestBrokerStaysConnectedWhenAStaleSocketClosesAfterAReconnect(t *testing.T) {
-	const token = "test-token"
-
-	// handleGPUWorkerConnect operates on the package-level broker.
-	saved := broker
-	broker = &gpuBroker{
-		pending:  make(map[string]chan gpuJobResult),
-		progress: make(map[string]jobProgress),
+	b, dial := mockWorkerBroker(t)
+	first := dial()
+	waitForGPUWorker(t, b, true)
+	second := dial()
+	if err := second.WriteJSON(gpujob.Hello{Kind: gpujob.KindHello, AvailableBytes: 123}); err != nil {
+		t.Fatal(err)
 	}
-	t.Cleanup(func() { broker = saved })
+	_ = first.Close()
+	deadline := time.Now().Add(time.Second)
+	for b.getHello().AvailableBytes != 123 {
+		if time.Now().After(deadline) {
+			t.Fatal("replacement worker heartbeat was lost")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = second.Close()
+	waitForGPUWorker(t, b, false)
+}
 
-	srv := httptest.NewServer(http.HandlerFunc(handleGPUWorkerConnect(token)))
-	defer srv.Close()
-	wsURL := "ws" + strings.TrimPrefix(srv.URL, "http")
-	hdr := http.Header{"Authorization": []string{"Bearer " + token}}
-
-	dial := func() *websocket.Conn {
+func TestBrokerWorkerReplies(t *testing.T) {
+	const jobID = "mock-raster"
+	result := gpujob.Result{Kind: gpujob.KindResult, ID: jobID}
+	margins := gpujob.Float32ToBytesLE([]float32{-10.5, 3.5})
+	send := func(t *testing.T, worker *websocket.Conn, kind int, payload []byte) {
 		t.Helper()
-		c, _, err := websocket.DefaultDialer.Dial(wsURL, hdr)
+		if err := worker.WriteMessage(kind, payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sendJSON := func(t *testing.T, worker *websocket.Conn, v any) {
+		t.Helper()
+		if err := worker.WriteJSON(v); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, tc := range []struct {
+		name       string
+		mock       func(*testing.T, *websocket.Conn)
+		wantError  string
+		disconnect bool
+	}{
+		{name: "exact binary payload with interleaved heartbeat", mock: func(t *testing.T, worker *websocket.Conn) {
+			sendJSON(t, worker, result)
+			sendJSON(t, worker, gpujob.Hello{Kind: gpujob.KindHello, AvailableBytes: 123})
+			send(t, worker, websocket.BinaryMessage, margins)
+		}},
+		{name: "worker error with no binary frame", mock: func(t *testing.T, worker *websocket.Conn) {
+			sendJSON(t, worker, gpujob.Result{ID: jobID, Error: "DEM unavailable"})
+		}, wantError: "DEM unavailable"},
+		{name: "control size limit", mock: func(t *testing.T, worker *websocket.Conn) {
+			send(t, worker, websocket.TextMessage, bytes.Repeat([]byte{' '}, workerControlLimit+1))
+		}, wantError: "read limit", disconnect: true},
+		{name: "unexpected binary", mock: func(t *testing.T, worker *websocket.Conn) {
+			send(t, worker, websocket.BinaryMessage, margins)
+		}, wantError: "unexpected binary", disconnect: true},
+		{name: "short margins", mock: func(t *testing.T, worker *websocket.Conn) {
+			sendJSON(t, worker, result)
+			send(t, worker, websocket.BinaryMessage, margins[:4])
+		}, wantError: "reading 8 GPU margin bytes", disconnect: true},
+		{name: "long margins", mock: func(t *testing.T, worker *websocket.Conn) {
+			sendJSON(t, worker, result)
+			send(t, worker, websocket.BinaryMessage, append(bytes.Clone(margins), 0))
+		}, wantError: "exceeds 8 bytes", disconnect: true},
+		{name: "unexpected control while reading margins", mock: func(t *testing.T, worker *websocket.Conn) {
+			sendJSON(t, worker, result)
+			sendJSON(t, worker, gpujob.Progress{Kind: gpujob.KindProgress, ID: jobID})
+		}, wantError: "expected binary GPU margins", disconnect: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, dial := mockWorkerBroker(t)
+			worker := dial()
+			waitForGPUWorker(t, b, true)
+			type submission struct {
+				margins []byte
+				err     error
+			}
+			replies := make(chan submission, 1)
+			go func() {
+				got, err := b.submit(gpujob.Job{ID: jobID, ImageWidth: 2, ImageHeight: 1}, 2*time.Second)
+				replies <- submission{got, err}
+			}()
+			if err := worker.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+				t.Fatal(err)
+			}
+			kind, data, err := worker.ReadMessage()
+			var job gpujob.Job
+			if err != nil || kind != websocket.TextMessage || json.Unmarshal(data, &job) != nil || job.ID != jobID {
+				t.Fatalf("mock did not receive the submitted job: %s, %v", data, err)
+			}
+			tc.mock(t, worker)
+			select {
+			case reply := <-replies:
+				if tc.wantError == "" {
+					if reply.err != nil || !bytes.Equal(reply.margins, margins) {
+						t.Fatalf("valid result rejected: %x, %v", reply.margins, reply.err)
+					}
+				} else if reply.err == nil || !strings.Contains(reply.err.Error(), tc.wantError) || reply.margins != nil {
+					t.Fatalf("got margins=%x err=%v, want %q", reply.margins, reply.err, tc.wantError)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("broker did not finish the submission")
+			}
+			if b.connected() == tc.disconnect {
+				t.Fatalf("worker connection does not match expected disconnect: %v", tc.disconnect)
+			}
+			_ = worker.Close()
+			waitForGPUWorker(t, b, false)
+		})
+	}
+}
+
+func mockWorkerBroker(t *testing.T) (*gpuBroker, func() *websocket.Conn) {
+	t.Helper()
+	const token = "test-token"
+	saved := broker
+	b := &gpuBroker{}
+	broker = b
+	t.Cleanup(func() { broker = saved })
+	srv := httptest.NewServer(handleGPUWorkerConnect(token))
+	t.Cleanup(srv.Close)
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+	return b, func() *websocket.Conn {
+		c, _, err := websocket.DefaultDialer.Dial(url, http.Header{"Authorization": {"Bearer " + token}})
 		if err != nil {
 			t.Fatalf("dial: %v", err)
 		}
+		t.Cleanup(func() { _ = c.Close() })
 		return c
 	}
+}
 
-	waitConnected := func(want bool) {
-		t.Helper()
-		for i := 0; i < 200; i++ {
-			if broker.connected() == want {
-				return
-			}
-			time.Sleep(10 * time.Millisecond)
+func waitForGPUWorker(t *testing.T, b *gpuBroker, want bool) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for b.connected() != want {
+		if time.Now().After(deadline) {
+			t.Fatalf("worker connected = %v, want %v", b.connected(), want)
 		}
-		t.Fatalf("broker.connected() = %v, want %v", broker.connected(), want)
+		time.Sleep(5 * time.Millisecond)
 	}
-
-	first := dial()
-	waitConnected(true)
-
-	// The worker reconnects while the broker still holds the first socket.
-	second := dial()
-	waitConnected(true)
-
-	// Now the stale first socket finally closes. Its read loop wakes up and
-	// tears down — which must not disturb the live second connection.
-	first.Close()
-	// Give the stale loop time to run its teardown, then confirm the
-	// registration survived it.
-	time.Sleep(200 * time.Millisecond)
-	if !broker.connected() {
-		t.Fatal("broker reported no worker after a STALE connection's teardown — the live one was unregistered (the production bug)")
-	}
-
-	// The live connection closing does unregister, so a genuinely gone
-	// worker is still reported gone.
-	second.Close()
-	waitConnected(false)
 }
