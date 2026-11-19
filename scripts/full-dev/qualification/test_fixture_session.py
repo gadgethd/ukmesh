@@ -8,11 +8,12 @@ import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 from fixture_session import restore_lease
 from owned_process import cancellation_scope, run_session
 from target_lease import child_context, target_lease
+from target_safety import InactiveChangingConsumerError
 import fixture_session
 import read_transport
 
@@ -78,6 +79,49 @@ with target_lease(path=Path(sys.argv[1])):
                                   side_effect=lambda **kw: target_lease(path=lock, **kw)):
                     with restore_lease():
                         self.assertGreater(time.monotonic() - first, .25)
+
+    def test_restore_resumes_the_owned_store_after_an_inactive_consumer_refusal(self):
+        token = 'owned-10x'
+        with tempfile.TemporaryDirectory() as directory:
+            evidence = Path(directory)
+            original = {'targets': 'original'}
+            selected = {'targets': {}, 'token': token}
+            actions = []
+            resumed = False
+
+            def select_originals():
+                nonlocal selected
+                actions.append('select originals')
+                if not resumed:
+                    raise InactiveChangingConsumerError('inactive fixture consumer')
+                selected = original
+
+            def controller(script, args, recovery):
+                nonlocal resumed
+                self.assertIsNone(recovery['signal'])
+                self.assertFalse((evidence / 'resume-fixture.json').exists())
+                if args == ['start']:
+                    actions.append('start ' + ('originals' if selected == original else 'fixture'))
+                    resumed = True
+                else:
+                    self.assertEqual(selected, original)
+                    self.assertEqual(args, ['inventory', '--run', str(evidence / 'restored')])
+                    actions.append('inventory')
+                return 0
+
+            with patch.object(fixture_session, 'target_lease',
+                              side_effect=lambda **kw: target_lease(path=evidence / 'lease', **kw)), \
+                 patch.object(fixture_session, 'read_intent', return_value={'status': 'applied'}), \
+                 patch.object(fixture_session, 'selection_files', side_effect=lambda: {'selection': selected}), \
+                 patch.object(fixture_session, 'selection_values', side_effect=lambda: selected), \
+                 patch.object(fixture_session, 'original_values', return_value=original), \
+                 patch.object(fixture_session, 'restore_originals', side_effect=select_originals) as select, \
+                 patch.object(fixture_session, 'run_controller', side_effect=controller):
+                fixture_session.restore(evidence, token)
+            self.assertEqual(select.call_args_list, [call(), call()])
+            self.assertEqual(actions, ['select originals', 'start fixture', 'select originals', 'start originals', 'inventory'])
+            receipt = json.loads((evidence / 'resume-fixture.json').read_text())
+            self.assertEqual(receipt['fixture'], token)
 
     def test_reader_recovery_uses_run_labels_and_immutable_container_id(self):
         with tempfile.TemporaryDirectory() as folder:

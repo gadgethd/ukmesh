@@ -14,7 +14,7 @@ from fixtures import bundle, original_values, restore_originals, selection_files
 from owned_process import cancellation_scope, run_session
 from read_transport import recover_reader
 from target_lease import child_context, target_lease
-from target_safety import read_intent
+from target_safety import InactiveChangingConsumerError, read_intent
 
 
 @contextmanager
@@ -51,6 +51,7 @@ def restore(evidence: Path, token: str) -> None:
     # The canonical controller and its fresh readiness probes finish normally.
     recovery = {'signal': None}
     with restore_lease():
+        resumed_at = None
         intent = read_intent()
         if intent and intent['status'] == 'pending':
             if intent['requested_selection'].get('token') != token:
@@ -60,11 +61,22 @@ def restore(evidence: Path, token: str) -> None:
             if status:
                 raise RuntimeError(f'canonical pending fixture start could not be resumed (exit {status}); '
                                    'resume this fixture through dev-all before restoring the original stores')
-        else:
-            selection = selection_files()['selection']
-            if selection.get('targets') != 'original' and selection.get('token') != token:
-                raise ValueError('selected fixture changed during this session')
-        restore_originals()
+        selection = selection_files()['selection']
+        on_originals = selection.get('targets') == 'original'
+        if not on_originals and selection.get('token') != token:
+            raise ValueError('selected fixture changed during this session')
+        try:
+            restore_originals()
+        except InactiveChangingConsumerError:
+            if on_originals:
+                raise
+            # Selection has not been published. Resume the owned fixture so
+            # the target guard can observe the consumer before switching.
+            status = run_controller('scripts/dev-all.sh', ['start'], recovery)
+            if status:
+                raise RuntimeError(f'canonical fixture restart before restoration failed (exit {status})')
+            resumed_at = utc_now()
+            restore_originals()
         if run_controller('scripts/dev-all.sh', ['start'], recovery):
             raise RuntimeError('canonical original-store start failed')
         if selection_values() != original_values():
@@ -73,6 +85,8 @@ def restore(evidence: Path, token: str) -> None:
         inventory.mkdir(mode=0o700)
         if run_controller('scripts/qualify-full-stack.sh', ['inventory', '--run', str(inventory)], recovery):
             raise RuntimeError('restored inventory failed')
+        if resumed_at is not None:
+            write_json(evidence / 'resume-fixture.json', {'at': resumed_at, 'fixture': token})
 
 
 def qualify(token: str, run: Path, args: list[str]) -> int:
