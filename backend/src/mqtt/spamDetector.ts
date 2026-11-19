@@ -239,22 +239,31 @@ async function refreshEstablishedNodes(databaseQuery: DatabaseQueryFn): Promise<
       avg_hops: number;
       advert_count: number;
     }>(databaseQuery, `
+      WITH adverts AS MATERIALIZED (
+        SELECT p.src_node_id, p.hop_count, p.packet_hash,
+          NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision AS lat,
+          NULLIF(p.payload->'appData'->'location'->>'longitude', '')::double precision AS lon
+        FROM mesh.packets p
+        WHERE p.packet_type = 4
+          AND p.time > NOW() - INTERVAL '30 days'
+          AND p.src_node_id IS NOT NULL
+          AND p.payload->'appData'->'location'->>'latitude' IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM core.nodes n
+            WHERE n.node_id = p.src_node_id AND n.advert_count >= $1
+          )
+      )
       SELECT
         n.node_id AS src_node_id,
-        AVG(NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision)  AS avg_lat,
-        AVG(NULLIF(p.payload->'appData'->'location'->>'longitude', '')::double precision) AS avg_lon,
-        AVG(p.hop_count)   AS avg_hops,
+        AVG(a.lat) AS avg_lat,
+        AVG(a.lon) AS avg_lon,
+        AVG(a.hop_count) AS avg_hops,
         n.advert_count
       FROM core.nodes n
-      JOIN mesh.packets p ON p.src_node_id = n.node_id
+      JOIN adverts a ON a.src_node_id = n.node_id
       WHERE n.advert_count >= $1
-        AND p.packet_type = 4
-        AND p.time > NOW() - INTERVAL '30 days'
-        AND p.payload->'appData'->'location'->>'latitude' IS NOT NULL
       GROUP BY n.node_id, n.advert_count
-      HAVING
-        STDDEV(NULLIF(p.payload->'appData'->'location'->>'latitude', '')::double precision) < 0.3
-        AND COUNT(DISTINCT p.packet_hash) >= $1
+      HAVING STDDEV(a.lat) < 0.3 AND COUNT(DISTINCT a.packet_hash) >= $1
     `, [ESTABLISHED_MIN_ADVERTS]);
 
     const nextEstablished = new Map<string, EstablishedNode>();

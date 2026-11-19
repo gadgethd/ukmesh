@@ -36,6 +36,8 @@ test('spam snapshots execute complete bounded SQL and retain verdicts on a rejec
       SELECT repeat('F',64), 'observer-'||(i%5), 'rotation-'||i, 4, NOW()-i*INTERVAL '1 second', 2,
         jsonb_build_object('_summary','Invented rotation '||(i%5),'publicKey',repeat('F',64))
       FROM generate_series(1,25) i;
+    INSERT INTO mesh.packets VALUES (repeat('09',32),'observer','ineligible-coordinate',4,NOW(),2,
+      '{"appData":{"location":{"latitude":"bad coordinate"}}}'::jsonb);
   `);
   t.mock.method(console, 'log', () => undefined);
   t.mock.method(console, 'error', () => undefined);
@@ -44,6 +46,8 @@ test('spam snapshots execute complete bounded SQL and retain verdicts on a rejec
     network: 'ukmesh', lat: 50, lon: -1,
   }));
   await refreshSpamDetectorCaches(query);
+  const refreshState = (await spamDetectorRefreshHealthy.get()).values;
+  assert.equal(refreshState.find(value => value.labels.dataset === 'established')?.value, 1);
   const actual = await Promise.all(inputs.map(evaluateAdvert));
   assert.ok(actual.slice(0,6).every(result => result.verdict === 'spam'));
   assert.equal(actual[6].verdict, 'clean');
