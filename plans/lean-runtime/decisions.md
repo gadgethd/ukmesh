@@ -2665,3 +2665,13 @@ qualification. Do not change workloads, timing or acceptance limits.
 ## Handle process exit during resource sampling
 
 - The soak collector stopped when Linux returned `ESRCH` while a process was disappearing. Skip `/proc` traversal for an empty native process set. Treat `ESRCH` like a missing process file in the per-process reads. Missing required containers still fail resident coverage and stability, and surviving containers still supply their effective cgroup limits.
+
+## Wait for accepted traffic to settle after cancelling a replay
+
+- The disk guard stopped the owned publisher while UKMesh was still committing queued traffic. Restore now retries an explicit busy reading from the initial intake check. It holds the existing lease, starts retries within the 120-second drain budget and runs full protection before publishing the original selection. Malformed evidence and refusals after protection starts still stop the attempt.
+
+## Resolve multibyte paths without storing expanded observation sets
+
+- An eight-day statistics refresh used more than 2 GiB of PostgreSQL temporary space on the owned 10× fixture. It materialized the full observation set at several steps and joined expanded hops back by observation ID.
+- Build the canonical identity projection and its prefix dictionary once per statement. Reduce each observation's hops in order and stream the resolved facts into the existing upsert. Keep receiver-role trimming, ambiguity and repeated-node checks, and the privacy generation and coverage update in the same statement.
+- The matched read-only projection returned the same two result digests across 53,737 rows. The complete eight-day read-only plan processed 715,587 rows with 5,850 temporary blocks written. The disposable PostgreSQL test exercised the fact writes and privacy fence.
