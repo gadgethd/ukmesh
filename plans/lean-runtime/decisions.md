@@ -2621,3 +2621,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The first 10× read attempt left CoreScope inactive. Target publication correctly refused to switch until the previous consumer could be observed.
 - Classify that refusal before publishing the selection. The fixture supervisor can start the still-selected owned fixture through the launcher and retry the original guarded switch once. Other refusals still require their own diagnosis.
+
+## Wait for the maintenance fixture's final PostgreSQL listener
+
+- Hosted CI stopped before the maintenance fixture executed its seed SQL. The fixture checked log text and probed a Unix socket, which is also used by the image's temporary initialization server.
+- Use one bounded TCP readiness probe for the final server. The dry run, signed apply, and idempotent retry continue to use the existing maintenance command and safety gates.
