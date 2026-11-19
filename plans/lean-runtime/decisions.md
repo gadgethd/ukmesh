@@ -2626,3 +2626,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - Hosted CI stopped before the maintenance fixture executed its seed SQL. The fixture checked log text and probed a Unix socket, which is also used by the image's temporary initialization server.
 - Use one bounded TCP readiness probe for the final server. The dry run, signed apply, and idempotent retry continue to use the existing maintenance command and safety gates.
+
+## Plan broad node lookups with the supplied values
+
+- The 10× comparison recorded 334–367 ms of average PostgreSQL execution for broad map and short-search shapes in the candidate. Forced generic plans reproduced about 410 ms of execution. With the same values, custom plans took 7–8 ms. JIT was already disabled.
+- Send broad lookups without candidate IDs as unnamed statements so PostgreSQL plans for the actual scope, cursor and limit. Keep bounded preparation when the SQL first identifies candidate IDs. Both paths retain the complete identity projection and visibility checks.
