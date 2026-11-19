@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { constants } from 'node:fs';
 import { open, writeFile } from 'node:fs/promises';
 import express, { Router } from 'express';
+import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { withLookupTrial, readLookupSessionIdentity } from './lookupBenchmarkSession.js';
 import type { LookupRuntime, LookupSourceLoader, LookupCacheModule, LookupSessionIdentity } from './lookupBenchmarkSession.js';
 import type { LookupHttpCase } from './lookupHttpRequests.js';
@@ -71,8 +72,11 @@ export async function loadLookupHttpWorkload(load: LookupSourceLoader, runtime: 
       AND n.node_id = ANY($1::text[])
       ORDER BY n.advert_count DESC, n.node_id LIMIT 1`, [visible.map((node: {node_id: string}) => node.node_id)])).rows[0];
     if (!identity) throw new Error('public linked identity required');
-    const packet = (await query(`SELECT packet_hash FROM mesh.packets WHERE visibility_ok IS TRUE
-      AND is_private IS NOT TRUE ORDER BY time DESC, packet_hash LIMIT 1`)).rows[0];
+    const packetScope = buildScopePlaceholders(1, 'ukmesh');
+    const packet = (await query(`SELECT p.packet_hash FROM mesh.packets p WHERE TRUE
+      ${buildPacketScopeClause(packetScope, 'p', 'ukmesh')}
+      ${buildPublicPacketPrivacyClause('p')}
+      ORDER BY p.time DESC, p.packet_hash LIMIT 1`, packetScope.params)).rows[0];
     if (!packet) throw new Error('public packet required');
     const { observer, observerWorkset } = await lookupObserver(query, databaseSetup.http, observerReceipt);
     const map = `/api/nodes/map?network=ukmesh&snapshot=${encodeURIComponent(snapshot)}&limit=1000`;

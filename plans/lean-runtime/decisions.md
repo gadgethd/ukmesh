@@ -2681,3 +2681,8 @@ qualification. Do not change workloads, timing or acceptance limits.
 - The final reconciliation exceeded its 30-second deadline after all 72,000 ACK packets were acknowledged, delivered live and drained. The audit joined the materialized wanted hashes to four complete sources. Each source can use the same hash array as a direct membership filter before aggregation.
 - Keep the independent counts across all partitions and retain matching children with no packet parent. The wanted set still owns missing hashes, observer expectations and mismatch output. Keep the same 30-second deadline and the separate parent-linked ingest-drain proof.
 - After restoring the original stores, both read-only queries returned all 72,160 observations and ledger records, all 72,000 paths and facts, and zero mismatches on the retained fixture. The direct filter took 7.76 seconds and the subsequent join took 12.17 seconds. This ordered diagnostic does not replace the timed run. The native PostgreSQL oracle still covers duplicate inputs, auxiliary observers, missing hashes and unrelated rows, and children with no matching parent.
+
+## Select a scoped packet for the shared lookup workloads
+
+- The first 1× baseline window stopped when its positive packet-detail case returned 404. The latest row with two public flags was outside the UKMesh network scope. Both sealed source versions choose the same public, in-scope packet when using the route's predicates.
+- Use the production packet scope and privacy builders for the shared packet selection, as the soak already does. Keep the packet-detail route, required 200 and separate missing-packet 404 case, cache modes, source seals, and demand deadlines.
