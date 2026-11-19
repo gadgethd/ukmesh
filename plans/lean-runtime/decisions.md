@@ -2661,3 +2661,7 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Share immutable path JSON, parsed paths, and adjacent equal timestamps inside CoreScope's load passes. Packet responses copy the shared path slice before returning it. The hashing pass keeps the original hash formula and reuses the stored canonical hash.
 - Reduce the repeater index under one read lock and reuse prefix deduplication. Keep the timestamp, route, and scope rules. Restore the lock and eviction proof at the published-result boundary and measure the whole reducer.
 - Reuse scratch space for aggregate hop resolution. The distance index reserves a small starting buffer and grows with resolved records. It uses the existing sender lookup to avoid retaining unrelated decoded payloads. The private cold-route probe verifies the 202-to-200 transition against the complete 461,125-row fixture at 512 MiB.
+
+## Handle process exit during resource sampling
+
+- The soak collector stopped when Linux returned `ESRCH` while a process was disappearing. Skip `/proc` traversal for an empty native process set. Treat `ESRCH` like a missing process file in the per-process reads. Missing required containers still fail resident coverage and stability, and surviving containers still supply their effective cgroup limits.

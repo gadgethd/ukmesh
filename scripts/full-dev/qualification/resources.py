@@ -114,12 +114,14 @@ def native_pss(manifest: dict) -> dict:
             if expected and expected not in args:
                 raise ValueError(f"native PID ownership mismatch for {service['name']}")
             roots.add(pid)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
     return process_memory(process_family(roots))
 
 
 def process_family(roots: set[int], *, proc_root: Path = Path('/proc')) -> set[int]:
+    if not roots:
+        return set()
     parents = {}
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -127,7 +129,7 @@ def process_family(roots: set[int], *, proc_root: Path = Path('/proc')) -> set[i
         try:
             status = key_values(entry / "status")
             parents[int(entry.name)] = status["PPid"]
-        except (FileNotFoundError, PermissionError, KeyError):
+        except (FileNotFoundError, ProcessLookupError, PermissionError, KeyError):
             continue
     selected = set(roots)
     while True:
@@ -179,7 +181,7 @@ def container_samples() -> list[dict]:
                 if len(mounts) == 1 and mounts[0].resolve().is_relative_to(REPO / "plans"):
                     resident["sqlite"] = sqlite_sizes(mounts[0])
             result.append(resident)
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             continue
     return result
 
