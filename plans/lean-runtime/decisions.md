@@ -2709,3 +2709,7 @@ qualification. Do not change workloads, timing or acceptance limits.
 - The next soak stopped at the 10 GiB reserve. The CoreScope WAL exceeded 870 MiB while SQLite had backfilled over 99% of its frames. The server held active WAL read locks, and the recorded read marks advanced. During this workload each default packet page rescanned all transmissions for its exact total before fetching 20 rows.
 - For the unfiltered page, count the whole table by its compact index and subtract the union of invalid row IDs from indexed blank and null checks. Preserve both existing validity checks, the exact count and page snapshot, and the existing predicate for every filtered page. A nullable legacy corpus excludes the same invalid combinations and counts overlapping exclusions once.
 - The six alternating-order pairs agreed at 480,129 rows, with medians of 51.89 and 1.83 ms. The route now uses the indexed count in CoreScope `610cba2d`. The focused retained packet tests and the full Go server suite passed. The WAL and whole-VM resource effect still require the integrated workload.
+
+## Retry an apt package replaced during a mirror update
+
+- Hosted Compose CI stopped when apt's signed index selected Ubuntu nginx archives that returned 404 from the package pool. Allow the current bounded retry for that specific package-fetch error. Preserve immediate failure for missing repositories, manifest failures, unsigned or unavailable packages, and application build or test errors.
