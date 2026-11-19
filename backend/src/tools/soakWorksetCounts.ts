@@ -49,13 +49,16 @@ const parentAuditCounts = `${parentKeys('$4')}, packets AS (
 
 const globalAuditCounts = `packets AS (
   SELECT packet_hash, count(*)::integer AS n, count(DISTINCT topic)::integer AS observers
-    FROM mesh.packets JOIN wanted USING(packet_hash) GROUP BY packet_hash
+    FROM mesh.packets WHERE packet_hash = ANY($1::text[]) GROUP BY packet_hash
 ), paths AS (
-  SELECT packet_hash, count(*)::integer AS n FROM mesh.packet_paths JOIN wanted USING(packet_hash) GROUP BY packet_hash
+  SELECT packet_hash, count(*)::integer AS n
+    FROM mesh.packet_paths WHERE packet_hash = ANY($1::text[]) GROUP BY packet_hash
 ), facts AS (
-  SELECT packet_hash, count(*)::integer AS n FROM mesh.multibyte_path_facts JOIN wanted USING(packet_hash) GROUP BY packet_hash
+  SELECT packet_hash, count(*)::integer AS n
+    FROM mesh.multibyte_path_facts WHERE packet_hash = ANY($1::text[]) GROUP BY packet_hash
 ), ledger AS (
-  SELECT packet_hash, count(*)::integer AS n FROM mesh.ingest_observation_ledger JOIN wanted USING(packet_hash) GROUP BY packet_hash
+  SELECT packet_hash, count(*)::integer AS n
+    FROM mesh.ingest_observation_ledger WHERE packet_hash = ANY($1::text[]) GROUP BY packet_hash
 )`;
 
 const auditSQL = (counts: string) => `WITH ${wanted}, ${counts}, per_hash AS (
