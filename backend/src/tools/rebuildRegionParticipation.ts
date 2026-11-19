@@ -42,7 +42,7 @@ import pg from 'pg';
 import { pathToFileURL } from 'node:url';
 import { analyticsConnectionOptions } from '../platform/config/database.js';
 import { regionRebuildSettings } from '../regions/rebuildSettings.js';
-import { SCOPED_PACKETS_SQL, type ScopedPacketRow } from '../regions/scopedPackets.js';
+import { readScopedPackets } from '../regions/scopedPackets.js';
 import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
@@ -51,7 +51,7 @@ import { decodePacketCompat } from '../mqtt/decodePacket.js';
 import { MEMBER_MIN_SHARE_PCT, meetsMemberShare } from '../regions/memberShare.js';
 import { regionProbeNamesWithEnv } from '../regions/regionNames.js';
 import { createRegionProbe, transportCode0Of } from '../regions/scopeDecode.js';
-import { clusterUnattributedPackets, type UnattributedPacket } from '../regions/unattributed.js';
+import { createUnattributedClusterer, type LocatedNode } from '../regions/unattributed.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
 import { withHeavyWorkAdmission, tryWithHeavyWorkAdmission,
   type HeavyWorkAdmissionOptions, type HeavyWorkAdmissionResult } from '../analysis/heavyWorkAdmission.js';
@@ -138,51 +138,6 @@ async function rebuildWithAdmission(
     const startedAt = Date.now();
     console.log(`[regions] probe list: ${probeNames.length} names; window ${windowDays}d${dryRun ? ' (dry run)' : ''}`);
 
-    const { rows: scopedRows } = await pool.query<ScopedPacketRow>(
-      SCOPED_PACKETS_SQL,
-      [windowDays, settings.maxPackets + 1],
-    );
-    const scopedPacketCount = scopedRows.length;
-    console.log(`[regions] scoped packets: ${scopedPacketCount} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
-    if (scopedPacketCount > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
-    if (scopedPacketCount === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
-
-    const regionTotals = new Map<string, number>();
-    const regionFirstSeen = new Map<string, Date>();
-    const regionLastSeen = new Map<string, Date>();
-    const packetRegion = new Map<string, string | null>();
-    const unattributedRows: ScopedPacketRow[] = [];
-    let decodedCount = 0;
-    for (const row of scopedRows) {
-      let region: string | null = null;
-      if (row.raw) {
-        const compat = decodePacketCompat(row.raw, keyStore);
-        if (compat.metadataValid && compat.transportCodes) {
-          const tc0 = transportCode0Of(compat.transportCodes);
-          region = probeRegion(
-            compat.decoded?.payloadType,
-            compat.decoded?.payload?.raw,
-            tc0,
-          );
-        }
-      }
-      row.raw = null;
-      packetRegion.set(row.packet_hash, region);
-      if (!region) unattributedRows.push(row);
-      if (region) {
-        decodedCount += 1;
-        regionTotals.set(region, (regionTotals.get(region) ?? 0) + 1);
-        const first = regionFirstSeen.get(region);
-        if (!first || row.t0 < first) regionFirstSeen.set(region, row.t0);
-        const last = regionLastSeen.get(region);
-        if (!last || row.t1 > last) regionLastSeen.set(region, row.t1);
-      }
-    }
-    const unattributedPacketCount = unattributedRows.length;
-    const unknownCount = scopedPacketCount - decodedCount;
-    console.log(`[regions] decoded ${decodedCount}/${scopedPacketCount} (${unknownCount} unknown)`);
-    if (scopedPacketCount > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
-
     const { rows: nodeRows } = await pool.query<NodeMetaRow>(
       `SELECT DISTINCT ON (node_id) node_id, role, name, lat, lon
          FROM core.nodes
@@ -210,7 +165,7 @@ async function rebuildWithAdmission(
     // gap geographically without inventing a region name. Nodes that opted out
     // of public display are dropped here, so no cluster geometry is derived
     // from them.
-    const nodeInfo = new Map<string, Readonly<UnattributedPacket['nodes'][number]>>();
+    const nodeInfo = new Map<string, Readonly<LocatedNode>>();
     for (const row of nodeRows) {
       const nodeId = (row.node_id ?? '').trim().toUpperCase();
       if (!nodeId || isPrivateNode(row.name)) continue;
@@ -221,49 +176,39 @@ async function rebuildWithAdmission(
     }
     nodeRows.length = 0;
 
-    const unattributedPackets: UnattributedPacket[] = [];
-    for (const row of unattributedRows) {
-      const nodes: NonNullable<UnattributedPacket['nodes']>[number][] = [];
-      const seen = new Set<string>();
-      const add = (nodeId: string): void => {
-        if (!nodeId || seen.has(nodeId)) return;
-        const info = nodeInfo.get(nodeId);
-        if (!info) return;
-        seen.add(nodeId);
-        nodes.push(info);
-      };
-      for (const element of row.elems ?? []) {
-        const resolved = resolveElement(prefixIndex, element);
-        if (resolved) add(resolved);
-      }
-      for (const observer of row.observers ?? []) add(observer.trim().toUpperCase());
-      unattributedPackets.push({
-        hash: row.packet_hash,
-        nodes,
-        firstSeen: row.t0,
-        lastSeen: row.t1,
-      });
-    }
-    unattributedRows.length = 0;
-    nodeInfo.clear();
-    const unattributedClusters = clusterUnattributedPackets(unattributedPackets, {
-      radiusKm: 60,
-      minPackets: 10,
-    });
-    unattributedPackets.length = 0;
-    console.log(`[regions] unattributed: ${unattributedPacketCount} packets -> ` +
-      `${unattributedClusters.clusters.length} clusters ` +
-      `(${unattributedClusters.clusteredPackets} clustered, ` +
-      `${unattributedClusters.discardedPackets} below floor, ` +
-      `${unattributedClusters.unlocatedPackets} unlocated)`);
-
+    const regionTotals = new Map<string, number>();
+    const regionFirstSeen = new Map<string, Date>();
+    const regionLastSeen = new Map<string, Date>();
     const scopedByNode = new Map<string, Map<string, number>>();
     const scopedTotal = new Map<string, number>();
     const elementStats = new Map<string, number>();
     const unresolvedSamples: string[] = [];
-    for (const row of scopedRows) {
-      const region = packetRegion.get(row.packet_hash) ?? null;
+    const unattributed = createUnattributedClusterer({ radiusKm: 60, minPackets: 10 });
+    let decodedCount = 0;
+
+    const scopedPacketCount = await readScopedPackets(pool, settings, row => {
+      let region: string | null = null;
+      if (row.raw) {
+        const compat = decodePacketCompat(row.raw, keyStore);
+        if (compat.metadataValid && compat.transportCodes) {
+          region = probeRegion(
+            compat.decoded?.payloadType,
+            compat.decoded?.payload?.raw,
+            transportCode0Of(compat.transportCodes),
+          );
+        }
+      }
+      if (region) {
+        decodedCount += 1;
+        regionTotals.set(region, (regionTotals.get(region) ?? 0) + 1);
+        const first = regionFirstSeen.get(region);
+        if (!first || row.t0 < first) regionFirstSeen.set(region, row.t0);
+        const last = regionLastSeen.get(region);
+        if (!last || row.t1 > last) regionLastSeen.set(region, row.t1);
+      }
+
       const countedNodes = new Set<string>();
+      const locatedNodes: LocatedNode[] = [];
       for (const element of row.elems ?? []) {
         if (!element) continue;
         const lengthKey = `elem_len_${element.length}`;
@@ -275,8 +220,7 @@ async function rebuildWithAdmission(
           if (unresolvedSamples.length < UNRESOLVED_ELEMENT_LOG_LIMIT) unresolvedSamples.push(element);
           continue;
         }
-        // Each SQL row is one distinct packet; overlapping path prefixes may
-        // resolve to the same node, which must still count once per packet.
+        // Overlapping path prefixes can resolve to the same node in one packet.
         if (countedNodes.has(nodeId)) continue;
         countedNodes.add(nodeId);
         scopedTotal.set(nodeId, (scopedTotal.get(nodeId) ?? 0) + 1);
@@ -284,11 +228,35 @@ async function rebuildWithAdmission(
           let byRegion = scopedByNode.get(nodeId);
           if (!byRegion) { byRegion = new Map(); scopedByNode.set(nodeId, byRegion); }
           byRegion.set(region, (byRegion.get(region) ?? 0) + 1);
+        } else {
+          const info = nodeInfo.get(nodeId);
+          if (info) locatedNodes.push(info);
         }
       }
-    }
-    scopedRows.length = 0;
-    packetRegion.clear();
+      if (!region) {
+        for (const observer of row.observers ?? []) {
+          const nodeId = observer.trim().toUpperCase();
+          if (countedNodes.has(nodeId)) continue;
+          const info = nodeInfo.get(nodeId);
+          if (!info) continue;
+          countedNodes.add(nodeId);
+          locatedNodes.push(info);
+        }
+        unattributed.add({ hash: row.packet_hash, nodes: locatedNodes, firstSeen: row.t0, lastSeen: row.t1 });
+      }
+    });
+    nodeInfo.clear();
+    console.log(`[regions] scoped packets: ${scopedPacketCount} (${Math.round((Date.now() - startedAt) / 1000)}s)`);
+    if (scopedPacketCount === 0 && !settings.allowEmpty) throw new Error('no scoped packets found in window; refusing to wipe tables');
+    const unattributedPacketCount = scopedPacketCount - decodedCount;
+    console.log(`[regions] decoded ${decodedCount}/${scopedPacketCount} (${unattributedPacketCount} unknown)`);
+    if (scopedPacketCount > 0 && decodedCount === 0) throw new Error('no scoped packets decoded; refusing to wipe tables');
+    const unattributedClusters = unattributed.finish();
+    console.log(`[regions] unattributed: ${unattributedPacketCount} packets -> ` +
+      `${unattributedClusters.clusters.length} clusters ` +
+      `(${unattributedClusters.clusteredPackets} clustered, ` +
+      `${unattributedClusters.discardedPackets} below floor, ` +
+      `${unattributedClusters.unlocatedPackets} unlocated)`);
     console.log(`[regions] element stats: ${JSON.stringify(Object.fromEntries([...elementStats.entries()].sort()))}`);
 
     const { rows: unscopedRows } = await pool.query<UnscopedElementRow>(

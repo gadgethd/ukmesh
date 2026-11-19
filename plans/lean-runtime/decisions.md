@@ -2686,3 +2686,10 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The first 1× baseline window stopped when its positive packet-detail case returned 404. The latest row with two public flags was outside the UKMesh network scope. Both sealed source versions choose the same public, in-scope packet when using the route's predicates.
 - Use the production packet scope and privacy builders for the shared packet selection, as the soak already does. Keep the packet-detail route, required 200 and separate missing-packet 404 case, cache modes, source seals, and demand deadlines.
+
+## Reduce scoped region rows as PostgreSQL returns them
+
+- During the 10× soak the scheduled rebuild added about 217 MiB of anonymous memory. It held the full scoped SQL result, a second packet-to-region map and arrays of unattributed packets. The read-only worker-role diagnostic returned the same 249,868 ordered rows with either transport. Fetch batches of 2,048 reached 150,296 KiB RSS versus 403,244 KiB for the array, with elapsed times of 26.86 and 28.80 seconds respectively.
+- Preserve the scoped SQL, history, ordered paths and capacity sentinel. Use the reader connection the region job already budgets and finish it before publishing on the advisory-lock connection. Keep one statement budget across the reader's database calls and the existing outer process deadline.
+- Reduce each row once with the capped identity metadata. Add unknown rows to the existing greedy clusters in packet order and perform merges and cluster ID assignment after the final row. The five-table publication and generation checks remain in their current transaction.
+- The full read-only rebuilds matched the digest of every value destined for publication. Both processed 249,868 packets, decoded 215,112, and produced 387 memberships, 8,718 classifications and 15 clusters. Peak RSS fell from 549,216 to 244,172 KiB. Elapsed time was 77.13 seconds for the previous rebuild and 69.66 seconds for the bounded one, measured in that order on the same fixture. The native publication suite also verified the empty and over-capacity cases, visibility changes, deadline and claim cleanup.

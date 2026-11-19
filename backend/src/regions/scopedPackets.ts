@@ -1,5 +1,7 @@
+import type pg from 'pg';
 import { publicPacketPrivacySql } from '../platform/query/networkFilters.js';
 import { UKMESH_NETWORK_SQL_LIST } from '../networks.js';
+import type { regionRebuildSettings } from './rebuildSettings.js';
 
 export interface ScopedPacketRow {
   packet_hash: string;
@@ -40,3 +42,62 @@ SELECT observations.packet_hash, observations.t0, observations.t1,
  ORDER BY observations.packet_hash
  LIMIT $2
 `;
+
+const PACKET_BATCH_SIZE = 2_048;
+
+/** The separate connection is already budgeted alongside the region publisher. */
+export async function readScopedPackets(
+  pool: Pick<pg.Pool, 'connect'>,
+  settings: Pick<ReturnType<typeof regionRebuildSettings>, 'windowDays' | 'maxPackets' | 'statementTimeoutMs'>,
+  visit: (row: ScopedPacketRow) => void,
+): Promise<number> {
+  const client = await pool.connect();
+  let remainingMs = settings.statementTimeoutMs;
+  let discard = false;
+  const execute = async (text: string, values: unknown[] | undefined, timeoutMs: number) => {
+    const query: pg.QueryConfig & { query_timeout: number } = { text, values, query_timeout: timeoutMs };
+    try {
+      return (await client.query<ScopedPacketRow>(query)).rows;
+    } catch (error) {
+      // A client timeout can leave the server busy. Closing this session
+      // abandons the read-only transaction without queuing another query.
+      discard = true;
+      throw error;
+    }
+  };
+  // The original query's budget is shared across batches. Row reduction runs
+  // between calls and still counts against the enclosing rebuild deadline.
+  const withinBudget = async (text: string, values?: unknown[]) => {
+    if (remainingMs <= 0) throw new Error('REGION_SCOPE_READ_DEADLINE');
+    const started = performance.now();
+    const rows = await execute(text, values, Math.ceil(remainingMs) + 1_000);
+    remainingMs -= performance.now() - started;
+    if (remainingMs < -1_000) throw new Error('REGION_SCOPE_READ_DEADLINE');
+    return rows;
+  };
+  const read = async (text: string, values?: unknown[]) => {
+    await withinBudget("SELECT set_config('statement_timeout', $1, true)", [`${Math.ceil(remainingMs)}ms`]);
+    return withinBudget(text, values);
+  };
+  try {
+    await withinBudget('BEGIN READ ONLY');
+    await withinBudget('SET LOCAL cursor_tuple_fraction = 1');
+    await read(`DECLARE scoped_region_packets NO SCROLL CURSOR FOR ${SCOPED_PACKETS_SQL}`,
+      [settings.windowDays, settings.maxPackets + 1]);
+    let count = 0;
+    while (true) {
+      const rows = await read(`FETCH FORWARD ${PACKET_BATCH_SIZE} FROM scoped_region_packets`);
+      count += rows.length;
+      if (count > settings.maxPackets) throw new Error('REGION_SCOPE_PACKET_CAPACITY');
+      for (const row of rows) visit(row);
+      if (rows.length < PACKET_BATCH_SIZE) return count;
+    }
+  } finally {
+    try {
+      // The read-only transaction owns and closes the non-HOLD cursor.
+      if (!discard) await execute('ROLLBACK', undefined, 1_000);
+    } finally {
+      client.release(discard);
+    }
+  }
+}
