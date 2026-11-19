@@ -2703,3 +2703,9 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - The existing chart summary sorted nearly 950,000 observations to calculate four distinct counts over two keys. Give each region and key one last-seen value. A key was present in a shorter window exactly when its latest observation was in that window. Keep null keys out of the distinct counts while allowing them to contribute to last observation time.
 - Keep the existing seven-day UKMesh and observer input filters, alias resolution, IATA fallback, ordering, and independent region-series query. On the owned fixture, broad and per-observer results matched exactly. Grouping sets wrote 17,886 temporary blocks versus 24,044, with comparable elapsed time. The independent two-scan variant used less temporary space but was slower by more than 30% and was not adopted.
+
+## Shorten the CoreScope default packet read transaction
+
+- The next soak stopped at the 10 GiB reserve. The CoreScope WAL exceeded 870 MiB while SQLite had backfilled over 99% of its frames. The server held active WAL read locks, and the recorded read marks advanced. During this workload each default packet page rescanned all transmissions for its exact total before fetching 20 rows.
+- For the unfiltered page, count the whole table by its compact index and subtract the union of invalid row IDs from indexed blank and null checks. Preserve both existing validity checks, the exact count and page snapshot, and the existing predicate for every filtered page. A nullable legacy corpus excludes the same invalid combinations and counts overlapping exclusions once.
+- The six alternating-order pairs agreed at 480,129 rows, with medians of 51.89 and 1.83 ms. The route now uses the indexed count in CoreScope `610cba2d`. The focused retained packet tests and the full Go server suite passed. The WAL and whole-VM resource effect still require the integrated workload.
