@@ -21,8 +21,7 @@ class PrepublicationCleanup(unittest.TestCase):
         temp=tempfile.TemporaryDirectory();self.addCleanup(temp.cleanup);self.root=Path(temp.name)
         self.addCleanup(patch.stopall);patch.object(soak,'REPO',self.root).start()
         self.tool=self.root/'backend/src/tools/soakDatabaseLookups.ts';self.tool.parent.mkdir(parents=True);self.tool.write_text('reviewed native tool')
-        self.helpers={key:self.tool.parent/name for key,name in
-            (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'),('socket','soakSocket.ts'))}
+        self.helpers={key:self.tool.parent/name for key,name in soak.SOAK_HELPERS.items()}
         for key,path in self.helpers.items():path.write_text('reviewed '+key+' helper')
         self.source=self.root/'soak-source';self.aux=self.root/'auxiliary-source';self.output=self.root/'native-soak'
         for path in (self.source,self.aux,self.output):path.mkdir()
@@ -140,8 +139,8 @@ class PrepublicationCleanup(unittest.TestCase):
         module=(common.REPO/'backend/src/tools/soakPublication.ts').as_uri()
         context=copy.deepcopy(self.receipt)
         context['toolSha256']=common.digest(common.REPO/'backend/src/tools/soakDatabaseLookups.ts')
-        context['helperSha256']={key:common.digest(common.REPO/'backend/src/tools'/name) for key,name in
-            (('publication','soakPublication.ts'),('counts','soakWorksetCounts.ts'),('socket','soakSocket.ts'))}
+        context['helperSha256']={key:common.digest(common.REPO/'backend/src/tools'/name)
+                                 for key,name in soak.SOAK_HELPERS.items()}
         script.write_text("import {SoakPublication} from "+repr(module)+";\nimport {writeFile} from 'node:fs/promises';\n"
             "const context="+json.dumps(context,separators=(',',':'))+"; const owner=new SoakPublication();\n"
             "const before=owner.failure(context,new Error('synthetic setup failure')); owner.begin();\n"

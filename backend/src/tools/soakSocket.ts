@@ -1,27 +1,37 @@
 import type WebSocket from 'ws';
 import type { RawData } from 'ws';
+import path from 'node:path';
+import { pairedReplayPackets } from './replaySampleMqtt.js';
+import { readGzipCsv, rowObject } from './sampleData.js';
 
 export type SoakSocketScope = { network: 'ukmesh'; observer: string | null; ackRows: number };
 
-/** Full-stack ACK delivery uses the existing observer subscription, never a subset of ACKs. */
-export function soakSocketScope(headers: readonly string[], rows: readonly (readonly string[])[],
-  count: number, fullStack: boolean): SoakSocketScope {
-  if (!fullStack) return {network:'ukmesh',observer:null,ackRows:count};
-  if (!Number.isSafeInteger(count) || count < 1 || rows.length !== count) throw new Error('ACK socket scope requires every requested row');
-  const rx=headers.indexOf('rx_node_id'),network=headers.indexOf('network');
-  if (rx < 0 || network < 0 || headers.lastIndexOf('rx_node_id') !== rx || headers.lastIndexOf('network') !== network) {
-    throw new Error('ACK socket scope requires unique receiver and network columns');
+function soakObserver(receiver: string | undefined, network: string | undefined, observer: string | null): string {
+  if (!receiver || !/^[a-f0-9]{64}$/i.test(receiver)) throw new Error('ACK socket scope requires a valid receiver on every row');
+  if (network !== 'ukmesh') throw new Error('ACK socket scope requires ukmesh on every row');
+  const normalized = receiver.toLowerCase();
+  if (observer !== null && observer !== normalized) throw new Error('ACK socket scope requires the same receiver on every row');
+  return normalized;
+}
+
+/** Validate the whole ACK cohort before publication and retain only its hashes and scope. */
+export async function readReplayInput(directory: string, count: number, paired: boolean) {
+  if (!Number.isSafeInteger(count) || count < 1) throw new Error('ACK socket scope requires a positive row count');
+  const hashes: string[] = [];
+  let observer: string | null = null;
+  if (paired) {
+    for await (const { row } of pairedReplayPackets(directory, count)) {
+      hashes.push(row['packet_hash']!);
+      observer = soakObserver(row['rx_node_id'], row['network'], observer);
+    }
+  } else {
+    const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
+    for (const row of table.rows) hashes.push(rowObject(table.headers, row)['packet_hash']!);
   }
-  let observer: string | null=null;
-  for (const row of rows) {
-    const receiver=row[rx];
-    if (!receiver || !/^[a-f0-9]{64}$/i.test(receiver)) throw new Error('ACK socket scope requires a valid receiver on every row');
-    if (row[network] !== 'ukmesh') throw new Error('ACK socket scope requires ukmesh on every row');
-    const normalized=receiver.toLowerCase();
-    if (observer !== null && observer !== normalized) throw new Error('ACK socket scope requires the same receiver on every row');
-    observer=normalized;
-  }
-  return {network:'ukmesh',observer,ackRows:rows.length};
+  const expected = new Set(hashes);
+  if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
+  const socketScope: SoakSocketScope = { network: 'ukmesh', observer, ackRows: count };
+  return { hashes, expected, socketScope };
 }
 
 export function soakSocketUrl(base: URL, scope: SoakSocketScope): URL {

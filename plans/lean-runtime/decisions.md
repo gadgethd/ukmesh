@@ -2646,3 +2646,12 @@ qualification. Do not change workloads, timing or acceptance limits.
 
 - Active and dead work already have budgets. Completed jobs left four Redis records behind for up to seven days. The owned 10× database contains 365,771 durable job receipts and added 24,055 during the soak.
 - Reap completed Redis markers by age and toward a target of 32,768 entries, including while the ready queue stays busy. Process up to 500 markers every five seconds. Leave active work, leases, dead jobs, and the PostgreSQL receipts intact. A replay outside the recent Redis cache can reach the worker, where the durable receipt prevents a second graph write or notification.
+
+## Isolate basemap failure scenarios at the browser process
+
+- Two hosted runs stalled while opening a new context in the Chromium process already used for the preceding WebGL test. Launch Chromium for each scenario, keep one worker, and close each context before closing its browser so Playwright can record failure artifacts. Keep the renderer options, assertions, and deadlines.
+
+## Stream the owned soak replay input
+
+- One process in the timed harness accounted for up to 253 MiB of swap. The harness materialized the full packet table for subscription checks and then assembled another list of serialized broker messages.
+- The owned fixture writes paired packet and raw CSV records in chronological order. Verify the full ordered pair list, scope, count, and distinct hashes before publication, then stream the same records through the existing paced MQTT publisher at QoS 1. Retain only the hashes and observations needed for reconciliation. Keep the ordinary replay CLI's ability to join and sort independent files, and include the executable replay helper in the guarded failure receipt.

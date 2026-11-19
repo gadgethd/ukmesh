@@ -9,14 +9,14 @@ import http from 'node:http';
 import { realpath, stat } from 'node:fs/promises';
 import pg from 'pg';
 import WebSocket from 'ws';
-import { assertLocalDatabaseUrl, option, readGzipCsv, requiredOption, rowObject } from './sampleData.js';
-import { replaySampleMqtt } from './replaySampleMqtt.js';
+import { assertLocalDatabaseUrl, option, requiredOption } from './sampleData.js';
+import { replayPairedSoakPackets, replaySampleMqtt } from './replaySampleMqtt.js';
 import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { CACHE_POLICY_REGISTRY } from '../cache/policyRegistry.js';
 import { boundedCacheMetricLabel } from '../metrics/labels.js';
 import { assertOwnedLeanFixture } from './ownedLookupFixture.js';
 import { publishFullStackTraffic, readFullStackTraffic } from './fullStackTraffic.js';
-import { soakSocketScope, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
+import { readReplayInput, soakSocketUrl, socketCloseDetails, waitForInitialState } from './soakSocket.js';
 import { waitForSoakDrain } from './soakDrain.js';
 import { auditSoakWorksetHashes, auditSoakWorksetParents, countSoakWorkset, soakWorkset, SOAK_COUNTER_DEADLINE_MS } from './soakWorksetCounts.js';
 import { SoakPublication, soakInvocationToken } from './soakPublication.js';
@@ -80,12 +80,8 @@ if (auxiliaryTraffic) for (const key of ['packets', 'paths', 'facts', 'ledger'] 
 }
 const manifest = JSON.parse(await readFile(path.join(directory, 'fixture.json'), 'utf8'));
 if (!manifest.synthetic || manifest.count !== count) throw new Error('matching invented fixture required');
-const table = await readGzipCsv(path.join(directory, 'packets.csv.gz'));
-const hashes = table.rows.map(row => rowObject(table.headers,row)['packet_hash']!);
-const expected = new Set(hashes);
-if (hashes.length !== count || expected.size !== count) throw new Error('fixture must contain exactly the requested distinct hashes');
+const { hashes, expected, socketScope } = await readReplayInput(directory, count, auxiliaryTraffic !== undefined);
 const workset=soakWorkset(hashes,auxiliaryTraffic?.ukmeshHashes);
-const socketScope=soakSocketScope(table.headers,table.rows,count,auxiliaryTraffic!==undefined);
 if(auxiliaryTraffic){
   const invocationToken=soakInvocationToken(option(args,'invocation-token'));
   const checksum=async(file:string)=>createHash('sha256').update(await readFile(file)).digest('hex');
@@ -94,7 +90,8 @@ if(auxiliaryTraffic){
     toolSha256:await checksum(fileURLToPath(import.meta.url)),helperSha256:{
       publication:await checksum(fileURLToPath(new URL('./soakPublication'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
       counts:await checksum(fileURLToPath(new URL('./soakWorksetCounts'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
-      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
+      socket:await checksum(fileURLToPath(new URL('./soakSocket'+path.extname(fileURLToPath(import.meta.url)),import.meta.url))),
+      replay:await checksum(fileURLToPath(new URL('./replaySampleMqtt'+path.extname(fileURLToPath(import.meta.url)),import.meta.url)))},inputSha256:{
       fixture:await checksum(path.join(directory,'fixture.json')),packets:await checksum(path.join(directory,'packets.csv.gz')),
       raw:await checksum(path.join(directory,'raw_packets.csv.gz')),auxiliary:await checksum(auxiliaryFile!)}};
   failureOutput=output;
@@ -242,9 +239,11 @@ try {
     publication.begin(); // BEFORE either publisher can send, even if its promise later rejects.
     auxiliaryWork = auxiliaryTraffic ? publishFullStackTraffic(auxiliaryTraffic, broker.href, auxiliaryController.signal)
       .then(sent => { auxiliaryAcknowledgements = sent; publication.auxiliaryPublished=sent; }) : undefined;
-    await Promise.all([auxiliaryWork,
-      replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
-        '--envelope-format',envelopeFormat]).then(()=>{publication.ackPublished=count;})]);
+    const ackWork = auxiliaryTraffic
+      ? replayPairedSoakPackets(directory, broker, count, rate)
+      : replaySampleMqtt(['--data-dir',directory,'--limit',String(count),'--speed',String(rate),'--broker',broker.href,'--qos','1',
+        '--envelope-format',envelopeFormat]);
+    await Promise.all([auxiliaryWork, ackWork.then(()=>{publication.ackPublished=count;})]);
     drainStarted = performance.now();
     acknowledgedMs=drainStarted-started;
     recordPhase('publication', { passed: true, acknowledgedMs, ackPublished: publication.ackPublished,
