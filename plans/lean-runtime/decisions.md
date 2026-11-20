@@ -2818,3 +2818,77 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Canonical `scripts/dev-all.sh restart corescope` rebuilt both Go binaries from the submodule at b1ffa003 and recreated the web+ingestor pair (exit 0, both Healthy). Deployed COMPANION_SOURCE_REVISION 6950bd186b4c396fd02a6ddf8a7d74f972a8b65d1fbb33559ba8d02b3860b01f equals source-hash.py output for the submodule at b1ffa00317d98829a5b880bf7bfa0e3da1be0bfb. Web container: memory 536870912 (512 MiB default), memory_swap equal (no container swap), RestartCount 0, GOMEMLIMIT=256MiB unchanged.
 - Fresh inventory receipt stage1-landing.eqdzon: 43/43 services passed, coverage checks all true, public_tunnel_off true. All DB consumers on original targets (meshcore / meshcore_owner_auth / beacon_dev); both CoreScope containers mount the ORIGINAL plans/companion-dev/runtime/corescope directory (web/ingestor read/write split preserved). No fixture selected; retained fixtures untouched.
 - CI watcher running on UKMesh PR #259 head 4e1a3d9 (run 44666069250 pull_request in progress at landing time). CoreScope fork has no CI workflow; UKMesh CI builds the pinned submodule and is the authoritative gate. Merges remain user actions.
+
+## Stage 2 reconnaissance — chart-refresh budget cascade and spam lost-clients (read-only)
+
+Evidence sources (all read-only, originals selected, no fixture mutation): the exact soak receipts
+guarded-indexed-core-soak.nsY0CJe6 (steady-runtime-logs.json digests verified against backend.log
+89c170e6… and sample-db.log afe2fc4a…), Prometheus history for 2026-11-19 (retained), and
+pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset 2026-11-13).
+
+### Chart refresh (batch 1) — root cause is serial work, not pool/admission contention
+- DEV backend env: STATS_DB_QUERY_CONCURRENCY=1, STATS_AGGREGATE_READS_ENABLED=false,
+  STATS_AGGREGATE_SHADOW_ENABLED=false, DATABASE_STATEMENT_TIMEOUT_MS=30000. Analytics pool = worker
+  role, random_page_cost=4, effective_cache_size=512MB, PG statement_timeout=max(900000,30000)=15min
+  (database.ts analyticsStatementTimeoutMs). So the binding deadlines are app-side only.
+- With aggregates OFF, fetchChartsData issues 17 queries through one Promise.all, all serialized by
+  the concurrency-1 slot FIFO (statsRepository.ts query()). Each query's 60s budget clock starts at
+  wrapper entry BEFORE acquireQuerySlot, so it includes slot wait (established semantics, decisions
+  "Bound statistics work to one statement on the lean main runtime": queue wait counts toward 60s/120s;
+  "If serial work violates them, fix work instead of raising limits").
+- The multibyte fact summary is query #12 in the array. It COMPLETED (returnedRows=1) at cumulative
+  wait+exec ~60.96s -> logged [stats-query-budget] exceeded, threw STATS_QUERY_BUDGET_EXCEEDED, which
+  chartAbort.abort() cascaded to the 5 still-queued queries #13-17 (observerDiversity, signalSummary,
+  routeTypes, transportCodes = 4x mesh.packets; pathDecodeTrend = 1x multibyte_path_facts). Each logs
+  "query failed after budget" (the exceeded query logs BOTH exceeded and failed-after-budget = the
+  "duplicate reporting"). 6 clusters x 7 matching lines = 42 backend failure lines. The "chart refresh
+  failed" line is the 7th match per cluster.
+- Prometheus FAIL window 09:29-09:39: analytics/other success = 82 queries / 378.85s exec (mean 4.62s);
+  analytics pool wait only 0.13s total / 83 checkouts (negligible). EARLY 09:00-09:06: 30 queries /
+  116.86s (mean 3.90s). 17 x ~4.6s ~= 78s serial > 60s budget. Contention is execution volume, not waits.
+- pg_stat_statements fixture means (per chart query, ~25 calls): region series (iata/day COUNT DISTINCT
+  packet_hash) 11.13s; region summary (GROUPING SETS) 12.88s; totals sumResult 6.71s; observerDiversity
+  (per_packet) 6.60s; pathHashWidths (unnest) 5.15s; prefix_counts (unnest) 4.79s; packet_types 4.63s;
+  multibyte summary 3.83s; packets/day 2.56s; hop distribution 2.39s; signal percentile 2.26s; radios/day
+  1.35s; packets/hour 0.84s. Sum ~= 70s serial. The two 7-day region scans and the repeated 24h scans
+  (10 queries re-scan the same 24h window, each re-evaluating the canonical privacy predicate) dominate.
+- The 79s admission wait on ONE cycle (09:30:26->09:31:46) is secondary: even waitMs=2-3 cycles failed at
+  ~60-62s of work. No other service logged db-admission in that gap (region/privacy-remat worker logs empty
+  for the whole window); holder not identified from logs, but it is not the recurring cause.
+- Candidate fix (authorized by next-ai-prompt "reduce repeated fact scans or consolidate same-snapshot work"):
+  consolidate same-window/same-snapshot legacy scans into fewer statements sharing one materialized scoped
+  base, preserving exact rows/order/values, the asOf snapshot, privacy-generation fences, completeness,
+  per-scope data, cache freshness, and the aggregate feature switches (left OFF). Highest yield: merge the
+  two 7-day region scans; merge the two 24h path_hashes unnests; merge the simple 24h/7d count aggregates.
+  NOT raising budgets/concurrency, NOT enabling aggregate reads (that is a separate documented rollout
+  requiring backfill + shadow parity; switches preserved).
+
+### Spam lost-clients (batch 2) — app-side 5s budget abort destroys the connection
+- sample-db.log: exactly 6 real FATAL "connection to client lost" (09:06:39, 09:11:44, 09:16:49, 09:21:54,
+  09:26:58, 09:37:06), each preceded ~2s by backend [spam-msg] status=timed_out. The other 12 scanner hits
+  are SQL-text lines containing the literal 'failed' inside the multiline STATEMENT dump (the remat
+  NOT EXISTS subquery of the spam visibility predicate) — false positives, not separate failures.
+- Mechanism: spam analyzer interval 300s, SPAM_MESSAGE_ANALYSIS_BUDGET_MS=5000 (whole pass). loadRecentMessages
+  runs WITH logical_messages via analyticsQuery with heartbeat.signal. On deadline the heartbeat aborts;
+  databaseRuntime.queryPool onAbort calls client.release(true) (DESTROYS the connection) -> PG logs FATAL
+  connection to client lost (not a clean cancel). Completed passes analyzed 158/188 messages; timed-out
+  passes analyzed 0 (query never returned within 5s).
+- pg_stat_statements fixture: WITH logical_messages mean 1.84s, MAX 4.89s (27 calls) — under load spikes it
+  breaches the 5s whole-pass budget. Same canonical per-row privacy predicate (visibility EXISTS + remat
+  NOT EXISTS with unnest(path_hashes)) as the chart scans. ranked_observers follow-up mean 0.05s.
+- Fix direction: confirm plan/waits/rows under the worker role on the fixture; reduce the query's own work so
+  it meets the 5s budget under load (preserve signature grouping/order, duplicate weighting, windows,
+  visibility, privacy, cancellation). Fix actual lost clients BEFORE any log-parser repair; parser repair must
+  handle PG multiline SQL explicitly and retain genuine ERROR/FATAL, with regression cases + saved input.
+
+### Couplings recorded before editing
+- statsRepository.ts query()/limitedQuery: budget+timeout+slot FIFO shared by ALL chart queries and the
+  multibyte readiness check; source attribution = first FROM table. fetchChartsData shadows query with
+  chartQuery (bindChartSnapshot asOf + chartAbort cascade). Consolidation must keep one asOf, the abort
+  cascade, the per-query budget/timeout semantics, and identical response row shapes consumed by
+  computeChartsData -> validateChartSnapshotPayload -> stats_chart_snapshots.
+- fetchObserverRegionSummary is also exported and used elsewhere (observer-scoped); its SQL is shared with
+  the broad region summary. Any merge must keep the observer-scoped variant's exact output.
+- spam repository.loadRecentMessages/countLogicalMessages/persistIncidents + analyzer.analyzeOnce heartbeat;
+  databaseRuntime.queryPool abort path is shared by ALL analytics/oltp signal-carrying queries (changing the
+  destroy-on-abort behavior would affect every caller, not just spam).
