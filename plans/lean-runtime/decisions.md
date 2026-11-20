@@ -3148,3 +3148,15 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   "major faults alone do not identify swap causality". Job correlation (chart/spam/region/
   graph/link timestamps from backend.log joined to sampler intervals) is the analysis step
   during the canonical soak. Host-wide swap policy and unrelated processes stay untouched.
+
+### Batch 4 correction — node base pin re-pulled by exact digest
+
+- The batch-4 ownership scan missed the root Dockerfile* files: node:26-alpine@sha256:c6ad9e9c1d80…
+  is the pinned base of Dockerfile, Dockerfile.app, Dockerfile.backend, Dockerfile.mesh-health-check
+  and Dockerfile.website. It had been removed as a superseded pin. Re-scanned ALL build files for
+  every removed digest: only this node pin was referenced (the four golang pins stay unreferenced;
+  the active pipeline pin 4fa7c968ba93 was kept). Re-pulled by exact digest before the Stage 3
+  rebuild; restored image id sha256:c6ad9e9c1d80… and creation 2026-10-28T20:55:24Z match the
+  pre-removal record exactly. Receipt: stage2-disk-reclamation.j3LbMU/node-pin-repull-verify.txt.
+  No build input changed; the reclaim verdict stands with this correction. Future reclaim scans
+  must include root Dockerfiles.
