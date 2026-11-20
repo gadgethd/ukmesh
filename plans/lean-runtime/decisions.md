@@ -3073,9 +3073,14 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   Facts coverage verified ready beforehand (covered_from 2026-11-10T23:04:44Z <= horizon-8d) so
   no backfill write occurred; fixture untouched (read-only probe).
 - Equivalence: ALL 16 normalized parts IDENTICAL for broad ('ukmesh') and observer
-  (15C00C48…CB8D) scopes — normalized sha256 a9eff528c0e2ba95… (broad) and 1c231b1bc0eb2baf…
-  (observer); normalization applies exactly computeChartsData's Number()/ISO conversions and
-  deterministic tie ordering. statsSummary.integration.test.ts deepEqual (string counts, ::text
+  (15C00C48…CB8D) scopes — canonical-key normalized sha256 89327e9679859ffe… (broad) and
+  38c110dead019d04… (observer), before == after in both scopes; normalization applies exactly
+  computeChartsData's Number()/ISO conversions and deterministic tie ordering. (The first
+  comparison.json digested raw JSON.stringify: jsonb returns object keys sorted by
+  length/bytewise rather than SELECT order, so before/after digests differed on key order
+  alone while every value matched. compare.mjs now canonicalizes keys recursively; the
+  superseded file is preserved as comparison-superseded-keyorder.json.)
+  statsSummary.integration.test.ts deepEqual (string counts, ::text
   timestamps, row order, observer alias scope) passes through the new consolidated region query.
 - Timing (warm fixture cache, serial concurrency=1): broad 18 queries/40,089 ms -> 7 queries/
   26,093 ms (-35%), max query 14,879 ms (region/reception); observer 18/10,880 -> 7/4,317 (-60%).
@@ -3114,7 +3119,8 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   five unreferenced superseded base pins (4 old golang, 1 old node; re-pullable/rebuildable).
 - Cache: docker builder prune -f removed ONLY unshared inactive records (the permitted
   category); after image removal freed 6.09 GB. Volumes: the 35 dangling volumes were all
-  anonymous (com.docker.volume.anonymous), created 2026-11-12..15 by removed test containers,
+  anonymous (com.docker.volume.anonymous), created 2026-11-12 (24), 2026-11-13 (3),
+  2026-11-14 (1) and 2026-11-19 01:40–05:42Z (7) by removed test containers,
   attached to NO container including stopped ones; each name+metadata recorded before removal;
   volume prune removed exactly that recorded set (59 -> 24 volumes, all 24 active; verified).
   No named/active/retained volume, no retained fixture, no browser install, no original store
@@ -3160,3 +3166,40 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   pre-removal record exactly. Receipt: stage2-disk-reclamation.j3LbMU/node-pin-repull-verify.txt.
   No build input changed; the reclaim verdict stands with this correction. Future reclaim scans
   must include root Dockerfiles.
+
+### Stage 2 independent review — verdict and resolutions
+
+- Independent subagent review of ec11ec6 / c89e6dc / f06d569 + evidence integrity:
+  PASS-WITH-ADVISORIES. No semantic divergence: migration 156 is access-path only
+  (predicate/column shape provably serves all three window queries; results byte-identical),
+  the chart consolidation survived expression-level scrutiny (privacy fences, windows,
+  GROUPING SETS, casts, 1:1 alias fan-out, laziness, abort cascade), and the parser repair
+  was re-simulated against the saved fixture (exactly the six genuine FATALs, full-byte digest).
+  Evidence independently re-verified, including a from-scratch re-normalization of all 16
+  chart parts in both scopes.
+- Resolved before the Stage 3 source freeze:
+  1. Parser hole (minor): non-PG failure lines after a SQL dump were skipped until the next
+     PG-prefixed record. Fix 369303e: PostgreSQL continuation lines are tab-indented, so the
+     skip is now bounded to tab-indented bodies wherever they appear (also fixes a capture
+     window opened mid-dump); every other line ends the echo and is scanned normally.
+     Verified all 510 continuation lines of the saved soak fixture are tab-indented; fixture
+     still yields exactly 6 failures at lines 1/87/173/259/345/431 with unchanged digest.
+     New regression pins: post-dump plain + structured failures, mid-dump window start,
+     record-shaped tab continuation, single-space severity, no-docker-prefix records,
+     HINT/CONTEXT/LOCATION skips, WARNING-with-'failed'. Qualification unit suite 230/230 OK.
+  2. Chart digest presentation (minor): canonical-key digests now match before == after
+     (broad 89327e9679859ffe…, observer 38c110dead019d04…); superseded comparison preserved.
+  3. Volume date claim (minor): corrected to 24×11-12, 3×11-13, 1×11-14, 7×11-19 (matches
+     dangling-volumes-inspect-before.txt exactly). Safety properties were already correct.
+  4. Migration coupling advisory: new unit test backend/src/db/messageWindowIndex.test.ts
+     pins the 156 predicate/columns to the literal filter shape of all three spam window
+     queries, so a future query change cannot silently orphan the index.
+- Accepted advisories (documented, no code change): CREATE INDEX IF NOT EXISTS skips chunk
+  creation if the root index exists (all 16 chunks verified present; single-transaction build
+  makes partial state unlikely); partial index overlaps packets_network_time_idx (cost-based
+  choice, write-amplification trade-off documented); maxResultRows now sees 1 row per
+  consolidated query with jsonb cardinality realistically bounded (25 buckets/8 days/IATA/
+  12 transport/10 prefixes); packet_types tie order pre-existing and normalization-handled;
+  PG_RECORD assumes the deployed '%m [%p] ' prefix (comment added; other prefixes fall back
+  to the ordinary scan). Concurrent-ingest proofs for spam + charts remain deferred to the
+  canonical Stage 3 soak (steady-runtime-logs + warm chart margin under 30 pkt/s ingest).
