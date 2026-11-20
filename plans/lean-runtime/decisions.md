@@ -3091,3 +3091,34 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   after binding, aggregate-switch call counts). New regression test asserts 4 packet scans +
   2 fact reads with reads OFF, zero legacy counts scans with reads ON, and single shared scans
   per group. Stats unit suites 40/40; full backend npm test result recorded on completion.
+
+## Stage 2 batch 4 disk reclamation — ownership-proven disposables only
+
+- Before: host free 10,169,892,864 B (9.47 GiB — BELOW the 10 GiB gate); docker 112 images
+  (19.28 GB, 6.46 GB unused), 539 build-cache records (12.97 GB), 59 volumes (41.42 GB,
+  419.1 MB unused). Evidence: plans/lean-runtime/qualification/stage2-disk-reclamation.j3LbMU
+  (docker-df-before.txt, host-free-before.bytes, removal-tags.txt, removal-ids.txt,
+  removal-digests-before.txt with full sha256 digests/sizes, dangling-volumes-before.txt +
+  inspect metadata, rmi/prune outputs, docker-df-after.txt, host-free-after.bytes).
+- Ownership checks before removal: every candidate had Containers=0 (docker system df -v);
+  no overlap with any running/stopped container image (programmatic cross-check); the active
+  pipeline image golang:1.27-bookworm 4fa7c968ba93 and ALL in-use images excluded. Referenced
+  digest pins KEPT: postgres@sha256:5db6dac2ef5d (test-worker-fixtures.sh),
+  eclipse-mosquitto@sha256:9cfdd46ad59f (bootstrap-mosquitto/restore-drill/test-mqtt-broker-fixture),
+  busybox@sha256:9532d8c39891 (backup/restore-drill). Tagged third-party tooling (alpine,
+  node:26, sqlc, ruff) kept. No decisions/handoff recovery references to removed tags.
+- Removed 75 images: superseded ukmesh diagnostic builds (d7-before/after, broker-persistence
+  v2/v3/v4 — builder script deleted, only stale .pyc remains; broker-session-accounting
+  prototypes, f1-backend/website, full-backend:mqtt-first/mqtt-final — profile namesake only,
+  no image-tag references; all ukmesh-rc-* revision builds; viewshed link-retention-test) and
+  five unreferenced superseded base pins (4 old golang, 1 old node; re-pullable/rebuildable).
+- Cache: docker builder prune -f removed ONLY unshared inactive records (the permitted
+  category); after image removal freed 6.09 GB. Volumes: the 35 dangling volumes were all
+  anonymous (com.docker.volume.anonymous), created 2026-11-12..15 by removed test containers,
+  attached to NO container including stopped ones; each name+metadata recorded before removal;
+  volume prune removed exactly that recorded set (59 -> 24 volumes, all 24 active; verified).
+  No named/active/retained volume, no retained fixture, no browser install, no original store
+  touched. No global system prune, no -a image prune.
+- After: host free 22,897,377,280 B (21.32 GiB, +11.85 GiB); images 37 (12.98 GB), cache 130
+  records (6.88 GB, 0 reclaimable), volumes 24/24 active. All 37 stack containers still Up.
+  Gate >=10 GiB now has >11 GiB headroom for Stage 3 fixture replay + soak + restoration.
