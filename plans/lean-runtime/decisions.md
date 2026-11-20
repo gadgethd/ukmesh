@@ -2892,3 +2892,32 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - spam repository.loadRecentMessages/countLogicalMessages/persistIncidents + analyzer.analyzeOnce heartbeat;
   databaseRuntime.queryPool abort path is shared by ALL analytics/oltp signal-carrying queries (changing the
   destroy-on-abort behavior would affect every caller, not just spam).
+
+## Stage 2 batch 2 design — spam window scan fetches every packet type (measured)
+
+- Role-faithful diagnostic: the canonical restore (access.sh) revokes database CONNECT on retained
+  fixtures, so diagnostics connect as the owning superuser and SET ROLE meshcore_worker; every
+  table/permission check then runs as the soak analytics pool did. No RLS exists on any involved
+  relation; worker table SELECT grants survive on the fixture. Planner options match production
+  (random_page_cost=4, effective_cache_size=512MB; server work_mem=10485kB, shared_buffers=128MB,
+  max_parallel_workers_per_gather=0). Zero fixture mutation for the plan probe.
+- EXPLAIN (ANALYZE, BUFFERS) of the exact STATEMENT-dump SQL with the failing soak window
+  (2026-11-18T09:06:39Z..2026-11-19T09:06:39Z, networks ukmesh/northeast/teesside, $4=8 $5=4 $6=10001):
+  mesh.packets is a TimescaleDB hypertable. The plan time-index-scans two chunks covering the window,
+  fetching ~292,787 heap rows (33,586 shared read blocks ~= 262 MiB) and heap-filtering to 326 type-5
+  rows (206,775 + 85,686 rows removed by filter). The remat anti-join and visibility One-Time Filter
+  are trivial (0 unresolved remat rows). Execution 2,176 ms cold; pg_stat_statements soak mean 1.84 s,
+  max 4.89 s vs the 5 s whole-pass budget -> heartbeat abort -> client.release(true) -> PG FATAL.
+- No existing index encodes (packet_type, time): the only type-5 partial index additionally requires
+  companion_sender IS NOT NULL, which the spam predicates do not guarantee. A query rewrite cannot
+  avoid the all-type window fetch; the structural fix is a retainable partial index (Stage 2 item 3
+  explicitly lists retainable indexes). Precedent: migrations 154/155 added read-model indexes with
+  SET LOCAL lock_timeout/statement_timeout; both stores' ledgers are at 155 and the canonical startup
+  runs tools/migrate.ts against the selected database, so one migration reaches originals and fixtures.
+- Fix: migration 156 creates mesh.packets (network, time DESC) WHERE packet_type = 5. Predicate kept
+  at packet_type only (not payload/visibility) so countLogicalMessages, which has no visibility fence,
+  uses the same index. Expected: window fetch falls from ~292,787 rows to the 326 type-5 rows.
+  Signature grouping/order, duplicate weighting, windows, visibility, privacy and cancellation are
+  untouched — the change is access path only. Before/after digests and paired timings on the retained
+  fixture follow; the index is created on the owned fixture as the owner role exactly as the migration
+  will create it canonically.
