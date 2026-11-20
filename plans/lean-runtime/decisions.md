@@ -2987,3 +2987,13 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Measured on the retained soak receipts: sample-db.log failure_lines 18 -> 6 (exactly the genuine
   FATALs at lines 88/262/436/610/784/960); backend.log stays 42 (real application failures retained).
   The repair follows the actual lost-client fix (migration 156), per the stage order.
+
+### CI rerun verdict — PR #259 green on unchanged head
+
+- Rerun of failed jobs on run 44666759322 (pull_request, head 2c687b88cff2) completed:
+  attempt 2 SUCCESS — Backend, Workers and Compose, Frontend, HopReach RF gates, Monitoring
+  configuration, Database Audit Tests, Secret scan all success. Combined with push run
+  44666753261 SUCCESS, Stage 1 CI is green on both event types at the final head. The
+  attempt-1 failure is confirmed as the documented teardown race, not a regression; the
+  minimal harness fix (await the in-flight refresh before DROP DATABASE FORCE) remains a
+  separate qualified change if pursued. Merges of PR #259 / CoreScope PR #2 stay user actions.
