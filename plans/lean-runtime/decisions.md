@@ -3122,3 +3122,29 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - After: host free 22,897,377,280 B (21.32 GiB, +11.85 GiB); images 37 (12.98 GB), cache 130
   records (6.88 GB, 0 reclaimable), volumes 24/24 active. All 37 stack containers still Up.
   Gate >=10 GiB now has >11 GiB headroom for Stage 3 fixture replay + soak + restoration.
+
+## Stage 2 batch 3 swap attribution — frozen variables, idle baseline, sampler ready
+
+- Evidence: plans/lean-runtime/qualification/stage2-swap-attribution.sDxFpW (swap_sampler.py,
+  idle-baseline.jsonl). Sampler reads cgroup v2 memory.current/swap.current/memory.stat
+  (anon, file, workingset_refault_anon/file, pgmajfault) + memory.pressure directly per owned
+  ukmesh-* container (37), plus /proc/vmstat rates (pswpin/pswpout/pgmajfault/pgscan_kswapd/
+  pgscan_direct) and meminfo; 5 s cadence, JSONL, no per-sample docker exec, read-only.
+- Frozen pressure variables (recorded, NOT modified): vm.swappiness=60, overcommit unchanged,
+  single swap file /swap.img 3.8G prio -2, no zram; EVERY owned container has memory.swap.max=0
+  (lean config) — container swap is structurally impossible under the frozen comparison.
+- Idle attribution (30-60 s, post-Stage-1/2 stack on originals): owned swap 0 MiB across all 37
+  containers; host swap used ~747 MiB is ENTIRELY outside owned cgroups. Process VmSwap sums
+  253.9 MiB over 92 host processes — top: AI harnesses (codex 56.2 + opencode 47.2 +
+  codex-code-mode 8.4 + opencode-pty 7.1 ≈ 119 MiB), dockerd 32.1, containerd 4.9,
+  docker-proxies, unattended-upgrades 9.2, fwupd 6.3. Remainder is swapped host shmem/tmpfs
+  (Shmem resident 301.6 MiB; /dev/shm itself only 32K used — private test cache already
+  released) with SwapCached 492.8 MiB overlap. Idle rates: pswpout 0/s, pswpin <=1.4/s,
+  majfault <=40/s decaying to ~1/s — no sustained churn at idle.
+- Consequence for the gates: the earlier soak's swap churn predates the frozen swap.max=0
+  limits and the Stage 1 allocation fix. Under the frozen config any Stage 3 swap traffic must
+  come from host-side harness overhead (probes, browser checks, docker exec) — the sampler
+  separates owned vs unattributed swap per sample so causality is provable, per the prompt's
+  "major faults alone do not identify swap causality". Job correlation (chart/spam/region/
+  graph/link timestamps from backend.log joined to sampler intervals) is the analysis step
+  during the canonical soak. Host-wide swap policy and unrelated processes stay untouched.
