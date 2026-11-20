@@ -2921,3 +2921,32 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   untouched — the change is access path only. Before/after digests and paired timings on the retained
   fixture follow; the index is created on the owned fixture as the owner role exactly as the migration
   will create it canonically.
+
+## Stage 2 batch 2 measured — partial type-5 index removes the spam budget breach
+
+- Migration 156_index_message_window.sql: CREATE INDEX IF NOT EXISTS idx_packets_message_time
+  ON mesh.packets (network, time DESC) WHERE packet_type = 5. IF NOT EXISTS follows migration 154
+  so a diagnostic pre-application on a retained fixture is idempotent with the canonical db-migrate
+  step (control.sh runs it against the selected database on every start; both ledgers were at 155).
+- Applied to the owned fixture lean_10x_20261118215522_9c0a37 as the owner role with the exact
+  migration SQL (BEGIN/SET LOCAL/COMMIT): build 2.17 s, propagated to all 16 chunks, total chunk
+  index footprint ~12.1 MiB for 618,909 type-5 rows. Evidence: stage2-diagnostics.Z7TQiL
+  (fixture-index-apply.sql/.txt, index-size.txt). No data rows touched.
+- Before (no index): exact soak-window EXPLAIN ANALYZE cold 2,176 ms, repeat 3,473 ms; 33,586-34,000
+  shared read blocks (~262 MiB) per pass — larger than the 128 MB buffer pool, so the scan evicts
+  itself and stays cold under the 300 s interval; ~292,787 heap rows fetched, 326 kept.
+  Soak pg_stat_statements mean 1.84 s / max 4.89 s vs the 5 s whole-pass budget.
+- After (index): same statement, same parameters, Execution Time 16.5 ms; 269 total blocks
+  (112 hit / 157 read); chunk scans 7.7 ms + 1.2 ms fetch exactly the 326 type-5 rows.
+  countLogicalMessages uses the same index: 1.1 ms, 254 hits. ~130-210x less execution and ~126x
+  fewer blocks; the 5 s budget now has three orders of magnitude of headroom even under load.
+- Result parity: 163 rows, byte-identical aligned output, sha256
+  f36e1798c34202578e6251ffe563c6197102a24365fdbd00e716f44c28bf2c0c before and after
+  (before-rows.txt / after-rows.txt). Signature grouping/order, duplicate weighting, windows,
+  visibility, privacy and cancellation untouched — access path only.
+- Suites: spam repository/privacy/analyzer/config + migrations unit tests 27/27 pass;
+  migrationBootstrap + legacyMoveReplay integration 5/5 pass on a fresh scratch database
+  (full 156-migration replay, 70 s bootstrap). PGlite spam SQL fixture not installed locally (opt-in).
+- Remaining for batch 2 closure: concurrent-ingest proof in a canonical fixture session (the query
+  is now 16 ms / 269 blocks, so the soak's spam passes must complete with zero lost clients), then
+  the runtime_logs.py multiline-SQL parser repair with regression cases and the saved input.
