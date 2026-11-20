@@ -2970,3 +2970,20 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Action: rerun the failed PR job on the unchanged head; keep both run IDs and the job log
   (/tmp/opencode/ci-backend-pr.log, private). If the rerun reproduces, the minimal harness fix belongs
   in a separate qualified commit, not silently in the Stage 1 pin PR.
+
+## Stage 2 batch 2 parser repair — multiline PostgreSQL SQL is data, not failures
+
+- runtime_logs.py: inspect_log now tracks PostgreSQL log-record state. A record prefix
+  (date time tz [pid] SEVERITY:) starts a new record; STATEMENT/QUERY/DETAIL/HINT/CONTEXT/LOCATION
+  records and their unprefix continuation lines are SQL/bind echoes and are skipped by the failure
+  scan. ERROR/FATAL/PANIC severity records remain failures; LOG/WARNING and every non-PG line keep
+  the previous scan. failure_line's per-line API is unchanged; skipped lines still feed the digest.
+- Regression: test_runtime_logs.py gains synthetic FATAL+multiline-STATEMENT, ERROR+DETAIL+STATEMENT,
+  dump-only, dump-then-new-ERROR and LOG cases, plus the saved real input
+  fixtures/runtime-logs/soak-spam-lost-clients.log.txt (exact 516-line excerpt of the retained soak
+  sample-db.log, named .log.txt because the repo ignores *.log: six FATAL records each followed by its logical_messages STATEMENT dump; synthetic
+  fixture data only, no credentials). 6/6 tests pass; test_qualification + test_soak_prepublication
+  85/85 pass.
+- Measured on the retained soak receipts: sample-db.log failure_lines 18 -> 6 (exactly the genuine
+  FATALs at lines 88/262/436/610/784/960); backend.log stays 42 (real application failures retained).
+  The repair follows the actual lost-client fix (migration 156), per the stage order.

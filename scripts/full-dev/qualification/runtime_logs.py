@@ -19,6 +19,20 @@ FAILURE = re.compile(
     re.IGNORECASE)
 EMPTY_FIELD = re.compile(r'\b(?:failed|failure|error|err)=(?:0|false|null|none)(?=\s|,|$)', re.IGNORECASE)
 ERROR_FIELD = re.compile(r'''\b(?:error|err)=(?:"([^"]*)"|'([^']*)'|(\S+))''', re.IGNORECASE)
+# A PostgreSQL log record carries its own timestamp, timezone, pid and severity.
+# STATEMENT/QUERY/DETAIL/HINT/CONTEXT/LOCATION records echo the failed SQL or its
+# bind values across continuation lines that have no record prefix; their text
+# is data, not a new failure. The severity record itself (ERROR/FATAL/PANIC)
+# remains the failure evidence.
+PG_RECORD = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ \S+ \[\d+\] ([A-Z]+\d*):')
+PG_DUMP_SEVERITIES = frozenset({'STATEMENT', 'QUERY', 'DETAIL', 'HINT', 'CONTEXT', 'LOCATION'})
+
+
+def pg_record_severity(line: str) -> str | None:
+    """Severity of a PostgreSQL log record, or None for any other line."""
+    body = line.split(' ', 1)[1] if re.match(r'^\d{4}-\d\d-\d\dT', line) else line
+    match = PG_RECORD.match(body)
+    return match.group(1) if match else None
 
 
 def failed_value(value) -> bool:
@@ -64,10 +78,21 @@ def inspect_log(path: Path) -> dict:
     checksum = hashlib.sha256()
     failures = 0
     examples = []
+    in_pg_dump = False
     with path.open('rb') as source:
         for number, line in enumerate(source, 1):
             checksum.update(line)
-            if failure_line(line.decode('utf8', errors='replace')):
+            text = line.decode('utf8', errors='replace')
+            severity = pg_record_severity(text)
+            if severity is not None:
+                # A new record ends any previous multiline dump. Dump records
+                # echo SQL/bind data; only their owning severity record counts.
+                in_pg_dump = severity in PG_DUMP_SEVERITIES
+                if in_pg_dump:
+                    continue
+            elif in_pg_dump:
+                continue
+            if failure_line(text):
                 failures += 1
                 if len(examples) < 20:
                     examples.append(number)
