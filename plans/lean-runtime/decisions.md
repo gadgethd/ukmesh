@@ -2950,3 +2950,23 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Remaining for batch 2 closure: concurrent-ingest proof in a canonical fixture session (the query
   is now 16 ms / 269 blocks, so the soak's spam passes must complete with zero lost clients), then
   the runtime_logs.py multiline-SQL parser repair with regression cases and the saved input.
+
+## Stage 1 CI split verdict on 2c687b8 — confirmed pre-existing test-harness flake
+
+- Watcher verdict: push run 44666753261 SUCCESS (all 7 jobs incl. Backend), pull_request run
+  44666759322 FAILURE — Backend job 136057910560..993, step 21 `npm run test:ingest-integration`,
+  single failing test `spam snapshots execute complete bounded SQL and retain verdicts on a
+  rejected refresh` (src/mqtt/spamSnapshot.integration.test.ts), error "terminating connection
+  due to administrator command". Same head 2c687b88 for both runs; the PR changes only the
+  CoreScope gitlink, handoff and receipts — no backend code — so this cannot be a regression
+  introduced by the PR.
+- Mechanism (CI service-container PG log): at 03:20:20.904 UTC the test's OWN teardown
+  `DROP DATABASE "meshcore_spam_10063_1795144819748" WITH (FORCE)` terminated connection [554]
+  one millisecond later, while a test query was still in flight. spamDetector.refreshSpamDetectorCaches
+  deduplicates through a module-global refreshInFlight and awaits Promise.all([established, identity]);
+  when the identity refresh rejects (the test's deliberate oversized-name rejection), Promise.all
+  settles without cancelling the established sibling, whose remaining fixture-pool work races the
+  t.after pool.end()/DROP DATABASE FORCE teardown. Timing-dependent: the push run passed the same step.
+- Action: rerun the failed PR job on the unchanged head; keep both run IDs and the job log
+  (/tmp/opencode/ci-backend-pr.log, private). If the rerun reproduces, the minimal harness fix belongs
+  in a separate qualified commit, not silently in the Stage 1 pin PR.
