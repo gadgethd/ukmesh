@@ -3053,3 +3053,41 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   only then run the real repository path read-only. Before = original 17 SQL texts verbatim
   (saved probe), after = real createStatsRepository.fetchChartsData, same pinned asOf, worker
   role via superuser SET ROLE, aggregates OFF.
+
+## Stage 2 batch 1 chart consolidation — measured before/after on the owned fixture
+
+- Implementation: four consolidated same-snapshot queries replace fifteen mesh.packets scans in
+  fetchChartsData (statsRepository.ts): fetchLegacyChartCounts (six switchable parts, one 7d scan,
+  LAZY — never started when aggregate reads serve them), fetchRadiosAndTotals (rh/rd/totals, one
+  7d src-alias scan), fetchPathHashParts (pc+widths, one 24h unnest), fetchRegionReceptionParts
+  (orSummary/orSeries/diversity/signal, one 7d rx-alias scan). Multibyte fact summary/trend and
+  the coverage check are unchanged (different table). Shadow path, fetchObserverRegionSummary
+  export, aggregate switches, abort cascade and pinned asOf unchanged.
+- Evidence: plans/lean-runtime/qualification/stage2-chart-consolidation.eDGS7E (private):
+  probe.mjs (pinned Date at fixture horizon 2026-11-19T09:39:05.726Z, generation 41, worker role
+  via superuser SET ROLE, planner rpc=4/ecs=512MB, aggregates OFF, STATS_DB_QUERY_CONCURRENCY=1),
+  before.json (original code from fresh worktree /tmp/opencode/chart-before-wt at f364035,
+  node_modules symlinked; budget raised to 600 s FOR BASELINE CAPTURE ONLY so the pre-fix rows
+  could be collected — the 60 s budget failure under load is the bug being fixed), after.json
+  (new code under the REAL 60 s budget / 120 s timeout), compare.mjs + comparison.json.
+  Facts coverage verified ready beforehand (covered_from 2026-11-10T23:04:44Z <= horizon-8d) so
+  no backfill write occurred; fixture untouched (read-only probe).
+- Equivalence: ALL 16 normalized parts IDENTICAL for broad ('ukmesh') and observer
+  (15C00C48…CB8D) scopes — normalized sha256 a9eff528c0e2ba95… (broad) and 1c231b1bc0eb2baf…
+  (observer); normalization applies exactly computeChartsData's Number()/ISO conversions and
+  deterministic tie ordering. statsSummary.integration.test.ts deepEqual (string counts, ::text
+  timestamps, row order, observer alias scope) passes through the new consolidated region query.
+- Timing (warm fixture cache, serial concurrency=1): broad 18 queries/40,089 ms -> 7 queries/
+  26,093 ms (-35%), max query 14,879 ms (region/reception); observer 18/10,880 -> 7/4,317 (-60%).
+  After breakdown: coverage 44 ms, radios+totals 2,557, paths 997, region/reception 14,879,
+  counts 2,645, fact summary 3,259, fact trend 1,708. The soak's cold+concurrent-ingest baseline
+  was 78 s total (budget failure at query #12); the consolidated path passes the real 60 s budget
+  warm with 34 s headroom. Concurrent-ingest proof follows in the canonical Stage 3 session.
+  If cold-soak margin proves thin, the recorded next lever is merging radios+totals into the
+  region/reception scan (both always-on 7d alias-join scans) — not raising limits.
+- Tests: statsRepository.test.ts fragments updated for the consolidated CTE structure
+  ('WITH prefix_counts' -> 'prefix_counts'); all semantic fences still asserted (no LIMIT 50000,
+  scoped network predicate, true percentile medians, top-10, alias canonicalization, no NOW()
+  after binding, aggregate-switch call counts). New regression test asserts 4 packet scans +
+  2 fact reads with reads OFF, zero legacy counts scans with reads ON, and single shared scans
+  per group. Stats unit suites 40/40; full backend npm test result recorded on completion.
