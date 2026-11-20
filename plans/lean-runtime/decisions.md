@@ -2997,3 +2997,59 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   attempt-1 failure is confirmed as the documented teardown race, not a regression; the
   minimal harness fix (await the in-flight refresh before DROP DATABASE FORCE) remains a
   separate qualified change if pursued. Merges of PR #259 / CoreScope PR #2 stay user actions.
+
+## Stage 2 batch 1 chart consolidation — couplings recorded before editing
+
+- Budget mechanics (statsRepository.ts 141-222): the 60 s STATS_QUERY_DURATION_BUDGET_MS is
+  per query() call and INCLUDES slot wait (startedAt before acquireQuerySlot). With
+  STATS_DB_QUERY_CONCURRENCY=1 all 17 Promise.all queries queue serially, so query N's
+  duration ≈ sum of executions 1..N; the 78 s total made query #12 exceed 60 s and abort
+  the cascade. Fix = reduce total serial execution, not raise limits.
+- Scan inventory (reads OFF): 15 mesh.packets scans + 2 multibyte_path_facts scans + coverage
+  check. Same-snapshot groups: (a) six switchable simple parts ph/pd/pt/hd/route/transport
+  (7d base, 24h subsets); (b) radios rh/rd + totals total_24h/total_7d/unique_radios_24h
+  (src alias LEFT JOIN); (c) pc + pathHashWidths (identical 24h path_hashes unnest base;
+  pc filters NULLIF(TRIM(h),'') and HAVING>1 LIMIT 10, widths counts ALL elements incl empty);
+  (d) orSummary + orSeries (7d rx regex scan) + observerDiversity (24h rx join) + signal (24h).
+- Privacy: packetsAlias ALWAYS emits publicPacketPrivacySql + network/test exclusions +
+  observer scope regardless of includePrivacy (networkFilters.ts 262-287); includePrivacy:false
+  only changes the unqualified `packets` string, which fetchObserverRegionSummary never uses
+  (it uses packetsAlias('p')). One scoped base per group preserves every fence.
+- Join fan-out: core.node_identity_aliases.source_node_id is PRIMARY KEY (migration 036) →
+  LEFT JOIN is 1:1; COUNT(*) totals over a joined base equal the original unjoined counts.
+- TZ: fixture and DEV sessions are UTC → date_trunc('hour'/'day') ≡ time_bucket('1 hour'/'1 day').
+  Consolidated SQL keeps each part's ORIGINAL bucket expression and ORDER BY anyway.
+- Ordering/casts: CTE counts stay bigint for ORDER BY (text casts only inside jsonb_build_object,
+  mirroring fetchLegacyAggregateChartParts); original tie-order non-determinism preserved
+  (pt ORDER BY count DESC only) — before/after comparison normalizes tie order.
+- Aggregate switch: the six parts remain individually served by aggregateReadPartsPromise when
+  reads ON; the consolidated legacy counts promise is LAZY (created only when a legacy fallback
+  is actually invoked) so reads ON never starts the legacy scan. Observer scope always legacy
+  (aggregatePartsPromise null when observer set) — unchanged.
+- Shadow path untouched: fetchLegacyAggregateChartParts / scheduleAggregateShadow /
+  compareAggregateShadowRows keep their current SQL and callers.
+- fetchObserverRegionSummary stays exported with identical SQL/output (public repository API;
+  statsService.test mocks it). fetchChartsData's region summary now comes from the consolidated
+  region query whose region_summary CTE replicates its exact expressions; equivalence proven by
+  statsSummary.integration.test.ts deepEqual (string counts, ::text timestamps, row order) and
+  fixture before/after digests.
+- Row shapes: jsonb parts (ISO timestamp strings, text counts) are the SAME shapes aggregate
+  reads already produce; every computeChartsData consumer verified Number()/fmt*()-safe
+  (statsService 271-445). orSummary keeps {iata,packets_24h,packets_7d,active_observers,
+  observers,last_packet_at} with text values and ORDER BY packets_7d DESC, iata ASC.
+- Abort/asOf: all consolidated queries go through chartQuery → bindChartSnapshot pins every
+  NOW() to one aggregateAsOf; any failure aborts chartAbort and cascades to siblings (unchanged).
+  Consolidated queries return 1 row « maxResultRows 100k. Budget source attribution logs
+  mesh.packets (first FROM).
+- Test couplings: statsRepository.test.ts 'WITH prefix_counts' fragment must become
+  'prefix_counts' (CTE no longer first); the observer-fallback fragment
+  "time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count" is preserved verbatim in the
+  consolidated counts SQL (downstream CTEs alias the base as p); percentile_cont p.rssi/p.snr
+  expressions preserved (signal CTE aliases base as p). All semantic assertions (no LIMIT 50000,
+  network filter present, true medians, LIMIT 10, alias canonicalization, no NOW() after binding,
+  aggregate switch counts) remain enforced.
+- Fixture probe safety: fetchChartsData may backfill multibyte facts (WRITE) if coverage missing;
+  probe must first verify multibyte_path_fact_state readiness at the pinned asOf/generation and
+  only then run the real repository path read-only. Before = original 17 SQL texts verbatim
+  (saved probe), after = real createStatsRepository.fetchChartsData, same pinned asOf, worker
+  role via superuser SET ROLE, aggregates OFF.
