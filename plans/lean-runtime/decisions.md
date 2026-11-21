@@ -3269,7 +3269,7 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Attribution: owned swap structurally zero (swap.max=0 on every owned container;
   per-sample owned-vs-host separation in swap-attribution.jsonl); churn whenever host
   available < ~600 MiB, quiet ≤1.3 MiB/s at ≥690 MiB even under full publication; host
-  3.9 GiB RAM with resident IDE-managed harnesses (codex cannot be stopped; opencode
+  3.8 GiB RAM (MemTotal 4,009,132 kB) with resident IDE-managed harnesses (codex cannot be stopped; opencode
   resident). No 40-minute 10× soak has ever passed swap_churn on this host (8 prior
   full-window resource receipts failed the same gate); short 1800-packet soaks passed at
   up to 2.799 GiB. Harness-free retry assessed:
@@ -3374,3 +3374,43 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Post-report documentation commit (this log) is the only tracked change; WORKING-STATE.md
   handoff replaced (private). Merges of PR #259 / PR #260 / CoreScope PR #2 remain user
   actions. Deferred by policy: real GPU / F2 / public tunnel / VPS.
+
+## Stage 3 supplementary review, receipt reconciliation and final corrections
+
+- The duplicate reviewer (relaunched while the first review session appeared lost to a
+  location shutdown) completed after the report seal and overwrote
+  independent-review-stage3.json — the redirect never reached it (subagent session
+  registry unstable across shutdowns). Reconciliation: the second review is preserved as
+  closure independent-review-stage3-r2.json (sha256 aa4897fe83f62b1b…); the first review
+  was restored BYTE-EXACT from the reviewer session's recorded write (opencode.db
+  session_message), sha256 d1fd929f2ce3a18a… re-verified equal to the independent_review
+  attachment in tests.json. The canonical report-mqtt-first.json is unchanged: 12/15,
+  zero binding errors.
+- Supplementary review r2: 20/20 checks PASS, verdict PASS-WITH-ADVISORIES — independently
+  re-hashed all 15 report digests + 65 manifest digests, recomputed resources from the raw
+  459 samples, verified soak functional numbers and restoration live (read-only docker).
+  Its four minor documentation discrepancies are dispositioned in report.md: the 552,289
+  prose label (already corrected), host-RAM rounding (corrected to 3.8 GiB / MemTotal
+  4,009,132 kB), a stale claim that report.md still held an unfilled review placeholder
+  (it was filled before the redaction audit; re-verified), and three pre-closure (Nov 13)
+  exited ukmesh-lookup-* diagnostic helpers (stopped, unreferenced by the inventory; noted
+  in the report's restoration section).
+- Three r2 completion-message claims were checked against receipts and do NOT stand:
+  (1) steady-runtime-logs.json has passed=false, not true — the report FAIL is consistent
+  and r2's own file agrees; (2) soak.json DOES itemize auxiliary traffic (auxiliaryTraffic:
+  40 cycles at 60 s, 240 auxiliary ACKs, per-app expected counts matching the 72,160
+  packet/ledger deltas = 72,000 ACK + 120 auxiliary transmissions + 40 status-only);
+  (3) the operations baseline was not "collected 2026-11-14": both sides were freshly
+  measured 2026-11-21 by the paired runner against the APPROVED sealed baseline source
+  2b4613a8 (pre-fix full-stack reference by design) and candidate d633ed0.
+- Host-RAM correction to the earlier Stage 3 entries: "3.9 GiB" was a rounding slip;
+  MemTotal 4,009,132 kB = 3.82 GiB (the prompt's ~3.8 GiB VM). No gate or attribution
+  impact.
+- Report-binding note: context.source_state() hashes tracked files INCLUDING this log, so
+  the post-report documentation commits (c7a7550 + this entry) intentionally move HEAD
+  past the collection seal d633ed0. The sealed report remains the canonical verdict and
+  must NOT be re-run at documentation HEADs (bindings would report source drift). Any
+  re-collection requires a new source freeze.
+- Final redaction scan of report.md after all edits: 0 hits (closure redaction-audit.json).
+  WORKING-STATE.md handoff updated (private). Merges of PR #259 / PR #260 / CoreScope PR #2
+  remain user actions; open criteria and deferred items unchanged.
