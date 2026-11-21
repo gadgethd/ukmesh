@@ -3203,3 +3203,174 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   PG_RECORD assumes the deployed '%m [%p] ' prefix (comment added; other prefixes fall back
   to the ordinary scan). Concurrent-ingest proofs for spam + charts remain deferred to the
   canonical Stage 3 soak (steady-runtime-logs + warm chart margin under 30 pkt/s ingest).
+
+## Stage 3 source freeze and final-source re-qualification (seal d633ed0)
+
+- Seal frozen at d633ed091bb83786a546911b553f180d7a4b1f6e (branch ukmesh/lean-load-fixes,
+  pushed; PR #260 base ukmesh-dev; PR #259 head 2c687b88; CoreScope fork PR #2, pin b1ffa003).
+  No tracked commits or edits during evidence collection; decisions logged in the git-ignored
+  plan dir until the report seal. Closure run:
+  plans/lean-runtime/qualification/mqtt-first-closure.uJSuz8 (private).
+- Re-qualification on the final source before collection: backend npm test 1151 tests
+  (1131 pass / 20 opt-in real-SQL skips / 0 fail); required real-SQL integration 1/1
+  (statsSummary) + migration-band 9/9 on owned disposable DBs (dropped afterwards);
+  qualification Python suite 230/230; parser regression 7/7; CoreScope Go suites green at
+  pin b1ffa003 with rebuilt binary sha256 9b0e72e299ba5915… equal to the Stage 1 green ELF
+  chain (1HN7hc). Receipts: stage3-go-suites.ykM7Vq, closure tests-evidence/.
+- Canonical rebuild + start green on the seal: backend image
+  sha256:b27e97b998645cbaa63e8b4991e52eeb5f85ccb09709b436c986bb8bc979f7e3 (label d633ed0),
+  app c94b0a371511, website a420ac128ae6, website-dev 66a4b7e1569d; migration 156 applied.
+- CI on the seal fully green: push run 44678364865 + PR run 44678417164, all 7 jobs SUCCESS
+  on both events (incl. Workers-and-Compose operator suite and HopReach mock-RF gates).
+  Receipt: closure tests-evidence/ci-runs.json. Real GPU / F2 / public tunnel / VPS remain
+  deferred by policy.
+- Frontend battery attempt 2 on the final revision: browser contracts 18/18, basemap 6,
+  Lighthouse failures [], 30-min production soak (heap growth 0.54% ≤ 10%), both production
+  builds exit 0, bench:map p95 ≈16.7 ms. bench:website attempt 1 failed unguarded
+  (refreshSampleRecent would write the synthetic overlay into an arbitrary DB); failure
+  retained, rerun later inside the guarded sample-proofs session (below).
+
+## Stage 3 soak fixture selection — attempt 1 OOM, clone probe, ec16a1 chosen
+
+- Official soak attempt 1 on 10× fixture 20261118215522_9c0a37 (session soak-82xcw138):
+  CoreScope cgroup OOM at ~594k ingested transmissions under the 512 MiB web ceiling
+  (growth ~1.17–1.29 KiB/tx; startup ~402 MiB at 480k; OOM threshold ~595–600k).
+  Canonical one-time 640 MiB recovery (recovery-only limit, never counts toward acceptance)
+  restored originals through the canonical switch; CoreScope replaced at 512 MiB on the
+  original directory. Fixture polluted to 605,365 tx — retained intact as reads evidence,
+  unusable for further timed work (startup now OOMs at 512 MiB). Failed receipts archived
+  unmodified: closure soak-attempt1-diagnosis/.
+- Full 40-minute validation probe on a disposable clone (20261120091333_4e9b05) of retry
+  fixture 20261114013258_ec16a1 (480,129 tx at start): CoreScope peak 491.9 MiB, 0 OOM.
+  Probe-only failures root-caused: 639 PG "out of background workers" (7th TimescaleDB
+  database vs 16-slot pool — clone artifact; official run kept the 6-database shape, 0
+  lines) and 609 pressure-burst best-effort timeouts. Analysis:
+  stage3-soak-probe.96FjW6/probe-analysis.md. Clone disposed with ownership verification
+  (0 mounts, targets original, 3 DBs dropped WITH FORCE): plan-dir clone-disposal-record.json.
+  600-s idle observation confirmed 0 new warnings and job rescheduling before the official run.
+
+## Stage 3 official soak (attempt 2, ec16a1) — functional core green, host-pressure gates open
+
+- Session soak-0qbnebx3 on ec16a1 (552,249 tx after). Functional core ALL GREEN:
+  72,000 QoS1 ACKs at 30/s; acknowledgedMs 2,400,099 (exactly 40 min); warmup 154 ms;
+  WebSocket 72,000/72,000 delivered, 0 missing, authenticated before publication;
+  drain 15,832 ms ≤ 120 s; isolated native hash-audit 0 mismatches ≤ 30 s;
+  failures/badOutcomes/cacheViolations empty; 8 warmup reads HTTP 200; CoreScope peak
+  485.2 MiB < 512 MiB, 0 OOMs/restarts; runtime working memory peak 2.737 GiB ≤ 3.0 GiB;
+  available-memory headroom gate passed; disk min 20.36 GiB ≥ 10 GiB; full resident
+  coverage; owned-container swap 0 in all 660 samples (frozen swap.max=0); companion
+  commits 72,000 with every app-specific typed persistence check passed.
+- Failed gates ONLY host-pressure: swap_growth 204.1 MiB > 128 MiB; swap_churn >1 MiB/s
+  sustained ≥60 s in low-available minutes; logs_passed — 80 backend PATH_RESOLVE_TIMEOUT
+  lines ALL in the 15:43 minute, the run-minimum host available memory (342 MiB).
+  Mechanism: backend/src/path-beta/workerPool.ts (2 threads, 15 s deadline,
+  interactive-first scheduling starves best-effort slow-mode finalizes under pressure);
+  zero functional impact — all 72,000 packets committed, delivered and audited.
+- Attribution: owned swap structurally zero (swap.max=0 on every owned container;
+  per-sample owned-vs-host separation in swap-attribution.jsonl); churn whenever host
+  available < ~600 MiB, quiet ≤1.3 MiB/s at ≥690 MiB even under full publication; host
+  3.9 GiB RAM with resident IDE-managed harnesses (codex cannot be stopped; opencode
+  resident). No 40-minute 10× soak has ever passed swap_churn on this host (8 prior
+  full-window resource receipts failed the same gate); short 1800-packet soaks passed at
+  up to 2.799 GiB. Harness-free retry assessed:
+  projected available ~620 MiB vs ~650–690 MiB quiet threshold — not assured.
+- Disposition: proceeding under the user's standing pre-acceptance "if the official soak
+  fails the gate, report it as an open criterion with attribution evidence" (logged in
+  preflight-and-plan.md; the disposition question was aborted twice by location shutdowns;
+  user may redirect). Diagnosis: closure soak-attempt2-diagnosis.md.
+
+## Stage 3 access retry — beacon maintenance scheduler first-tick interval
+
+- Access attempt 1 failed one observation check: beacon_maint sessions absent ~20 s after
+  beacon start. Cause: pgxpool lazy; the background Scheduler's first tick is a FULL
+  interval away (sweep 30 s, CMI/packet-sites 5 min) and BEACON_EXTERNAL_MIGRATIONS=1 opens
+  no boot maintenance connection. All 60+ privilege checks passed. Failed receipts
+  archived: closure access-attempt1-diagnosis/.
+- Retry followed the prior-closure mqtt-final pattern: canonical switch to ec16a1 + start,
+  6-minute maintenance window (4 idle maint sessions observed), canonical access 62/62 +
+  work-smoke PASSED in the same window on the soak targets, canonical restore + inventory.
+  No script or config change.
+
+## Stage 3 operations 10× retry — 9c0a37 cannot start within the 512 MiB acceptance limit
+
+- Operations 10× attempt 1 on 9c0a37 failed at canonical start: CoreScope exit 137 during
+  the health wait — startup load of 605,365 transmissions exceeds the 512 MiB ceiling
+  (same OOM threshold as soak attempt 1; docker event buffer flushed by healthchecks,
+  attribution via the growth model + read-only counts confirming the store unchanged).
+  Archived: closure operations-10x-attempt1-diagnosis/.
+- Retried on retained ec16a1 (552,249 tx; starts and runs ≤512 MiB; equals the qualified
+  soak targets). Authority: report.py binds ONE consistent token per scale WITHIN
+  other-operations.json only (no cross-phase equality with reads); the prompt lists ec16a1
+  as the other retained 10× fixture. Paired operations PASSED at both scales
+  (1× 7e7e37 + 10× ec16a1): 8/8 checks, exact data parity, worst regression +6.77% ≤ 10%,
+  max 1326.7 ms ≪ 30 s deadline.
+
+## Stage 3 reads, parity, backups, guarded sample proofs, recovery, interfaces, projection
+
+- Reads 1× attempt 1 FAILED (environment, not source; session reads-mqgzspbg): Beacon had
+  run 21 h on originals; its log reached 9.7 MB / ~4 s read, beyond startup_readiness's
+  2 s / 8 MiB probe bound → probe timeout every readiness cycle → fixture start exit 2.
+  Canonical recovery without force-edits: dev-all.sh restart beacon (fresh log epoch) →
+  start (pending intent resumed) → canonical restore, inventory 43/43. Failed receipt +
+  recovery receipt preserved in closure fixture-sessions/reads-mqgzspbg/; diagnosis in
+  plan-dir reads-attempt1-diagnosis/. Attempt 2 PASSED. Follow-up candidates NOT in this
+  seal: readiness Beacon-log probe bound vs long-lived containers; control.sh rg-absent
+  guard (rg process-substitution filter fails silently when ripgrep is absent).
+- Backups: 4 original stores verified PASSED. Reads (mqtt-first native): 3 matched pairs
+  per scale PASSED (1× 7e7e37, 10× 9c0a37), C1+C8, warm + cache-miss, companion reads;
+  C8 p95 within 100 ms / 250 ms. Parity 1× PASSED: 140 lookup cases, path graph
+  5,177 nodes / 27,175 links, seal unchanged.
+- Guarded sample-proofs session sample-proofs-ii8l24yx (owned sample 20261114011231_24039e):
+  maintenance-152 native provenance regenerated on final backend image b27e97b99864…
+  (superseded provenance/receipt preserved; STATE = plans/lean-runtime per common.py);
+  CoreScope public PG 5/5 + RAM 3/3 proofs at the closure root with MQTT/durable + Redis
+  ownership self-restored; bench:website PASSED (3 runs, 30 measurements, exactly 50
+  synthetic recent-v1 overlay rows written ONLY to the owned sample DB, 1,333 → 1,383
+  packets). CoreScope mode=mqtt restored; evidence copied into tests-evidence (manifest
+  65 entries, digest-bound).
+- Recovery 1× (7e7e37, session recovery-vxtrr8m2 → closure recovery-0939b6c7): 15/15
+  REQUIRED_CHECKS PASSED. Interfaces (1× 7e7e37, guarded session interfaces-p9i8e6mx →
+  closure interfaces-8ue93zwc): 9/9 PASSED. Core-projection verify on originals: 4/4 PASSED.
+
+## Stage 3 final restoration, report verdict and independent review
+
+- Final restoration verified: inventory 43/43 on originals (meshcore, meshcore_owner_auth,
+  beacon_dev + original CoreScope directory); CoreScope web limit back at 512 MiB
+  (536,870,912 bytes); mode mqtt, durable ingest; tunnel off; normal Redis settings
+  restored; every fixture session ended restored on originals with passing 43/43
+  inventories (12/14 via session restore; the 2 documented failed attempts via canonical
+  recovery receipts);
+  no diagnostic/clone/recovery containers remain; 13 ukmesh + 9 beacon DBs all originals
+  or retained fixtures. Retained fixtures intact: 7e7e37, 9c0a37 (polluted, reads
+  evidence), ec16a1 (soak fixture), 24039e sample, fa041a. Four verified original backups
+  retained.
+- tests.json assembled digest-bound from tests-evidence/manifest.json (12 checks +
+  remote_CI top-level, context-bound on originals via phase_context). Canonical report:
+  scripts/qualify-full-stack.sh report --run <closure> --acceptance-profile mqtt-first →
+  12/15 PASS; failed phases exactly resources, soak, steady-runtime-logs = the
+  pre-accepted open criteria (host swap churn/growth + pressure-burst best-effort
+  timeouts); no binding errors. Advisory (non-gating in mqtt-first): fixed-demand-80rps
+  not collected; mixed-read latency failed under the same host pressure.
+- Independent Stage 3 subagent review: VERIFIED — all 11 check areas pass on independent
+  read-only recomputation (report.py validators re-run as pure functions reproduce 12/15
+  exactly; resources.evaluate() recomputed byte-identical from the raw 459 samples; all
+  65 manifest + 31 tests-evidence digests verified; live maintenance_proof() revalidation
+  and restoration checks pass; seal intact). The session was temporarily unreachable after
+  a location shutdown and appeared lost; it completed on its own (a relaunched duplicate
+  was redirected/lost — no second receipt). Five NON-BLOCKING findings, all incorporated:
+  (1) attribution sampler froze container IDs pre-switch — 12 recreated containers read
+  None after ~15:11; owned-swap-zero during the soak rests on the official resources.jsonl
+  (full coverage, swap 0 + swap.max 0 in all 459 samples); attribution sound. (2) Prose
+  label 552,289 = packets; actual transmissions 552,249 — dated correction appended to
+  soak-attempt2-diagnosis.md, receipts untouched. (3) Prior full-window swap_churn
+  failures number 8, not 7 — corrected. (4) independent_review attachment — now attached
+  to tests.json {path, sha256} and the canonical report re-run: UNCHANGED 12/15, zero
+  binding errors. (5) Advisory mixed-read feed p95 319.3 ms — recorded. Review receipt:
+  closure independent-review-stage3.json. Redaction scan of the final report against
+  known environment secret values: 0 hits (closure redaction-audit.json).
+- Qualification is NOT called complete: the canonical report and required checks do not
+  all pass together — the three host-pressure phases remain open criteria under the
+  standing pre-acceptance. Functional qualification on the sealed revision is green.
+- Post-report documentation commit (this log) is the only tracked change; WORKING-STATE.md
+  handoff replaced (private). Merges of PR #259 / PR #260 / CoreScope PR #2 remain user
+  actions. Deferred by policy: real GPU / F2 / public tunnel / VPS.
