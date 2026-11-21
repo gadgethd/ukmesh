@@ -19,6 +19,27 @@ FAILURE = re.compile(
     re.IGNORECASE)
 EMPTY_FIELD = re.compile(r'\b(?:failed|failure|error|err)=(?:0|false|null|none)(?=\s|,|$)', re.IGNORECASE)
 ERROR_FIELD = re.compile(r'''\b(?:error|err)=(?:"([^"]*)"|'([^']*)'|(\S+))''', re.IGNORECASE)
+# A PostgreSQL log record carries its own timestamp, timezone, pid and severity.
+# STATEMENT/QUERY/DETAIL/HINT/CONTEXT/LOCATION records echo the failed SQL or its
+# bind values across continuation lines that have no record prefix; their text
+# is data, not a new failure. The severity record itself (ERROR/FATAL/PANIC)
+# remains the failure evidence.
+# PG_RECORD assumes the deployed log_line_prefix '%m [%p] ' (fractional-second
+# timestamp, pid, severity directly before the colon). A different prefix would
+# fall back to the ordinary message scan rather than misclassify records.
+PG_RECORD = re.compile(r'^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d\.\d+ \S+ \[\d+\] ([A-Z]+\d*):')
+PG_DUMP_SEVERITIES = frozenset({'STATEMENT', 'QUERY', 'DETAIL', 'HINT', 'CONTEXT', 'LOCATION'})
+
+
+def log_body(line: str) -> str:
+    """The line without the docker --timestamps prefix, when present."""
+    return line.split(' ', 1)[1] if re.match(r'^\d{4}-\d\d-\d\dT', line) else line
+
+
+def pg_record_severity(line: str) -> str | None:
+    """Severity of a PostgreSQL log record, or None for any other line."""
+    match = PG_RECORD.match(log_body(line))
+    return match.group(1) if match else None
 
 
 def failed_value(value) -> bool:
@@ -43,7 +64,7 @@ def failed_value(value) -> bool:
 def failure_line(line: str) -> bool:
     # Docker prepends its timestamp. Parse structured fields before scanning
     # messages so false/null counters do not hide quoted failure messages.
-    body = line.split(' ', 1)[1] if re.match(r'^\d{4}-\d\d-\d\dT', line) else line
+    body = log_body(line)
     try:
         return failed_value(json.loads(body))
     except (ValueError, TypeError):
@@ -67,7 +88,20 @@ def inspect_log(path: Path) -> dict:
     with path.open('rb') as source:
         for number, line in enumerate(source, 1):
             checksum.update(line)
-            if failure_line(line.decode('utf8', errors='replace')):
+            text = line.decode('utf8', errors='replace')
+            severity = pg_record_severity(text)
+            if severity in PG_DUMP_SEVERITIES:
+                # Dump records echo SQL/bind data; only their owning severity
+                # record counts.
+                continue
+            if severity is None and log_body(text).startswith('\t'):
+                # PostgreSQL continuation lines are tab-indented. Skip them
+                # wherever they appear: inside a dump, and when the capture
+                # window opened mid-dump (leading orphaned continuations).
+                # Any other line ends the echo and is scanned normally, so a
+                # non-PostgreSQL failure right after a dump stays visible.
+                continue
+            if failure_line(text):
                 failures += 1
                 if len(examples) < 20:
                     examples.append(number)

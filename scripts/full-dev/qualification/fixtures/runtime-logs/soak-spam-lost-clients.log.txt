@@ -1,0 +1,516 @@
+2026-11-19T09:06:39.785605000Z 2026-11-19 09:06:39.771 UTC [835438] FATAL:  connection to client lost
+2026-11-19T09:06:39.785646000Z 2026-11-19 09:06:39.771 UTC [835438] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:06:39.785666000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:06:39.785784000Z 	          p.packet_hash,
+2026-11-19T09:06:39.785806000Z 	          p.network,
+2026-11-19T09:06:39.786485000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:06:39.786517000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:06:39.786580000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:06:39.786631000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:06:39.786654000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:06:39.786675000Z 	          p.time                               AS observed_at
+2026-11-19T09:06:39.786722000Z 	       FROM mesh.packets p
+2026-11-19T09:06:39.786753000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:06:39.787643000Z 	         AND p.time >= $1
+2026-11-19T09:06:39.787678000Z 	         AND p.time < $2
+2026-11-19T09:06:39.787702000Z 	         AND p.network = ANY($3)
+2026-11-19T09:06:39.787723000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:06:39.787746000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:06:39.787769000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:06:39.788037000Z 	         AND (
+2026-11-19T09:06:39.788090000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:06:39.788122000Z 	    AND EXISTS (
+2026-11-19T09:06:39.788157000Z 	    SELECT 1
+2026-11-19T09:06:39.788205000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:06:39.788244000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:06:39.788277000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:06:39.788455000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:06:39.788507000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:06:39.788542000Z 	  )
+2026-11-19T09:06:39.788579000Z 	    AND NOT EXISTS (
+2026-11-19T09:06:39.788611000Z 	      SELECT 1
+2026-11-19T09:06:39.788646000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:06:39.788683000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:06:39.788715000Z 	        AND (
+2026-11-19T09:06:39.788751000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:06:39.788783000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:06:39.788814000Z 	          OR (
+2026-11-19T09:06:39.788849000Z 	            (p.network = remat.network
+2026-11-19T09:06:39.788886000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:06:39.788918000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:06:39.788965000Z 	            AND EXISTS (
+2026-11-19T09:06:39.788998000Z 	              SELECT 1
+2026-11-19T09:06:39.789029000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:06:39.789071000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:06:39.789298000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:06:39.789368000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:06:39.789426000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:06:39.789469000Z 	              )
+2026-11-19T09:06:39.789512000Z 	            )
+2026-11-19T09:06:39.789550000Z 	          )
+2026-11-19T09:06:39.789586000Z 	        )
+2026-11-19T09:06:39.789626000Z 	    )
+2026-11-19T09:06:39.789661000Z 	  )
+2026-11-19T09:06:39.789700000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:06:39.789741000Z 	     ),
+2026-11-19T09:06:39.789776000Z 	     signature_keys AS (
+2026-11-19T09:06:39.789813000Z 	       SELECT logical_messages.*,
+2026-11-19T09:06:39.789851000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:06:39.789886000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:06:39.789921000Z 	         FROM logical_messages
+2026-11-19T09:06:39.789958000Z 	     ),
+2026-11-19T09:06:39.789998000Z 	     signature_stats AS (
+2026-11-19T09:06:39.790035000Z 	       SELECT network,
+2026-11-19T09:06:39.790072000Z 	              signature,
+2026-11-19T09:06:39.790110000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:06:39.790149000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:06:39.790197000Z 	         FROM signature_keys
+2026-11-19T09:06:39.790235000Z 	        GROUP BY network, signature
+2026-11-19T09:06:39.790273000Z 	     ),
+2026-11-19T09:06:39.790310000Z 	     signature_ranked AS (
+2026-11-19T09:06:39.790350000Z 	       SELECT signature_keys.*,
+2026-11-19T09:06:39.790402000Z 	              signature_stats.signature_count,
+2026-11-19T09:06:39.790439000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:06:39.790483000Z 	         FROM signature_keys
+2026-11-19T09:06:39.790522000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:06:39.790559000Z 	     )
+2026-11-19T09:06:39.790596000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:06:39.792323000Z 	       FROM signature_ranked
+2026-11-19T09:06:39.792414000Z 	      ORDER BY (
+2026-11-19T09:06:39.792514000Z 	                 signature_count >= $4
+2026-11-19T09:06:39.792562000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:06:39.792654000Z 	               ) DESC,
+2026-11-19T09:06:39.792696000Z 	               signature_count DESC,
+2026-11-19T09:06:39.792760000Z 	               observed_at DESC,
+2026-11-19T09:06:39.792809000Z 	               packet_hash
+2026-11-19T09:06:39.792882000Z 	      LIMIT $6
+2026-11-19T09:11:44.341511000Z 2026-11-19 09:11:44.327 UTC [836950] FATAL:  connection to client lost
+2026-11-19T09:11:44.341538000Z 2026-11-19 09:11:44.327 UTC [836950] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:11:44.341559000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:11:44.341599000Z 	          p.packet_hash,
+2026-11-19T09:11:44.341622000Z 	          p.network,
+2026-11-19T09:11:44.341655000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:11:44.341675000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:11:44.341698000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:11:44.341730000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:11:44.341751000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:11:44.341773000Z 	          p.time                               AS observed_at
+2026-11-19T09:11:44.341797000Z 	       FROM mesh.packets p
+2026-11-19T09:11:44.341839000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:11:44.342144000Z 	         AND p.time >= $1
+2026-11-19T09:11:44.342263000Z 	         AND p.time < $2
+2026-11-19T09:11:44.342295000Z 	         AND p.network = ANY($3)
+2026-11-19T09:11:44.342345000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:11:44.342540000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:11:44.342565000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:11:44.342596000Z 	         AND (
+2026-11-19T09:11:44.342620000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:11:44.342678000Z 	    AND EXISTS (
+2026-11-19T09:11:44.342705000Z 	    SELECT 1
+2026-11-19T09:11:44.342724000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:11:44.342745000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:11:44.342766000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:11:44.342822000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:11:44.342862000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:11:44.342889000Z 	  )
+2026-11-19T09:11:44.342932000Z 	    AND NOT EXISTS (
+2026-11-19T09:11:44.342958000Z 	      SELECT 1
+2026-11-19T09:11:44.342979000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:11:44.343004000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:11:44.343349000Z 	        AND (
+2026-11-19T09:11:44.343408000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:11:44.343446000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:11:44.343638000Z 	          OR (
+2026-11-19T09:11:44.343680000Z 	            (p.network = remat.network
+2026-11-19T09:11:44.343893000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:11:44.343973000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:11:44.344011000Z 	            AND EXISTS (
+2026-11-19T09:11:44.344049000Z 	              SELECT 1
+2026-11-19T09:11:44.344083000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:11:44.344126000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:11:44.344166000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:11:44.344215000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:11:44.344541000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:11:44.344575000Z 	              )
+2026-11-19T09:11:44.344604000Z 	            )
+2026-11-19T09:11:44.344641000Z 	          )
+2026-11-19T09:11:44.344813000Z 	        )
+2026-11-19T09:11:44.345141000Z 	    )
+2026-11-19T09:11:44.345200000Z 	  )
+2026-11-19T09:11:44.345577000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:11:44.345807000Z 	     ),
+2026-11-19T09:11:44.345873000Z 	     signature_keys AS (
+2026-11-19T09:11:44.345921000Z 	       SELECT logical_messages.*,
+2026-11-19T09:11:44.345966000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:11:44.346010000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:11:44.346053000Z 	         FROM logical_messages
+2026-11-19T09:11:44.346094000Z 	     ),
+2026-11-19T09:11:44.346134000Z 	     signature_stats AS (
+2026-11-19T09:11:44.346418000Z 	       SELECT network,
+2026-11-19T09:11:44.346457000Z 	              signature,
+2026-11-19T09:11:44.346485000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:11:44.346511000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:11:44.346547000Z 	         FROM signature_keys
+2026-11-19T09:11:44.346764000Z 	        GROUP BY network, signature
+2026-11-19T09:11:44.346812000Z 	     ),
+2026-11-19T09:11:44.346877000Z 	     signature_ranked AS (
+2026-11-19T09:11:44.346914000Z 	       SELECT signature_keys.*,
+2026-11-19T09:11:44.347359000Z 	              signature_stats.signature_count,
+2026-11-19T09:11:44.347426000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:11:44.347786000Z 	         FROM signature_keys
+2026-11-19T09:11:44.348148000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:11:44.348360000Z 	     )
+2026-11-19T09:11:44.348445000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:11:44.348494000Z 	       FROM signature_ranked
+2026-11-19T09:11:44.348539000Z 	      ORDER BY (
+2026-11-19T09:11:44.348735000Z 	                 signature_count >= $4
+2026-11-19T09:11:44.348764000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:11:44.348794000Z 	               ) DESC,
+2026-11-19T09:11:44.348873000Z 	               signature_count DESC,
+2026-11-19T09:11:44.348916000Z 	               observed_at DESC,
+2026-11-19T09:11:44.348964000Z 	               packet_hash
+2026-11-19T09:11:44.349003000Z 	      LIMIT $6
+2026-11-19T09:16:49.544979000Z 2026-11-19 09:16:49.522 UTC [838453] FATAL:  connection to client lost
+2026-11-19T09:16:49.545010000Z 2026-11-19 09:16:49.522 UTC [838453] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:16:49.545044000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:16:49.546305000Z 	          p.packet_hash,
+2026-11-19T09:16:49.547101000Z 	          p.network,
+2026-11-19T09:16:49.547143000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:16:49.547180000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:16:49.547214000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:16:49.547242000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:16:49.547275000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:16:49.547322000Z 	          p.time                               AS observed_at
+2026-11-19T09:16:49.547358000Z 	       FROM mesh.packets p
+2026-11-19T09:16:49.547394000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:16:49.547425000Z 	         AND p.time >= $1
+2026-11-19T09:16:49.547618000Z 	         AND p.time < $2
+2026-11-19T09:16:49.547648000Z 	         AND p.network = ANY($3)
+2026-11-19T09:16:49.547680000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:16:49.547837000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:16:49.547873000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:16:49.547911000Z 	         AND (
+2026-11-19T09:16:49.547946000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:16:49.547974000Z 	    AND EXISTS (
+2026-11-19T09:16:49.548010000Z 	    SELECT 1
+2026-11-19T09:16:49.548050000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:16:49.548081000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:16:49.548116000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:16:49.550038000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:16:49.550443000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:16:49.550659000Z 	  )
+2026-11-19T09:16:49.550697000Z 	    AND NOT EXISTS (
+2026-11-19T09:16:49.551173000Z 	      SELECT 1
+2026-11-19T09:16:49.553844000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:16:49.554587000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:16:49.554632000Z 	        AND (
+2026-11-19T09:16:49.555106000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:16:49.555163000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:16:49.555255000Z 	          OR (
+2026-11-19T09:16:49.555582000Z 	            (p.network = remat.network
+2026-11-19T09:16:49.555612000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:16:49.555678000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:16:49.555713000Z 	            AND EXISTS (
+2026-11-19T09:16:49.555744000Z 	              SELECT 1
+2026-11-19T09:16:49.555791000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:16:49.557572000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:16:49.557937000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:16:49.558185000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:16:49.558227000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:16:49.559946000Z 	              )
+2026-11-19T09:16:49.560075000Z 	            )
+2026-11-19T09:16:49.560121000Z 	          )
+2026-11-19T09:16:49.560151000Z 	        )
+2026-11-19T09:16:49.560345000Z 	    )
+2026-11-19T09:16:49.560393000Z 	  )
+2026-11-19T09:16:49.560426000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:16:49.560907000Z 	     ),
+2026-11-19T09:16:49.560941000Z 	     signature_keys AS (
+2026-11-19T09:16:49.560964000Z 	       SELECT logical_messages.*,
+2026-11-19T09:16:49.560984000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:16:49.561030000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:16:49.561059000Z 	         FROM logical_messages
+2026-11-19T09:16:49.561547000Z 	     ),
+2026-11-19T09:16:49.561592000Z 	     signature_stats AS (
+2026-11-19T09:16:49.561630000Z 	       SELECT network,
+2026-11-19T09:16:49.561699000Z 	              signature,
+2026-11-19T09:16:49.561840000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:16:49.561908000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:16:49.561937000Z 	         FROM signature_keys
+2026-11-19T09:16:49.562012000Z 	        GROUP BY network, signature
+2026-11-19T09:16:49.562041000Z 	     ),
+2026-11-19T09:16:49.562109000Z 	     signature_ranked AS (
+2026-11-19T09:16:49.563596000Z 	       SELECT signature_keys.*,
+2026-11-19T09:16:49.563743000Z 	              signature_stats.signature_count,
+2026-11-19T09:16:49.563774000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:16:49.563945000Z 	         FROM signature_keys
+2026-11-19T09:16:49.564030000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:16:49.564155000Z 	     )
+2026-11-19T09:16:49.564746000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:16:49.564797000Z 	       FROM signature_ranked
+2026-11-19T09:16:49.564831000Z 	      ORDER BY (
+2026-11-19T09:16:49.564899000Z 	                 signature_count >= $4
+2026-11-19T09:16:49.565256000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:16:49.565796000Z 	               ) DESC,
+2026-11-19T09:16:49.565837000Z 	               signature_count DESC,
+2026-11-19T09:16:49.565953000Z 	               observed_at DESC,
+2026-11-19T09:16:49.565990000Z 	               packet_hash
+2026-11-19T09:16:49.566025000Z 	      LIMIT $6
+2026-11-19T09:21:54.305387000Z 2026-11-19 09:21:54.276 UTC [839963] FATAL:  connection to client lost
+2026-11-19T09:21:54.305436000Z 2026-11-19 09:21:54.276 UTC [839963] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:21:54.305464000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:21:54.305507000Z 	          p.packet_hash,
+2026-11-19T09:21:54.305533000Z 	          p.network,
+2026-11-19T09:21:54.305561000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:21:54.305938000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:21:54.305985000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:21:54.306299000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:21:54.306334000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:21:54.306358000Z 	          p.time                               AS observed_at
+2026-11-19T09:21:54.306401000Z 	       FROM mesh.packets p
+2026-11-19T09:21:54.306703000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:21:54.306759000Z 	         AND p.time >= $1
+2026-11-19T09:21:54.306787000Z 	         AND p.time < $2
+2026-11-19T09:21:54.307147000Z 	         AND p.network = ANY($3)
+2026-11-19T09:21:54.307205000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:21:54.307279000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:21:54.307303000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:21:54.307584000Z 	         AND (
+2026-11-19T09:21:54.309163000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:21:54.310100000Z 	    AND EXISTS (
+2026-11-19T09:21:54.310389000Z 	    SELECT 1
+2026-11-19T09:21:54.310450000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:21:54.310481000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:21:54.311141000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:21:54.311185000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:21:54.311219000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:21:54.311256000Z 	  )
+2026-11-19T09:21:54.311292000Z 	    AND NOT EXISTS (
+2026-11-19T09:21:54.311325000Z 	      SELECT 1
+2026-11-19T09:21:54.311347000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:21:54.311641000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:21:54.311680000Z 	        AND (
+2026-11-19T09:21:54.311872000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:21:54.311908000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:21:54.311937000Z 	          OR (
+2026-11-19T09:21:54.311964000Z 	            (p.network = remat.network
+2026-11-19T09:21:54.311991000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:21:54.314429000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:21:54.314510000Z 	            AND EXISTS (
+2026-11-19T09:21:54.314606000Z 	              SELECT 1
+2026-11-19T09:21:54.314642000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:21:54.314666000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:21:54.314702000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:21:54.315404000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:21:54.315464000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:21:54.315507000Z 	              )
+2026-11-19T09:21:54.315736000Z 	            )
+2026-11-19T09:21:54.316193000Z 	          )
+2026-11-19T09:21:54.316245000Z 	        )
+2026-11-19T09:21:54.316535000Z 	    )
+2026-11-19T09:21:54.316597000Z 	  )
+2026-11-19T09:21:54.316646000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:21:54.316679000Z 	     ),
+2026-11-19T09:21:54.316711000Z 	     signature_keys AS (
+2026-11-19T09:21:54.316742000Z 	       SELECT logical_messages.*,
+2026-11-19T09:21:54.316782000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:21:54.316818000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:21:54.316847000Z 	         FROM logical_messages
+2026-11-19T09:21:54.316879000Z 	     ),
+2026-11-19T09:21:54.316914000Z 	     signature_stats AS (
+2026-11-19T09:21:54.316941000Z 	       SELECT network,
+2026-11-19T09:21:54.317186000Z 	              signature,
+2026-11-19T09:21:54.317220000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:21:54.317256000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:21:54.317620000Z 	         FROM signature_keys
+2026-11-19T09:21:54.317660000Z 	        GROUP BY network, signature
+2026-11-19T09:21:54.317692000Z 	     ),
+2026-11-19T09:21:54.317720000Z 	     signature_ranked AS (
+2026-11-19T09:21:54.317748000Z 	       SELECT signature_keys.*,
+2026-11-19T09:21:54.317774000Z 	              signature_stats.signature_count,
+2026-11-19T09:21:54.317806000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:21:54.317841000Z 	         FROM signature_keys
+2026-11-19T09:21:54.317890000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:21:54.317920000Z 	     )
+2026-11-19T09:21:54.317946000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:21:54.318019000Z 	       FROM signature_ranked
+2026-11-19T09:21:54.318052000Z 	      ORDER BY (
+2026-11-19T09:21:54.318082000Z 	                 signature_count >= $4
+2026-11-19T09:21:54.318556000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:21:54.318617000Z 	               ) DESC,
+2026-11-19T09:21:54.320769000Z 	               signature_count DESC,
+2026-11-19T09:21:54.320870000Z 	               observed_at DESC,
+2026-11-19T09:21:54.320914000Z 	               packet_hash
+2026-11-19T09:21:54.321435000Z 	      LIMIT $6
+2026-11-19T09:26:58.812013000Z 2026-11-19 09:26:58.800 UTC [841348] FATAL:  connection to client lost
+2026-11-19T09:26:58.812050000Z 2026-11-19 09:26:58.800 UTC [841348] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:26:58.812074000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:26:58.812174000Z 	          p.packet_hash,
+2026-11-19T09:26:58.812212000Z 	          p.network,
+2026-11-19T09:26:58.812253000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:26:58.812435000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:26:58.813167000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:26:58.813260000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:26:58.813330000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:26:58.813398000Z 	          p.time                               AS observed_at
+2026-11-19T09:26:58.813454000Z 	       FROM mesh.packets p
+2026-11-19T09:26:58.813494000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:26:58.813532000Z 	         AND p.time >= $1
+2026-11-19T09:26:58.813577000Z 	         AND p.time < $2
+2026-11-19T09:26:58.813616000Z 	         AND p.network = ANY($3)
+2026-11-19T09:26:58.813656000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:26:58.813859000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:26:58.813914000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:26:58.813956000Z 	         AND (
+2026-11-19T09:26:58.813998000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:26:58.814038000Z 	    AND EXISTS (
+2026-11-19T09:26:58.814073000Z 	    SELECT 1
+2026-11-19T09:26:58.814116000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:26:58.814151000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:26:58.814183000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:26:58.815438000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:26:58.815483000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:26:58.815783000Z 	  )
+2026-11-19T09:26:58.815831000Z 	    AND NOT EXISTS (
+2026-11-19T09:26:58.815869000Z 	      SELECT 1
+2026-11-19T09:26:58.815901000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:26:58.815939000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:26:58.815965000Z 	        AND (
+2026-11-19T09:26:58.815991000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:26:58.816017000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:26:58.816041000Z 	          OR (
+2026-11-19T09:26:58.816068000Z 	            (p.network = remat.network
+2026-11-19T09:26:58.816093000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:26:58.816122000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:26:58.816148000Z 	            AND EXISTS (
+2026-11-19T09:26:58.816177000Z 	              SELECT 1
+2026-11-19T09:26:58.816209000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:26:58.816249000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:26:58.816273000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:26:58.816302000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:26:58.816326000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:26:58.816358000Z 	              )
+2026-11-19T09:26:58.816413000Z 	            )
+2026-11-19T09:26:58.816446000Z 	          )
+2026-11-19T09:26:58.816473000Z 	        )
+2026-11-19T09:26:58.816495000Z 	    )
+2026-11-19T09:26:58.816523000Z 	  )
+2026-11-19T09:26:58.816702000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:26:58.816748000Z 	     ),
+2026-11-19T09:26:58.816812000Z 	     signature_keys AS (
+2026-11-19T09:26:58.816844000Z 	       SELECT logical_messages.*,
+2026-11-19T09:26:58.816877000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:26:58.816911000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:26:58.816940000Z 	         FROM logical_messages
+2026-11-19T09:26:58.816976000Z 	     ),
+2026-11-19T09:26:58.816999000Z 	     signature_stats AS (
+2026-11-19T09:26:58.817030000Z 	       SELECT network,
+2026-11-19T09:26:58.817059000Z 	              signature,
+2026-11-19T09:26:58.817097000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:26:58.817132000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:26:58.817159000Z 	         FROM signature_keys
+2026-11-19T09:26:58.817360000Z 	        GROUP BY network, signature
+2026-11-19T09:26:58.817404000Z 	     ),
+2026-11-19T09:26:58.817435000Z 	     signature_ranked AS (
+2026-11-19T09:26:58.817463000Z 	       SELECT signature_keys.*,
+2026-11-19T09:26:58.817492000Z 	              signature_stats.signature_count,
+2026-11-19T09:26:58.817518000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:26:58.817547000Z 	         FROM signature_keys
+2026-11-19T09:26:58.817578000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:26:58.817612000Z 	     )
+2026-11-19T09:26:58.817634000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:26:58.817666000Z 	       FROM signature_ranked
+2026-11-19T09:26:58.817693000Z 	      ORDER BY (
+2026-11-19T09:26:58.817719000Z 	                 signature_count >= $4
+2026-11-19T09:26:58.817747000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:26:58.817787000Z 	               ) DESC,
+2026-11-19T09:26:58.817812000Z 	               signature_count DESC,
+2026-11-19T09:26:58.817831000Z 	               observed_at DESC,
+2026-11-19T09:26:58.817851000Z 	               packet_hash
+2026-11-19T09:26:58.817877000Z 	      LIMIT $6
+2026-11-19T09:37:06.487347000Z 2026-11-19 09:37:06.477 UTC [844511] FATAL:  connection to client lost
+2026-11-19T09:37:06.487367000Z 2026-11-19 09:37:06.477 UTC [844511] STATEMENT:  WITH logical_messages AS (
+2026-11-19T09:37:06.488465000Z 	       SELECT DISTINCT ON (p.packet_hash)
+2026-11-19T09:37:06.488501000Z 	          p.packet_hash,
+2026-11-19T09:37:06.488523000Z 	          p.network,
+2026-11-19T09:37:06.488544000Z 	          p.payload->'decrypted'->>'sender'    AS sender,
+2026-11-19T09:37:06.488570000Z 	          p.payload->'decrypted'->>'message'   AS message,
+2026-11-19T09:37:06.488595000Z 	          p.payload->>'channelHash'            AS channel_hash,
+2026-11-19T09:37:06.488653000Z 	          p.payload->>'_summary'               AS summary,
+2026-11-19T09:37:06.488678000Z 	          p.payload->'decrypted'->>'timestamp' AS claimed_ts,
+2026-11-19T09:37:06.488696000Z 	          p.time                               AS observed_at
+2026-11-19T09:37:06.488722000Z 	       FROM mesh.packets p
+2026-11-19T09:37:06.488742000Z 	       WHERE p.packet_type = 5
+2026-11-19T09:37:06.488763000Z 	         AND p.time >= $1
+2026-11-19T09:37:06.488788000Z 	         AND p.time < $2
+2026-11-19T09:37:06.488808000Z 	         AND p.network = ANY($3)
+2026-11-19T09:37:06.488830000Z 	         AND p.payload ? 'decrypted'
+2026-11-19T09:37:06.488852000Z 	         AND p.payload->'decrypted' ? 'message'
+2026-11-19T09:37:06.488874000Z 	         AND COALESCE(p.payload->'decrypted'->>'sender', '') NOT LIKE '%🚫%'
+2026-11-19T09:37:06.488896000Z 	         AND (
+2026-11-19T09:37:06.488916000Z 	    p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+2026-11-19T09:37:06.488940000Z 	    AND EXISTS (
+2026-11-19T09:37:06.488975000Z 	    SELECT 1
+2026-11-19T09:37:06.488998000Z 	    FROM ops.packet_visibility_materialization_state cached_visibility
+2026-11-19T09:37:06.489022000Z 	    JOIN ops.public_visibility_state current_visibility
+2026-11-19T09:37:06.489041000Z 	      ON current_visibility.singleton = cached_visibility.singleton
+2026-11-19T09:37:06.489064000Z 	    WHERE cached_visibility.singleton = TRUE
+2026-11-19T09:37:06.489091000Z 	      AND cached_visibility.visibility_generation = current_visibility.generation
+2026-11-19T09:37:06.489114000Z 	  )
+2026-11-19T09:37:06.489137000Z 	    AND NOT EXISTS (
+2026-11-19T09:37:06.489162000Z 	      SELECT 1
+2026-11-19T09:37:06.489184000Z 	      FROM ops.privacy_rematerialization_queue remat
+2026-11-19T09:37:06.489212000Z 	      WHERE remat.target = 'packets' AND remat.status IN ('pending', 'processing', 'failed')
+2026-11-19T09:37:06.489238000Z 	        AND (
+2026-11-19T09:37:06.489259000Z 	          p.rx_node_id = remat.node_id
+2026-11-19T09:37:06.489281000Z 	          OR p.src_node_id = remat.node_id
+2026-11-19T09:37:06.489306000Z 	          OR (
+2026-11-19T09:37:06.489332000Z 	            (p.network = remat.network
+2026-11-19T09:37:06.489360000Z 	              OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+2026-11-19T09:37:06.489386000Z 	                AND remat.network IN ('ukmesh', 'northeast', 'teesside')))
+2026-11-19T09:37:06.489408000Z 	            AND EXISTS (
+2026-11-19T09:37:06.490434000Z 	              SELECT 1
+2026-11-19T09:37:06.490460000Z 	              FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
+2026-11-19T09:37:06.490478000Z 	              WHERE UPPER(packet_prefix) IN (
+2026-11-19T09:37:06.490499000Z 	                UPPER(LEFT(remat.node_id, 2)),
+2026-11-19T09:37:06.490535000Z 	                UPPER(LEFT(remat.node_id, 4)),
+2026-11-19T09:37:06.490561000Z 	                UPPER(LEFT(remat.node_id, 6))
+2026-11-19T09:37:06.490590000Z 	              )
+2026-11-19T09:37:06.490617000Z 	            )
+2026-11-19T09:37:06.490645000Z 	          )
+2026-11-19T09:37:06.490671000Z 	        )
+2026-11-19T09:37:06.490700000Z 	    )
+2026-11-19T09:37:06.490726000Z 	  )
+2026-11-19T09:37:06.490751000Z 	       ORDER BY p.packet_hash, p.time ASC
+2026-11-19T09:37:06.490778000Z 	     ),
+2026-11-19T09:37:06.490802000Z 	     signature_keys AS (
+2026-11-19T09:37:06.490831000Z 	       SELECT logical_messages.*,
+2026-11-19T09:37:06.490860000Z 	              MD5(LOWER(BTRIM(COALESCE(message, '')))) AS signature,
+2026-11-19T09:37:06.490886000Z 	              LOWER(BTRIM(COALESCE(sender, ''))) AS normalized_sender
+2026-11-19T09:37:06.490910000Z 	         FROM logical_messages
+2026-11-19T09:37:06.490941000Z 	     ),
+2026-11-19T09:37:06.490976000Z 	     signature_stats AS (
+2026-11-19T09:37:06.491005000Z 	       SELECT network,
+2026-11-19T09:37:06.491032000Z 	              signature,
+2026-11-19T09:37:06.491061000Z 	              COUNT(*) AS signature_count,
+2026-11-19T09:37:06.491314000Z 	              COUNT(DISTINCT normalized_sender) AS distinct_sender_count
+2026-11-19T09:37:06.491343000Z 	         FROM signature_keys
+2026-11-19T09:37:06.491379000Z 	        GROUP BY network, signature
+2026-11-19T09:37:06.491414000Z 	     ),
+2026-11-19T09:37:06.491445000Z 	     signature_ranked AS (
+2026-11-19T09:37:06.491470000Z 	       SELECT signature_keys.*,
+2026-11-19T09:37:06.491495000Z 	              signature_stats.signature_count,
+2026-11-19T09:37:06.491521000Z 	              signature_stats.distinct_sender_count
+2026-11-19T09:37:06.491551000Z 	         FROM signature_keys
+2026-11-19T09:37:06.491577000Z 	         JOIN signature_stats USING (network, signature)
+2026-11-19T09:37:06.491609000Z 	     )
+2026-11-19T09:37:06.491636000Z 	     SELECT packet_hash, network, sender, message, channel_hash, summary, claimed_ts, observed_at
+2026-11-19T09:37:06.491882000Z 	       FROM signature_ranked
+2026-11-19T09:37:06.491916000Z 	      ORDER BY (
+2026-11-19T09:37:06.491947000Z 	                 signature_count >= $4
+2026-11-19T09:37:06.491985000Z 	                 AND distinct_sender_count <= $5
+2026-11-19T09:37:06.492017000Z 	               ) DESC,
+2026-11-19T09:37:06.492044000Z 	               signature_count DESC,
+2026-11-19T09:37:06.492072000Z 	               observed_at DESC,
+2026-11-19T09:37:06.492099000Z 	               packet_hash
+2026-11-19T09:37:06.492129000Z 	      LIMIT $6

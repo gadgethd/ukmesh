@@ -111,7 +111,7 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   };
   const multibyteSql = sqlFor('fully_decoded_multibyte_24h');
   const fullWindowAggregates = [
-    sqlFor('WITH prefix_counts'),
+    sqlFor('prefix_counts'),
     sqlFor('hash_hex_len'),
     sqlFor('avg_observers'),
     sqlFor('median_rssi'),
@@ -129,7 +129,7 @@ test('24-hour chart aggregates use the complete scoped window and true signal me
   assert.match(signalSql, /percentile_cont\(0\.5\)\s+WITHIN GROUP\s+\(ORDER BY p\.snr\)::text\s+AS median_snr/i);
   assert.doesNotMatch(signalSql, /AVG\(p\.rssi\)::text\s+AS median_rssi/i);
   assert.doesNotMatch(signalSql, /AVG\(p\.snr\)::text\s+AS median_snr/i);
-  assert.match(sqlFor('WITH prefix_counts'), /LIMIT 10/i);
+  assert.match(sqlFor('prefix_counts'), /LIMIT 10/i);
   assert.equal(
     calls.some((call) => call.text.includes('meshcore_canonical_node_id')),
     false,
@@ -193,6 +193,57 @@ test('canonical charts coalesce six high-volume dimensions into one maintained a
   assert.equal(calls.filter((sql) => sql.includes('FROM mesh.packet_hourly_stats')).length, 0);
   assert.ok(calls.some((sql) =>
     sql.includes("time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count")));
+});
+
+test('legacy chart refresh consolidates same-snapshot scans and keeps the aggregate switch', async () => {
+  const calls: string[] = [];
+  const query = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+  ): Promise<{ rows: T[] }> => {
+    calls.push(text);
+    if (/FROM (?:mesh\.)?multibyte_path_fact_state/.test(text)) {
+      return { rows: [{ ready: true }] as T[] };
+    }
+    if (text.includes('FROM mesh.packet_hourly_stats')) {
+      return {
+        rows: [{
+          packets_per_hour: [], packets_per_day: [], packet_types: [],
+          hop_distribution: [], route_types: [], transport_codes: [],
+        }] as T[],
+      };
+    }
+    return { rows: [] };
+  };
+  const filters = () => ({
+    params: ['ukmesh'],
+    packets: 'AND network = $1',
+    packetsAlias: (alias: string) => `AND ${alias}.network = $1`,
+    nodes: 'AND network = $1',
+    nodesAlias: (alias: string) => `AND ${alias}.network = $1`,
+  });
+  const repository = createStatsRepository({ query, networkFilters: filters });
+  await repository.fetchChartsData('ukmesh', undefined);
+  // The six switchable parts share one legacy counts scan; radios+totals,
+  // path hashes and region/reception each scan once. Four packet scans total
+  // replace the original fifteen, plus the two multibyte fact reads.
+  const legacyCountsFragment = "time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count";
+  assert.equal(calls.filter((sql) => sql.includes(legacyCountsFragment)).length, 1);
+  assert.equal(calls.filter((sql) => sql.includes('AS radios_per_hour')).length, 1);
+  assert.equal(calls.filter((sql) => sql.includes('AS prefix_collisions')).length, 1);
+  assert.equal(calls.filter((sql) => sql.includes('AS region_summary')).length, 1);
+  assert.equal(calls.filter((sql) => /FROM mesh\.packets p/.test(sql)).length, 4);
+  assert.equal(calls.filter((sql) => /FROM (?:mesh\.)?multibyte_path_facts f/.test(sql)).length, 2);
+
+  calls.length = 0;
+  const readRepository = createStatsRepository({
+    query, networkFilters: filters, aggregateReadsEnabled: true,
+  });
+  await readRepository.fetchChartsData('ukmesh', undefined);
+  // Aggregate reads must never start the lazy legacy counts scan.
+  assert.equal(calls.filter((sql) => sql.includes(legacyCountsFragment)).length, 0);
+  assert.equal(calls.filter((sql) => sql.includes('FROM mesh.packet_hourly_stats')).length, 1);
+  assert.equal(calls.filter((sql) => sql.includes('AS radios_per_hour')).length, 1);
+  assert.equal(calls.filter((sql) => sql.includes('AS region_summary')).length, 1);
 });
 
 test('per-network shadowing runs before reads are enabled and stays off for other networks', async () => {
