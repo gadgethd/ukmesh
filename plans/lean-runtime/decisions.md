@@ -3455,3 +3455,20 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   8080 dashboard, 8081 app, 8082 CoreScope, 8083 website, 8084 Beacon web, 8085 Grafana,
   8086 Prometheus, 8087 website-dev, 8088 Beacon API, 8089 mesh health. Verified 9/9 up
   from 192.168.2.22; adds ~40-60 MiB total in two capped containers.
+
+## Efficiency pass — CoreScope retained-store compaction (pin d8087b58)
+
+- Measured root cause on an owned 605,365-transmission copy: ~775 B retained per
+  transmission — 408 B of structs (StoreTx 248 + StoreObs 160), ~80 B indexes, ~55 MB
+  strings, 56 MB map preallocation. RouteType/PayloadType/Score/SNR/RSSI and ScopeName were
+  each heap-allocated per packet (~1.6M small objects).
+- Fix: pool immutable nullable value pointers (bounded small-int table, mutex-guarded
+  float map, interned string pool; 16k caps). Field types, API, privacy and semantics are
+  unchanged; the one test that mutated through the pointer now constructs its own. Commit
+  d8087b58 on fork branch efficiency/compact-store.
+- Acceptance-condition test (512 MiB cgroup, GOMEMLIMIT=256MiB, GOMAXPROCS=2): the build
+  now LOADS and serves reads at 605,365 transmissions — 422-432 MiB RSS, 428 MB heap,
+  analytics recompute completed; previously exit 137 at this size. Go server suite green
+  (64 s; the pre-existing environmental prune-queue test is skipped exactly as baseline).
+  Effect ~40 MB at 605k; it unlocks 9c0a37 and a second 72k soak on ec16a1 (~626k).
+  Independent review of the CoreScope diff is still outstanding.
