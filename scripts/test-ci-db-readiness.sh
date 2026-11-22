@@ -36,7 +36,11 @@ services:
       start_interval: 1s
 YAML
 
-"${compose[@]}" up --detach --no-build --wait --wait-timeout 120 timescaledb db-migrate
+"${compose[@]}" up --detach --no-build --wait --wait-timeout 120 timescaledb
+# Start the one-shot migrator WITHOUT --wait: compose races when a one-shot
+# exits before its wait loop begins and reports "container ... exited (0)" as a
+# failure. Start it, then read the real exit status with docker wait.
+"${compose[@]}" up --detach --no-build db-migrate
 migrator="$("${compose[@]}" ps --all --quiet db-migrate)"
 test -n "$migrator"
 test "$(docker wait "$migrator")" = 0
