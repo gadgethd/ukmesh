@@ -33,7 +33,8 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
     CREATE TABLE node_status_samples (
       time timestamptz, node_id text, network text, battery_mv integer, uptime_secs bigint,
       tx_air_secs double precision, rx_air_secs double precision,
-      channel_utilization double precision, air_util_tx double precision, stats jsonb
+      channel_utilization double precision, air_util_tx double precision, stats jsonb,
+      radio text
     );
     CREATE TABLE packets (time timestamptz, rx_node_id text, network text, packet_hash text);
   `);
@@ -49,6 +50,21 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
   // post-move names so the suite does not depend on another suite's leftovers.
   await client.query(`
     CREATE SCHEMA IF NOT EXISTS mesh;
+    -- Mirror migration 136: the canonical projection routes read now carries the
+    -- verbatim radio settings alongside the counters.
+    CREATE OR REPLACE VIEW node_identity_status_samples AS
+      SELECT time,
+             meshcore_canonical_node_id(node_id) AS node_id,
+             network,
+             battery_mv,
+             uptime_secs,
+             tx_air_secs,
+             rx_air_secs,
+             channel_utilization,
+             air_util_tx,
+             stats,
+             radio
+        FROM node_status_samples;
     CREATE VIEW core.node_identity_nodes AS SELECT node_id, name FROM node_identity_nodes;
     CREATE VIEW core.node_identity_status_samples AS SELECT * FROM node_identity_status_samples;
     CREATE VIEW mesh.packets AS SELECT * FROM packets;
@@ -60,12 +76,12 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
     ($1, 'Canonical observer'), ($2, NULL), ($3, 'Hidden 🚫'),
     ($4, 'Stale status'), ($5, 'No packets'), ($6, 'Test only')`,
   [key('A'), key('B'), key('C'), key('D'), key('1'), key('2')]);
-  const status = async (node: string, network: string, minutes: number, uptime: number | null, battery: number | null) => {
+  const status = async (node: string, network: string, minutes: number, uptime: number | null, battery: number | null, radio: string | null = null) => {
     await client.query(`INSERT INTO node_status_samples VALUES
-      (NOW() - $1 * INTERVAL '1 minute', $2, $3, $4, $5, 3, 4, 5, 6, '{"owner_secret":"hidden"}')`,
-    [minutes, node, network, battery, uptime]);
+      (NOW() - $1 * INTERVAL '1 minute', $2, $3, $4, $5, 3, 4, 5, 6, '{"owner_secret":"hidden"}', $6)`,
+    [minutes, node, network, battery, uptime, radio]);
   };
-  await status(key('A'), 'ukmesh', 1, 10, 3500);
+  await status(key('A'), 'ukmesh', 1, 10, 3500, '869.618,62.500,8,8');
   await status(` ${key('F').toLowerCase()} `, 'northeast', 3, 7200, 3900);
   await status(key('E'), 'teesside', 4, 7200, 3800);
   await status(key('B'), 'ukmesh', 2, null, null);
@@ -129,6 +145,7 @@ test('MQTT node SQL preserves the original scoped contract and reads changes imm
     assert.deepEqual(rows.map((row) => [row.node_id, row.packets_24h]), [[key('A'), '7'], [key('B'), '1']]);
     assert.equal(rows[0]!.battery_mv, 3500, 'newest measurement wins after a reboot resets uptime');
     assert.equal(rows[0]!.uptime_secs, '10', 'existing PostgreSQL bigint telemetry serialization is retained');
+    assert.equal(rows[0]!.radio, '869.618,62.500,8,8', 'radio settings are exposed verbatim');
     assert.equal(rows[1]!.name, null);
     assert.equal(rows[1]!.battery_mv, null);
     assert.equal(rows[1]!.uptime_secs, null);

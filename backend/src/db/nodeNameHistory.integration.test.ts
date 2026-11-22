@@ -51,7 +51,8 @@ test('name retention and search execute the production write paths, migration, i
     CREATE TABLE core.node_status_samples (
       time TIMESTAMPTZ, node_id TEXT, network TEXT, battery_mv INTEGER, uptime_secs BIGINT,
       tx_air_secs DOUBLE PRECISION, rx_air_secs DOUBLE PRECISION,
-      channel_utilization DOUBLE PRECISION, air_util_tx DOUBLE PRECISION, stats JSONB, status TEXT
+      channel_utilization DOUBLE PRECISION, air_util_tx DOUBLE PRECISION, stats JSONB, status TEXT,
+      radio TEXT
     );
     CREATE TABLE mesh.packets (
       rx_node_id TEXT, src_node_id TEXT, time TIMESTAMPTZ, network TEXT,

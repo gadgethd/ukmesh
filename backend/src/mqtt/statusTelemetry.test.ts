@@ -36,8 +36,32 @@ test('the same firmware statistics are valid live telemetry, including zero coun
     assert.deepEqual([writtenSample], [{
       nodeId: NODE_ID, network: 'ukmesh', status,
       batteryMv: 4200, uptimeSecs: 1, txAirSecs: 0, rxAirSecs: 0,
-      channelUtilization: 0, airUtilTx: 0, stats: firmwareWill.stats,
+      channelUtilization: 0, airUtilTx: 0,
+      radio: 'SX1262 869.525/250/11/5', stats: firmwareWill.stats,
     }]);
+  }
+});
+
+test('radio settings are persisted verbatim and malformed values are discarded', async () => {
+  for (const radio of ['869.618,62.500,8,8', 'SX1262 869.618/62/8/8', '  869.431,125,11,5  ']) {
+    const writes: NodeStatusSampleInput[] = [];
+    assert.equal(await persistStatusTelemetrySample(
+      { status: 'online', radio, stats: { battery_mv: 4100, uptime_secs: 60 } },
+      { nodeId: NODE_ID, network: 'ukmesh' },
+      async (sample) => { writes.push(sample); },
+    ), true);
+    assert.equal(writes[0]?.radio, radio.trim());
+  }
+
+  for (const radio of [undefined, null, 869.618, '', '   ', 'x'.repeat(65), '869.618,62.5\n8,8', '869.618,62.5\u00008,8']) {
+    const writes: NodeStatusSampleInput[] = [];
+    await persistStatusTelemetrySample(
+      { status: 'online', radio, stats: { battery_mv: 4100, uptime_secs: 60 } },
+      { nodeId: NODE_ID, network: 'ukmesh' },
+      async (sample) => { writes.push(sample); },
+    );
+    assert.equal(writes.length, 1);
+    assert.equal(writes[0]?.radio, undefined, `radio=${JSON.stringify(radio)}`);
   }
 });
 
