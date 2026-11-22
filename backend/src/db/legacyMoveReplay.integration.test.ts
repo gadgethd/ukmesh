@@ -24,7 +24,7 @@ const roleBootstrap = [
   readFileSync(new URL('../../../scripts/bootstrap-reader-roles.sql', import.meta.url), 'utf8'),
 ];
 const allMigrations = loadMigrationFiles();
-const HEAD = '135_packet_identity_backfill_chunks.sql';
+const HEAD = '136_node_status_radio.sql';
 // Everything before 078 is unaffected by this change; splitting the band there
 // lets the second test insert the legacy relations at the point they would have
 // existed on a live database.
@@ -102,7 +102,7 @@ async function seedFreshVolume(harness: Harness): Promise<void> {
   for (const script of roleBootstrap) await harness.pool.query(script);
 }
 
-test('a fresh base-schema database replays the whole band to head 135', {
+test(`a fresh base-schema database replays the whole band to head ${HEAD}`, {
   skip: endpoint ? false : 'owned PostgreSQL required',
   timeout: 300000,
 }, async (t) => {
@@ -127,7 +127,7 @@ test('a fresh base-schema database replays the whole band to head 135', {
   );
   assert.equal(ledger.rows.length, allMigrations.length);
   assert.equal(ledger.rows.at(-1)?.name, HEAD);
-  assert.equal(Math.max(...ledger.rows.map((row) => Number(row.name.slice(0, 3)))), 135);
+  assert.equal(Math.max(...ledger.rows.map((row) => Number(row.name.slice(0, 3)))), Number(HEAD.slice(0, 3)));
 
   // Nothing is invented to satisfy a move, and the export schema 087 needs is
   // created rather than assumed.
