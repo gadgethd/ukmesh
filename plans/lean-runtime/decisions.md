@@ -3414,3 +3414,44 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Final redaction scan of report.md after all edits: 0 hits (closure redaction-audit.json).
   WORKING-STATE.md handoff updated (private). Merges of PR #259 / PR #260 / CoreScope PR #2
   remain user actions; open criteria and deferred items unchanged.
+
+## Efficiency pass — DEV runtime footprint reductions (2026-11-22)
+
+### PostgreSQL per-instance footprint (docker-compose.postgres.yml)
+
+- Measured on the official soak receipts: main PG peaked at 425 MiB anon (mean 164)
+  with 33 connections, shared_buffers 128 MiB, work_mem 10485 kB from the volume
+  config, autovacuum_max_workers 10 x 32 MiB, timescaledb.max_background_workers 16,
+  max_worker_processes 21.
+- Added command-line overrides (precedence over the volume postgresql.conf):
+  work_mem 4MB, autovacuum_work_mem 16MB, autovacuum_max_workers 4,
+  max_worker_processes 16, timescaledb.max_background_workers 8. Command line keeps
+  durability (FULL/WAL, synchronous_commit), roles, 10 free slots and all features; only
+  per-session/per-worker headroom is bounded. Idle DB 155 -> 120 MiB; soak peak expected
+  to drop ~100-150 MiB. Fresh container verified: all six settings source=command line.
+- Measured on a canonical 1800-packet/60 s probe (efficiency-probe.oEf5fx, ec16a1,
+  --reuse-prepared): PG anon peak 425 -> 203 MiB; runtime peak anon 2961 -> 2218 MiB total;
+  host available min 653 / median 869 MiB; swap growth 69 MB; 0 backend failure lines;
+  short soak passed (1800 ACKs, drain 7.9 s, ws 0 missing).
+- CI is unaffected (docker-compose.ci.yml defines its own timescaledb service/command).
+
+### Observability + worker heap budgets (docker-compose.yml)
+
+- Loki: GOGC=50 (idle 70 -> 40 MiB; logs pipeline unchanged). Prometheus/Grafana GOGC=50
+  was measured to REGRESS their RSS (129/124 -> 120-173 MiB) and was reverted; a clean
+  restart with defaults settled at 82/63 MiB.
+- Explicit worker budgets: path-learning NODE_OPTIONS --max-old-space-size=192
+  --max-semi-space-size=8; synthetic-monitor/health-worker/privacy-remat 96/8; Python
+  workers (link, tagger) MALLOC_ARENA_MAX=2, MALLOC_TRIM_THRESHOLD_=131072. Region
+  snapshot keeps its 128 MB cap. No feature or scheduling change.
+- All applied through the canonical dev-all.sh start (launcher env), not a manual
+  compose invocation.
+- Probe note: path-learning retained ~168 MiB mean after its startup pass (cap 192); watch
+  in the 40-minute soak. Backend mean 178 / peak 319 MiB (baseline 305/458).
+
+### LAN access layer (scripts/full-dev/lan, uncommitted at first run)
+
+- Status dashboard + nginx gateway joining ukmesh-full_default / ukmesh-companions_default:
+  8080 dashboard, 8081 app, 8082 CoreScope, 8083 website, 8084 Beacon web, 8085 Grafana,
+  8086 Prometheus, 8087 website-dev, 8088 Beacon API, 8089 mesh health. Verified 9/9 up
+  from 192.168.2.22; adds ~40-60 MiB total in two capped containers.
