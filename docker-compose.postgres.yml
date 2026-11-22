@@ -24,9 +24,9 @@ services:
       - -c
       - autovacuum_max_workers=${POSTGRES_AUTOVACUUM_MAX_WORKERS:-4}
       - -c
-      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-16}
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-20}
       - -c
-      - timescaledb.max_background_workers=${POSTGRES_TIMESCALE_BG_WORKERS:-8}
+      - timescaledb.max_background_workers=${POSTGRES_TIMESCALE_BG_WORKERS:-12}
       - -c
       - wal_compression=${POSTGRES_WAL_COMPRESSION:-lz4}
     # Allow bounded read bursts to use spare capacity on the four-CPU DEV VM.

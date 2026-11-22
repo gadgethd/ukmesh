@@ -3472,3 +3472,25 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
   (64 s; the pre-existing environmental prune-queue test is skipped exactly as baseline).
   Effect ~40 MB at 605k; it unlocks 9c0a37 and a second 72k soak on ec16a1 (~626k).
   Independent review of the CoreScope diff is still outstanding.
+
+## Efficiency pass — CoreScope review advisories, PG worker slots, fixture capacity
+
+- CoreScope shared-pool review: PASS-WITH-ADVISORIES (18 checks). Applied: NaN never pooled
+  (would consume a slot per call), float pool keyed by IEEE bits so -0.0/+0.0 stay distinct,
+  a second test that mutated through *tx.PayloadType now assigns a private pointer, and a
+  pool-behaviour unit test (shared identity, caps, NULL vs "", signed zero, NaN).
+  Commit ba132b01; Go suite green (69 s, environmental prune test skipped as baseline).
+- PostgreSQL worker slots corrected after a short probe logged "failed to launch job ...
+  out of background workers": max_worker_processes 16 -> 20, Timescale background workers
+  8 -> 12. Per-session/worker memory limits stay (work_mem 4MB, autovacuum 4x16MB).
+- Fixture capacity exhausted for acceptance soaks: two full-soak attempts each published
+  ~72k before their restores were blocked by CoreScope hitting 512 MiB, leaving ec16a1 at
+  700,095 transmissions (9c0a37 remains 605,365). The 1x fixtures hold ~16k. A fresh 10x
+  bundle (fixtures.create_bundle) restores the 480k lookup DB but copies the 372 KB backup
+  SQLite (empty CoreScope store); matching the historical fixtures needs the ~480k-packet
+  MQTT replay that produced the original stores, which no single canonical command exposes.
+  Until a replayed fixture exists, the 40-minute acceptance soak cannot run; the config and
+  compaction work is retained and verified independently of that limitation.
+- Recovery: temporary 1024 MiB CoreScope limit used only to start the over-capacity fixture
+  for the canonical restore; originals verified back at 512 MiB on the original directory,
+  inventory 43/43.
