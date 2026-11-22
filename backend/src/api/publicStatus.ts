@@ -14,6 +14,8 @@ export type PublicLatestNodeStatusDTO = PublicStatusCounters & {
   network: string | null;
   name: string | null;
   iata: string | null;
+  /** Radio settings as published (canonical for CoreScope-compatible clients). */
+  radio: string | null;
 };
 
 export type PublicMqttNodeStatusDTO = PublicStatusCounters & {
@@ -21,6 +23,7 @@ export type PublicMqttNodeStatusDTO = PublicStatusCounters & {
   name: string | null;
   last_seen: string;
   packets_24h: string;
+  radio: string | null;
 };
 
 type PublicStatusCounterSource = Partial<PublicStatusCounters>;
@@ -45,6 +48,7 @@ export function toPublicLatestNodeStatusDTO(
     network: row.network,
     name: row.name,
     iata: row.iata,
+    radio: row.radio ?? null,
     ...publicStatusCounters(row),
   };
 }
@@ -56,6 +60,7 @@ export function toPublicMqttNodeStatusDTO(
     node_id: row.node_id,
     name: row.name,
     last_seen: row.last_seen,
+    radio: row.radio ?? null,
     ...publicStatusCounters(row),
     packets_24h: row.packets_24h,
   };

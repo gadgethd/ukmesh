@@ -50,12 +50,13 @@ router.get('/node-status/latest', async (req, res) => {
            nss.rx_air_secs,
            nss.channel_utilization,
            nss.air_util_tx,
+           nss.radio,
            s.name,
            s.iata
          FROM identity_sources s
          JOIN LATERAL (
            SELECT time, network, battery_mv, uptime_secs, tx_air_secs,
-                  rx_air_secs, channel_utilization, air_util_tx
+                  rx_air_secs, channel_utilization, air_util_tx, radio
            FROM core.node_status_samples
            WHERE node_id = s.source_node_id
              AND network = ANY($1::text[])
@@ -128,6 +129,7 @@ router.get('/node-status/history', async (req, res) => {
       uptime_secs: number | null;
       channel_utilization: number | null;
       air_util_tx: number | null;
+      radio: string | null;
       heap_free: number | null;
       heap_min_free: number | null;
       uptime_ms: number | null;
@@ -142,6 +144,7 @@ router.get('/node-status/history', async (req, res) => {
          uptime_secs,
          channel_utilization,
          air_util_tx,
+         radio,
          CASE
            WHEN jsonb_typeof(stats->'heap_free') = 'number' THEN (stats->>'heap_free')::double precision
            ELSE NULL

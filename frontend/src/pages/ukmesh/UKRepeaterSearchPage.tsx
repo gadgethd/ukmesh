@@ -39,6 +39,21 @@ interface AdvertPacket {
   packet_hash: string;
 }
 
+interface NodeStatusLatest {
+  time: string;
+  node_id: string;
+  network: string | null;
+  name: string | null;
+  iata: string | null;
+  battery_mv: number | null;
+  uptime_secs: number | null;
+  tx_air_secs: number | null;
+  rx_air_secs: number | null;
+  channel_utilization: number | null;
+  air_util_tx: number | null;
+  radio: string | null;
+}
+
 interface TopAdvertNode {
   node_id: string;
   name?: string;
@@ -53,7 +68,12 @@ interface TopAdvertNode {
   last_advert_at: string;
 }
 
-type NodeDetailBundle = { links: NodeLink[]; history: PacketHistory[]; adverts: AdvertPacket[] };
+type NodeDetailBundle = {
+  links: NodeLink[];
+  history: PacketHistory[];
+  adverts: AdvertPacket[];
+  latestStatus: NodeStatusLatest | null;
+};
 type PublicMapPage = {
   nodes: MeshNode[];
   page: {
@@ -67,6 +87,17 @@ type PublicMapPage = {
 const NODE_DETAIL_TTL_MS = 5 * 60_000;
 const MAP_PAGE_LIMIT = 2000;
 const MAP_MAX_PAGES = 100;
+
+/** Render the canonical four-number radio string readably; keep vendor forms verbatim. */
+function formatRadio(radio: string | null | undefined): string | null {
+  if (!radio) return null;
+  const parts = radio.split(',').map((part) => part.trim());
+  if (parts.length === 4 && parts.every((part) => /^\d+(\.\d+)?$/.test(part))) {
+    const [mhz, khz, sf, cr] = parts;
+    return `${mhz} MHz · ${khz} kHz · SF${sf} · CR${cr}`;
+  }
+  return radio;
+}
 const nodeDetailCache = new ScopedCache<NodeDetailBundle>({
   name: 'repeater-detail',
   ttlMs: NODE_DETAIL_TTL_MS,
@@ -86,7 +117,7 @@ async function loadNodeDetails(
   const publicKey = node.public_key ?? node.node_id;
   return nodeDetailCache.getOrLoad(scopeKey, cacheKey, async () => {
     const requestScope = { network, observer };
-    const [links, history, adverts] = await Promise.all([
+    const [links, history, adverts, latestStatus] = await Promise.all([
       fetchJson<NodeLink[]>(
         withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/links`, requestScope),
         { signal, cache: 'no-store' },
@@ -102,11 +133,19 @@ async function loadNodeDetails(
         { signal, cache: 'no-store' },
         { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
       ),
+      // Radio settings live on the status stream rather than the node row, so
+      // they are fetched per selection and degrade to "not reported" on error.
+      fetchJson<NodeStatusLatest[]>(
+        withScopeParams(`/api/node-status/latest?observer=${encodeURIComponent(node.node_id)}`, requestScope),
+        { signal, cache: 'no-store' },
+        { timeoutMs: 8_000, maxBytes: 256 * 1024 },
+      ).catch(() => [] as NodeStatusLatest[]),
     ]);
     return {
       links: Array.isArray(links) ? links : [],
       history: Array.isArray(history) ? history : [],
       adverts: Array.isArray(adverts) ? adverts : [],
+      latestStatus: Array.isArray(latestStatus) ? latestStatus[0] ?? null : null,
     };
   });
 }
@@ -263,6 +302,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const [links, setLinks] = useState<NodeLink[]>([]);
   const [history, setHistory] = useState<PacketHistory[]>([]);
   const [adverts, setAdverts] = useState<AdvertPacket[]>([]);
+  const [latestStatus, setLatestStatus] = useState<NodeStatusLatest | null>(null);
   const [loadingDetails, setLoadingDetails] = useState(false);
   const [copiedKey, setCopiedKey] = useState(false);
   const selectionSequenceRef = useRef(0);
@@ -376,6 +416,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
     setLinks([]);
     setHistory([]);
     setAdverts([]);
+    setLatestStatus(null);
     setCopiedKey(false);
 
     try {
@@ -384,6 +425,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
       setLinks(details.links);
       setHistory(details.history);
       setAdverts(details.adverts);
+      setLatestStatus(details.latestStatus);
     } catch {
       // Ignore errors
     } finally {
@@ -584,6 +626,12 @@ export const UKRepeaterSearchPage: React.FC = () => {
                     <span className="repeater-details-card__label">Hardware</span>
                     <span className="repeater-details-card__value">{selectedNode.hardware_model || 'Unknown'}</span>
                   </div>
+                  {formatRadio(latestStatus?.radio) && (
+                    <div className="repeater-details-card__field">
+                      <span className="repeater-details-card__label">Radio</span>
+                      <span className="repeater-details-card__value">{formatRadio(latestStatus?.radio)}</span>
+                    </div>
+                  )}
                   <div className="repeater-details-card__field">
                     <span className="repeater-details-card__label">Last Seen</span>
                     <span className="repeater-details-card__value">{timeAgo(selectedNode.last_seen)}</span>
