@@ -65,13 +65,13 @@ test('isolated app edge serves the shell and credentials-free current projection
   await mkdir(join(beaconAssets, 'assets'), { recursive: true });
   await writeFile(join(beaconAssets, 'ukmesh-feed.html'), '<title>Beacon Channels preview</title>');
   await writeFile(join(beaconAssets, 'assets/channels-abcdef.js'), '/* Channels preview */');
-  const coreConfig = `server {
+  const coreConfig = include => `server {
     listen 127.0.0.1:${edgePort};
     proxy_read_timeout 10s;
     set $corescope_projection http://127.0.0.1:${corePort};
     set $ukmesh_app http://127.0.0.1:${ukmeshPort};
     set $ukmesh_backend http://127.0.0.1:${ukmeshPort};
-    include /etc/nginx/corescope-app/preview-locations.conf;
+    ${include ? 'include /etc/nginx/corescope-app/preview-locations.conf;' : 'location = / { return 200 "Legacy UKMesh map"; }'}
   }\n`;
   const feedConfig = include => `server {
     listen 127.0.0.1:${feedPort};
@@ -81,7 +81,7 @@ test('isolated app edge serves the shell and credentials-free current projection
     location = /feed/packets { return 200 "Packet Feed"; }
     location / { return 404; }
   }\n`;
-  await writeFile(config, coreConfig + feedConfig(true));
+  await writeFile(config, coreConfig(true) + feedConfig(true));
   const dockerfile = await readFile(new URL('../../../Dockerfile.app', import.meta.url), 'utf8');
   const image = dockerfile.match(/^FROM (nginx:\S+)$/m)?.[1];
   assert.ok(image, 'use the main app image pin');
@@ -200,17 +200,22 @@ test('isolated app edge serves the shell and credentials-free current projection
 
   // Change just the Feed selection on the fixture and verify the live app
   // and Packet Feed still resolve after Nginx loads the previous config.
-  await writeFile(config, coreConfig + feedConfig(false));
-  for (const args of [['nginx', '-t'], ['nginx', '-s', 'reload']]) {
-    const command = spawnSync('docker', ['exec', name, ...args], { encoding: 'utf8', timeout: 5_000 });
-    assert.equal(command.status, 0, command.stderr);
+  async function reload(mapCandidate, feedCandidate, route, expected) {
+    await writeFile(config, coreConfig(mapCandidate) + feedConfig(feedCandidate));
+    for (const args of [['nginx', '-t'], ['nginx', '-s', 'reload']]) {
+      const command = spawnSync('docker', ['exec', name, ...args], { encoding: 'utf8', timeout: 5_000 });
+      assert.equal(command.status, 0, command.stderr);
+    }
+    for (let attempt = 0; attempt < 30; attempt++) {
+      if (await (await route({ headers: { connection: 'close' } })).text() === expected) return;
+      await delay(100);
+    }
+    assert.fail(`prior route did not return ${expected}`);
   }
-  for (let attempt = 0; attempt < 30; attempt++) {
-    if (await (await feed('/feed', { headers: { connection: 'close' } })).text() === 'Packet Feed default') break;
-    assert.ok(attempt < 29, 'previous Feed default never returned');
-    await delay(100);
-  }
+  await reload(true, false, options => feed('/feed', options), 'Packet Feed default');
   assert.equal((await feed('/beacon/readyz')).status, 404);
   assert.equal(await (await feed('/feed/packets')).text(), 'Packet Feed');
   assert.match(await (await read('/')).text(), /CoreScope preview/);
+  await reload(false, true, options => read('/', options), 'Legacy UKMesh map');
+  assert.match(await (await feed('/feed')).text(), /Beacon Channels preview/);
 });
