@@ -296,7 +296,6 @@ jobs:
       MQTT_USERNAME: backend
       MQTT_PASSWORD: ci-mqtt-password
       ANUBIS_ED25519_PRIVATE_KEY_HEX: '0000000000000000000000000000000000000000000000000000000000000001'
-      HEALTHCHECK_SOURCE_REF: c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: '0000000000000000000000000000000000000000000000000000000000000000'
       GRAFANA_ADMIN_PASSWORD: ci-grafana-password
       SOURCE_REVISION: ${{ github.sha }}
@@ -309,6 +308,11 @@ jobs:
           node-version-file: .nvmrc
       - name: Validate release security waivers
         run: node scripts/check-trivy-waivers.mjs
+      - name: Check out the pinned Health Check source
+        run: |
+          git submodule update --init -- third_party/meshcore-health-check
+          revision=$(bash scripts/healthcheck-source.sh --verify)
+          printf 'HEALTHCHECK_SOURCE_REF=%s\n' "$revision" >> "$GITHUB_ENV"
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
         with:
           python-version: '3.12'
@@ -360,7 +364,7 @@ jobs:
           # BuildKit can still request metadata; the build wrapper covers that.
           while IFS= read -r image; do
             python scripts/ci-retry.py pull docker pull "$image"
-          done < <(awk 'toupper($1) == "FROM" { print $2 }' \
+          done < <(awk 'toupper($1) == "FROM" && $2 != "scratch" { print $2 }' \
             Dockerfile Dockerfile.backend Dockerfile.app Dockerfile.website \
             Dockerfile.mesh-health-check Dockerfile.mosquitto-reloader \
             viewshed-worker/Dockerfile tagger-worker/Dockerfile \

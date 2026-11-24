@@ -49,13 +49,14 @@ if [[ $action != status && $action != logs && ${UKMESH_COMPANION_LOCKED:-} != 1 
   fi
 fi
 if [[ $action == init ]]; then
-  for name in corescope beacon-server beacon-web; do
+  for name in corescope beacon-server beacon-web meshcore-health-check; do
     path="third_party/$name"
     # Preserve existing branches, edits and pending merges.
     if [[ ! -e $path/.git ]]; then git submodule update --init -- "$path"; fi
     if ! git -C "$path" remote get-url upstream >/dev/null 2>&1; then
       case "$name" in
         corescope) upstream=https://github.com/Kpa-clawbot/CoreScope.git ;;
+        meshcore-health-check) upstream=https://github.com/yellowcooln/meshcore-health-check.git ;;
         *) upstream="https://github.com/MeshCore-Beacon/$name.git" ;;
       esac
       git -C "$path" remote add upstream "$upstream"

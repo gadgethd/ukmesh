@@ -60,6 +60,7 @@ build_sample_broker() {
 }
 
 build_images() {
+  bash "$repo/scripts/healthcheck-source.sh" --verify >/dev/null
   prepare_wiring
   build_sample_broker
   for component in backend app-ukmesh website-ukmesh website-dev tagger-worker link-worker hopreach mesh-health-check mosquitto-reloader; do

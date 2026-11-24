@@ -14,4 +14,5 @@
 
 ## Health Check ownership
 
-- The deployed pin, fork main and upstream have diverged. Verify the security behaviour on the merged source before refactoring. The root build currently copies an external lockfile and overlays four files over the image, making source identity and UI changes hard to verify together. Build the fork source and use one authoritative lockfile after its replacements pass.
+- The deployed pin, fork main and upstream had diverged. The merge kept the deployed origin and session checks, and the refactor gave WebSocket transport its own module. The app and share screens use the same guided layout. A restored version-1 store verified historical targets and receipts in the built image.
+- The Health Check gitlink is the source pin for DEV, CI and release builds. BuildKit fetches that exact commit from the fork before installing dependencies from the fork’s lockfile. This binds the image source to its revision label even when a local checkout contains additional assets. DEV and release builds verify the selected pin. Remove the external lockfile and the image overlays together.

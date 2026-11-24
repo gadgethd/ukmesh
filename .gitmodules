@@ -7,3 +7,6 @@
 [submodule "third_party/beacon-web"]
 	path = third_party/beacon-web
 	url = https://github.com/gadgethd/beacon-web.git
+[submodule "third_party/meshcore-health-check"]
+	path = third_party/meshcore-health-check
+	url = https://github.com/gadgethd/meshcore-health-check.git

@@ -137,8 +137,10 @@ guide](docs/upgrade-2.0.md), [migration contract](backend/src/db/migrations/READ
 and [release runbook](docs/runbook-release-rollback.md).
 
 Configure `.env` from [.env.example](.env.example), including database, MQTT,
-Redis, owner-cookie, operator, Grafana and Anubis secrets, allowed browser
-origins and the full pinned health-check source revision. Provision the broker
+Redis, owner-cookie, operator, Grafana and Anubis secrets and allowed browser
+origins. For local Health Check image builds, initialise the pinned submodule
+and set `HEALTHCHECK_SOURCE_REF` using `bash scripts/healthcheck-source.sh --verify`.
+Provision the broker
 credentials/ACLs with `scripts/bootstrap-mosquitto.sh`. Bootstrap database roles,
 apply the explicit pending migration chain and provision the owner-auth schema
 before starting application images. Application startup does not migrate either
@@ -172,7 +174,7 @@ belong in that template and their linked runbooks.
 | `JWT_SECRET`, `OWNER_COOKIE_SECRET` | Separate JWT and owner-cookie secrets; owner login requires the cookie secret |
 | `OPERATOR_SITE_TOKEN` | Authenticates local operator routes |
 | `GRAFANA_ADMIN_PASSWORD`, `ANUBIS_ED25519_PRIVATE_KEY_HEX` | Monitoring and edge service credentials |
-| `HEALTHCHECK_SOURCE_REF` | Required full pinned source revision for the health-check image |
+| `HEALTHCHECK_SOURCE_REF` | Verified Health Check submodule revision for direct local image builds |
 | `ALLOWED_ORIGINS` | Exact allowed browser origins for HTTP/WebSocket access |
 | `OWNER_DATABASE_URL` / `OWNER_POSTGRES_DB` | Explicit owner-auth database location; retain verified grants and session state |
 | `OWNER_AUTHORIZATION_MODE`, `OWNER_ACL_MODE` | Owner grant authority and ACL publication; review the [owner runbook](docs/runbook-owner-auth.md) before applying changes |

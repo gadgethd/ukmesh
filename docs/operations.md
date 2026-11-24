@@ -60,9 +60,11 @@ Dependabot groups weekly dependency updates for the backend, frontend, and GitHu
 
 ## Clean bootstrap
 
-Set every required value in `.env`, including the immutable
-`HEALTHCHECK_SOURCE_REF` and Anubis signing key. Before starting Mosquitto, load
-the environment and run `scripts/bootstrap-mosquitto.sh`. The helper creates a
+Set every required value in `.env`, including the Anubis signing key. For a
+local Health Check image build, initialise the pinned submodule and use
+`bash scripts/healthcheck-source.sh --verify` for `HEALTHCHECK_SOURCE_REF`.
+Before starting Mosquitto, load the environment and run
+`scripts/bootstrap-mosquitto.sh`. The helper creates a
 backend-only read ACL and password file, refuses partial or symlinked state, and
 does not replace an existing credential set.
 
