@@ -54,7 +54,8 @@ func writePNG(path string, img image.Image, generation int64) (*PublicRFProof, e
 	return &PublicRFProof{VisibilityGeneration: generation, SHA256: hex.EncodeToString(digest.Sum(nil))}, nil
 }
 
-func (p *PublicRFProof) matches(path string, generation int64) bool {
+// Matches verifies the retained bytes before reusing a published tile.
+func (p *PublicRFProof) Matches(path string, generation int64) bool {
 	if p == nil || p.VisibilityGeneration != generation || len(p.SHA256) != sha256.Size*2 {
 		return false
 	}

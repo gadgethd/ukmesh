@@ -225,8 +225,12 @@ func nodeTilesExist(outputDir string, entry *nodeCoverageMeta) bool {
 		if !strings.HasPrefix(image, prefix) || strings.Contains(image, "..") {
 			return false
 		}
-		info, err := os.Stat(filepath.Join(outputDir, filepath.FromSlash(image)))
-		if err != nil || info.Size() == 0 {
+		path := filepath.Join(outputDir, filepath.FromSlash(image))
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+			return false
+		}
+		if proof := entry.Standard.PublicRFNode; proof != nil && !tile.PublicRFProof.Matches(path, proof.VisibilityGeneration) {
 			return false
 		}
 	}

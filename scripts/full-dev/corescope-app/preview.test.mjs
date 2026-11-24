@@ -70,6 +70,7 @@ test('isolated app edge serves the shell and credentials-free current projection
     proxy_read_timeout 10s;
     set $corescope_projection http://127.0.0.1:${corePort};
     set $ukmesh_app http://127.0.0.1:${ukmeshPort};
+    set $ukmesh_backend http://127.0.0.1:${ukmeshPort};
     include /etc/nginx/corescope-app/preview-locations.conf;
   }\n`;
   const feedConfig = include => `server {
@@ -117,6 +118,10 @@ test('isolated app edge serves the shell and credentials-free current projection
   assert.equal(await (await read('/api/regions/summary?network=ukmesh')).text(), '/api/regions/summary?network=ukmesh');
   assert.equal(await (await read('/terrain-tiles/3/4/5.png')).text(), '/terrain-tiles/3/4/5.png');
   assert.equal(await (await read('/sw.js')).text(), '/sw.js');
+  assert.equal(await (await read('/icons/icon-192.png')).text(), '/icons/icon-192.png');
+  assert.equal(await (await read('/rf-coverage/meta.json')).text(), '/internal/rf-coverage-public/meta.json');
+  const nodeTile = '/tiles/nodes/n111111111111111111111111/1-2.png';
+  assert.equal(await (await read('/rf-coverage' + nodeTile)).text(), '/internal/rf-coverage-public' + nodeTile);
   const credentials = { Cookie: 'session=forbidden', Authorization: 'Bearer forbidden', Accept: 'application/json' };
   const nodes = await read('/corescope/api/nodes?q=a%2Bb', { headers: credentials });
   assert.equal(nodes.status, 200);
@@ -131,8 +136,7 @@ test('isolated app edge serves the shell and credentials-free current projection
   assert.equal((await read('/corescope/ws')).status, 426);
   for (const route of ['/_projection-ready', '/corescope/api/public-projection-ready', '/corescope/api/debug/affinity',
     '/corescope/api/backup', '/api/nodes', '/corescope/static/api/backup', '/corescope/static/../api/backup',
-    '/rf-coverage/meta.json', '/rf-coverage/progress.json', '/rf-coverage/tiles/precision/1-2.png',
-    '/rf-coverage/tiles/nodes/n111111111111111111111111/1-2.png']) {
+    '/rf-coverage/raw/meta.json', '/rf-coverage/tiles/nodes/unverified/1-2.png', '/internal/rf-coverage-public/meta.json']) {
     assert.equal((await read(route)).status, 404, route);
   }
   // Send a raw path to Nginx so URL normalization in Fetch cannot remove it first.
@@ -162,6 +166,7 @@ test('isolated app edge serves the shell and credentials-free current projection
   for (const status of [403, 404]) {
     readiness = status;
     assert.equal((await read('/corescope/api/nodes')).status, 503);
+    assert.equal((await read('/rf-coverage' + nodeTile)).status, 503);
     await assert.rejects(connect(), /Unexpected server response: 503/);
   }
   assert.equal(actualReads().length, 3, 'no data or upgrade reached the upstream during authority loss');

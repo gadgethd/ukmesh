@@ -282,7 +282,7 @@ func RasterProgressiveChunked(
 	for _, tilePlan := range publicationTiles {
 		outputPath := filepath.Join(tileDir, tilePlan.name)
 		if existing, ok := checkpoint.Completed[tilePlan.name]; ok {
-			proofMatches := options.VisibilityGeneration <= 0 || existing.PublicRFProof.matches(outputPath, options.VisibilityGeneration)
+			proofMatches := options.VisibilityGeneration <= 0 || existing.PublicRFProof.Matches(outputPath, options.VisibilityGeneration)
 			if info, statErr := os.Stat(outputPath); proofMatches && statErr == nil && info.Size() > 0 {
 				if progress != nil {
 					progress(completed*progressUnitsPerTile, len(publicationTiles)*progressUnitsPerTile)

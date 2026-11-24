@@ -22,12 +22,12 @@ func TestProgressivePNGProofBindsPublishedBytesAndGeneration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if proof == nil || proof.SHA256 != fmt.Sprintf("%x", sha256.Sum256(content)) || !proof.matches(path, 42) || proof.matches(path, 43) {
+	if proof == nil || proof.SHA256 != fmt.Sprintf("%x", sha256.Sum256(content)) || !proof.Matches(path, 42) || proof.Matches(path, 43) {
 		t.Fatalf("proof = %+v", proof)
 	}
 	img.SetNRGBA(0, 0, color.NRGBA{B: 100, A: 255})
 	old, err := writePNG(path, img, 0)
-	if err != nil || old != nil || proof.matches(path, 42) {
+	if err != nil || old != nil || proof.Matches(path, 42) {
 		t.Fatalf("replaced PNG: legacy proof %+v, err=%v", old, err)
 	}
 }
