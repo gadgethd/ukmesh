@@ -14,7 +14,6 @@ services:
       PROBE_TIMEOUT_MS: "2500"
     volumes:
       - ./site:/srv:ro
-      - ./routes.json:/srv/routes.json:ro
     networks: [full, companions]
     mem_limit: 96m
     memswap_limit: 96m

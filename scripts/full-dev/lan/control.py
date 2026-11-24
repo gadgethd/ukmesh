@@ -16,7 +16,7 @@ from target_lease import target_lease
 from target_safety import changing, inspect_snapshot, read_intent, target_values
 
 RUNTIME = STATE / 'runtime' / 'lan'
-ROUTES = HERE / 'routes.json'
+ROUTES = HERE / 'site' / 'routes.json'
 PRIVATE_LANS = tuple(ipaddress.ip_network(network) for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
 
 
