@@ -45,7 +45,8 @@ export function createPublicRamSource(deps: {
     }
     if (getRamIngestMode() !== 'ram') { res.sendStatus(503); return; }
     try {
-      const batch = (await read()).filter(({ id }) => compareIds(id, after) > 0).slice(0, limit);
+      const candidates = (await read()).filter(({ id }) => compareIds(id, after) > 0);
+      const batch = candidates.slice(0, limit);
       const policy = await loadPolicy();
       if (!policy) { res.sendStatus(503); return; }
       const entries = batch.filter(({ entry }) => policy.classify({
@@ -53,7 +54,8 @@ export function createPublicRamSource(deps: {
         pathHashes: entry.input.pathHashes, pathHashSizeBytes: entry.input.pathHashSizeBytes,
       }).visibilityOk).map(({ id, entry }) => ({ id,
         value: encodePendingEntry({ ...entry, visibilityOk: true, isPrivate: false }) }));
-      res.json({ generation: policy.currentGeneration, entries, nextCursor: batch.at(-1)?.id ?? after });
+      res.json({ generation: policy.currentGeneration, entries,
+        nextCursor: batch.at(-1)?.id ?? after, hasMore: candidates.length > limit });
     } catch { res.sendStatus(503); }
   });
   return router;

@@ -35,9 +35,11 @@ class FakeCache {
     return this.values.delete(requestUrl(request, this.origin));
   }
 
-  async keys(): Promise<Request[]> {
+  async keys(request?: RequestLike, options?: { ignoreSearch?: boolean }): Promise<Request[]> {
     this.keysCalls += 1;
-    return [...this.values.keys()].map((url) => new Request(url));
+    const requestKey = (url: string) => options?.ignoreSearch ? url.split('?')[0] : url;
+    const match = request && requestKey(requestUrl(request, this.origin));
+    return [...this.values.keys()].filter((url) => !match || requestKey(url) === match).map((url) => new Request(url));
   }
 }
 
@@ -426,9 +428,16 @@ test('CoreScope versioned assets work offline and companion data stays network o
   const asset = new Request('https://mesh.test/corescope/static/map.js?v=1002');
   assert.equal(runtime.shouldHandle(asset), true);
   assert.equal(await (await runtime.handleFetch(asset)).text(), 'CoreScope script');
+  for (const version of [1003, 1004]) {
+    await runtime.handleFetch(new Request(`https://mesh.test/corescope/static/map.js?v=${version}`));
+  }
+  const cache = await fixture.cacheStorage.open(String(runtime.policy['appCache']));
+  assert.equal(await cache.match(asset), undefined, 'the third companion release expires the oldest path version');
   online = false;
-  assert.equal(await (await runtime.handleFetch(asset)).text(), 'CoreScope script');
+  assert.equal(await (await runtime.handleFetch(new Request('https://mesh.test/corescope/static/map.js?v=1003'))).text(),
+    'CoreScope script');
   assert.equal(runtime.shouldHandle(new Request('https://mesh.test/corescope/static/map.js')), false);
+  assert.equal(runtime.shouldHandle(new Request('https://mesh.test/corescope/static/map.js?v=1003&extra=1')), false);
   for (const path of ['/corescope/config.js', '/corescope/api/nodes', '/beacon/readyz',
     '/beacon/api/v1/channels/1/messages', '/rf-coverage/tiles/nodes/node/0-0.png', '/api/nodes/map']) {
     assert.equal(runtime.shouldHandle({ url: 'https://mesh.test' + path, mode: 'navigate' }), false, path);

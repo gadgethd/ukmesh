@@ -28,9 +28,12 @@ test('F01/F16 credentialed public source filters current policy, pages raw curso
   const get = (path: string, authorized = true) => fetch(root + path, { headers: authorized ? { authorization: `Bearer ${token}` } : {} });
   try {
     assert.equal((await get('/entries', false)).status, 401);
-    assert.deepEqual(await (await get('/entries?limit=1')).json(), { generation: 2, entries: [], nextCursor: '10-0' });
+    assert.deepEqual(await (await get('/entries?limit=1')).json(), {
+      generation: 2, entries: [], nextCursor: '10-0', hasMore: true,
+    });
     const page = await (await get('/entries?after=10-0')).json();
     assert.equal(page.entries.length, 1); assert.equal(page.nextCursor, '11-0');
+    assert.equal(page.hasMore, false);
     assert.equal(JSON.parse(page.entries[0].value).vo, 1);
     assert.equal(JSON.parse(page.entries[0].value).d.packetHash, 'allowed');
     assert.equal((await get('/entries?limit=501')).status, 400);

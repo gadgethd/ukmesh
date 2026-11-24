@@ -45,12 +45,15 @@ function isBasemapMetadataUrl(url) {
   return isBasemapUrl(url) && !isTileUrl(url);
 }
 
+function coreScopeAssetVersion(url) {
+  return /^\/corescope\/static\/[\w./-]+\.(?:js|css|svg|png|webp|woff2?|ico)$/.test(url.pathname)
+    ? Number(/^\?v=(\d{1,14})$/.exec(url.search)?.[1]) || 0 : 0;
+}
+
 function isAppAssetUrl(url, origin) {
   const parsed = new URL(url, origin);
   if (parsed.origin !== origin) return false;
-  if (/^\/corescope\/static\/[\w./-]+\.(?:js|css|svg|png|webp|woff2?|ico)$/.test(parsed.pathname)) {
-    return /^\d{1,14}$/.test(parsed.searchParams.get('v') ?? '');
-  }
+  if (coreScopeAssetVersion(parsed)) return true;
   if (!parsed.pathname.startsWith('/assets/')) return false;
   // MapLibre's worker bundle keeps a stable filename across releases; caching
   // it forever pairs a new page bundle with an old worker. Revalidate instead.
@@ -318,6 +321,12 @@ export function createServiceWorkerRuntime(environment) {
       const response = await environment.fetch(request);
       if (response.ok && !metadataState.rollbackMode) {
         await cache.put(request, response.clone());
+        if (coreScopeAssetVersion(new URL(request.url, environment.origin))) {
+          const versions = await cache.keys(request, { ignoreSearch: true });
+          versions.sort((left, right) => coreScopeAssetVersion(new URL(right.url)) - coreScopeAssetVersion(new URL(left.url)));
+          // Keep the current companion file and one prior release for open tabs.
+          await Promise.all(versions.slice(2).map((asset) => cache.delete(asset)));
+        }
       }
       // An old tab can still request its old hashed chunks after activation.
       // Keep fallback in the previous namespace so its expiry is not extended.
