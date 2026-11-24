@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UKMesh DEV — service status</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #0b0f14; --panel: #121821; --edge: #1f2a37; --text: #d7e1ec;
+    --muted: #7d8ea3; --up: #3ddc84; --down: #ff5d5d; --warn: #f5b83d; --link: #66b3ff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: radial-gradient(1200px 500px at 50% -200px, #132030, var(--bg));
+         color: var(--text); font: 15px/1.5 system-ui, -apple-system, Segoe UI, sans-serif; }
+  header { padding: 28px 24px 8px; max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: .2px; }
+  .sub { color: var(--muted); font-size: 13px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .sub b { color: var(--text); font-weight: 600; }
+  main { max-width: 1180px; margin: 0 auto; padding: 12px 24px 48px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.2px; color: var(--muted);
+       margin: 26px 0 10px; border-bottom: 1px solid var(--edge); padding-bottom: 8px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 12px; }
+  a.card { display: block; text-decoration: none; color: inherit; background: var(--panel);
+           border: 1px solid var(--edge); border-radius: 12px; padding: 14px 16px;
+           transition: border-color .15s, transform .15s; position: relative; }
+  a.card:hover { border-color: #2f4a66; transform: translateY(-1px); }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .name { font-weight: 600; font-size: 15px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600;
+          padding: 3px 9px; border-radius: 999px; border: 1px solid var(--edge); color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .up .dot { background: var(--up); box-shadow: 0 0 8px var(--up); }
+  .down .dot { background: var(--down); box-shadow: 0 0 8px var(--down); }
+  .warn .dot { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+  .up { color: var(--up); } .down { color: var(--down); } .warn { color: var(--warn); }
+  .note { color: var(--muted); font-size: 12.5px; margin: 6px 0 10px; min-height: 18px; }
+  .meta { display: flex; gap: 12px; font-size: 12px; color: var(--muted); }
+  .meta b { color: var(--text); font-weight: 600; }
+  .port { color: var(--link); font-variant-numeric: tabular-nums; }
+  footer { max-width: 1180px; margin: 0 auto; padding: 0 24px 30px; color: var(--muted); font-size: 12px; }
+  .refresh { background: none; border: 1px solid var(--edge); color: var(--text); border-radius: 8px;
+             padding: 5px 12px; font: inherit; font-size: 12px; cursor: pointer; }
+  .refresh:hover { border-color: #2f4a66; }
+  .banner { display: none; margin: 12px 0 0; padding: 8px 12px; border-radius: 8px;
+            background: #2a1a12; border: 1px solid #5a3620; color: #f5b83d; font-size: 13px; }
+  .banner.show { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <h1>UKMesh DEV — service status</h1>
+  <div class="sub">
+    <span>auto-refresh <b>5s</b></span>
+    <span>last check <b id="at">—</b></span>
+    <span id="counts">—</span>
+    <button class="refresh" id="refresh" type="button">Refresh now</button>
+  </div>
+  <div class="banner" id="banner">Status API unreachable — the dashboard container itself may be restarting.</div>
+</header>
+<main>
+  <div id="root"></div>
+</main>
+<footer>Links open the service on this host at the shown port. The dashboard checks each service from inside the DEV network.</footer>
+<script>
+  const host = location.hostname;
+  const groups = { main: 'Applications', companions: 'Companions', observability: 'Observability' };
+  let refreshing = false;
+
+  function msLabel(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms'; }
+
+  function render(data) {
+    const root = document.getElementById('root');
+    root.innerHTML = '';
+    for (const [key, label] of Object.entries(groups)) {
+      const rows = data.targets.filter((t) => t.group === key);
+      if (!rows.length) continue;
+      const h = document.createElement('h2');
+      h.textContent = label;
+      root.appendChild(h);
+      const grid = document.createElement('div');
+      grid.className = 'grid';
+      for (const t of rows) {
+        const a = document.createElement('a');
+        a.className = 'card';
+        a.href = `http://${host}:${t.port}/`;
+        a.target = '_blank';
+        a.rel = 'noreferrer';
+        const state = !t.up ? 'down' : (t.ms > 1000 ? 'warn' : 'up');
+        a.innerHTML = `
+          <div class="top">
+            <span class="name">${t.name}</span>
+            <span class="pill ${state}"><span class="dot"></span>${t.up ? 'up' : 'down'}</span>
+          </div>
+          <div class="note">${t.note}</div>
+          <div class="meta">
+            <span class="port">:${t.port}</span>
+            <span>${t.status ?? '—'}</span>
+            <span>${msLabel(t.ms)}</span>
+            ${t.error ? `<span title="${t.error}">${t.error}</span>` : ''}
+          </div>`;
+        grid.appendChild(a);
+      }
+      root.appendChild(grid);
+    }
+    document.getElementById('at').textContent = new Date(data.at).toLocaleTimeString();
+    const up = data.targets.filter((t) => t.up).length;
+    document.getElementById('counts').innerHTML = `<b>${up}</b>/${data.targets.length} up`;
+    document.getElementById('banner').classList.remove('show');
+  }
+
+  async function tick() {
+    if (refreshing) return;
+    refreshing = true;
+    try {
+      const response = await fetch('/api/status', { cache: 'no-store' });
+      if (!response.ok) throw new Error('status ' + response.status);
+      render(await response.json());
+    } catch (error) {
+      document.getElementById('banner').classList.add('show');
+    } finally {
+      refreshing = false;
+    }
+  }
+
+  document.getElementById('refresh').addEventListener('click', tick);
+  tick();
+  setInterval(tick, 5000);
+</script>
+</body>
+</html>

@@ -23,10 +23,10 @@ action=${1:-start}
 service=${2:-}
 case "$action" in
   help|--help)
-    echo 'scripts/dev-all.sh [start|companions|build|status|stop|logs [SERVICE]|restart SERVICE|init|qualify PHASE|hot ukmesh|hot beacon-web]'
+    echo 'scripts/dev-all.sh [start|companions|build|status|stop|logs [SERVICE]|restart SERVICE|init|qualify PHASE|lan start [IP]|lan stop|lan status|hot ukmesh|hot beacon-web]'
     echo 'start runs the complete lean stack. stop retains stores. hot enables editing; start restores built assets.'
     exit 0 ;;
-  start|companions|build|status|stop|logs|restart|init|qualify|hot) ;;
+  start|companions|build|status|stop|logs|restart|init|qualify|lan|hot) ;;
   *) echo "Unknown action: $action" >&2; exit 2 ;;
 esac
 state="$repo/plans/companion-dev"
@@ -42,6 +42,27 @@ fi
 case "$action" in
   init|companions) exec bash "$repo/scripts/companion-dev/control.sh" "$@" ;;
   qualify) shift; exec bash "$repo/scripts/qualify-full-stack.sh" "${@:-all}" ;;
+  lan)
+    control="$repo/scripts/full-dev/lan/control.py"
+    refresh_lan_origins() {
+      local component
+      for component in backend mesh-health-check; do
+        bash "$repo/scripts/full-dev/control.sh" restart "$component" || return
+      done
+    }
+    case "$service" in
+      start)
+        python3 "$control" prepare "${3:-127.0.0.1}"
+        if refresh_lan_origins && python3 "$control" up; then exit 0; fi
+        if python3 "$control" stop; then refresh_lan_origins; fi
+        exit 1 ;;
+      stop)
+        python3 "$control" stop
+        refresh_lan_origins ;;
+      status) exec python3 "$control" status ;;
+      *) echo 'lan supports start [IP], stop or status' >&2; exit 2 ;;
+    esac ;;
+
   build|start|status)
     bash "$repo/scripts/full-dev/control.sh" "$action"
     exec bash "$repo/scripts/companion-dev/control.sh" "$action" ;;

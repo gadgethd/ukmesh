@@ -59,7 +59,8 @@ class LocalMemoryPolicy(unittest.TestCase):
             'shared_preload_libraries': 'timescaledb,pg_stat_statements',
             'max_parallel_workers_per_gather': '0', 'max_connections': '100',
             'shared_buffers': '128MB', 'maintenance_work_mem': '64MB',
-            'autovacuum_work_mem': '32MB', 'wal_compression': 'lz4',
+            'autovacuum_work_mem': '16MB', 'work_mem': '4MB', 'autovacuum_max_workers': '4',
+            'max_worker_processes': '28', 'timescaledb.max_background_workers': '21', 'wal_compression': 'lz4',
         })
         self.assertEqual(database['image'], 'timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509')
         self.assertEqual(float(database['cpus']), 2.5)
@@ -170,8 +171,8 @@ class LocalMemoryPolicy(unittest.TestCase):
 
     def test_all_companion_caps_include_build_and_migration_jobs(self):
         self.check_pairs(compose('scripts/companion-dev/compose.yml'),{
-            'build':1200,'beacon-db':512,'beacon-redis':128,'corescope-ingestor':384,
-            'corescope':384,'beacon-migrate':256,'beacon':384,'web-build':1200,'beacon-web':48})
+            'build':1200,'beacon-db':512,'beacon-redis':128,'corescope-ingestor':256,
+            'corescope':512,'beacon-migrate':256,'beacon':384,'web-build':1200,'beacon-web':48})
 
     def test_full_overlay_helpers_and_all_required_main_caps_are_paired(self):
         services=compose('docker-compose.yml','scripts/full-dev/compose.yml')

@@ -294,6 +294,7 @@ services:
       PATH_LEARNING_RUN_DEADLINE_MS: ${PATH_LEARNING_RUN_DEADLINE_MS:-2700000}
       PATH_LEARNING_INTERVAL_MS: ${PATH_LEARNING_INTERVAL_MS:-3600000}
       NODE_ENV: production
+      NODE_OPTIONS: ${PATH_LEARNING_NODE_OPTIONS:---max-old-space-size=192 --max-semi-space-size=8}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -331,6 +332,7 @@ services:
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: ${DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256:-}
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
       NODE_ENV: production
+      NODE_OPTIONS: ${HEALTH_WORKER_NODE_OPTIONS:---max-old-space-size=96 --max-semi-space-size=8}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -366,6 +368,8 @@ services:
       TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}
       PYTHONDONTWRITEBYTECODE: "1"
 
+      MALLOC_ARENA_MAX: 2
+      MALLOC_TRIM_THRESHOLD_: 131072
   region-snapshot-worker:
     <<: [*internal-hosts, *application-hardening]
     image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
@@ -422,6 +426,7 @@ services:
       PRIVACY_REMAT_MAX_ATTEMPTS: ${PRIVACY_REMAT_MAX_ATTEMPTS:-8}
       PRIVACY_REMAT_CHUNK_PAUSE_MS: ${PRIVACY_REMAT_CHUNK_PAUSE_MS:-500}
       NODE_ENV: production
+      NODE_OPTIONS: ${PRIVACY_REMAT_NODE_OPTIONS:---max-old-space-size=96 --max-semi-space-size=8}
     depends_on:
       db-migrate:
         condition: service_completed_successfully
@@ -453,6 +458,7 @@ services:
       ALERT_WEBHOOK_URL: ${ALERT_WEBHOOK_URL:-http://alert-receiver:8080/alerts}
       ALERT_RECEIVER_TOKEN: ${ALERT_RECEIVER_TOKEN:-}
       NODE_ENV: production
+      NODE_OPTIONS: ${SYNTHETIC_NODE_OPTIONS:---max-old-space-size=96 --max-semi-space-size=8}
     volumes:
       - synthetic_alert_data:/var/lib/meshcore-synthetic
     depends_on:
@@ -524,6 +530,8 @@ services:
       LINK_QUEUE_V3_DEAD_RETENTION_MS: ${LINK_QUEUE_V3_DEAD_RETENTION_MS:-2592000000}
       SRTM_MAX_LINK_TILES: ${SRTM_MAX_LINK_TILES:-64}
       SRTM_CACHE_MAX_BYTES: ${SRTM_CACHE_MAX_BYTES:-21474836480}
+      MALLOC_ARENA_MAX: 2
+      MALLOC_TRIM_THRESHOLD_: 131072
     volumes:
       - srtm_data:/data/srtm
     healthcheck:
@@ -892,6 +900,9 @@ services:
     logging: *service-journal
     mem_limit: &loki-memory "${LOKI_MEMORY_LIMIT:-192m}"
     memswap_limit: *loki-memory
+    environment:
+      GOGC: ${LOKI_GOGC:-50}
+      GOMEMLIMIT: ${LOKI_GOMEMLIMIT:-140MiB}
     command: -config.file=/etc/loki/loki.yaml
     read_only: true
     cap_drop:

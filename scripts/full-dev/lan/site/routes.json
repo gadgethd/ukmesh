@@ -1,0 +1,11 @@
+[
+  {"id":"ukmesh","name":"MeshCore app","port":8081,"group":"main","upstream":"http://app-ukmesh:8080","probe":"/readyz","origin":"app","access":"app","note":"Primary UKMesh application"},
+  {"id":"corescope","name":"CoreScope","port":8082,"group":"companions","upstream":"http://corescope:3000","probe":"/api/healthz","access":"app","note":"Packet analytics","operator_paths":["/api/debug/affinity","/api/dropped-packets","/api/backup"],"operator_methods":[["POST","/api/perf/reset"],["PUT","/api/config/geo-filter"]]},
+  {"id":"website","name":"UKMesh website","port":8083,"group":"main","upstream":"http://website-ukmesh:8080","probe":"/readyz","origin":"app","access":"app","note":"Public map and feed"},
+  {"id":"beacon-web","name":"Beacon web","port":8084,"group":"companions","upstream":"http://beacon-web:8080","probe":"/api/v1/info","access":"app","note":"Beacon companion UI"},
+  {"id":"grafana","name":"Grafana","port":8085,"group":"observability","upstream":"http://grafana:3000","probe":"/api/health","access":"operator","note":"Dashboards"},
+  {"id":"prometheus","name":"Prometheus","port":8086,"group":"observability","upstream":"http://prometheus:9090","probe":"/-/ready","access":"operator","note":"Metrics"},
+  {"id":"website-dev","name":"Website (dev)","port":8087,"group":"main","upstream":"http://website-dev:8080","probe":"/readyz","origin":"app","access":"app","note":"Development website"},
+  {"id":"beacon-api","name":"Beacon API","port":8088,"group":"companions","upstream":"http://beacon:8080","probe":"/api/v1/info","access":"operator","note":"Direct API access"},
+  {"id":"health","name":"Mesh health check","port":8089,"group":"observability","upstream":"http://mesh-health-check:3090","probe":"/","origin":"health","access":"app","note":"Health checks"}
+]

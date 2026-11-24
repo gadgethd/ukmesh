@@ -424,11 +424,12 @@ def main() -> int:
     parser.add_argument("--run")
     args = parser.parse_args()
     try:
-        if args.action == "create":
-            result = create_bundle(args.name or "sample", owned_run(args.run))
+        if args.action in ("create", "clone"):
+            if args.action == "create":
+                result = create_bundle(args.name or "sample", owned_run(args.run))
+            else:
+                result = clone_bundle(args.name or "")
             result['fixture_maintenance'] = stagger_fixture_maintenance()
-        elif args.action == "clone":
-            result = clone_bundle(args.name or "")
         elif args.action == "switch":
             result = switch(args.name or "")
         elif args.action == "restore":

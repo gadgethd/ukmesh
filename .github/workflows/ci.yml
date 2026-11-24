@@ -323,6 +323,13 @@ jobs:
           python -m pip install -r scripts/requirements-checks.txt
           python -m unittest discover -s scripts -p 'test_postgres_shm.py' -v
           python scripts/check-postgres-shm.py
+      - name: Check the local DEV memory and log policy
+        run: |
+          python -B -m unittest discover -s scripts/full-dev -p test_memory_policy.py -v
+          python -B -m unittest discover -s scripts/full-dev/qualification -p test_runtime_logs.py -v
+          python -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_resume.py -v
+          python -B -m unittest discover -s scripts/full-dev/lan -p test_policy.py -v
+          node --test scripts/full-dev/lan/site/status.test.mjs
       - name: Test operator scripts
         working-directory: scripts
         run: |

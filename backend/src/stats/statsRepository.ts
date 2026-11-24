@@ -167,6 +167,24 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     activeQueries = Math.max(0, activeQueries - 1);
   };
 
+  function enforceQueryBudget(source: string, returnedRows: number, durationMs?: number) {
+    if ((durationMs ?? 0) <= queryBudgetMs && returnedRows <= maxResultRows) return;
+    console.error('[stats-query-budget] exceeded', {
+      source,
+      durationMs,
+      durationBudgetMs: queryBudgetMs,
+      returnedRows,
+      returnedRowBudget: maxResultRows,
+    });
+    throw new Error('STATS_QUERY_BUDGET_EXCEEDED');
+  }
+
+  function chartRows<T extends QueryResultRow>(name: string, value: T[] | undefined): T[] {
+    const rows = value ?? [];
+    enforceQueryBudget(name, rows.length);
+    return rows;
+  }
+
   const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
     text: string,
     params?: unknown[],
@@ -190,16 +208,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       const result = await deps.query<T>(text, params, controller.signal);
       const durationMs = Math.round(performance.now() - startedAt);
       const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-      if (durationMs > queryBudgetMs || result.rows.length > maxResultRows) {
-        console.error('[stats-query-budget] exceeded', {
-          source,
-          durationMs,
-          durationBudgetMs: queryBudgetMs,
-          returnedRows: result.rows.length,
-          returnedRowBudget: maxResultRows,
-        });
-        throw new Error('STATS_QUERY_BUDGET_EXCEEDED');
-      }
+      enforceQueryBudget(source, result.rows.length, durationMs);
       return result;
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
@@ -340,6 +349,26 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     transportCodes: QueryResultRow[];
   };
 
+  type ChartCountRow = {
+    packets_per_hour: QueryResultRow[];
+    packets_per_day: QueryResultRow[];
+    packet_types: QueryResultRow[];
+    hop_distribution: QueryResultRow[];
+    route_types: QueryResultRow[];
+    transport_codes: QueryResultRow[];
+  };
+
+  function unpackChartCounts(row: ChartCountRow | undefined): AggregateChartParts {
+    return {
+      packetsPerHour: chartRows('packets_per_hour', row?.packets_per_hour),
+      packetsPerDay: chartRows('packets_per_day', row?.packets_per_day),
+      packetTypes: chartRows('packet_types', row?.packet_types),
+      hopDistribution: chartRows('hop_distribution', row?.hop_distribution),
+      routeTypes: chartRows('route_types', row?.route_types),
+      transportCodes: chartRows('transport_codes', row?.transport_codes),
+    };
+  }
+
   // Compose already forwards these two settings. Preserve `true` as global
   // enablement while allowing a comma-separated per-network rollout.
   const readSwitch = String(process.env['STATS_AGGREGATE_READS_ENABLED'] ?? '').trim().toLowerCase();
@@ -415,14 +444,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const fullStart24hParam = `$${firstBoundParam + 3}`;
     const fullStart7dParam = `$${firstBoundParam + 4}`;
     const fullEndParam = `$${firstBoundParam + 5}`;
-    const result = await query<{
-      packets_per_hour: QueryResultRow[];
-      packets_per_day: QueryResultRow[];
-      packet_types: QueryResultRow[];
-      hop_distribution: QueryResultRow[];
-      route_types: QueryResultRow[];
-      transport_codes: QueryResultRow[];
-    }>(
+    const result = await query<ChartCountRow>(
       `WITH rollup_24h AS (
          SELECT
            s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
@@ -610,15 +632,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       ],
       signal,
     );
-    const row = result.rows[0];
-    return {
-      packetsPerHour: row?.packets_per_hour ?? [],
-      packetsPerDay: row?.packets_per_day ?? [],
-      packetTypes: row?.packet_types ?? [],
-      hopDistribution: row?.hop_distribution ?? [],
-      routeTypes: row?.route_types ?? [],
-      transportCodes: row?.transport_codes ?? [],
-    };
+    return unpackChartCounts(result.rows[0]);
   }
 
   async function fetchLegacyAggregateChartParts(
@@ -631,14 +645,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const asOfParam = `$${firstBoundParam}`;
     const start24hParam = `$${firstBoundParam + 1}`;
     const start7dParam = `$${firstBoundParam + 2}`;
-    const result = await query<{
-      packets_per_hour: QueryResultRow[];
-      packets_per_day: QueryResultRow[];
-      packet_types: QueryResultRow[];
-      hop_distribution: QueryResultRow[];
-      route_types: QueryResultRow[];
-      transport_codes: QueryResultRow[];
-    }>(
+    const result = await query<ChartCountRow>(
       `WITH scoped AS MATERIALIZED (
          SELECT
            p.time,
@@ -748,14 +755,407 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         bounds.start7d.toISOString(),
       ],
     );
+    return unpackChartCounts(result.rows[0]);
+  }
+
+  // One 7-day scoped scan serves the six switchable legacy chart parts. The
+  // per-part expressions, casts and orderings match the original individual
+  // queries; downstream CTEs alias the materialized base as p so the window
+  // and bucket semantics stay identical. Started lazily only when aggregate
+  // reads are off (or observer-scoped), never alongside an aggregate read.
+  async function fetchLegacyChartCounts(
+    network: string | undefined,
+    observer: string | undefined,
+    queryFn: QueryFn,
+  ): Promise<AggregateChartParts> {
+    const filters = networkFilters(network, observer);
+    const result = await queryFn<ChartCountRow>(
+      `WITH scoped AS MATERIALIZED (
+         SELECT p.time, p.packet_type, p.hop_count, p.route_type,
+                NULLIF(TRIM(p.transport_codes), '') AS transport_code,
+                NULLIF(TRIM(p.region_scope), '') AS region_scope
+         FROM mesh.packets p
+         WHERE p.time > NOW() - INTERVAL '7 days'
+           ${filters.packetsAlias('p')}
+       ),
+       hour_counts AS (
+         SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+         GROUP BY 1
+       ),
+       hour_buckets AS (
+         SELECT generate_series(
+           date_trunc('hour', NOW() - INTERVAL '24 hours'),
+           date_trunc('hour', NOW()),
+           INTERVAL '1 hour'
+         ) AS bucket
+       ),
+       day_counts AS (
+         SELECT time_bucket('1 day', p.time) AS day, COUNT(*) AS count
+         FROM scoped p
+         GROUP BY 1
+       ),
+       packet_types AS (
+         SELECT p.packet_type, COUNT(*) AS count
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+         GROUP BY p.packet_type
+       ),
+       hop_counts AS (
+         SELECT p.hop_count AS hops, COUNT(*) AS count
+         FROM scoped p
+         WHERE p.hop_count IS NOT NULL
+         GROUP BY p.hop_count
+       ),
+       route_counts AS (
+         SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(*) AS count
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+         GROUP BY p.route_type
+       ),
+       transport_counts AS (
+         SELECT p.transport_code, p.region_scope, COUNT(*) AS count
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND p.transport_code IS NOT NULL
+         GROUP BY p.transport_code, p.region_scope
+         ORDER BY count DESC, region_scope ASC, transport_code ASC
+         LIMIT 12
+       )
+       SELECT
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hour', b.bucket, 'count', COALESCE(h.count, 0))
+             ORDER BY b.bucket
+           )
+           FROM hour_buckets b
+           LEFT JOIN hour_counts h USING (bucket)
+         ), '[]'::jsonb) AS packets_per_hour,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('day', day, 'count', count::text)
+             ORDER BY day
+           ) FROM day_counts
+         ), '[]'::jsonb) AS packets_per_day,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('packet_type', packet_type, 'count', count::text)
+             ORDER BY count DESC
+           ) FROM packet_types
+         ), '[]'::jsonb) AS packet_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hops', hops, 'count', count::text)
+             ORDER BY hops
+           ) FROM hop_counts
+         ), '[]'::jsonb) AS hop_distribution,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('route_type', route_type, 'count', count::text)
+             ORDER BY count DESC, route_type
+           ) FROM route_counts
+         ), '[]'::jsonb) AS route_types,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object(
+               'transport_code', transport_code,
+               'region_scope', region_scope,
+               'count', count::text
+             )
+             ORDER BY count DESC, region_scope, transport_code
+           ) FROM transport_counts
+         ), '[]'::jsonb) AS transport_codes`,
+      filters.params,
+    );
+    return unpackChartCounts(result.rows[0]);
+  }
+
+  // Radio distinct counts and packet totals share one 7-day scan with the
+  // source identity alias join. The alias relation's source_node_id primary
+  // key makes the join 1:1, so COUNT(*) totals equal the original unjoined
+  // counts exactly.
+  async function fetchRadiosAndTotals(
+    network: string | undefined,
+    observer: string | undefined,
+    queryFn: QueryFn,
+  ): Promise<{
+    total_24h: string;
+    total_7d: string;
+    unique_radios_24h: string;
+    radios_per_hour: QueryResultRow[];
+    radios_per_day: QueryResultRow[];
+  }> {
+    const filters = networkFilters(network, observer);
+    const result = await queryFn<{
+      total_24h: string;
+      total_7d: string;
+      unique_radios_24h: string;
+      radios_per_hour: QueryResultRow[];
+      radios_per_day: QueryResultRow[];
+    }>(
+      `WITH scoped AS MATERIALIZED (
+         SELECT p.time,
+                p.src_node_id,
+                COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_id
+         FROM mesh.packets p
+         LEFT JOIN core.node_identity_aliases src_alias
+           ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
+         WHERE p.time > NOW() - INTERVAL '7 days'
+           ${filters.packetsAlias('p')}
+       ),
+       hour_counts AS (
+         SELECT time_bucket('1 hour', p.time) AS bucket,
+                COUNT(DISTINCT p.src_id)::int AS count
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND p.src_node_id IS NOT NULL
+         GROUP BY 1
+       ),
+       hour_buckets AS (
+         SELECT generate_series(
+           date_trunc('hour', NOW() - INTERVAL '24 hours'),
+           date_trunc('hour', NOW()),
+           INTERVAL '1 hour'
+         ) AS bucket
+       ),
+       day_counts AS (
+         SELECT time_bucket('1 day', p.time) AS day,
+                COUNT(DISTINCT p.src_id) AS count
+         FROM scoped p
+         WHERE p.src_node_id IS NOT NULL
+         GROUP BY 1
+       )
+       SELECT
+         (SELECT COUNT(*)::text FROM scoped WHERE time > NOW() - INTERVAL '24 hours') AS total_24h,
+         (SELECT COUNT(*)::text FROM scoped) AS total_7d,
+         (SELECT COUNT(DISTINCT src_id)::text FROM scoped
+           WHERE time > NOW() - INTERVAL '24 hours' AND src_node_id IS NOT NULL) AS unique_radios_24h,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hour', b.bucket, 'count', COALESCE(h.count, 0))
+             ORDER BY b.bucket
+           )
+           FROM hour_buckets b
+           LEFT JOIN hour_counts h USING (bucket)
+         ), '[]'::jsonb) AS radios_per_hour,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('day', day, 'count', count::text)
+             ORDER BY day
+           ) FROM day_counts
+         ), '[]'::jsonb) AS radios_per_day`,
+      filters.params,
+    );
     const row = result.rows[0];
     return {
-      packetsPerHour: row?.packets_per_hour ?? [],
-      packetsPerDay: row?.packets_per_day ?? [],
-      packetTypes: row?.packet_types ?? [],
-      hopDistribution: row?.hop_distribution ?? [],
-      routeTypes: row?.route_types ?? [],
-      transportCodes: row?.transport_codes ?? [],
+      total_24h: row?.total_24h ?? '0',
+      total_7d: row?.total_7d ?? '0',
+      unique_radios_24h: row?.unique_radios_24h ?? '0',
+      radios_per_hour: chartRows('radios_per_hour', row?.radios_per_hour),
+      radios_per_day: chartRows('radios_per_day', row?.radios_per_day),
+    };
+  }
+
+  // Prefix collisions and hash-width distribution share one 24-hour unnest.
+  // Collisions keep the original TRIM filter, HAVING and top-10 ordering;
+  // widths keep counting every unnested element (including empty strings).
+  async function fetchPathHashParts(
+    network: string | undefined,
+    observer: string | undefined,
+    queryFn: QueryFn,
+  ): Promise<{
+    prefix_collisions: QueryResultRow[];
+    hash_widths: QueryResultRow[];
+  }> {
+    const filters = networkFilters(network, observer);
+    const result = await queryFn<{
+      prefix_collisions: QueryResultRow[];
+      hash_widths: QueryResultRow[];
+    }>(
+      `WITH hashes AS MATERIALIZED (
+         SELECT h
+         FROM (
+           SELECT p.path_hashes
+           FROM mesh.packets p
+           WHERE p.time > NOW() - INTERVAL '24 hours'
+             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
+             ${filters.packetsAlias('p')}
+         ) p
+         CROSS JOIN LATERAL unnest(p.path_hashes) AS h
+       ),
+       prefix_counts AS (
+         SELECT UPPER(h) AS prefix, COUNT(*)::int AS node_count
+         FROM hashes
+         WHERE NULLIF(TRIM(h), '') IS NOT NULL
+         GROUP BY 1
+         HAVING COUNT(*) > 1
+       ),
+       widths AS (
+         SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
+         FROM hashes
+         GROUP BY 1
+       )
+       SELECT
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('prefix', prefix, 'repeats', node_count)
+             ORDER BY node_count DESC, prefix ASC
+           )
+           FROM (
+             SELECT prefix, node_count
+             FROM prefix_counts
+             ORDER BY node_count DESC, prefix ASC
+             LIMIT 10
+           ) top_prefixes
+         ), '[]'::jsonb) AS prefix_collisions,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('hash_hex_len', hash_hex_len, 'hop_count', hop_count)
+           ) FROM widths
+         ), '[]'::jsonb) AS hash_widths`,
+      filters.params,
+    );
+    const row = result.rows[0];
+    return {
+      prefix_collisions: chartRows('prefix_collisions', row?.prefix_collisions),
+      hash_widths: chartRows('hash_widths', row?.hash_widths),
+    };
+  }
+
+  // Region summary/series, observer diversity and signal quality share one
+  // 7-day scan with the receiver identity alias join (1:1 by primary key).
+  // region_summary replicates fetchObserverRegionSummary's exact expressions,
+  // ordering and text casts; the standalone function remains for other callers.
+  async function fetchRegionReceptionParts(
+    network: string | undefined,
+    observer: string | undefined,
+    queryFn: QueryFn,
+  ): Promise<{
+    region_summary: QueryResultRow[];
+    region_series: QueryResultRow[];
+    observer_diversity: QueryResultRow;
+    signal_summary: QueryResultRow;
+  }> {
+    const filters = networkFilters(network, observer);
+    const result = await queryFn<{
+      region_summary: QueryResultRow[];
+      region_series: QueryResultRow[];
+      observer_diversity: QueryResultRow;
+      signal_summary: QueryResultRow;
+    }>(
+      `WITH scoped AS MATERIALIZED (
+         SELECT p.time,
+                p.packet_hash,
+                COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
+                p.rx_node_id AS rx_raw,
+                COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_id,
+                p.rssi,
+                p.snr
+         FROM mesh.packets p
+         LEFT JOIN core.node_identity_aliases rx_alias
+           ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
+         WHERE p.time > NOW() - INTERVAL '7 days'
+           ${filters.packetsAlias('p')}
+       ),
+       observations AS (
+         SELECT iata, packet_hash, rx_id AS observer_id, time
+         FROM scoped
+         WHERE rx_raw IS NOT NULL
+           AND rx_raw <> ''
+           AND rx_raw ~ '^[0-9A-Fa-f]{64}$'
+       ),
+       region_activity AS (
+         SELECT iata, packet_hash, observer_id, GROUPING(packet_hash) AS observer_group, MAX(time) AS last_seen
+         FROM observations
+         GROUP BY GROUPING SETS ((iata, packet_hash), (iata, observer_id))
+       ),
+       region_summary AS (
+         SELECT
+           iata,
+           COUNT(packet_hash) FILTER (WHERE observer_group = 0 AND last_seen > NOW() - INTERVAL '24 hours') AS packets_24h,
+           COUNT(packet_hash) FILTER (WHERE observer_group = 0) AS packets_7d,
+           COUNT(observer_id) FILTER (WHERE observer_group = 1 AND last_seen > NOW() - INTERVAL '1 minute') AS active_observers,
+           COUNT(observer_id) FILTER (WHERE observer_group = 1) AS observers,
+           MAX(last_seen)::text AS last_packet_at
+         FROM region_activity
+         GROUP BY iata
+       ),
+       region_series AS (
+         SELECT iata, time_bucket('1 day', time) AS day, COUNT(DISTINCT packet_hash) AS count
+         FROM observations
+         GROUP BY 1, 2
+       ),
+       per_packet AS (
+         SELECT packet_hash, COUNT(DISTINCT rx_id)::int AS observer_count
+         FROM scoped
+         WHERE time > NOW() - INTERVAL '24 hours'
+           AND packet_hash IS NOT NULL
+           AND rx_raw IS NOT NULL
+         GROUP BY packet_hash
+       ),
+       diversity AS (
+         SELECT
+           AVG(observer_count)::text AS avg_observers,
+           MAX(observer_count)::text AS max_observers,
+           COUNT(*)::text AS total_packets,
+           COUNT(*) FILTER (WHERE observer_count = 1)::text AS single_observer_packets
+         FROM per_packet
+       ),
+       signal AS (
+         SELECT
+           AVG(p.rssi)::text AS avg_rssi,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.rssi)::text AS median_rssi,
+           AVG(p.snr)::text AS avg_snr,
+           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.snr)::text AS median_snr,
+           COUNT(p.rssi)::text AS rssi_samples,
+           COUNT(p.snr)::text AS snr_samples
+         FROM scoped p
+         WHERE p.time > NOW() - INTERVAL '24 hours'
+           AND (p.rssi IS NOT NULL OR p.snr IS NOT NULL)
+       )
+       SELECT
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object(
+               'iata', iata,
+               'packets_24h', packets_24h::text,
+               'packets_7d', packets_7d::text,
+               'active_observers', active_observers::text,
+               'observers', observers::text,
+               'last_packet_at', last_packet_at
+             )
+             ORDER BY packets_7d DESC, iata ASC
+           ) FROM region_summary
+         ), '[]'::jsonb) AS region_summary,
+         COALESCE((
+           SELECT jsonb_agg(
+             jsonb_build_object('iata', iata, 'day', day, 'count', count::text)
+             ORDER BY iata ASC, day ASC
+           ) FROM region_series
+         ), '[]'::jsonb) AS region_series,
+         (SELECT jsonb_build_object(
+           'avg_observers', avg_observers,
+           'max_observers', max_observers,
+           'total_packets', total_packets,
+           'single_observer_packets', single_observer_packets
+         ) FROM diversity) AS observer_diversity,
+         (SELECT jsonb_build_object(
+           'avg_rssi', avg_rssi,
+           'median_rssi', median_rssi,
+           'avg_snr', avg_snr,
+           'median_snr', median_snr,
+           'rssi_samples', rssi_samples,
+           'snr_samples', snr_samples
+         ) FROM signal) AS signal_summary`,
+      filters.params,
+    );
+    const row = result.rows[0];
+    return {
+      region_summary: chartRows('region_summary', row?.region_summary),
+      region_series: chartRows('region_series', row?.region_series),
+      observer_diversity: row?.observer_diversity ?? {},
+      signal_summary: row?.signal_summary ?? {},
     };
   }
 
@@ -986,6 +1386,15 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         });
     }
     const aggregateReadPartsPromise = aggregateReadsEnabled ? aggregatePartsPromise : null;
+    // The six switchable parts share one lazy legacy scan: it starts only when
+    // a legacy fallback is actually invoked, so aggregate reads never pay for it.
+    let legacyCountsPromise: Promise<AggregateChartParts> | null = null;
+    const legacyCounts = (): Promise<AggregateChartParts> => {
+      if (!legacyCountsPromise) {
+        legacyCountsPromise = fetchLegacyChartCounts(network, observer, query);
+      }
+      return legacyCountsPromise;
+    };
     const aggregateRows = (
       key: keyof AggregateChartParts,
       legacy: () => Promise<{ rows: QueryResultRow[] }>,
@@ -994,222 +1403,49 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         ? aggregateReadPartsPromise.then((parts) => ({ rows: parts[key] }))
         : legacy()
     );
+    const countsRows = (key: keyof AggregateChartParts): Promise<{ rows: QueryResultRow[] }> =>
+      aggregateRows(key, () => legacyCounts().then((parts) => ({ rows: parts[key] })));
+    // Same-snapshot scans consolidated: radios+totals, the path-hash unnest and
+    // the region/reception parts each scan once and fan out to their slots.
+    const radiosTotalsPromise = fetchRadiosAndTotals(network, observer, query);
+    const pathHashPartsPromise = fetchPathHashParts(network, observer, query);
+    const regionReceptionPromise = fetchRegionReceptionParts(network, observer, query);
 
+    const chartParts = [
+      countsRows('packetsPerHour'),
+      countsRows('packetsPerDay'),
+      radiosTotalsPromise.then((parts) => ({ rows: parts.radios_per_hour })),
+      radiosTotalsPromise.then((parts) => ({ rows: parts.radios_per_day })),
+      countsRows('packetTypes'),
+      countsRows('hopDistribution'),
+      pathHashPartsPromise.then((parts) => ({ rows: parts.prefix_collisions })),
+      radiosTotalsPromise.then((parts) => ({
+        rows: [{
+          total_24h: parts.total_24h,
+          total_7d: parts.total_7d,
+          unique_radios_24h: parts.unique_radios_24h,
+        }],
+      })),
+      regionReceptionPromise.then((parts) => ({ rows: parts.region_summary })),
+      regionReceptionPromise.then((parts) => ({ rows: parts.region_series })),
+      pathHashPartsPromise.then((parts) => ({ rows: parts.hash_widths })),
+      fetchMultibyteFactSummary(),
+      regionReceptionPromise.then((parts) => ({ rows: [parts.observer_diversity] })),
+      regionReceptionPromise.then((parts) => ({ rows: [parts.signal_summary] })),
+      countsRows('routeTypes'),
+      countsRows('transportCodes'),
+      fetchMultibyteFactTrend(),
+    ] as const;
     const [
       phResult, pdResult, rhResult, rdResult,
       ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
-    ] = await Promise.all([
-      aggregateRows('packetsPerHour', () => query(`
-        WITH buckets AS (
-          SELECT generate_series(
-            date_trunc('hour', NOW() - INTERVAL '24 hours'),
-            date_trunc('hour', NOW()),
-            INTERVAL '1 hour'
-          ) AS bucket
-        ),
-        counts AS (
-          SELECT time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count
-          FROM mesh.packets p
-          WHERE p.time > NOW() - INTERVAL '24 hours'
-            ${filters.packetsAlias('p')}
-          GROUP BY 1
-        )
-        SELECT b.bucket AS hour, COALESCE(c.count, 0) AS count
-        FROM buckets b
-        LEFT JOIN counts c ON c.bucket = b.bucket
-        ORDER BY b.bucket
-      `, filters.params)),
-      aggregateRows('packetsPerDay', () => query(`
-        SELECT time_bucket('1 day', time) AS day, COUNT(*) AS count
-        FROM mesh.packets
-        WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}
-        GROUP BY day ORDER BY day
-      `, filters.params)),
-      query(`
-        WITH buckets AS (
-          SELECT generate_series(
-            date_trunc('hour', NOW() - INTERVAL '24 hours'),
-            date_trunc('hour', NOW()),
-            INTERVAL '1 hour'
-          ) AS bucket
-        ),
-        counts AS (
-          SELECT time_bucket('1 hour', p.time) AS bucket,
-                 COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))::int AS count
-          FROM mesh.packets p
-          LEFT JOIN core.node_identity_aliases src_alias
-            ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-          WHERE p.time > NOW() - INTERVAL '24 hours'
-            AND p.src_node_id IS NOT NULL
-            ${filters.packetsAlias('p')}
-          GROUP BY 1
-        )
-        SELECT b.bucket AS hour, COALESCE(c.count, 0) AS count
-        FROM buckets b
-        LEFT JOIN counts c ON c.bucket = b.bucket
-        ORDER BY b.bucket
-      `, filters.params),
-      query(`
-        SELECT time_bucket('1 day', p.time) AS day,
-               COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id)))) AS count
-        FROM mesh.packets p
-        LEFT JOIN core.node_identity_aliases src_alias
-          ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-        WHERE p.time > NOW() - INTERVAL '7 days' AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}
-        GROUP BY day ORDER BY day
-      `, filters.params),
-      aggregateRows('packetTypes', () => query(`
-        SELECT packet_type, COUNT(*) AS count
-        FROM mesh.packets
-        WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}
-        GROUP BY packet_type ORDER BY count DESC
-      `, filters.params)),
-      aggregateRows('hopDistribution', () => query(`
-        SELECT hop_count AS hops, COUNT(*) AS count
-        FROM mesh.packets
-        WHERE time > NOW() - INTERVAL '7 days'
-          AND hop_count IS NOT NULL
-          ${filters.packets}
-        GROUP BY hop_count ORDER BY hop_count
-      `, filters.params)),
-      query(`
-        WITH prefix_counts AS (
-          SELECT UPPER(h) AS prefix, COUNT(*)::int AS node_count
-          FROM (
-            SELECT p.path_hashes
-            FROM mesh.packets p
-            WHERE p.time > NOW() - INTERVAL '24 hours'
-              AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-              ${filters.packetsAlias('p')}
-          ) p
-          CROSS JOIN LATERAL unnest(p.path_hashes) AS h
-          WHERE NULLIF(TRIM(h), '') IS NOT NULL
-          GROUP BY 1
-          HAVING COUNT(*) > 1
-        )
-        SELECT prefix, node_count AS repeats
-        FROM prefix_counts
-        ORDER BY node_count DESC, prefix ASC
-        LIMIT 10
-      `, filters.params),
-      query(`
-        SELECT
-          (SELECT COUNT(*) FROM mesh.packets WHERE time > NOW() - INTERVAL '24 hours' ${filters.packets}) AS total_24h,
-          (SELECT COUNT(*) FROM mesh.packets WHERE time > NOW() - INTERVAL '7 days' ${filters.packets}) AS total_7d,
-          (SELECT COUNT(DISTINCT COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))))
-             FROM mesh.packets p
-             LEFT JOIN core.node_identity_aliases src_alias
-               ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-            WHERE p.time > NOW() - INTERVAL '24 hours'
-              AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}) AS unique_radios_24h
-      `, filters.params),
-      fetchObserverRegionSummary(network, observer, query),
-      query(`
-        SELECT
-          COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
-          time_bucket('1 day', p.time) AS day,
-          COUNT(DISTINCT p.packet_hash) AS count
-        FROM mesh.packets p
-        WHERE p.time > NOW() - INTERVAL '7 days'
-          AND p.rx_node_id IS NOT NULL
-          AND p.rx_node_id <> ''
-          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
-          ${filters.packetsAlias('p')}
-        GROUP BY 1, 2
-        ORDER BY iata ASC, day ASC
-      `, filters.params),
-      query<{ hash_hex_len: string; hop_count: string }>(
-        `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
-         FROM (
-           SELECT p.path_hashes
-           FROM mesh.packets p
-           WHERE p.time > NOW() - INTERVAL '24 hours'
-             AND COALESCE(array_length(p.path_hashes, 1), 0) > 0
-             ${filters.packetsAlias('p')}
-         ) p
-         CROSS JOIN LATERAL unnest(p.path_hashes) AS h
-         GROUP BY 1`,
-        filters.params,
-      ),
-      fetchMultibyteFactSummary(),
-      query<{
-        avg_observers: string | null;
-        max_observers: string | null;
-        total_packets: string;
-        single_observer_packets: string;
-      }>(
-        `WITH per_packet AS (
-           SELECT packet_hash,
-                  COUNT(DISTINCT rx_node_id)::int AS observer_count
-           FROM (
-             SELECT p.packet_hash,
-                    COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id
-             FROM mesh.packets p
-             LEFT JOIN core.node_identity_aliases rx_alias
-               ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-           WHERE p.time > NOW() - INTERVAL '24 hours'
-             AND p.packet_hash IS NOT NULL
-             AND p.rx_node_id IS NOT NULL
-             ${filters.packetsAlias('p')}
-           ) recent
-           GROUP BY packet_hash
-         )
-         SELECT
-           AVG(observer_count)::text AS avg_observers,
-           MAX(observer_count)::text AS max_observers,
-           COUNT(*)::text AS total_packets,
-           COUNT(*) FILTER (WHERE observer_count = 1)::text AS single_observer_packets
-         FROM per_packet`,
-        filters.params,
-      ),
-      query<{
-        avg_rssi: string | null;
-        median_rssi: string | null;
-        avg_snr: string | null;
-        median_snr: string | null;
-        rssi_samples: string;
-        snr_samples: string;
-      }>(
-        `SELECT
-           AVG(p.rssi)::text AS avg_rssi,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.rssi)::text AS median_rssi,
-           AVG(p.snr)::text AS avg_snr,
-           percentile_cont(0.5) WITHIN GROUP (ORDER BY p.snr)::text AS median_snr,
-           COUNT(p.rssi)::text AS rssi_samples,
-           COUNT(p.snr)::text AS snr_samples
-         FROM mesh.packets p
-         WHERE p.time > NOW() - INTERVAL '24 hours'
-           AND (p.rssi IS NOT NULL OR p.snr IS NOT NULL)
-           ${filters.packetsAlias('p')}`,
-        filters.params,
-      ),
-      aggregateRows('routeTypes', () => query<{ route_type: string; count: string }>(
-        `SELECT COALESCE(p.route_type::text, 'Unknown') AS route_type, COUNT(*)::text AS count
-         FROM mesh.packets p
-         WHERE p.time > NOW() - INTERVAL '24 hours'
-           ${filters.packetsAlias('p')}
-         GROUP BY p.route_type
-         ORDER BY COUNT(*) DESC, route_type ASC`,
-        filters.params,
-      )),
-      aggregateRows('transportCodes', () => query<{ transport_code: string; region_scope: string | null; count: string }>(
-        `SELECT
-           NULLIF(TRIM(p.transport_codes), '') AS transport_code,
-           NULLIF(TRIM(p.region_scope), '') AS region_scope,
-           COUNT(*)::text AS count
-                   FROM mesh.packets p
-                   WHERE p.time > NOW() - INTERVAL '24 hours'
-                     AND NULLIF(TRIM(p.transport_codes), '') IS NOT NULL
-           ${filters.packetsAlias('p')}
-         GROUP BY 1, 2
-         ORDER BY COUNT(*) DESC, region_scope ASC, transport_code ASC
-         LIMIT 12`,
-        filters.params,
-      )),
-      fetchMultibyteFactTrend(),
-    ]);
+    ] = await Promise.all(chartParts).catch(async (error: unknown) => {
+      if (!chartAbort.signal.aborted) chartAbort.abort(error);
+      await Promise.allSettled([...chartParts, aggregatePartsPromise]);
+      throw error;
+    });
 
     const response = {
       phResult,

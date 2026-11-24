@@ -2720,3 +2720,793 @@ qualification. Do not change workloads, timing or acceptance limits.
 - Each loaded transmission copies the winning observation's observer labels, signal pointers, path and direction into its permanent record. Keep the winning observation by reference and use the packet store's same longest-path rule, stable ties, cached parsed path and nil fields when there are no observations. Preserve complete history and keep SQL and wire formats as they are.
 - Check selected-observation changes and tie behavior on startup, on the retained SQL path and after late observations. Use a retained snapshot and both Go suites to check packet, graph, live feed and analytics parity. Verify the main packet page in Chromium and measure memory at the complete grown history before repeating the guarded soak. The periodic neighbor graph also carries a transient full snapshot at this scale. Measure it after this storage change before deciding how to reduce that peak.
 - Before DEV integration, a repeat default-limit cold start on 533,245 rows was OOM-killed. On the separate 480,129-row fixture, the exact unfiltered page and the populated Chromium journey passed at 512 MiB. Keep the grown-fixture startup failure open.
+
+## Bound CoreScope cold-load and graph-refresh allocation peaks
+
+- Profiled the f361d4b1 candidate on a fresh verified clone of the grown 533,245-row fixture at the default 512 MiB limit (core-startup-profile.wNyzpr, protobuf heap/allocs profiles; the debug=1 text format was verified against a known 105 MiB live heap to report raw unscaled sampled bytes and is not used for totals). Two cold starts OOM-killed around the load tail plus path-hop index rebuild, before the post-load analytics pass; the earlier surviving run peaked at the cap during that analytics pass. Scaled profiles attribute about 851 MiB of cumulative load allocations against about 387 MiB live: resolvePathForObsColdLoad→parsePathJSON about 48.5 MiB (532,345 of 533,545 observations share one distinct non-empty path), addTxToPathHopIndex about 30 MiB (a per-transmission seen map plus per-hop ToLower), per-chunk seenTxIDs maps about 29 MiB, and byHash/byTxID/byObsID/packets doubling growth about 139 MiB.
+- Couplings recorded before editing: resolvePathForObsColdLoad gains a bounded parsed-path pool and a nil-safe lowercase cache (call sites: legacy Load twice, scanAndMergeChunk, and the retained spansNode read path, which keeps nil pools). addTxToPathHopIndex gains allocation-free dedup for short paths and a nil-safe lowercase cache (call sites: buildPathHopIndex bulk pass, the ingest batch loop, the single-tx update path, and eight test files). seenTxIDs becomes ordered last-id dedup: the chunk SQL orders by t.id ASC so equal ids are adjacent, and advertTxIDs/advertEvidenceForIDs/mergeAdvertEvidence consume an unordered set. LoadChunked pre-sizes the four startup indexes only while they are empty, from the filtered DB count clamped by the memory cap. The neighbor-graph builder reuses loadParsedPaths and StoreObs.ParsedTime: edge times serialize through UTC RFC3339, identical instants keep identical payloads, and parseTimestamp remains for neighbor_persist's small reload.
+- The full graph snapshot stays unchunked in this batch: the prior entry requires measuring the refresh peak after the storage change before deciding how to shrink the snapshot. The 390-second probe must observe both scheduled refreshes at the default limit before any snapshot change is considered.
+
+## External merge of PR #246 / fork PR #1 while the startup fix was in flight
+
+- At 2026-11-19 22:57 UTC the user merged CoreScope fork PR #1 (f361d4b1 → gadgethd/CoreScope ukmesh-dev, merge commit 965cc93d) and UKMesh PR #246 (ebf1d67 → gadgethd/ukmesh ukmesh-dev, merge commit a960fc3). All three CI runs on ebf1d67 had finished green (44633216887, 44633206418, 44633216783). The grown-fixture cold-start OOM was still open at merge time; the merge is recorded as a user action, not a qualification verdict, and the 10× default-limit startup criterion remains unmet until the fix below passes.
+- Landing plan for the fix: the fork tree at 965cc93d is identical to f361d4b1 (empty diff), so the verified scratch worktree carries its edits onto a new branch ukmesh/lean-cold-load created at 965cc93d; ukmesh/bounded-packet-history stays at f361d4b1 and nothing is reset. After both Go suites, the 390-second default-limit probe with both scheduled refreshes, payload parity against the original binary, and the Chromium packets journey pass, the fix commits on ukmesh/lean-cold-load and opens a new fork PR; UKMesh then re-pins the gitlink on a new branch from a960fc3 with a new PR. No history rewrite, no force-push, receipts stay per-run.
+
+## Post-load peak reclaim + review-driven hardening (lean-cold-load, attempt 4)
+
+- Measurement (core-leanload-verify.8w2bA2, candidate ELF 7748c4d7): the allocation cuts fixed the load-tail OOM (window A) — LoadChunked now completes 533,245 tx / 533,545 obs in 4.74 s and readiness is reached — but the process still OOM-killed at t≈6.0 s at the 512 MiB default cap. Memory timeline: working set 469.7 MiB at load-complete vs ~410 MiB live, then oscillating 495→512 across the post-load analytics recompute + graph rebuilds + the read burst (reads start at early readiness t≈1 s). Root cause: the faster bounded load interleaves less GC, so ~60 MiB of load garbage is still uncollected when the analytics pass layers its scratch on top; the combined peak breaches the cap. The earlier surviving f361d4b1 run peaked 494 MiB sampled only because its slower load interleaved more reclaim.
+- Coupling: RunStartupLoad (chunked_load.go) is the single production load orchestrator; the post-load analytics recompute is gated on StartupLoadDone(), signalled by the deferred signalStartupLoadDone at RunStartupLoad return. A single runtime.GC() placed after LoadChunked succeeds (before that signal) therefore reclaims load garbage BEFORE the analytics pass starts, returning the heap to the ~410 MiB live baseline. This is a one-time bounded phase-boundary reclaim, not a steady-state intervention; it changes no stored data or API output. Tests call LoadChunked directly and do not hit it. Expected post-fix peak ≈ 452 MiB (live 410 + one gated recompute scratch), comfortably under 512. The t≈300 s full-store graph refresh is covered by the same pooled-path/ParsedTime cuts and is re-measured by the 390 s probe.
+- Independent subagent review (ses_e099ea172ffeB3r3IpXpSw4i69) verdict on the production diff: behavior-preserving across all eight axes (ordered dedup count/maxID/cursor, chunkTxs≡old map incl. shared-hash, pre-size race/clamp, shared path slices never mutated, ParsedTime instant+render parity, ≤8 linear dedup, cachedToLower nil-safety, AGENTS.md). Its one blocker (false test premise: Go time.Parse accepts fractional seconds even when the layout omits them) was already corrected in attempt 3 — those shapes are parity cases, not a strict superset. Review-driven additions in attempt 4: (1) explicit size bound maxLowerCacheEntries=4096 on cachedToLower inserts (AGENTS.md map-cap compliance; pure optimization, misses recompute); (2) regression tests for shared-hash dedup, memory-clamped pre-size, non-UTC edge-time end-to-end, and the bounded lowercase cache.
+- Build-environment note: the first two pipeline attempts were compiler OOM-killed inside the 1184m no-swap build container while the host had ~683 MiB available; --memory-swap was raised to 2624m (build container only) so the toolchain can spill to host swap. Runtime probes/soak keep their own limits; this does not relax any runtime gate.
+
+## Isolated-probe warmup race (diagnostic fix, not a product change)
+
+- The BDzNE6 verification run aborted in the REFERENCE phase: the entry burst reads default-shape /api/analytics/rf and /api/analytics/topology immediately after backgroundLoadComplete, but the #1659 analytics warmup gate returns 503 until the first post-load recompute completes (a beat later). The original reference binary is unchanged and passed earlier runs by poll-timing luck; this is a flaky isolated diagnostic, not a candidate memory result. The candidate never ran in that attempt.
+- Fix in the isolated probe.py (active evidence dir core-leanload-verify.mEn757): after readiness, a bounded (45 s) wait polls /api/analytics/rf until it returns 200, mirroring the canonical read protocol's warmup wait. This does not weaken any gate — steady-state latency/failures read only /api/packets (warmup-independent), and packet payload parity hashes are warmup-independent. BDzNE6 is marked SUPERSEDED-warmup-race; 8w2bA2 keeps the pre-GC-barrier candidate OOM receipts. Each verification attempt uses a fresh evidence dir; the launcher tolerates an already-released build cache and fully frees the tmpfs clone (incl. -shm/-wal sidecars).
+
+## Periodic analytics-pass OOM at t≈310 s and the work-gate reclaim (attempt 5)
+
+- Measurement (core-leanload-verify.mEn757, candidate ELF 14886090): the RunStartupLoad GC barrier FIXED the startup OOM — the candidate survived load, the startup analytics pass ("recomputed 11 snapshots in 1.352s"), and the first full-store graph rebuild at t≈301 s (+23 MiB, reclaimed; the pooled-path/ParsedTime cuts hold). Steady baseline settled at ~443 MiB working (store + populated analytics caches). It then OOM-killed at t≈310 s — the first PERIODIC 5-minute analytics recompute: working 443→485→511 MiB. The startup pass survived only because the GC barrier gave it a ~410 MiB baseline (caches not yet populated); the periodic pass starts from the ~440 MiB populated-cache baseline.
+- Attribution: each analytics compute allocates ~5-27 MiB of transient scratch (aggregateRF snr/rssi/size/scatter buffers ~15 MiB; hash-sizes globalAdopterHS map; topology filtered slice). The analyticsWorkGate serializes the 11 computes, but with GOMEMLIMIT below the live heap the GC cannot reclaim each compute's scratch before the next starts, so ~85 MiB accumulates across the pass. 440 + 85 > 512.
+- Fix: analyticsWorkGate.release() now runs runtime.GC() BEFORE freeing the slot, so the finished compute's scratch is reclaimed before the next compute is admitted. This bounds the sequential peak to live-baseline + a SINGLE compute's scratch (~467 MiB) rather than the sum. The reclaim runs while the slot is held (next compute waits) and is background-only — requests read the atomic cache, never the gate — so no request-path latency is added. The RunStartupLoad barrier is kept (clears load garbage before the pass); the two are complementary. Coupling: release() is called via defer in analyticsRecomputer.runOnce and by the neighbor-graph / repeater-enrich gate users; acquire's stop-abort path also calls release(). No re-entrant acquire exists (1-slot serialization invariant unchanged).
+
+## Periodic-pass attribution diagnostic (core-periodic-profile.7heJvc)
+
+- Code reading identifies computeAnalyticsDistance as the likely dominant periodic-pass allocator: it copies the ENTIRE precomputed distance index into filteredHops (distHopRecord = 136 bytes: 7 string headers + 3 words) and filteredPaths even when unfiltered (matchSet==nil), then builds catDists/distByHour/allDists from the copy. filteredHops is NEVER mutated downstream (only filteredPaths is sorted), so the full hops copy is pure transient waste in the default recomputer shape. At ~400-530k hop records that is ~55-72 MiB — matching the observed +56 MiB peak over the ~443 MiB populated-cache baseline (512 cap, ~69 MiB headroom).
+- To confirm empirically before cutting, a short diagnostic forces the WORST-CASE periodic pass: analytics.pauseWhenIdle=false + defaultIntervalSeconds=25 fire all 11 recomputers together ~25 s after start, at the 640 MiB recovery-only size so the pass survives for pprof attribution (diagnostic, not the 512 gate). ENABLE_PPROF on; cumulative allocs + live heap captured densely t=20..52 and differenced offline. Reuses attempt-5 ELF (2ff394d1); does not release the build cache. If distance dominates, the behavior-preserving cut is to read hopsSnap directly when unfiltered (no copy) and avoid the full paths copy for the top-20 sort.
+
+## Periodic-pass root cause CONFIRMED by profile: aggregateRF signal-slice growth (attempt 6)
+
+- The forced worst-case diagnostic (core-periodic-profile.GPMWeS, attempt-5 ELF 2ff394d1, 640 MiB recovery size, pauseWhenIdle=false + defaultIntervalSeconds=25 so all 11 recomputers fire together) survived and captured protobuf allocs/heap across the periodic ticks. Startup log shows distance=0s: the distance index is LAZY (empty at startup, built only on a distance request, which the probe never makes), so the earlier distance-full-copy hypothesis was WRONG and distance is left untouched.
+- pprof -alloc_space -base allocs-t28 allocs-t40 (one periodic pass): dominant allocator main.aggregateRF.func3 (the observe closure) = 68.23 MiB (48.6%): rssiVals append 14.74 MiB, snrVals append 14.74 MiB, scatterAll append 38.75 MiB. Line-level -list confirms store.go:6626/6632/6635. These slices were pre-sized estCap/2 (snr/rssi) and estCap/4 (scatter), but nearly all 533,545 observations carry SNR/RSSI, so they grew via Go's 1.25x large-slice reallocation; the cumulative backing-array garbage is ~68 MiB/pass. On the ~443 MiB populated-cache baseline (512 cap, ~69 MiB headroom) that breaches at the periodic recompute. (Remaining diff nodes are pprof-capture overhead — compress/flate, runtime/pprof — and steady /api/packets reads, not product scratch.)
+- Fix (behavior-preserving): pre-size snrVals/rssiVals/scatterAll to estCap (the total-observation upper bound) so appends never grow. Identical values/output; ~17-21 MiB live backing arrays instead of ~68 MiB of churn. packetSizes already txCap (unchanged). The analyticsWorkGate.release() GC reclaim is KEPT — it bounds the OTHER computes' sequential scratch (topology ~13, hash-sizes ~7.5, retransmissions ~8.5 MiB); expected periodic peak now ~443 + max-single-compute (~21) ≈ 464 MiB, ~48 MiB under cap.
+- Regression: TestAggregateRFSignalSlicesPreSized (cold_load_pool_test.go) feeds 100k pre-built signal-bearing transmissions through aggregateRF and asserts a steady pass allocates in [32,64] B/obs — above the exercised minimum, below the growth-era ~140 B/obs. Perf-characteristic assertion per AGENTS.md.
+- Diagnostic probe bug fixed en route (7heJvc SUPERSEDED): warmup wait must cover BOTH rf and topology (entry burst reads both; topology's #1659 gate clears after rf), and profiling starts after warmup so the baseline is post-load. GPMWeS is the clean attribution receipt.
+
+## Attempt-6 verification (core-leanload-verify.RgxmwA)
+
+- Attempt-6 ELF 57487307 (RF signal-slice pre-size + gate reclaim + GC barrier + Stage-1 load cuts). Server suite ok 48.653s, ingestor ok 247.456s, build clean. TestAggregateRFSignalSlicesPreSized PASS 0.09s (explicit -v receipt rf-presize-test-attempt6.log in the stage dir).
+- Verification probe warmup wait hardened to cover BOTH rf and topology (entry burst reads both; topology's #1659 gate clears after rf). Does not weaken any gate: steady latency/failures read only /api/packets; parity uses packet payloads. Candidate runs the default 512 MiB for 390 s (startup + t≈301 graph rebuild + t≈310 periodic analytics pass + Chromium journey); reference original binary at 640 MiB recovery override 30 s; exact packet payload parity.
+
+## Attempt-6 verification RgxmwA: MEMORY GATES PASS; browser blocked by missing host libs (environment, not product)
+
+- core-leanload-verify.RgxmwA (candidate ELF 57487307, default 512 MiB, 390 s): NO OOM (oom_kill=0), sampled working peak 488.2 MiB and cgroup memory.peak 491.5 MiB (both < 512), readiness 9.65 s, startup heap 399.4 MiB, resident coverage 1.0, both graph refreshes (default 2 / unfiltered 2), steady 390.0 s with 3119 reads, ZERO failures, p95 13.28 ms. The RF signal-slice pre-size + gate reclaim + GC barrier resolved the periodic-pass OOM. Reference (original binary, 640 MiB) passed, peak 568 MiB.
+- The ONLY failing gate was browser_passed: Playwright chromium_headless_shell-1243 could not launch — host missing libatk-1.0/libatk-bridge/libatspi/libXcomposite/libXdamage/libXfixes/libXrandr/libgbm/libasound (+transitive libXrender/libXi). This is a host environment defect (no passwordless sudo; recent verification attempts had OOM'd before ever reaching the browser, so it was never exercised here). NOT a product regression.
+- Non-root workaround (no system changes): apt-get download the Noble t64 packages (libatk1.0-0t64 libatk-bridge2.0-0t64 libatspi2.0-0t64 libasound2t64 libxcomposite1 libxdamage1 libxfixes3 libxrandr2 libgbm1 libxrender1 libxi6), dpkg-deb -x into /tmp/opencode/chromium-libs/prefix, export LD_LIBRARY_PATH=<prefix>/usr/lib/x86_64-linux-gnu. Smoke test: chrome-headless-shell --version OK (153.0.8010.12) and Playwright launch about:blank OK. The proper host fix is `sudo playwright install-deps chromium`; the local prefix is the non-root equivalent used for this run. launch.sh exports LD_LIBRARY_PATH so the candidate browser subprocess inherits it (docker containers are unaffected — they get explicit env).
+
+## Attempt-6 verification EmnIRI: memory gates pass again; browser harness expectation STALE (fixed)
+
+- core-leanload-verify.EmnIRI (same ELF 57487307, 512 MiB, 390 s, Chromium libs fixed via the local prefix): NO OOM, sampled working peak 496.1 MiB, cgroup memory.peak 502.5 MiB (both < 512), readiness 11.3 s, coverage 1.0, refreshes 2/2, steady 390.0 s / 3119 reads / ZERO failures / p95 14.85 ms. Memory fix confirmed reproducible across two runs (RgxmwA peak 488.2, EmnIRI 496.1).
+- browser_passed=false AGAIN, but differently: Chromium launched, the SPA booted (server log shows [ws] client connected at the browser moment), yet page.waitForResponse timed out waiting for /api/packets?limit=20. Root cause: the leanload-verify browser.mjs is a STALE variant. The current packets page initial load uses PACKET_LIMIT = isMobile ? 1000 : 50000 (public/packets.js:757, present even at the old pin 610cba2d), so the page NEVER requests limit=20 on initial load. The earlier successful Chromium receipt (480,129 fixture, publish-browser.n87pTm/browser.json responsePackets=20) was produced by a DIFFERENT, canonical journey: publish-browser.n87pTm/browser-journey.mjs, which (1) verifies /api/packets?limit=20&offset=0 via direct fetch (total===expected, exactly 20 rows — response-limit fidelity), then (2) navigates to /#/packets?hash=<first-hash> and waits for the /api/packets?hash=<hash> detail request the app actually issues (packets.js:1349 _initUrlParams.get('hash') → filters.hash → buildPacketsParams line 791), asserting the focused hash, rendered rows, and zero page errors.
+- Fix: the next verification dir uses the proven browser-journey.mjs content as browser.mjs (probe.py invokes `node browser.mjs <endpoint> <expected>` — argument-compatible). This RESTORES the canonical journey; it does not weaken any gate (it adds the direct limit=20 listing check the stale variant only attempted via the page). Not a product regression: public/ is byte-identical between the submodule pin f361d4b1 and the scratch worktree (diff -rq clean).
+
+## Independent review of gate-reclaim + RF pre-size: no blockers; four improvements applied (attempt 7)
+
+- Subagent review verdicts: CHANGE 1 (GC in gate release) SAFE — all callers acquire-then-defer-release, stop-abort releases only after a successful send, background-only, no re-entrancy; CHANGE 2 (estCap pre-size) SAFE/behavior-preserving — ≤1 append per slice per observation in normal/regional branches, estCap=0 fine, no overflow; CHANGE 3 (pre-size test) SOUND.
+- Applied before the attempt-7 rebuild: (1) acquire's stop-abort path now calls releaseSlot() (no forced GC — no compute ran; keeps Stop's 5 s timeout margin); release() = runtime.GC() + releaseSlot(). (2) Softened the release comment (13 gated computes incl. neighbor-graph/repeater-enrich; GC is process-wide but the pacer is already saturated at this GOMEMLIMIT; measured peak 488-496 MiB replaces the ~467 estimate). (3) Qualified the store.go pre-size comment: capacity hint, not a hard bound — legacy obs-less txs, retained-mode request scans larger than the resident cache, and >2M-obs stores can still grow (append handles it, as before). (4) RF test now asserts result totalPackets/totalAllPackets == n (the allocation lower bound alone cannot prove filling — pre-sized arrays allocate even when empty) and documents the Z-suffix timestamp requirement; NEW TestAnalyticsWorkGateReleaseReclaimsScratch pins NumGC delta across release(), slot re-acquire, releaseSlot freeing, and stopped-acquire false+slot-empty.
+- Comment/test edits shift line numbers relative to the verified ELF 57487307, so attempt 7 rebuilds and RE-VERIFIES at 512 MiB (fresh dir) before commit — the committed tree will exactly match the qualified binary's source.
+
+## Disk reclamation (pre-attempt-7): dangling docker images
+
+- Free space had dipped to 9.99 GiB (gate: ≥10 GiB). Reclaimed ONLY dangling (untagged, unreferenced) docker images via `docker image prune -f`; no tagged image, volume, container or evidence file touched. Receipt before removal:
+  - 04e40053a0d1 300MB created=2026-11-18 12:05:21 +0000 UTC
+  - bc5afe0ad5ab 300MB created=2026-11-18 00:08:33 +0000 UTC
+
+## Attempt-7 build + verification (core-leanload-verify.1HN7hc)
+
+- Attempt-7 ELF 9b0e72e299ba5915 (review improvements: releaseSlot stop-abort, comment qualifications, RF test output assertions, gate GC-ordering test). Server suite ok 49.566s, ingestor ok 195.298s, build clean. Explicit -v receipts: TestAggregateRFSignalSlicesPreSized PASS 0.08s, TestAnalyticsWorkGateReleaseReclaimsScratch PASS 0.00s (stage1-test-receipts-attempt7.log). Attempt-6 receipts preserved (server/ingestor/pipeline/ELF *-attempt6).
+- Verification 1HN7hc: same probe (dual rf+topology warmup), launch.sh with the non-root Chromium lib prefix, and the PROVEN canonical browser journey (publish-browser.n87pTm/browser-journey.mjs content: direct limit=20 listing fidelity check + hash-focused page journey). Candidate default 512 MiB / 390 s; reference original binary 640 MiB / 30 s; exact payload parity. This is the commit-gating run: the committed tree will exactly match this ELF's source.
+
+## Stage 1 VERIFIED — core-leanload-verify.1HN7hc FULLY GREEN (commit-gating run)
+
+- Candidate ELF 9b0e72e299ba5915 at the DEFAULT 512 MiB, 390 s: passed=True, oom_kill=0 (all cgroup memory events 0), state running, coverage 1.0, readiness 5.62 s, startup heap 391.4 MiB, sampled working peak 485.1 MiB, cgroup memory.peak 494.7 MiB, swap 0, refreshes 2/2, steady 390.0 s / 3119 reads / ZERO failures / p95 13.88 ms, browser_passed=True.
+- Canonical Chromium journey receipt: {"passed":true,"status":200,"retainedPackets":533245,"responsePackets":20,"renderedRows":1,"errors":[]} — the limit=20 listing fidelity check AND the hash-focused page rendering both pass on the grown fixture at 512 MiB.
+- matched-packet-parity.json: passed=true, packet_payloads_identical=true, rows 533245. Reference (original binary, 640 MiB recovery override, 30 s): passed, peak 570.8 MiB, startup heap 467.9 MiB, ready 7.08 s. Candidate startup heap is 76.5 MiB LOWER than the original at readiness.
+- Three 390 s runs (RgxmwA 488.2, EmnIRI 496.1, 1HN7hc 485.1 MiB working peaks) all passed every memory/read gate; the final run additionally passed the browser journey and exact parity. The two earlier browser failures were harness/environment issues (missing host libs; stale limit=20 expectation), both documented and fixed without weakening gates.
+- Landing: commit the 14-file batch on ukmesh/lean-cold-load (base 965cc93d), push, fork PR → ukmesh-dev; re-pin UKMesh gitlink from a960fc3 on a new branch with the handoff update; new UKMesh PR. Merges remain user actions; the 10× startup criterion is now CLOSED by this evidence (fix verified at the default, not the recovery size).
+
+## Stage 1 LANDED (pending user merges + CI)
+
+- CoreScope: commit b1ffa00317d98829a5b880bf7bfa0e3da1be0bfb on ukmesh/lean-cold-load (14 files, +717/-47; explicit git add; gofmt clean; identity gadgethd noreply, repo-local config). Pushed to the fork; PR #2 https://github.com/gadgethd/CoreScope/pull/2 (head b1ffa003 → base ukmesh-dev, like PR #1). Commit message carries the full perf proof.
+- UKMesh: branch ukmesh/lean-cold-load-repin from a960fc3; commit aae266f re-pins third_party/corescope f361d4b1 → b1ffa003, rewrites handoff section 1 (memory proof complete), annotates the web-OOM failure as addressed pending soak re-qualification, and records this log. PR #259 https://github.com/gadgethd/ukmesh/pull/259 (base ukmesh-dev). Follow-up commit adds the PR/commit cross-links.
+- Submodule working tree checked out at b1ffa003 (matches the new gitlink). plans/ is git-ignored but decisions.md is tracked — staged via git add -u (no -f, nothing untracked added).
+- GitHub API auth quirk: the gho_ OAuth token intermittently returns 401 "Requires authentication" for REST calls while git HTTPS auth always works; both Bearer and Basic succeed in the good windows. PR creation used a retry loop alternating schemes. No credential changes made.
+- Merges remain USER ACTIONS (as with #1/#246). The 10× startup criterion is CLOSED by the 1HN7hc evidence. Next: CI green on both PRs, then Stage 2 batches (charts/spam/swap/disk) with before/after owned-fixture evidence, then Stage 3 mqtt-first qualification on the final source.
+
+## Stage 1 DEV landing verification (post-restart inventory)
+
+- Canonical `scripts/dev-all.sh restart corescope` rebuilt both Go binaries from the submodule at b1ffa003 and recreated the web+ingestor pair (exit 0, both Healthy). Deployed COMPANION_SOURCE_REVISION 6950bd186b4c396fd02a6ddf8a7d74f972a8b65d1fbb33559ba8d02b3860b01f equals source-hash.py output for the submodule at b1ffa00317d98829a5b880bf7bfa0e3da1be0bfb. Web container: memory 536870912 (512 MiB default), memory_swap equal (no container swap), RestartCount 0, GOMEMLIMIT=256MiB unchanged.
+- Fresh inventory receipt stage1-landing.eqdzon: 43/43 services passed, coverage checks all true, public_tunnel_off true. All DB consumers on original targets (meshcore / meshcore_owner_auth / beacon_dev); both CoreScope containers mount the ORIGINAL plans/companion-dev/runtime/corescope directory (web/ingestor read/write split preserved). No fixture selected; retained fixtures untouched.
+- CI watcher running on UKMesh PR #259 head 4e1a3d9 (run 44666069250 pull_request in progress at landing time). CoreScope fork has no CI workflow; UKMesh CI builds the pinned submodule and is the authoritative gate. Merges remain user actions.
+
+## Stage 2 reconnaissance — chart-refresh budget cascade and spam lost-clients (read-only)
+
+Evidence sources (all read-only, originals selected, no fixture mutation): the exact soak receipts
+guarded-indexed-core-soak.nsY0CJe6 (steady-runtime-logs.json digests verified against backend.log
+89c170e6… and sample-db.log afe2fc4a…), Prometheus history for 2026-11-19 (retained), and
+pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset 2026-11-13).
+
+### Chart refresh (batch 1) — root cause is serial work, not pool/admission contention
+- DEV backend env: STATS_DB_QUERY_CONCURRENCY=1, STATS_AGGREGATE_READS_ENABLED=false,
+  STATS_AGGREGATE_SHADOW_ENABLED=false, DATABASE_STATEMENT_TIMEOUT_MS=30000. Analytics pool = worker
+  role, random_page_cost=4, effective_cache_size=512MB, PG statement_timeout=max(900000,30000)=15min
+  (database.ts analyticsStatementTimeoutMs). So the binding deadlines are app-side only.
+- With aggregates OFF, fetchChartsData issues 17 queries through one Promise.all, all serialized by
+  the concurrency-1 slot FIFO (statsRepository.ts query()). Each query's 60s budget clock starts at
+  wrapper entry BEFORE acquireQuerySlot, so it includes slot wait (established semantics, decisions
+  "Bound statistics work to one statement on the lean main runtime": queue wait counts toward 60s/120s;
+  "If serial work violates them, fix work instead of raising limits").
+- The multibyte fact summary is query #12 in the array. It COMPLETED (returnedRows=1) at cumulative
+  wait+exec ~60.96s -> logged [stats-query-budget] exceeded, threw STATS_QUERY_BUDGET_EXCEEDED, which
+  chartAbort.abort() cascaded to the 5 still-queued queries #13-17 (observerDiversity, signalSummary,
+  routeTypes, transportCodes = 4x mesh.packets; pathDecodeTrend = 1x multibyte_path_facts). Each logs
+  "query failed after budget" (the exceeded query logs BOTH exceeded and failed-after-budget = the
+  "duplicate reporting"). 6 clusters x 7 matching lines = 42 backend failure lines. The "chart refresh
+  failed" line is the 7th match per cluster.
+- Prometheus FAIL window 09:29-09:39: analytics/other success = 82 queries / 378.85s exec (mean 4.62s);
+  analytics pool wait only 0.13s total / 83 checkouts (negligible). EARLY 09:00-09:06: 30 queries /
+  116.86s (mean 3.90s). 17 x ~4.6s ~= 78s serial > 60s budget. Contention is execution volume, not waits.
+- pg_stat_statements fixture means (per chart query, ~25 calls): region series (iata/day COUNT DISTINCT
+  packet_hash) 11.13s; region summary (GROUPING SETS) 12.88s; totals sumResult 6.71s; observerDiversity
+  (per_packet) 6.60s; pathHashWidths (unnest) 5.15s; prefix_counts (unnest) 4.79s; packet_types 4.63s;
+  multibyte summary 3.83s; packets/day 2.56s; hop distribution 2.39s; signal percentile 2.26s; radios/day
+  1.35s; packets/hour 0.84s. Sum ~= 70s serial. The two 7-day region scans and the repeated 24h scans
+  (10 queries re-scan the same 24h window, each re-evaluating the canonical privacy predicate) dominate.
+- The 79s admission wait on ONE cycle (09:30:26->09:31:46) is secondary: even waitMs=2-3 cycles failed at
+  ~60-62s of work. No other service logged db-admission in that gap (region/privacy-remat worker logs empty
+  for the whole window); holder not identified from logs, but it is not the recurring cause.
+- Candidate fix (authorized by next-ai-prompt "reduce repeated fact scans or consolidate same-snapshot work"):
+  consolidate same-window/same-snapshot legacy scans into fewer statements sharing one materialized scoped
+  base, preserving exact rows/order/values, the asOf snapshot, privacy-generation fences, completeness,
+  per-scope data, cache freshness, and the aggregate feature switches (left OFF). Highest yield: merge the
+  two 7-day region scans; merge the two 24h path_hashes unnests; merge the simple 24h/7d count aggregates.
+  NOT raising budgets/concurrency, NOT enabling aggregate reads (that is a separate documented rollout
+  requiring backfill + shadow parity; switches preserved).
+
+### Spam lost-clients (batch 2) — app-side 5s budget abort destroys the connection
+- sample-db.log: exactly 6 real FATAL "connection to client lost" (09:06:39, 09:11:44, 09:16:49, 09:21:54,
+  09:26:58, 09:37:06), each preceded ~2s by backend [spam-msg] status=timed_out. The other 12 scanner hits
+  are SQL-text lines containing the literal 'failed' inside the multiline STATEMENT dump (the remat
+  NOT EXISTS subquery of the spam visibility predicate) — false positives, not separate failures.
+- Mechanism: spam analyzer interval 300s, SPAM_MESSAGE_ANALYSIS_BUDGET_MS=5000 (whole pass). loadRecentMessages
+  runs WITH logical_messages via analyticsQuery with heartbeat.signal. On deadline the heartbeat aborts;
+  databaseRuntime.queryPool onAbort calls client.release(true) (DESTROYS the connection) -> PG logs FATAL
+  connection to client lost (not a clean cancel). Completed passes analyzed 158/188 messages; timed-out
+  passes analyzed 0 (query never returned within 5s).
+- pg_stat_statements fixture: WITH logical_messages mean 1.84s, MAX 4.89s (27 calls) — under load spikes it
+  breaches the 5s whole-pass budget. Same canonical per-row privacy predicate (visibility EXISTS + remat
+  NOT EXISTS with unnest(path_hashes)) as the chart scans. ranked_observers follow-up mean 0.05s.
+- Fix direction: confirm plan/waits/rows under the worker role on the fixture; reduce the query's own work so
+  it meets the 5s budget under load (preserve signature grouping/order, duplicate weighting, windows,
+  visibility, privacy, cancellation). Fix actual lost clients BEFORE any log-parser repair; parser repair must
+  handle PG multiline SQL explicitly and retain genuine ERROR/FATAL, with regression cases + saved input.
+
+### Couplings recorded before editing
+- statsRepository.ts query()/limitedQuery: budget+timeout+slot FIFO shared by ALL chart queries and the
+  multibyte readiness check; source attribution = first FROM table. fetchChartsData shadows query with
+  chartQuery (bindChartSnapshot asOf + chartAbort cascade). Consolidation must keep one asOf, the abort
+  cascade, the per-query budget/timeout semantics, and identical response row shapes consumed by
+  computeChartsData -> validateChartSnapshotPayload -> stats_chart_snapshots.
+- fetchObserverRegionSummary is also exported and used elsewhere (observer-scoped); its SQL is shared with
+  the broad region summary. Any merge must keep the observer-scoped variant's exact output.
+- spam repository.loadRecentMessages/countLogicalMessages/persistIncidents + analyzer.analyzeOnce heartbeat;
+  databaseRuntime.queryPool abort path is shared by ALL analytics/oltp signal-carrying queries (changing the
+  destroy-on-abort behavior would affect every caller, not just spam).
+
+## Stage 2 batch 2 design — spam window scan fetches every packet type (measured)
+
+- Role-faithful diagnostic: the canonical restore (access.sh) revokes database CONNECT on retained
+  fixtures, so diagnostics connect as the owning superuser and SET ROLE meshcore_worker; every
+  table/permission check then runs as the soak analytics pool did. No RLS exists on any involved
+  relation; worker table SELECT grants survive on the fixture. Planner options match production
+  (random_page_cost=4, effective_cache_size=512MB; server work_mem=10485kB, shared_buffers=128MB,
+  max_parallel_workers_per_gather=0). Zero fixture mutation for the plan probe.
+- EXPLAIN (ANALYZE, BUFFERS) of the exact STATEMENT-dump SQL with the failing soak window
+  (2026-11-18T09:06:39Z..2026-11-19T09:06:39Z, networks ukmesh/northeast/teesside, $4=8 $5=4 $6=10001):
+  mesh.packets is a TimescaleDB hypertable. The plan time-index-scans two chunks covering the window,
+  fetching ~292,787 heap rows (33,586 shared read blocks ~= 262 MiB) and heap-filtering to 326 type-5
+  rows (206,775 + 85,686 rows removed by filter). The remat anti-join and visibility One-Time Filter
+  are trivial (0 unresolved remat rows). Execution 2,176 ms cold; pg_stat_statements soak mean 1.84 s,
+  max 4.89 s vs the 5 s whole-pass budget -> heartbeat abort -> client.release(true) -> PG FATAL.
+- No existing index encodes (packet_type, time): the only type-5 partial index additionally requires
+  companion_sender IS NOT NULL, which the spam predicates do not guarantee. A query rewrite cannot
+  avoid the all-type window fetch; the structural fix is a retainable partial index (Stage 2 item 3
+  explicitly lists retainable indexes). Precedent: migrations 154/155 added read-model indexes with
+  SET LOCAL lock_timeout/statement_timeout; both stores' ledgers are at 155 and the canonical startup
+  runs tools/migrate.ts against the selected database, so one migration reaches originals and fixtures.
+- Fix: migration 156 creates mesh.packets (network, time DESC) WHERE packet_type = 5. Predicate kept
+  at packet_type only (not payload/visibility) so countLogicalMessages, which has no visibility fence,
+  uses the same index. Expected: window fetch falls from ~292,787 rows to the 326 type-5 rows.
+  Signature grouping/order, duplicate weighting, windows, visibility, privacy and cancellation are
+  untouched — the change is access path only. Before/after digests and paired timings on the retained
+  fixture follow; the index is created on the owned fixture as the owner role exactly as the migration
+  will create it canonically.
+
+## Stage 2 batch 2 measured — partial type-5 index removes the spam budget breach
+
+- Migration 156_index_message_window.sql: CREATE INDEX IF NOT EXISTS idx_packets_message_time
+  ON mesh.packets (network, time DESC) WHERE packet_type = 5. IF NOT EXISTS follows migration 154
+  so a diagnostic pre-application on a retained fixture is idempotent with the canonical db-migrate
+  step (control.sh runs it against the selected database on every start; both ledgers were at 155).
+- Applied to the owned fixture lean_10x_20261118215522_9c0a37 as the owner role with the exact
+  migration SQL (BEGIN/SET LOCAL/COMMIT): build 2.17 s, propagated to all 16 chunks, total chunk
+  index footprint ~12.1 MiB for 618,909 type-5 rows. Evidence: stage2-diagnostics.Z7TQiL
+  (fixture-index-apply.sql/.txt, index-size.txt). No data rows touched.
+- Before (no index): exact soak-window EXPLAIN ANALYZE cold 2,176 ms, repeat 3,473 ms; 33,586-34,000
+  shared read blocks (~262 MiB) per pass — larger than the 128 MB buffer pool, so the scan evicts
+  itself and stays cold under the 300 s interval; ~292,787 heap rows fetched, 326 kept.
+  Soak pg_stat_statements mean 1.84 s / max 4.89 s vs the 5 s whole-pass budget.
+- After (index): same statement, same parameters, Execution Time 16.5 ms; 269 total blocks
+  (112 hit / 157 read); chunk scans 7.7 ms + 1.2 ms fetch exactly the 326 type-5 rows.
+  countLogicalMessages uses the same index: 1.1 ms, 254 hits. ~130-210x less execution and ~126x
+  fewer blocks; the 5 s budget now has three orders of magnitude of headroom even under load.
+- Result parity: 163 rows, byte-identical aligned output, sha256
+  f36e1798c34202578e6251ffe563c6197102a24365fdbd00e716f44c28bf2c0c before and after
+  (before-rows.txt / after-rows.txt). Signature grouping/order, duplicate weighting, windows,
+  visibility, privacy and cancellation untouched — access path only.
+- Suites: spam repository/privacy/analyzer/config + migrations unit tests 27/27 pass;
+  migrationBootstrap + legacyMoveReplay integration 5/5 pass on a fresh scratch database
+  (full 156-migration replay, 70 s bootstrap). PGlite spam SQL fixture not installed locally (opt-in).
+- Remaining for batch 2 closure: concurrent-ingest proof in a canonical fixture session (the query
+  is now 16 ms / 269 blocks, so the soak's spam passes must complete with zero lost clients), then
+  the runtime_logs.py multiline-SQL parser repair with regression cases and the saved input.
+
+## Stage 1 CI split verdict on 2c687b8 — confirmed pre-existing test-harness flake
+
+- Watcher verdict: push run 44666753261 SUCCESS (all 7 jobs incl. Backend), pull_request run
+  44666759322 FAILURE — Backend job 136057910560..993, step 21 `npm run test:ingest-integration`,
+  single failing test `spam snapshots execute complete bounded SQL and retain verdicts on a
+  rejected refresh` (src/mqtt/spamSnapshot.integration.test.ts), error "terminating connection
+  due to administrator command". Same head 2c687b88 for both runs; the PR changes only the
+  CoreScope gitlink, handoff and receipts — no backend code — so this cannot be a regression
+  introduced by the PR.
+- Mechanism (CI service-container PG log): at 03:20:20.904 UTC the test's OWN teardown
+  `DROP DATABASE "meshcore_spam_10063_1795144819748" WITH (FORCE)` terminated connection [554]
+  one millisecond later, while a test query was still in flight. spamDetector.refreshSpamDetectorCaches
+  deduplicates through a module-global refreshInFlight and awaits Promise.all([established, identity]);
+  when the identity refresh rejects (the test's deliberate oversized-name rejection), Promise.all
+  settles without cancelling the established sibling, whose remaining fixture-pool work races the
+  t.after pool.end()/DROP DATABASE FORCE teardown. Timing-dependent: the push run passed the same step.
+- Action: rerun the failed PR job on the unchanged head; keep both run IDs and the job log
+  (/tmp/opencode/ci-backend-pr.log, private). If the rerun reproduces, the minimal harness fix belongs
+  in a separate qualified commit, not silently in the Stage 1 pin PR.
+
+## Stage 2 batch 2 parser repair — multiline PostgreSQL SQL is data, not failures
+
+- runtime_logs.py: inspect_log now tracks PostgreSQL log-record state. A record prefix
+  (date time tz [pid] SEVERITY:) starts a new record; STATEMENT/QUERY/DETAIL/HINT/CONTEXT/LOCATION
+  records and their unprefix continuation lines are SQL/bind echoes and are skipped by the failure
+  scan. ERROR/FATAL/PANIC severity records remain failures; LOG/WARNING and every non-PG line keep
+  the previous scan. failure_line's per-line API is unchanged; skipped lines still feed the digest.
+- Regression: test_runtime_logs.py gains synthetic FATAL+multiline-STATEMENT, ERROR+DETAIL+STATEMENT,
+  dump-only, dump-then-new-ERROR and LOG cases, plus the saved real input
+  fixtures/runtime-logs/soak-spam-lost-clients.log.txt (exact 516-line excerpt of the retained soak
+  sample-db.log, named .log.txt because the repo ignores *.log: six FATAL records each followed by its logical_messages STATEMENT dump; synthetic
+  fixture data only, no credentials). 6/6 tests pass; test_qualification + test_soak_prepublication
+  85/85 pass.
+- Measured on the retained soak receipts: sample-db.log failure_lines 18 -> 6 (exactly the genuine
+  FATALs at lines 88/262/436/610/784/960); backend.log stays 42 (real application failures retained).
+  The repair follows the actual lost-client fix (migration 156), per the stage order.
+
+### CI rerun verdict — PR #259 green on unchanged head
+
+- Rerun of failed jobs on run 44666759322 (pull_request, head 2c687b88cff2) completed:
+  attempt 2 SUCCESS — Backend, Workers and Compose, Frontend, HopReach RF gates, Monitoring
+  configuration, Database Audit Tests, Secret scan all success. Combined with push run
+  44666753261 SUCCESS, Stage 1 CI is green on both event types at the final head. The
+  attempt-1 failure is confirmed as the documented teardown race, not a regression; the
+  minimal harness fix (await the in-flight refresh before DROP DATABASE FORCE) remains a
+  separate qualified change if pursued. Merges of PR #259 / CoreScope PR #2 stay user actions.
+
+## Stage 2 batch 1 chart consolidation — couplings recorded before editing
+
+- Budget mechanics (statsRepository.ts 141-222): the 60 s STATS_QUERY_DURATION_BUDGET_MS is
+  per query() call and INCLUDES slot wait (startedAt before acquireQuerySlot). With
+  STATS_DB_QUERY_CONCURRENCY=1 all 17 Promise.all queries queue serially, so query N's
+  duration ≈ sum of executions 1..N; the 78 s total made query #12 exceed 60 s and abort
+  the cascade. Fix = reduce total serial execution, not raise limits.
+- Scan inventory (reads OFF): 15 mesh.packets scans + 2 multibyte_path_facts scans + coverage
+  check. Same-snapshot groups: (a) six switchable simple parts ph/pd/pt/hd/route/transport
+  (7d base, 24h subsets); (b) radios rh/rd + totals total_24h/total_7d/unique_radios_24h
+  (src alias LEFT JOIN); (c) pc + pathHashWidths (identical 24h path_hashes unnest base;
+  pc filters NULLIF(TRIM(h),'') and HAVING>1 LIMIT 10, widths counts ALL elements incl empty);
+  (d) orSummary + orSeries (7d rx regex scan) + observerDiversity (24h rx join) + signal (24h).
+- Privacy: packetsAlias ALWAYS emits publicPacketPrivacySql + network/test exclusions +
+  observer scope regardless of includePrivacy (networkFilters.ts 262-287); includePrivacy:false
+  only changes the unqualified `packets` string, which fetchObserverRegionSummary never uses
+  (it uses packetsAlias('p')). One scoped base per group preserves every fence.
+- Join fan-out: core.node_identity_aliases.source_node_id is PRIMARY KEY (migration 036) →
+  LEFT JOIN is 1:1; COUNT(*) totals over a joined base equal the original unjoined counts.
+- TZ: fixture and DEV sessions are UTC → date_trunc('hour'/'day') ≡ time_bucket('1 hour'/'1 day').
+  Consolidated SQL keeps each part's ORIGINAL bucket expression and ORDER BY anyway.
+- Ordering/casts: CTE counts stay bigint for ORDER BY (text casts only inside jsonb_build_object,
+  mirroring fetchLegacyAggregateChartParts); original tie-order non-determinism preserved
+  (pt ORDER BY count DESC only) — before/after comparison normalizes tie order.
+- Aggregate switch: the six parts remain individually served by aggregateReadPartsPromise when
+  reads ON; the consolidated legacy counts promise is LAZY (created only when a legacy fallback
+  is actually invoked) so reads ON never starts the legacy scan. Observer scope always legacy
+  (aggregatePartsPromise null when observer set) — unchanged.
+- Shadow path untouched: fetchLegacyAggregateChartParts / scheduleAggregateShadow /
+  compareAggregateShadowRows keep their current SQL and callers.
+- fetchObserverRegionSummary stays exported with identical SQL/output (public repository API;
+  statsService.test mocks it). fetchChartsData's region summary now comes from the consolidated
+  region query whose region_summary CTE replicates its exact expressions; equivalence proven by
+  statsSummary.integration.test.ts deepEqual (string counts, ::text timestamps, row order) and
+  fixture before/after digests.
+- Row shapes: jsonb parts (ISO timestamp strings, text counts) are the SAME shapes aggregate
+  reads already produce; every computeChartsData consumer verified Number()/fmt*()-safe
+  (statsService 271-445). orSummary keeps {iata,packets_24h,packets_7d,active_observers,
+  observers,last_packet_at} with text values and ORDER BY packets_7d DESC, iata ASC.
+- Abort/asOf: all consolidated queries go through chartQuery → bindChartSnapshot pins every
+  NOW() to one aggregateAsOf; any failure aborts chartAbort and cascades to siblings (unchanged).
+  Consolidated queries return 1 row « maxResultRows 100k. Budget source attribution logs
+  mesh.packets (first FROM).
+- Test couplings: statsRepository.test.ts 'WITH prefix_counts' fragment must become
+  'prefix_counts' (CTE no longer first); the observer-fallback fragment
+  "time_bucket('1 hour', p.time) AS bucket, COUNT(*)::int AS count" is preserved verbatim in the
+  consolidated counts SQL (downstream CTEs alias the base as p); percentile_cont p.rssi/p.snr
+  expressions preserved (signal CTE aliases base as p). All semantic assertions (no LIMIT 50000,
+  network filter present, true medians, LIMIT 10, alias canonicalization, no NOW() after binding,
+  aggregate switch counts) remain enforced.
+- Fixture probe safety: fetchChartsData may backfill multibyte facts (WRITE) if coverage missing;
+  probe must first verify multibyte_path_fact_state readiness at the pinned asOf/generation and
+  only then run the real repository path read-only. Before = original 17 SQL texts verbatim
+  (saved probe), after = real createStatsRepository.fetchChartsData, same pinned asOf, worker
+  role via superuser SET ROLE, aggregates OFF.
+
+## Stage 2 batch 1 chart consolidation — measured before/after on the owned fixture
+
+- Implementation: four consolidated same-snapshot queries replace fifteen mesh.packets scans in
+  fetchChartsData (statsRepository.ts): fetchLegacyChartCounts (six switchable parts, one 7d scan,
+  LAZY — never started when aggregate reads serve them), fetchRadiosAndTotals (rh/rd/totals, one
+  7d src-alias scan), fetchPathHashParts (pc+widths, one 24h unnest), fetchRegionReceptionParts
+  (orSummary/orSeries/diversity/signal, one 7d rx-alias scan). Multibyte fact summary/trend and
+  the coverage check are unchanged (different table). Shadow path, fetchObserverRegionSummary
+  export, aggregate switches, abort cascade and pinned asOf unchanged.
+- Evidence: plans/lean-runtime/qualification/stage2-chart-consolidation.eDGS7E (private):
+  probe.mjs (pinned Date at fixture horizon 2026-11-19T09:39:05.726Z, generation 41, worker role
+  via superuser SET ROLE, planner rpc=4/ecs=512MB, aggregates OFF, STATS_DB_QUERY_CONCURRENCY=1),
+  before.json (original code from fresh worktree /tmp/opencode/chart-before-wt at f364035,
+  node_modules symlinked; budget raised to 600 s FOR BASELINE CAPTURE ONLY so the pre-fix rows
+  could be collected — the 60 s budget failure under load is the bug being fixed), after.json
+  (new code under the REAL 60 s budget / 120 s timeout), compare.mjs + comparison.json.
+  Facts coverage verified ready beforehand (covered_from 2026-11-10T23:04:44Z <= horizon-8d) so
+  no backfill write occurred; fixture untouched (read-only probe).
+- Equivalence: ALL 16 normalized parts IDENTICAL for broad ('ukmesh') and observer
+  (15C00C48…CB8D) scopes — canonical-key normalized sha256 89327e9679859ffe… (broad) and
+  38c110dead019d04… (observer), before == after in both scopes; normalization applies exactly
+  computeChartsData's Number()/ISO conversions and deterministic tie ordering. (The first
+  comparison.json digested raw JSON.stringify: jsonb returns object keys sorted by
+  length/bytewise rather than SELECT order, so before/after digests differed on key order
+  alone while every value matched. compare.mjs now canonicalizes keys recursively; the
+  superseded file is preserved as comparison-superseded-keyorder.json.)
+  statsSummary.integration.test.ts deepEqual (string counts, ::text
+  timestamps, row order, observer alias scope) passes through the new consolidated region query.
+- Timing (warm fixture cache, serial concurrency=1): broad 18 queries/40,089 ms -> 7 queries/
+  26,093 ms (-35%), max query 14,879 ms (region/reception); observer 18/10,880 -> 7/4,317 (-60%).
+  After breakdown: coverage 44 ms, radios+totals 2,557, paths 997, region/reception 14,879,
+  counts 2,645, fact summary 3,259, fact trend 1,708. The soak's cold+concurrent-ingest baseline
+  was 78 s total (budget failure at query #12); the consolidated path passes the real 60 s budget
+  warm with 34 s headroom. Concurrent-ingest proof follows in the canonical Stage 3 session.
+  If cold-soak margin proves thin, the recorded next lever is merging radios+totals into the
+  region/reception scan (both always-on 7d alias-join scans) — not raising limits.
+- Tests: statsRepository.test.ts fragments updated for the consolidated CTE structure
+  ('WITH prefix_counts' -> 'prefix_counts'); all semantic fences still asserted (no LIMIT 50000,
+  scoped network predicate, true percentile medians, top-10, alias canonicalization, no NOW()
+  after binding, aggregate-switch call counts). New regression test asserts 4 packet scans +
+  2 fact reads with reads OFF, zero legacy counts scans with reads ON, and single shared scans
+  per group. Stats unit suites 40/40; full backend npm test result recorded on completion.
+
+## Stage 2 batch 4 disk reclamation — ownership-proven disposables only
+
+- Before: host free 10,169,892,864 B (9.47 GiB — BELOW the 10 GiB gate); docker 112 images
+  (19.28 GB, 6.46 GB unused), 539 build-cache records (12.97 GB), 59 volumes (41.42 GB,
+  419.1 MB unused). Evidence: plans/lean-runtime/qualification/stage2-disk-reclamation.j3LbMU
+  (docker-df-before.txt, host-free-before.bytes, removal-tags.txt, removal-ids.txt,
+  removal-digests-before.txt with full sha256 digests/sizes, dangling-volumes-before.txt +
+  inspect metadata, rmi/prune outputs, docker-df-after.txt, host-free-after.bytes).
+- Ownership checks before removal: every candidate had Containers=0 (docker system df -v);
+  no overlap with any running/stopped container image (programmatic cross-check); the active
+  pipeline image golang:1.27-bookworm 4fa7c968ba93 and ALL in-use images excluded. Referenced
+  digest pins KEPT: postgres@sha256:5db6dac2ef5d (test-worker-fixtures.sh),
+  eclipse-mosquitto@sha256:9cfdd46ad59f (bootstrap-mosquitto/restore-drill/test-mqtt-broker-fixture),
+  busybox@sha256:9532d8c39891 (backup/restore-drill). Tagged third-party tooling (alpine,
+  node:26, sqlc, ruff) kept. No decisions/handoff recovery references to removed tags.
+- Removed 75 images: superseded ukmesh diagnostic builds (d7-before/after, broker-persistence
+  v2/v3/v4 — builder script deleted, only stale .pyc remains; broker-session-accounting
+  prototypes, f1-backend/website, full-backend:mqtt-first/mqtt-final — profile namesake only,
+  no image-tag references; all ukmesh-rc-* revision builds; viewshed link-retention-test) and
+  five unreferenced superseded base pins (4 old golang, 1 old node; re-pullable/rebuildable).
+- Cache: docker builder prune -f removed ONLY unshared inactive records (the permitted
+  category); after image removal freed 6.09 GB. Volumes: the 35 dangling volumes were all
+  anonymous (com.docker.volume.anonymous), created 2026-11-12 (24), 2026-11-13 (3),
+  2026-11-14 (1) and 2026-11-19 01:40–05:42Z (7) by removed test containers,
+  attached to NO container including stopped ones; each name+metadata recorded before removal;
+  volume prune removed exactly that recorded set (59 -> 24 volumes, all 24 active; verified).
+  No named/active/retained volume, no retained fixture, no browser install, no original store
+  touched. No global system prune, no -a image prune.
+- After: host free 22,897,377,280 B (21.32 GiB, +11.85 GiB); images 37 (12.98 GB), cache 130
+  records (6.88 GB, 0 reclaimable), volumes 24/24 active. All 37 stack containers still Up.
+  Gate >=10 GiB now has >11 GiB headroom for Stage 3 fixture replay + soak + restoration.
+
+## Stage 2 batch 3 swap attribution — frozen variables, idle baseline, sampler ready
+
+- Evidence: plans/lean-runtime/qualification/stage2-swap-attribution.sDxFpW (swap_sampler.py,
+  idle-baseline.jsonl). Sampler reads cgroup v2 memory.current/swap.current/memory.stat
+  (anon, file, workingset_refault_anon/file, pgmajfault) + memory.pressure directly per owned
+  ukmesh-* container (37), plus /proc/vmstat rates (pswpin/pswpout/pgmajfault/pgscan_kswapd/
+  pgscan_direct) and meminfo; 5 s cadence, JSONL, no per-sample docker exec, read-only.
+- Frozen pressure variables (recorded, NOT modified): vm.swappiness=60, overcommit unchanged,
+  single swap file /swap.img 3.8G prio -2, no zram; EVERY owned container has memory.swap.max=0
+  (lean config) — container swap is structurally impossible under the frozen comparison.
+- Idle attribution (30-60 s, post-Stage-1/2 stack on originals): owned swap 0 MiB across all 37
+  containers; host swap used ~747 MiB is ENTIRELY outside owned cgroups. Process VmSwap sums
+  253.9 MiB over 92 host processes — top: AI harnesses (codex 56.2 + opencode 47.2 +
+  codex-code-mode 8.4 + opencode-pty 7.1 ≈ 119 MiB), dockerd 32.1, containerd 4.9,
+  docker-proxies, unattended-upgrades 9.2, fwupd 6.3. Remainder is swapped host shmem/tmpfs
+  (Shmem resident 301.6 MiB; /dev/shm itself only 32K used — private test cache already
+  released) with SwapCached 492.8 MiB overlap. Idle rates: pswpout 0/s, pswpin <=1.4/s,
+  majfault <=40/s decaying to ~1/s — no sustained churn at idle.
+- Consequence for the gates: the earlier soak's swap churn predates the frozen swap.max=0
+  limits and the Stage 1 allocation fix. Under the frozen config any Stage 3 swap traffic must
+  come from host-side harness overhead (probes, browser checks, docker exec) — the sampler
+  separates owned vs unattributed swap per sample so causality is provable, per the prompt's
+  "major faults alone do not identify swap causality". Job correlation (chart/spam/region/
+  graph/link timestamps from backend.log joined to sampler intervals) is the analysis step
+  during the canonical soak. Host-wide swap policy and unrelated processes stay untouched.
+
+### Batch 4 correction — node base pin re-pulled by exact digest
+
+- The batch-4 ownership scan missed the root Dockerfile* files: node:26-alpine@sha256:c6ad9e9c1d80…
+  is the pinned base of Dockerfile, Dockerfile.app, Dockerfile.backend, Dockerfile.mesh-health-check
+  and Dockerfile.website. It had been removed as a superseded pin. Re-scanned ALL build files for
+  every removed digest: only this node pin was referenced (the four golang pins stay unreferenced;
+  the active pipeline pin 4fa7c968ba93 was kept). Re-pulled by exact digest before the Stage 3
+  rebuild; restored image id sha256:c6ad9e9c1d80… and creation 2026-10-28T20:55:24Z match the
+  pre-removal record exactly. Receipt: stage2-disk-reclamation.j3LbMU/node-pin-repull-verify.txt.
+  No build input changed; the reclaim verdict stands with this correction. Future reclaim scans
+  must include root Dockerfiles.
+
+### Stage 2 independent review — verdict and resolutions
+
+- Independent subagent review of ec11ec6 / c89e6dc / f06d569 + evidence integrity:
+  PASS-WITH-ADVISORIES. No semantic divergence: migration 156 is access-path only
+  (predicate/column shape provably serves all three window queries; results byte-identical),
+  the chart consolidation survived expression-level scrutiny (privacy fences, windows,
+  GROUPING SETS, casts, 1:1 alias fan-out, laziness, abort cascade), and the parser repair
+  was re-simulated against the saved fixture (exactly the six genuine FATALs, full-byte digest).
+  Evidence independently re-verified, including a from-scratch re-normalization of all 16
+  chart parts in both scopes.
+- Resolved before the Stage 3 source freeze:
+  1. Parser hole (minor): non-PG failure lines after a SQL dump were skipped until the next
+     PG-prefixed record. Fix 369303e: PostgreSQL continuation lines are tab-indented, so the
+     skip is now bounded to tab-indented bodies wherever they appear (also fixes a capture
+     window opened mid-dump); every other line ends the echo and is scanned normally.
+     Verified all 510 continuation lines of the saved soak fixture are tab-indented; fixture
+     still yields exactly 6 failures at lines 1/87/173/259/345/431 with unchanged digest.
+     New regression pins: post-dump plain + structured failures, mid-dump window start,
+     record-shaped tab continuation, single-space severity, no-docker-prefix records,
+     HINT/CONTEXT/LOCATION skips, WARNING-with-'failed'. Qualification unit suite 230/230 OK.
+  2. Chart digest presentation (minor): canonical-key digests now match before == after
+     (broad 89327e9679859ffe…, observer 38c110dead019d04…); superseded comparison preserved.
+  3. Volume date claim (minor): corrected to 24×11-12, 3×11-13, 1×11-14, 7×11-19 (matches
+     dangling-volumes-inspect-before.txt exactly). Safety properties were already correct.
+  4. Migration coupling advisory: new unit test backend/src/db/messageWindowIndex.test.ts
+     pins the 156 predicate/columns to the literal filter shape of all three spam window
+     queries, so a future query change cannot silently orphan the index.
+- Accepted advisories (documented, no code change): CREATE INDEX IF NOT EXISTS skips chunk
+  creation if the root index exists (all 16 chunks verified present; single-transaction build
+  makes partial state unlikely); partial index overlaps packets_network_time_idx (cost-based
+  choice, write-amplification trade-off documented); maxResultRows now sees 1 row per
+  consolidated query with jsonb cardinality realistically bounded (25 buckets/8 days/IATA/
+  12 transport/10 prefixes); packet_types tie order pre-existing and normalization-handled;
+  PG_RECORD assumes the deployed '%m [%p] ' prefix (comment added; other prefixes fall back
+  to the ordinary scan). Concurrent-ingest proofs for spam + charts remain deferred to the
+  canonical Stage 3 soak (steady-runtime-logs + warm chart margin under 30 pkt/s ingest).
+
+## Stage 3 source freeze and final-source re-qualification (seal d633ed0)
+
+- Seal frozen at d633ed091bb83786a546911b553f180d7a4b1f6e (branch ukmesh/lean-load-fixes,
+  pushed; PR #260 base ukmesh-dev; PR #259 head 2c687b88; CoreScope fork PR #2, pin b1ffa003).
+  No tracked commits or edits during evidence collection; decisions logged in the git-ignored
+  plan dir until the report seal. Closure run:
+  plans/lean-runtime/qualification/mqtt-first-closure.uJSuz8 (private).
+- Re-qualification on the final source before collection: backend npm test 1151 tests
+  (1131 pass / 20 opt-in real-SQL skips / 0 fail); required real-SQL integration 1/1
+  (statsSummary) + migration-band 9/9 on owned disposable DBs (dropped afterwards);
+  qualification Python suite 230/230; parser regression 7/7; CoreScope Go suites green at
+  pin b1ffa003 with rebuilt binary sha256 9b0e72e299ba5915… equal to the Stage 1 green ELF
+  chain (1HN7hc). Receipts: stage3-go-suites.ykM7Vq, closure tests-evidence/.
+- Canonical rebuild + start green on the seal: backend image
+  sha256:b27e97b998645cbaa63e8b4991e52eeb5f85ccb09709b436c986bb8bc979f7e3 (label d633ed0),
+  app c94b0a371511, website a420ac128ae6, website-dev 66a4b7e1569d; migration 156 applied.
+- CI on the seal fully green: push run 44678364865 + PR run 44678417164, all 7 jobs SUCCESS
+  on both events (incl. Workers-and-Compose operator suite and HopReach mock-RF gates).
+  Receipt: closure tests-evidence/ci-runs.json. Real GPU / F2 / public tunnel / VPS remain
+  deferred by policy.
+- Frontend battery attempt 2 on the final revision: browser contracts 18/18, basemap 6,
+  Lighthouse failures [], 30-min production soak (heap growth 0.54% ≤ 10%), both production
+  builds exit 0, bench:map p95 ≈16.7 ms. bench:website attempt 1 failed unguarded
+  (refreshSampleRecent would write the synthetic overlay into an arbitrary DB); failure
+  retained, rerun later inside the guarded sample-proofs session (below).
+
+## Stage 3 soak fixture selection — attempt 1 OOM, clone probe, ec16a1 chosen
+
+- Official soak attempt 1 on 10× fixture 20261118215522_9c0a37 (session soak-82xcw138):
+  CoreScope cgroup OOM at ~594k ingested transmissions under the 512 MiB web ceiling
+  (growth ~1.17–1.29 KiB/tx; startup ~402 MiB at 480k; OOM threshold ~595–600k).
+  Canonical one-time 640 MiB recovery (recovery-only limit, never counts toward acceptance)
+  restored originals through the canonical switch; CoreScope replaced at 512 MiB on the
+  original directory. Fixture polluted to 605,365 tx — retained intact as reads evidence,
+  unusable for further timed work (startup now OOMs at 512 MiB). Failed receipts archived
+  unmodified: closure soak-attempt1-diagnosis/.
+- Full 40-minute validation probe on a disposable clone (20261120091333_4e9b05) of retry
+  fixture 20261114013258_ec16a1 (480,129 tx at start): CoreScope peak 491.9 MiB, 0 OOM.
+  Probe-only failures root-caused: 639 PG "out of background workers" (7th TimescaleDB
+  database vs 16-slot pool — clone artifact; official run kept the 6-database shape, 0
+  lines) and 609 pressure-burst best-effort timeouts. Analysis:
+  stage3-soak-probe.96FjW6/probe-analysis.md. Clone disposed with ownership verification
+  (0 mounts, targets original, 3 DBs dropped WITH FORCE): plan-dir clone-disposal-record.json.
+  600-s idle observation confirmed 0 new warnings and job rescheduling before the official run.
+
+## Stage 3 official soak (attempt 2, ec16a1) — functional core green, host-pressure gates open
+
+- Session soak-0qbnebx3 on ec16a1 (552,249 tx after). Functional core ALL GREEN:
+  72,000 QoS1 ACKs at 30/s; acknowledgedMs 2,400,099 (exactly 40 min); warmup 154 ms;
+  WebSocket 72,000/72,000 delivered, 0 missing, authenticated before publication;
+  drain 15,832 ms ≤ 120 s; isolated native hash-audit 0 mismatches ≤ 30 s;
+  failures/badOutcomes/cacheViolations empty; 8 warmup reads HTTP 200; CoreScope peak
+  485.2 MiB < 512 MiB, 0 OOMs/restarts; runtime working memory peak 2.737 GiB ≤ 3.0 GiB;
+  available-memory headroom gate passed; disk min 20.36 GiB ≥ 10 GiB; full resident
+  coverage; owned-container swap 0 in all 660 samples (frozen swap.max=0); companion
+  commits 72,000 with every app-specific typed persistence check passed.
+- Failed gates ONLY host-pressure: swap_growth 204.1 MiB > 128 MiB; swap_churn >1 MiB/s
+  sustained ≥60 s in low-available minutes; logs_passed — 80 backend PATH_RESOLVE_TIMEOUT
+  lines ALL in the 15:43 minute, the run-minimum host available memory (342 MiB).
+  Mechanism: backend/src/path-beta/workerPool.ts (2 threads, 15 s deadline,
+  interactive-first scheduling starves best-effort slow-mode finalizes under pressure);
+  zero functional impact — all 72,000 packets committed, delivered and audited.
+- Attribution: owned swap structurally zero (swap.max=0 on every owned container;
+  per-sample owned-vs-host separation in swap-attribution.jsonl); churn whenever host
+  available < ~600 MiB, quiet ≤1.3 MiB/s at ≥690 MiB even under full publication; host
+  3.8 GiB RAM (MemTotal 4,009,132 kB) with resident IDE-managed harnesses (codex cannot be stopped; opencode
+  resident). No 40-minute 10× soak has ever passed swap_churn on this host (8 prior
+  full-window resource receipts failed the same gate); short 1800-packet soaks passed at
+  up to 2.799 GiB. Harness-free retry assessed:
+  projected available ~620 MiB vs ~650–690 MiB quiet threshold — not assured.
+- Disposition: proceeding under the user's standing pre-acceptance "if the official soak
+  fails the gate, report it as an open criterion with attribution evidence" (logged in
+  preflight-and-plan.md; the disposition question was aborted twice by location shutdowns;
+  user may redirect). Diagnosis: closure soak-attempt2-diagnosis.md.
+
+## Stage 3 access retry — beacon maintenance scheduler first-tick interval
+
+- Access attempt 1 failed one observation check: beacon_maint sessions absent ~20 s after
+  beacon start. Cause: pgxpool lazy; the background Scheduler's first tick is a FULL
+  interval away (sweep 30 s, CMI/packet-sites 5 min) and BEACON_EXTERNAL_MIGRATIONS=1 opens
+  no boot maintenance connection. All 60+ privilege checks passed. Failed receipts
+  archived: closure access-attempt1-diagnosis/.
+- Retry followed the prior-closure mqtt-final pattern: canonical switch to ec16a1 + start,
+  6-minute maintenance window (4 idle maint sessions observed), canonical access 62/62 +
+  work-smoke PASSED in the same window on the soak targets, canonical restore + inventory.
+  No script or config change.
+
+## Stage 3 operations 10× retry — 9c0a37 cannot start within the 512 MiB acceptance limit
+
+- Operations 10× attempt 1 on 9c0a37 failed at canonical start: CoreScope exit 137 during
+  the health wait — startup load of 605,365 transmissions exceeds the 512 MiB ceiling
+  (same OOM threshold as soak attempt 1; docker event buffer flushed by healthchecks,
+  attribution via the growth model + read-only counts confirming the store unchanged).
+  Archived: closure operations-10x-attempt1-diagnosis/.
+- Retried on retained ec16a1 (552,249 tx; starts and runs ≤512 MiB; equals the qualified
+  soak targets). Authority: report.py binds ONE consistent token per scale WITHIN
+  other-operations.json only (no cross-phase equality with reads); the prompt lists ec16a1
+  as the other retained 10× fixture. Paired operations PASSED at both scales
+  (1× 7e7e37 + 10× ec16a1): 8/8 checks, exact data parity, worst regression +6.77% ≤ 10%,
+  max 1326.7 ms ≪ 30 s deadline.
+
+## Stage 3 reads, parity, backups, guarded sample proofs, recovery, interfaces, projection
+
+- Reads 1× attempt 1 FAILED (environment, not source; session reads-mqgzspbg): Beacon had
+  run 21 h on originals; its log reached 9.7 MB / ~4 s read, beyond startup_readiness's
+  2 s / 8 MiB probe bound → probe timeout every readiness cycle → fixture start exit 2.
+  Canonical recovery without force-edits: dev-all.sh restart beacon (fresh log epoch) →
+  start (pending intent resumed) → canonical restore, inventory 43/43. Failed receipt +
+  recovery receipt preserved in closure fixture-sessions/reads-mqgzspbg/; diagnosis in
+  plan-dir reads-attempt1-diagnosis/. Attempt 2 PASSED. Follow-up candidates NOT in this
+  seal: readiness Beacon-log probe bound vs long-lived containers; control.sh rg-absent
+  guard (rg process-substitution filter fails silently when ripgrep is absent).
+- Backups: 4 original stores verified PASSED. Reads (mqtt-first native): 3 matched pairs
+  per scale PASSED (1× 7e7e37, 10× 9c0a37), C1+C8, warm + cache-miss, companion reads;
+  C8 p95 within 100 ms / 250 ms. Parity 1× PASSED: 140 lookup cases, path graph
+  5,177 nodes / 27,175 links, seal unchanged.
+- Guarded sample-proofs session sample-proofs-ii8l24yx (owned sample 20261114011231_24039e):
+  maintenance-152 native provenance regenerated on final backend image b27e97b99864…
+  (superseded provenance/receipt preserved; STATE = plans/lean-runtime per common.py);
+  CoreScope public PG 5/5 + RAM 3/3 proofs at the closure root with MQTT/durable + Redis
+  ownership self-restored; bench:website PASSED (3 runs, 30 measurements, exactly 50
+  synthetic recent-v1 overlay rows written ONLY to the owned sample DB, 1,333 → 1,383
+  packets). CoreScope mode=mqtt restored; evidence copied into tests-evidence (manifest
+  65 entries, digest-bound).
+- Recovery 1× (7e7e37, session recovery-vxtrr8m2 → closure recovery-0939b6c7): 15/15
+  REQUIRED_CHECKS PASSED. Interfaces (1× 7e7e37, guarded session interfaces-p9i8e6mx →
+  closure interfaces-8ue93zwc): 9/9 PASSED. Core-projection verify on originals: 4/4 PASSED.
+
+## Stage 3 final restoration, report verdict and independent review
+
+- Final restoration verified: inventory 43/43 on originals (meshcore, meshcore_owner_auth,
+  beacon_dev + original CoreScope directory); CoreScope web limit back at 512 MiB
+  (536,870,912 bytes); mode mqtt, durable ingest; tunnel off; normal Redis settings
+  restored; every fixture session ended restored on originals with passing 43/43
+  inventories (12/14 via session restore; the 2 documented failed attempts via canonical
+  recovery receipts);
+  no diagnostic/clone/recovery containers remain; 13 ukmesh + 9 beacon DBs all originals
+  or retained fixtures. Retained fixtures intact: 7e7e37, 9c0a37 (polluted, reads
+  evidence), ec16a1 (soak fixture), 24039e sample, fa041a. Four verified original backups
+  retained.
+- tests.json assembled digest-bound from tests-evidence/manifest.json (12 checks +
+  remote_CI top-level, context-bound on originals via phase_context). Canonical report:
+  scripts/qualify-full-stack.sh report --run <closure> --acceptance-profile mqtt-first →
+  12/15 PASS; failed phases exactly resources, soak, steady-runtime-logs = the
+  pre-accepted open criteria (host swap churn/growth + pressure-burst best-effort
+  timeouts); no binding errors. Advisory (non-gating in mqtt-first): fixed-demand-80rps
+  not collected; mixed-read latency failed under the same host pressure.
+- Independent Stage 3 subagent review: VERIFIED — all 11 check areas pass on independent
+  read-only recomputation (report.py validators re-run as pure functions reproduce 12/15
+  exactly; resources.evaluate() recomputed byte-identical from the raw 459 samples; all
+  65 manifest + 31 tests-evidence digests verified; live maintenance_proof() revalidation
+  and restoration checks pass; seal intact). The session was temporarily unreachable after
+  a location shutdown and appeared lost; it completed on its own (a relaunched duplicate
+  was redirected/lost — no second receipt). Five NON-BLOCKING findings, all incorporated:
+  (1) attribution sampler froze container IDs pre-switch — 12 recreated containers read
+  None after ~15:11; owned-swap-zero during the soak rests on the official resources.jsonl
+  (full coverage, swap 0 + swap.max 0 in all 459 samples); attribution sound. (2) Prose
+  label 552,289 = packets; actual transmissions 552,249 — dated correction appended to
+  soak-attempt2-diagnosis.md, receipts untouched. (3) Prior full-window swap_churn
+  failures number 8, not 7 — corrected. (4) independent_review attachment — now attached
+  to tests.json {path, sha256} and the canonical report re-run: UNCHANGED 12/15, zero
+  binding errors. (5) Advisory mixed-read feed p95 319.3 ms — recorded. Review receipt:
+  closure independent-review-stage3.json. Redaction scan of the final report against
+  known environment secret values: 0 hits (closure redaction-audit.json).
+- Qualification is NOT called complete: the canonical report and required checks do not
+  all pass together — the three host-pressure phases remain open criteria under the
+  standing pre-acceptance. Functional qualification on the sealed revision is green.
+- Post-report documentation commit (this log) is the only tracked change; WORKING-STATE.md
+  handoff replaced (private). Merges of PR #259 / PR #260 / CoreScope PR #2 remain user
+  actions. Deferred by policy: real GPU / F2 / public tunnel / VPS.
+
+## Stage 3 supplementary review, receipt reconciliation and final corrections
+
+- The duplicate reviewer (relaunched while the first review session appeared lost to a
+  location shutdown) completed after the report seal and overwrote
+  independent-review-stage3.json — the redirect never reached it (subagent session
+  registry unstable across shutdowns). Reconciliation: the second review is preserved as
+  closure independent-review-stage3-r2.json (sha256 aa4897fe83f62b1b…); the first review
+  was restored BYTE-EXACT from the reviewer session's recorded write (opencode.db
+  session_message), sha256 d1fd929f2ce3a18a… re-verified equal to the independent_review
+  attachment in tests.json. The canonical report-mqtt-first.json is unchanged: 12/15,
+  zero binding errors.
+- Supplementary review r2: 20/20 checks PASS, verdict PASS-WITH-ADVISORIES — independently
+  re-hashed all 15 report digests + 65 manifest digests, recomputed resources from the raw
+  459 samples, verified soak functional numbers and restoration live (read-only docker).
+  Its four minor documentation discrepancies are dispositioned in report.md: the 552,289
+  prose label (already corrected), host-RAM rounding (corrected to 3.8 GiB / MemTotal
+  4,009,132 kB), a stale claim that report.md still held an unfilled review placeholder
+  (it was filled before the redaction audit; re-verified), and three pre-closure (Nov 13)
+  exited ukmesh-lookup-* diagnostic helpers (stopped, unreferenced by the inventory; noted
+  in the report's restoration section).
+- Three r2 completion-message claims were checked against receipts and do NOT stand:
+  (1) steady-runtime-logs.json has passed=false, not true — the report FAIL is consistent
+  and r2's own file agrees; (2) soak.json DOES itemize auxiliary traffic (auxiliaryTraffic:
+  40 cycles at 60 s, 240 auxiliary ACKs, per-app expected counts matching the 72,160
+  packet/ledger deltas = 72,000 ACK + 120 auxiliary transmissions + 40 status-only);
+  (3) the operations baseline was not "collected 2026-11-14": both sides were freshly
+  measured 2026-11-21 by the paired runner against the APPROVED sealed baseline source
+  2b4613a8 (pre-fix full-stack reference by design) and candidate d633ed0.
+- Host-RAM correction to the earlier Stage 3 entries: "3.9 GiB" was a rounding slip;
+  MemTotal 4,009,132 kB = 3.82 GiB (the prompt's ~3.8 GiB VM). No gate or attribution
+  impact.
+- Report-binding note: context.source_state() hashes tracked files INCLUDING this log, so
+  the post-report documentation commits (c7a7550 + this entry) intentionally move HEAD
+  past the collection seal d633ed0. The sealed report remains the canonical verdict and
+  must NOT be re-run at documentation HEADs (bindings would report source drift). Any
+  re-collection requires a new source freeze.
+- Final redaction scan of report.md after all edits: 0 hits (closure redaction-audit.json).
+  WORKING-STATE.md handoff updated (private). Merges of PR #259 / PR #260 / CoreScope PR #2
+  remain user actions; open criteria and deferred items unchanged.
+
+## Efficiency pass — DEV runtime footprint reductions (2026-11-22)
+
+### PostgreSQL per-instance footprint (docker-compose.postgres.yml)
+
+- Measured on the official soak receipts: main PG peaked at 425 MiB anon (mean 164)
+  with 33 connections, shared_buffers 128 MiB, work_mem 10485 kB from the volume
+  config, autovacuum_max_workers 10 x 32 MiB, timescaledb.max_background_workers 16,
+  max_worker_processes 21.
+- Added command-line overrides (precedence over the volume postgresql.conf):
+  work_mem 4MB, autovacuum_work_mem 16MB, autovacuum_max_workers 4,
+  max_worker_processes 16, timescaledb.max_background_workers 8. Command line keeps
+  durability (FULL/WAL, synchronous_commit), roles, 10 free slots and all features; only
+  per-session/per-worker headroom is bounded. Idle DB 155 -> 120 MiB; soak peak expected
+  to drop ~100-150 MiB. Fresh container verified: all six settings source=command line.
+- Measured on a canonical 1800-packet/60 s probe (efficiency-probe.oEf5fx, ec16a1,
+  --reuse-prepared): PG anon peak 425 -> 203 MiB; runtime peak anon 2961 -> 2218 MiB total;
+  host available min 653 / median 869 MiB; swap growth 69 MB; 0 backend failure lines;
+  short soak passed (1800 ACKs, drain 7.9 s, ws 0 missing).
+- CI is unaffected (docker-compose.ci.yml defines its own timescaledb service/command).
+
+### Observability + worker heap budgets (docker-compose.yml)
+
+- Loki: GOGC=50 (idle 70 -> 40 MiB; logs pipeline unchanged). Prometheus/Grafana GOGC=50
+  was measured to REGRESS their RSS (129/124 -> 120-173 MiB) and was reverted; a clean
+  restart with defaults settled at 82/63 MiB.
+- Explicit worker budgets: path-learning NODE_OPTIONS --max-old-space-size=192
+  --max-semi-space-size=8; synthetic-monitor/health-worker/privacy-remat 96/8; Python
+  workers (link, tagger) MALLOC_ARENA_MAX=2, MALLOC_TRIM_THRESHOLD_=131072. Region
+  snapshot keeps its 128 MB cap. No feature or scheduling change.
+- All applied through the canonical dev-all.sh start (launcher env), not a manual
+  compose invocation.
+- Probe note: path-learning retained ~168 MiB mean after its startup pass (cap 192); watch
+  in the 40-minute soak. Backend mean 178 / peak 319 MiB (baseline 305/458).
+
+### LAN access layer (scripts/full-dev/lan, uncommitted at first run)
+
+- Status dashboard + nginx gateway joining ukmesh-full_default / ukmesh-companions_default:
+  8080 dashboard, 8081 app, 8082 CoreScope, 8083 website, 8084 Beacon web, 8085 Grafana,
+  8086 Prometheus, 8087 website-dev, 8088 Beacon API, 8089 mesh health. Verified 9/9 up
+  from 192.168.2.22; adds ~40-60 MiB total in two capped containers.
+
+## Efficiency pass — CoreScope retained-store compaction (pin d8087b58)
+
+- Measured root cause on an owned 605,365-transmission copy: ~775 B retained per
+  transmission — 408 B of structs (StoreTx 248 + StoreObs 160), ~80 B indexes, ~55 MB
+  strings, 56 MB map preallocation. RouteType/PayloadType/Score/SNR/RSSI and ScopeName were
+  each heap-allocated per packet (~1.6M small objects).
+- Fix: pool immutable nullable value pointers (bounded small-int table, mutex-guarded
+  float map, interned string pool; 16k caps). Field types, API, privacy and semantics are
+  unchanged; the one test that mutated through the pointer now constructs its own. Commit
+  d8087b58 on fork branch efficiency/compact-store.
+- Acceptance-condition test (512 MiB cgroup, GOMEMLIMIT=256MiB, GOMAXPROCS=2): the build
+  now LOADS and serves reads at 605,365 transmissions — 422-432 MiB RSS, 428 MB heap,
+  analytics recompute completed; previously exit 137 at this size. Go server suite green
+  (64 s; the pre-existing environmental prune-queue test is skipped exactly as baseline).
+  Effect ~40 MB at 605k; it unlocks 9c0a37 and a second 72k soak on ec16a1 (~626k).
+  Independent review of the CoreScope diff is still outstanding.
+
+## Efficiency pass — CoreScope review advisories, PG worker slots, fixture capacity
+
+- CoreScope shared-pool review: PASS-WITH-ADVISORIES (18 checks). Applied: NaN never pooled
+  (would consume a slot per call), float pool keyed by IEEE bits so -0.0/+0.0 stay distinct,
+  a second test that mutated through *tx.PayloadType now assigns a private pointer, and a
+  pool-behaviour unit test (shared identity, caps, NULL vs "", signed zero, NaN).
+  Commit ba132b01; Go suite green (69 s, environmental prune test skipped as baseline).
+- PostgreSQL worker slots corrected after a short probe logged "failed to launch job ...
+  out of background workers": max_worker_processes 16 -> 20, Timescale background workers
+  8 -> 12. Per-session/worker memory limits stay (work_mem 4MB, autovacuum 4x16MB).
+- Fixture capacity exhausted for acceptance soaks: two full-soak attempts each published
+  ~72k before their restores were blocked by CoreScope hitting 512 MiB, leaving ec16a1 at
+  700,095 transmissions (9c0a37 remains 605,365). The 1x fixtures hold ~16k. A fresh 10x
+  bundle (fixtures.create_bundle) restores the 480k lookup DB but copies the 372 KB backup
+  SQLite (empty CoreScope store); matching the historical fixtures needs the ~480k-packet
+  MQTT replay that produced the original stores, which no single canonical command exposes.
+  Until a replayed fixture exists, the 40-minute acceptance soak cannot run; the config and
+  compaction work is retained and verified independently of that limitation.
+- Recovery: temporary 1024 MiB CoreScope limit used only to start the over-capacity fixture
+  for the canonical restore; originals verified back at 512 MiB on the original directory,
+  inventory 43/43.
+
+## Follow-up validation and ownership (2026-11-23)
+
+- Recover stopped infrastructure using the exact applied fixture identities before querying live ownership. At reboot, restarting application containers report no PID and the launcher reads database identity before its main startup routine. Wait for infrastructure health before re-entering the guarded restore. Keep a bounded receipt for an interrupted fixture and require the canonical intake and target checks during the switch.
+- Keep consolidated chart SQL and apply the existing row budget to the decoded logical results. The outer query sees one JSON envelope and permits two hourly rows under a configured limit of one. Decode all three count sources through the same owner.
+- Set PostgreSQL log handling at the service boundary. The existing scanner drops tab-indented application errors in arbitrary container logs. Each original line and checksum remains evidence.
+- Validate effective resource settings in the operator CI job. The local suite still expects 32 MB autovacuum memory and outdated CoreScope caps. Verify PostgreSQL scheduler pressure separately from its 4 MB query budget and keep larger-host override examples explicit.
+
+- CoreScope RF samples already own the exact SNR and RSSI values. Store their observation order and pair eligibility in compact flags and sample before sorting. Use full estimated capacity only for unfiltered resident scans. Keep cold-load cursor progress tied to physical IDs and scope-name memory with its own byte budget.
+- Keep the existing LAN ports under a single route definition. The old wildcard bindings allow monitoring and direct admin access outside the VM, while homepage polls miss actual WebSocket readiness. Bind user-facing routes to the chosen address, keep operator routes on loopback, and cache one shared probe sweep. An active addon stays outside fixture selection, whose broker and clients must remain local.
+
+- Read the live PostgreSQL scheduler population before changing worker slots. Sixteen connectable databases have Timescale installed, including original stores, retained main and owner fixtures, `postgres` and `template1`. The twelve-slot cap held one launcher and eleven schedulers and logged worker admission failures. Allow one launcher, sixteen schedulers and four concurrently running jobs. Reserve the two parallel workers, four logical workers and the logical launcher above that limit. Preserve the explicit memory, connection and durability settings.
+
+- The first private LAN startup exposed a nested file mount under the read-only site directory. Keep the shared route manifest inside the mounted site directory and use it from both consumers. Serve only explicit dashboard fields. CoreScope operator endpoints outside the admin prefix are denied by exact path or method, while its public configuration GET remains available.
+- The CoreScope candidate completed a 390-second probe on the owned 480,000-transmission copy at the 512 MiB cgroup limit. All 3,118 reads succeeded with p95 19.8 ms, peak working memory of 392.3 MiB, two default and unfiltered graph refreshes, and a passing Chromium packet journey. The original topology warm-up 503 remains in the separate startup receipt.
+- The interrupted replay fixture has 480,000 expected hashes in CoreScope and Beacon and 190,642 in UKMesh. UKMesh's cohort also contains 40,659 observations above one per hash and CoreScope has one. Gaps occur throughout the archived sequence. Neither older 10× fixture uses this replay source. Retain the archives and receipts and keep this incomplete fixture out of the acceptance soak.

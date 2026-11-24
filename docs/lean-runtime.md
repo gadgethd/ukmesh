@@ -102,6 +102,18 @@ restoring the original stores. During startup, cancellation waits for the
 pending target operation to settle. If startup repeatedly fails, the receipt
 identifies the retained fixture whose canonical start needs to resume.
 
+After a reboot, an already applied fixture can resume its verified local
+infrastructure before restoring the original stores. Use a fresh evidence
+directory under `plans/lean-runtime/qualification/`.
+
+```sh
+python3 scripts/full-dev/qualification/fixture_session.py restore-current <evidence-directory>
+```
+
+The command checks the retained fixture, containers and publisher state before
+starting anything. Use the restoration receipt to identify a failed bootstrap
+job or a remaining service startup failure.
+
 The executable service inventory and native work oracles must agree with the
 resolved configurations. A running process or HTTP 200 alone does not establish
 completed work. Missing, skipped, stale or mismatched evidence prevents a clean

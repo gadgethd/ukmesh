@@ -503,6 +503,7 @@
       "name": "beacon-db",
       "container": "ukmesh-companions-beacon-db-1",
       "kind": "container",
+      "log_format": "postgresql",
       "required": true,
       "work": [
         {
@@ -590,6 +591,7 @@
       "name": "sample-db",
       "container": "ukmesh-sample-db",
       "kind": "container",
+      "log_format": "postgresql",
       "required": true,
       "work": [
         {

@@ -37,6 +37,14 @@ if [[ -f $targets ]]; then
   done < "$targets"
 fi
 
+export FULL_DEV_LAN_APP_ORIGINS= FULL_DEV_LAN_HEALTH_ORIGINS=
+if [[ $UKMESH_DATABASE == meshcore && -f $repo/plans/lean-runtime/runtime/lan/active.json ]]; then
+  lan_origins=$(python3 "$repo/scripts/full-dev/lan/control.py" origins)
+  mapfile -t lan_origin_lines <<< "$lan_origins"
+  export FULL_DEV_LAN_APP_ORIGINS=",${lan_origin_lines[0]}"
+  export FULL_DEV_LAN_HEALTH_ORIGINS=",${lan_origin_lines[1]}"
+fi
+
 # Runtime containers receive only their own role; the administrator DSN is
 # interpolated exclusively into the one-shot migration service.
 export POSTGRES_DB="$UKMESH_DATABASE"

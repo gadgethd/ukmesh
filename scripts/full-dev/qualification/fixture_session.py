@@ -108,6 +108,30 @@ def restore(evidence: Path, token: str) -> None:
             write_json(evidence / 'resume-fixture.json', {'at': resumed_at, 'fixture': token})
 
 
+def restore_current(run: Path) -> None:
+    from fixture_resume import prepare_applied_fixture
+
+    with cancellation_scope('interrupted fixture recovery') as cancellation, restore_lease():
+        receipt = {'at': utc_now(), 'restored': False}
+
+        def record_cancel():
+            receipt['cancellation'] = signal.Signals(cancellation['signal']).name
+            write_json(run / 'interrupted-recovery.json', receipt)
+
+        cancellation['on_cancel'] = record_cancel
+        try:
+            token = prepare_applied_fixture(run)
+            receipt['fixture'] = token
+            restore(run, token)
+        except Exception as error:
+            receipt['error'] = safe_error(error)
+            raise
+        else:
+            receipt.update(restored=True, inventory=str(run / 'restored' / 'inventory.json'))
+        finally:
+            write_json(run / 'interrupted-recovery.json', receipt)
+
+
 def qualify(token: str, run: Path, args: list[str]) -> int:
     if not args or args[0] not in ('access', 'core-projection', 'operations', 'parity',
                                  'reads', 'recovery', 'sample', 'smoke', 'soak', 'traffic'):
@@ -193,8 +217,15 @@ def qualify(token: str, run: Path, args: list[str]) -> int:
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == 'restore-current':
+        try:
+            restore_current(owned_run(sys.argv[2]))
+        except InterruptedError as error:
+            print(str(error), file=sys.stderr)
+            raise SystemExit(130)
+        raise SystemExit(0)
     if len(sys.argv) < 4:
-        raise SystemExit('usage: fixture_session.py TOKEN EVIDENCE_DIR ACTION [OPTIONS]')
+        raise SystemExit('usage: fixture_session.py TOKEN EVIDENCE_DIR ACTION [OPTIONS] | restore-current EVIDENCE_DIR')
     try:
         raise SystemExit(qualify(sys.argv[1], owned_run(sys.argv[2]), sys.argv[3:]))
     except InterruptedError as error:

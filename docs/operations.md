@@ -575,10 +575,11 @@ signed backup/restore runbook.
 
 If a scheduled Timescale policy logs `failed to start a background worker`,
 compare `SHOW max_worker_processes` with
-`SHOW timescaledb.max_background_workers`. The Compose default reserves 24
-PostgreSQL worker slots for the image's current 16-worker Timescale setting,
-its launcher/database schedulers, and logical-replication headroom. Correct the
-configuration and restart only TimescaleDB; then require the policy's next
+`SHOW timescaledb.max_background_workers`. Lean DEV defaults to 28 PostgreSQL
+worker slots and 21 Timescale workers. The Timescale limit covers the launcher,
+16 schedulers and four concurrent jobs on the qualification VM. Count all
+databases with the extension installed and check the scheduled job overlap.
+Correct the configuration, restart TimescaleDB and require the policy's next
 manual or scheduled run to succeed before closing the incident.
 
 ### DatabasePoolSaturated
