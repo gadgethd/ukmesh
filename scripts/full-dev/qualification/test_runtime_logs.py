@@ -58,6 +58,12 @@ class RuntimeErrors(unittest.TestCase):
             self.assertEqual(result['example_line_numbers'], [4,5,6,7,8])
             self.assertNotIn('database offline', str(result))
 
+    def test_tab_indented_application_errors_remain_visible(self):
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / 'backend.log'
+            log.write_text('2026-11-23T12:00:00Z \tERROR: database offline\n')
+            self.assertEqual(inspect_log(log)['example_line_numbers'], [1])
+
     def test_postgresql_multiline_sql_dumps_are_data_not_new_failures(self):
         def record(severity, message):
             return ('2026-11-19T09:06:39.785605000Z 2026-11-19 09:06:39.771 UTC [835438] '
@@ -72,7 +78,7 @@ class RuntimeErrors(unittest.TestCase):
             # The severity record stays the single failure; the echoed SQL and
             # its continuation lines never add failures of their own.
             log.write_text('\n'.join([record('FATAL', 'connection to client lost')] + dump) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [1])
             # ERROR with DETAIL bind values and a STATEMENT echo counts once.
@@ -81,20 +87,20 @@ class RuntimeErrors(unittest.TestCase):
                 record('DETAIL', 'Key (packet_hash)=(failed) already exists.'),
                 record('STATEMENT', "INSERT INTO mesh.packets VALUES ('exception', 'panic')"),
             ]) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [1])
             # A dump without any severity record is pure echo: zero failures.
             log.write_text('\n'.join(dump) + '\n')
-            self.assertEqual(inspect_log(log)['failure_lines'], 0)
+            self.assertEqual(inspect_log(log, postgres=True)['failure_lines'], 0)
             # A later genuine record ends the dump and is counted again.
             log.write_text('\n'.join(dump + [record('ERROR', 'permission denied for table packets')]) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [6])
             # Non-dump PostgreSQL records keep the ordinary message scan.
             log.write_text(record('LOG', 'background worker failed to start') + '\n')
-            self.assertEqual(inspect_log(log)['failure_lines'], 1)
+            self.assertEqual(inspect_log(log, postgres=True)['failure_lines'], 1)
 
     def test_dump_boundaries_keep_neighbouring_failures_visible(self):
         def record(severity, message, gap='  '):
@@ -106,33 +112,33 @@ class RuntimeErrors(unittest.TestCase):
             log = Path(directory) / 'sample-db.log'
             # A non-PostgreSQL failure right after a dump is NOT swallowed.
             log.write_text('\n'.join(dump + ['[link-worker] job failed: database offline']) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [3])
             # Structured application failures after a dump stay visible too.
             log.write_text('\n'.join(dump + ['{"level":"error","msg":"commit failed"}']) + '\n')
-            self.assertEqual(inspect_log(log)['failure_lines'], 1)
+            self.assertEqual(inspect_log(log, postgres=True)['failure_lines'], 1)
             # A window opened mid-dump: orphaned tab continuations are echo
             # data even without their owning record; the later FATAL counts.
             log.write_text('\n'.join(["\t WHERE status = 'failed' -- panic exception",
                                       record('FATAL', 'connection to client lost')]) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [2])
             # A tab-indented continuation that looks like a record is still
             # echo data, not a new failure.
             log.write_text('\n'.join([record('ERROR', 'permission denied for table packets')] + dump
                                      + ["\tERROR:  fake failure inside echoed SQL"]) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [1])
             # Single-space severity gaps and records without the docker prefix
             # keep the same classification.
             log.write_text(record('FATAL', 'connection to client lost', gap=' ') + '\n')
-            self.assertEqual(inspect_log(log)['failure_lines'], 1)
+            self.assertEqual(inspect_log(log, postgres=True)['failure_lines'], 1)
             bare = '2026-11-19 09:06:39.771 UTC [835438] '
             log.write_text(bare + 'STATEMENT:  SELECT 1\n' + bare + 'FATAL:  connection to client lost\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [2])
             # HINT/CONTEXT/LOCATION echoes are data; WARNING messages keep the
@@ -143,15 +149,15 @@ class RuntimeErrors(unittest.TestCase):
                 record('CONTEXT', 'SQL statement "SELECT failed"'),
                 record('LOCATION', 'exec_stmt, pl_exec.c:1'),
             ]) + '\n')
-            result = inspect_log(log)
+            result = inspect_log(log, postgres=True)
             self.assertEqual(result['failure_lines'], 1)
             self.assertEqual(result['example_line_numbers'], [1])
             log.write_text(record('WARNING', 'background worker failed to start') + '\n')
-            self.assertEqual(inspect_log(log)['failure_lines'], 1)
+            self.assertEqual(inspect_log(log, postgres=True)['failure_lines'], 1)
 
     def test_saved_soak_lost_client_input_counts_only_the_six_fatal_records(self):
         saved = Path(__file__).parent / 'fixtures' / 'runtime-logs' / 'soak-spam-lost-clients.log.txt'
-        result = inspect_log(saved)
+        result = inspect_log(saved, postgres=True)
         # Exact excerpt of the retained 10x soak sample-db log: six genuine
         # FATAL "connection to client lost" records, each followed by the
         # multiline STATEMENT dump whose SQL literals contain 'failed'.

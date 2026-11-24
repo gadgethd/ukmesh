@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import copy
-from contextlib import nullcontext
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 import datetime as dt
+import io
 import json
 import os
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 import uuid
@@ -191,6 +193,27 @@ class ActualTargetOwnership(unittest.TestCase):
 
 
 class FixtureCloneProtection(unittest.TestCase):
+    def test_clone_reports_maintenance_only_after_creating_the_bundle(self):
+        calls = []
+        output = io.StringIO()
+        with patch.object(sys, 'argv', ['fixtures.py', 'clone', 'source_token']), \
+                patch.object(fixtures, 'clone_bundle', side_effect=lambda token:
+                             calls.append(('clone', token)) or {'token': 'cloned_token'}), \
+                patch.object(fixtures, 'stagger_fixture_maintenance', side_effect=lambda:
+                             calls.append(('stagger', None)) or {'passed': True}), redirect_stdout(output):
+            self.assertEqual(fixtures.main(), 0)
+        self.assertEqual(calls, [('clone', 'source_token'), ('stagger', None)])
+        self.assertEqual(json.loads(output.getvalue()), {
+            'token': 'cloned_token', 'fixture_maintenance': {'passed': True},
+        })
+
+    def test_failed_clone_does_not_reschedule_other_fixtures(self):
+        with patch.object(sys, 'argv', ['fixtures.py', 'clone', 'source_token']), \
+                patch.object(fixtures, 'clone_bundle', side_effect=ValueError('refused')), \
+                patch.object(fixtures, 'stagger_fixture_maintenance') as schedule, redirect_stderr(io.StringIO()):
+            self.assertEqual(fixtures.main(), 1)
+        schedule.assert_not_called()
+
     def test_selected_fixture_cannot_be_cloned(self):
         source = {"kind": "1x", "databases": [{"database": "owned"}]}
         with patch.object(fixtures, "target_lease", return_value=nullcontext()), \

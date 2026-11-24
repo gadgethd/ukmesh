@@ -81,26 +81,23 @@ def validate_window(started: str, finished: str) -> None:
         raise ValueError('Log capture requires an ordered, aware, completed time window')
 
 
-def inspect_log(path: Path) -> dict:
+def inspect_log(path: Path, *, postgres: bool = False) -> dict:
     checksum = hashlib.sha256()
     failures = 0
     examples = []
+    in_sql_echo = postgres  # A bounded window can open on a continuation.
     with path.open('rb') as source:
         for number, line in enumerate(source, 1):
             checksum.update(line)
             text = line.decode('utf8', errors='replace')
-            severity = pg_record_severity(text)
-            if severity in PG_DUMP_SEVERITIES:
-                # Dump records echo SQL/bind data; only their owning severity
-                # record counts.
-                continue
-            if severity is None and log_body(text).startswith('\t'):
-                # PostgreSQL continuation lines are tab-indented. Skip them
-                # wherever they appear: inside a dump, and when the capture
-                # window opened mid-dump (leading orphaned continuations).
-                # Any other line ends the echo and is scanned normally, so a
-                # non-PostgreSQL failure right after a dump stays visible.
-                continue
+            if postgres:
+                severity = pg_record_severity(text)
+                if severity in PG_DUMP_SEVERITIES:
+                    in_sql_echo = True
+                    continue
+                if in_sql_echo and log_body(text).startswith('\t'):
+                    continue
+                in_sql_echo = False
             if failure_line(text):
                 failures += 1
                 if len(examples) < 20:
@@ -122,7 +119,7 @@ def collect_logs(run: Path, *, started: str, finished: str) -> dict:
             path.chmod(0o600)
             result = docker(['logs', '--timestamps', '--since', started, '--until', finished, container],
                             output_stream=output, merge_stderr=True, check=False, timeout=30)
-        checked = inspect_log(path)
+        checked = inspect_log(path, postgres=service.get('log_format') == 'postgresql')
         checks.append({'name': service['name'], 'passed': result.returncode == 0 and checked['failure_lines'] == 0,
                        'exit_code': result.returncode, **checked})
     value = {'passed': bool(checks) and all(check['passed'] for check in checks),

@@ -3494,3 +3494,15 @@ pg_stat_statements on the fixture DB lean_10x_20261118215522_9c0a37 (stats_reset
 - Recovery: temporary 1024 MiB CoreScope limit used only to start the over-capacity fixture
   for the canonical restore; originals verified back at 512 MiB on the original directory,
   inventory 43/43.
+
+## Follow-up validation and ownership (2026-11-23)
+
+- Recover stopped infrastructure using the exact applied fixture identities before querying live ownership. At reboot, restarting application containers report no PID and the launcher reads database identity before its main startup routine. Wait for infrastructure health before re-entering the guarded restore. Keep a bounded receipt for an interrupted fixture and require the canonical intake and target checks during the switch.
+- Keep consolidated chart SQL and apply the existing row budget to the decoded logical results. The outer query sees one JSON envelope and permits two hourly rows under a configured limit of one. Decode all three count sources through the same owner.
+- Set PostgreSQL log handling at the service boundary. The existing scanner drops tab-indented application errors in arbitrary container logs. Each original line and checksum remains evidence.
+- Validate effective resource settings in the operator CI job. The local suite still expects 32 MB autovacuum memory and outdated CoreScope caps. Verify PostgreSQL scheduler pressure separately from its 4 MB query budget and keep larger-host override examples explicit.
+
+- CoreScope RF samples already own the exact SNR and RSSI values. Store their observation order and pair eligibility in compact flags and sample before sorting. Use full estimated capacity only for unfiltered resident scans. Keep cold-load cursor progress tied to physical IDs and scope-name memory with its own byte budget.
+- Keep the existing LAN ports under a single route definition. The old wildcard bindings allow monitoring and direct admin access outside the VM, while homepage polls miss actual WebSocket readiness. Bind user-facing routes to the chosen address, keep operator routes on loopback, and cache one shared probe sweep. An active addon stays outside fixture selection, whose broker and clients must remain local.
+
+- Read the live PostgreSQL scheduler population before changing worker slots. Sixteen connectable databases have Timescale installed, including original stores, retained main and owner fixtures, `postgres` and `template1`. The twelve-slot cap held one launcher and eleven schedulers and logged worker admission failures. Allow one launcher, sixteen schedulers and four concurrently running jobs. Reserve the two parallel workers, four logical workers and the logical launcher above that limit. Preserve the explicit memory, connection and durability settings.

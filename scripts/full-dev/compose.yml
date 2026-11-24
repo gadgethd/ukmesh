@@ -49,7 +49,7 @@ services:
       MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ukmesh-local-control
       MQTT_BROKER_BACKLOG_MONITOR: "true"
       REDIS_PASSWORD: ""
-      ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924
+      ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924${FULL_DEV_LAN_APP_ORIGINS:-}
       OWNER_ACL_MODE: shadow
       OWNER_ACL_UNMANAGED_USERS: ""
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
@@ -136,7 +136,7 @@ services:
       MQTT_PASSWORD: ""
       EXTERNAL_LINK_URL: http://127.0.0.1:5173
       DASH_BROKER_HOST: 127.0.0.1:9002
-      WEBSOCKET_ALLOWED_ORIGINS: http://127.0.0.1:3090,http://localhost:3090,http://127.0.0.1:8925,http://localhost:8925
+      WEBSOCKET_ALLOWED_ORIGINS: http://127.0.0.1:3090,http://localhost:3090,http://127.0.0.1:8925,http://localhost:8925${FULL_DEV_LAN_HEALTH_ORIGINS:-}
       TEST_CHANNEL_NAME: test
       TEST_CHANNEL_SECRET: 9cd8fcf22a47333b591d96a2b848b73f
   anubis-website-ukmesh:

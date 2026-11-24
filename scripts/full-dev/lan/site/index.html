@@ -61,11 +61,11 @@
 <main>
   <div id="root"></div>
 </main>
-<footer>Links open the service on this host at the shown port. Status is probed server-side from inside the stack network; 4xx responses count as reachable.</footer>
+<footer>Links open the service on this host at the shown port. The dashboard checks each service from inside the DEV network.</footer>
 <script>
   const host = location.hostname;
   const groups = { main: 'Applications', companions: 'Companions', observability: 'Observability' };
-  let timer = null;
+  let refreshing = false;
 
   function msLabel(ms) { return ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms'; }
 
@@ -110,18 +110,22 @@
   }
 
   async function tick() {
+    if (refreshing) return;
+    refreshing = true;
     try {
       const response = await fetch('/api/status', { cache: 'no-store' });
       if (!response.ok) throw new Error('status ' + response.status);
       render(await response.json());
     } catch (error) {
       document.getElementById('banner').classList.add('show');
+    } finally {
+      refreshing = false;
     }
   }
 
   document.getElementById('refresh').addEventListener('click', tick);
   tick();
-  timer = setInterval(tick, 5000);
+  setInterval(tick, 5000);
 </script>
 </body>
 </html>

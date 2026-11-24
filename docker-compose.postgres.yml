@@ -23,10 +23,11 @@ services:
       - work_mem=${POSTGRES_WORK_MEM:-4MB}
       - -c
       - autovacuum_max_workers=${POSTGRES_AUTOVACUUM_MAX_WORKERS:-4}
+      # Reserve Timescale's launcher, schedulers for retained stores and job slots.
       - -c
-      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-20}
+      - max_worker_processes=${POSTGRES_MAX_WORKER_PROCESSES:-28}
       - -c
-      - timescaledb.max_background_workers=${POSTGRES_TIMESCALE_BG_WORKERS:-12}
+      - timescaledb.max_background_workers=${POSTGRES_TIMESCALE_BG_WORKERS:-21}
       - -c
       - wal_compression=${POSTGRES_WAL_COMPRESSION:-lz4}
     # Allow bounded read bursts to use spare capacity on the four-CPU DEV VM.

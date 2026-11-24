@@ -57,14 +57,18 @@ def read_intent(path=INTENT):
     return value
 
 
-def inspect_snapshot(deadline=None,*,execute_fn=None):
+def inspect_containers(deadline=None,*,execute_fn=None):
     def execute(args,**options):
         remaining=deadline-time.monotonic() if deadline is not None else 10
         if remaining<=0:raise TimeoutError('target inspection deadline')
         return (execute_fn or docker)(args,timeout=min(10,remaining),**options)
     ids=execute(['ps','-aq']).stdout.decode().split()
     items=json.loads(execute(['inspect',*ids]).stdout) if ids else []
-    containers={item['Name'].lstrip('/'):item for item in items}
+    return {item['Name'].lstrip('/'):item for item in items}
+
+
+def inspect_snapshot(deadline=None,*,execute_fn=None):
+    containers=inspect_containers(deadline,execute_fn=execute_fn)
     finite={s.get('container',s['name']) for s in service_manifest()['services'] if s.get('kind')=='oneshot'}
     records={}
     for name,item in containers.items():
@@ -140,6 +144,12 @@ def select(values,previous_values,commit,*,snapshot=inspect_snapshot,observe_fn=
     kwargs={} if lock_path is None else {'path':lock_path}
     with target_lease(exclusive=True,**kwargs):
         requested=target_values(values);prior=read_intent(path);actual=snapshot()
+        if requested_selection and requested_selection.get('token') and any(
+            item['State']['Running']
+            and (item['Config'].get('Labels') or {}).get('com.docker.compose.project') == 'ukmesh-lan'
+            for item in actual.get('containers', {}).values()
+        ):
+            raise ValueError('stop the LAN addon before selecting a qualification fixture')
         if prior and prior['status']=='pending':
             intent=prior
             if intent.get('requested_values')!=values or intent.get('requested_selection')!=requested_selection:
