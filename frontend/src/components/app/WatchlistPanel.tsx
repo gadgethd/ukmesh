@@ -15,7 +15,7 @@ export function watchEntryHref(entry: WatchEntry): string {
     target.searchParams.set('region', entry.id);
   }
   if (entry.category === 'packet_type') {
-    target.pathname = '/feed';
+    target.pathname = '/feed/packets';
     target.searchParams.set('type', entry.id);
   }
   if (entry.category === 'spam_incident') {

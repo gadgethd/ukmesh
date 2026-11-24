@@ -1,0 +1,11 @@
+:root {
+  --ukmesh-bg: #080d14;
+  --ukmesh-panel: #0d1520;
+  --ukmesh-raised: #111c2b;
+  --ukmesh-border: rgba(32, 80, 140, .35);
+  --ukmesh-accent: #00c4ff;
+  --ukmesh-text: #d6e8ff;
+  --ukmesh-muted: #8697b0;
+  --ukmesh-font: 'Inter', system-ui, sans-serif;
+  --ukmesh-mono: 'Share Tech Mono', 'Courier New', monospace;
+}

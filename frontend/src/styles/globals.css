@@ -25,19 +25,19 @@
 /* ─── Design System ─────────────────────────────────────────────────────── */
 :root {
   /* Backgrounds */
-  --bg-base:        #080d14;
-  --bg-panel:       #0d1520;
-  --bg-panel-alt:   #111c2b;
+  --bg-base:        var(--ukmesh-bg);
+  --bg-panel:       var(--ukmesh-panel);
+  --bg-panel-alt:   var(--ukmesh-raised);
   --bg-secondary:   var(--bg-panel-alt);
   --bg-hover:       #162030;
   --bg-active:      #1a2840;
 
   /* Borders */
-  --border:         rgba(32, 80, 140, 0.35);
+  --border:         var(--ukmesh-border);
   --border-bright:  rgba(0, 196, 255, 0.25);
 
   /* Accent — electric cyan */
-  --accent:         #00c4ff;
+  --accent:         var(--ukmesh-accent);
   --accent-dim:     rgba(0, 196, 255, 0.15);
   --accent-glow:    rgba(0, 196, 255, 0.4);
 
@@ -46,9 +46,9 @@
   --amber-dim:      rgba(255, 179, 0, 0.15);
 
   /* Text */
-  --text-primary:   #d6e8ff;
+  --text-primary:   var(--ukmesh-text);
   --text-secondary: #8aa6c4;
-  --text-muted:     #8697b0;
+  --text-muted:     var(--ukmesh-muted);
 
   /* Status */
   --online:         #00e676;
@@ -60,8 +60,8 @@
   --room-server:    #ce93d8;   /* RoomServer (role 3) — lavender */
 
   /* Typography */
-  --font-mono:      'Share Tech Mono', 'Courier New', monospace;
-  --font-body:      'Inter', system-ui, sans-serif;
+  --font-mono:      var(--ukmesh-mono);
+  --font-body:      var(--ukmesh-font);
 
   /* Spacing */
   --radius:         4px;

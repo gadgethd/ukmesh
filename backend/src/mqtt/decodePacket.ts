@@ -178,6 +178,27 @@ function canonicalPacketId(meta: PathMeta): string | undefined {
   return hash.digest('hex').toUpperCase();
 }
 
+/** Wire evidence for reconciling the two persisted GroupText identities. */
+export function beaconGroupTextIdentity(rawHex: string): {
+  ukmeshPacketUid: string;
+  beaconPacketHash: string;
+  observationWireSha256: string;
+} | undefined {
+  const meta = parsePathMeta(rawHex);
+  if (!meta) return undefined;
+  const payloadType = (meta.bytes[0]! >> 2) & 0x0f;
+  if (payloadType !== 5) return undefined;
+  const ukmeshPacketUid = canonicalPacketId(meta);
+  if (!ukmeshPacketUid) return undefined;
+  const beaconPacketHash = createHash('sha256').update(Uint8Array.of(payloadType))
+    .update(meta.bytes.subarray(meta.payloadOffset)).digest('hex').slice(0, 16);
+  return {
+    ukmeshPacketUid,
+    beaconPacketHash,
+    observationWireSha256: createHash('sha256').update(meta.bytes).digest('hex'),
+  };
+}
+
 export function decodePacketCompat(rawHex: string, keyStore: KeyStore): CompatDecodedPacket {
   const meta = parsePathMeta(rawHex);
   if (!meta) return { metadataValid: false };

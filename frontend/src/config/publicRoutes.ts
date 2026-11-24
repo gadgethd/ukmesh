@@ -60,6 +60,13 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     sitemap: true,
   },
   {
+    path: '/feed/packets',
+    component: 'feed',
+    title: 'Live Packet Feed — UK Mesh Network',
+    description: 'Inspect public packets, observer reports and MeshCore paths.',
+    sitemap: false,
+  },
+  {
     path: '/repeater',
     component: 'repeater',
     title: 'Repeater Search — UK Mesh Network',
