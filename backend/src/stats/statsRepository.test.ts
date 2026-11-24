@@ -396,3 +396,54 @@ for (const concurrency of [1, 2]) {
     }
   });
 }
+
+
+test('consolidated chart responses enforce the budget on each logical result', async () => {
+  const previous = process.env.STATS_CHART_MAX_RESULT_ROWS;
+  const previousConcurrency = process.env.STATS_DB_QUERY_CONCURRENCY;
+  process.env.STATS_CHART_MAX_RESULT_ROWS = '1';
+  process.env.STATS_DB_QUERY_CONCURRENCY = '8';
+  try {
+    let count = 1;
+    let siblingAborted = false;
+    const query = async <T extends QueryResultRow>(
+      sql: string,
+      _params?: unknown[],
+      signal?: AbortSignal,
+    ): Promise<{ rows: T[] }> => {
+      if (count > 1 && sql.includes('WITH hashes AS MATERIALIZED')) {
+        assert.ok(signal);
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => {
+            siblingAborted = true;
+            reject(signal.reason);
+          }, { once: true });
+        });
+      }
+      if (!sql.includes('AS packets_per_hour') || !sql.includes('WITH scoped AS MATERIALIZED')) {
+        return { rows: [] };
+      }
+      const rows = Array.from({ length: count }, (_, hour) => ({ hour, count: 1 }));
+      return { rows: [{ packets_per_hour: rows, packets_per_day: rows }] as unknown as T[] };
+    };
+    const repo = createStatsRepository({
+      query,
+      aggregateReadsEnabled: false,
+      aggregateShadowEnabled: false,
+      networkFilters: () => ({
+        params: [], packets: '', packetsAlias: () => '', nodes: '', nodesAlias: () => '',
+      }),
+    });
+    const result = await repo.fetchChartsData('ukmesh');
+    assert.equal(result.phResult.rows.length, 1);
+    assert.equal(result.pdResult.rows.length, 1);
+    count = 2;
+    await assert.rejects(repo.fetchChartsData('ukmesh'), /STATS_QUERY_BUDGET_EXCEEDED/);
+    assert.equal(siblingAborted, true);
+  } finally {
+    if (previous === undefined) delete process.env.STATS_CHART_MAX_RESULT_ROWS;
+    else process.env.STATS_CHART_MAX_RESULT_ROWS = previous;
+    if (previousConcurrency === undefined) delete process.env.STATS_DB_QUERY_CONCURRENCY;
+    else process.env.STATS_DB_QUERY_CONCURRENCY = previousConcurrency;
+  }
+});

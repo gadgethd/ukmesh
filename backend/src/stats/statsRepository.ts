@@ -167,6 +167,24 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     activeQueries = Math.max(0, activeQueries - 1);
   };
 
+  function enforceQueryBudget(source: string, returnedRows: number, durationMs?: number) {
+    if ((durationMs ?? 0) <= queryBudgetMs && returnedRows <= maxResultRows) return;
+    console.error('[stats-query-budget] exceeded', {
+      source,
+      durationMs,
+      durationBudgetMs: queryBudgetMs,
+      returnedRows,
+      returnedRowBudget: maxResultRows,
+    });
+    throw new Error('STATS_QUERY_BUDGET_EXCEEDED');
+  }
+
+  function chartRows<T extends QueryResultRow>(name: string, value: T[] | undefined): T[] {
+    const rows = value ?? [];
+    enforceQueryBudget(name, rows.length);
+    return rows;
+  }
+
   const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
     text: string,
     params?: unknown[],
@@ -190,16 +208,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       const result = await deps.query<T>(text, params, controller.signal);
       const durationMs = Math.round(performance.now() - startedAt);
       const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-      if (durationMs > queryBudgetMs || result.rows.length > maxResultRows) {
-        console.error('[stats-query-budget] exceeded', {
-          source,
-          durationMs,
-          durationBudgetMs: queryBudgetMs,
-          returnedRows: result.rows.length,
-          returnedRowBudget: maxResultRows,
-        });
-        throw new Error('STATS_QUERY_BUDGET_EXCEEDED');
-      }
+      enforceQueryBudget(source, result.rows.length, durationMs);
       return result;
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
@@ -340,6 +349,26 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     transportCodes: QueryResultRow[];
   };
 
+  type ChartCountRow = {
+    packets_per_hour: QueryResultRow[];
+    packets_per_day: QueryResultRow[];
+    packet_types: QueryResultRow[];
+    hop_distribution: QueryResultRow[];
+    route_types: QueryResultRow[];
+    transport_codes: QueryResultRow[];
+  };
+
+  function unpackChartCounts(row: ChartCountRow | undefined): AggregateChartParts {
+    return {
+      packetsPerHour: chartRows('packets_per_hour', row?.packets_per_hour),
+      packetsPerDay: chartRows('packets_per_day', row?.packets_per_day),
+      packetTypes: chartRows('packet_types', row?.packet_types),
+      hopDistribution: chartRows('hop_distribution', row?.hop_distribution),
+      routeTypes: chartRows('route_types', row?.route_types),
+      transportCodes: chartRows('transport_codes', row?.transport_codes),
+    };
+  }
+
   // Compose already forwards these two settings. Preserve `true` as global
   // enablement while allowing a comma-separated per-network rollout.
   const readSwitch = String(process.env['STATS_AGGREGATE_READS_ENABLED'] ?? '').trim().toLowerCase();
@@ -415,14 +444,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const fullStart24hParam = `$${firstBoundParam + 3}`;
     const fullStart7dParam = `$${firstBoundParam + 4}`;
     const fullEndParam = `$${firstBoundParam + 5}`;
-    const result = await query<{
-      packets_per_hour: QueryResultRow[];
-      packets_per_day: QueryResultRow[];
-      packet_types: QueryResultRow[];
-      hop_distribution: QueryResultRow[];
-      route_types: QueryResultRow[];
-      transport_codes: QueryResultRow[];
-    }>(
+    const result = await query<ChartCountRow>(
       `WITH rollup_24h AS (
          SELECT
            s.network, s.hour, s.packet_type, s.hop_count, s.route_type,
@@ -610,15 +632,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       ],
       signal,
     );
-    const row = result.rows[0];
-    return {
-      packetsPerHour: row?.packets_per_hour ?? [],
-      packetsPerDay: row?.packets_per_day ?? [],
-      packetTypes: row?.packet_types ?? [],
-      hopDistribution: row?.hop_distribution ?? [],
-      routeTypes: row?.route_types ?? [],
-      transportCodes: row?.transport_codes ?? [],
-    };
+    return unpackChartCounts(result.rows[0]);
   }
 
   async function fetchLegacyAggregateChartParts(
@@ -631,14 +645,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const asOfParam = `$${firstBoundParam}`;
     const start24hParam = `$${firstBoundParam + 1}`;
     const start7dParam = `$${firstBoundParam + 2}`;
-    const result = await query<{
-      packets_per_hour: QueryResultRow[];
-      packets_per_day: QueryResultRow[];
-      packet_types: QueryResultRow[];
-      hop_distribution: QueryResultRow[];
-      route_types: QueryResultRow[];
-      transport_codes: QueryResultRow[];
-    }>(
+    const result = await query<ChartCountRow>(
       `WITH scoped AS MATERIALIZED (
          SELECT
            p.time,
@@ -748,15 +755,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         bounds.start7d.toISOString(),
       ],
     );
-    const row = result.rows[0];
-    return {
-      packetsPerHour: row?.packets_per_hour ?? [],
-      packetsPerDay: row?.packets_per_day ?? [],
-      packetTypes: row?.packet_types ?? [],
-      hopDistribution: row?.hop_distribution ?? [],
-      routeTypes: row?.route_types ?? [],
-      transportCodes: row?.transport_codes ?? [],
-    };
+    return unpackChartCounts(result.rows[0]);
   }
 
   // One 7-day scoped scan serves the six switchable legacy chart parts. The
@@ -770,14 +769,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     queryFn: QueryFn,
   ): Promise<AggregateChartParts> {
     const filters = networkFilters(network, observer);
-    const result = await queryFn<{
-      packets_per_hour: QueryResultRow[];
-      packets_per_day: QueryResultRow[];
-      packet_types: QueryResultRow[];
-      hop_distribution: QueryResultRow[];
-      route_types: QueryResultRow[];
-      transport_codes: QueryResultRow[];
-    }>(
+    const result = await queryFn<ChartCountRow>(
       `WITH scoped AS MATERIALIZED (
          SELECT p.time, p.packet_type, p.hop_count, p.route_type,
                 NULLIF(TRIM(p.transport_codes), '') AS transport_code,
@@ -876,15 +868,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
          ), '[]'::jsonb) AS transport_codes`,
       filters.params,
     );
-    const row = result.rows[0];
-    return {
-      packetsPerHour: row?.packets_per_hour ?? [],
-      packetsPerDay: row?.packets_per_day ?? [],
-      packetTypes: row?.packet_types ?? [],
-      hopDistribution: row?.hop_distribution ?? [],
-      routeTypes: row?.route_types ?? [],
-      transportCodes: row?.transport_codes ?? [],
-    };
+    return unpackChartCounts(result.rows[0]);
   }
 
   // Radio distinct counts and packet totals share one 7-day scan with the
@@ -968,8 +952,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       total_24h: row?.total_24h ?? '0',
       total_7d: row?.total_7d ?? '0',
       unique_radios_24h: row?.unique_radios_24h ?? '0',
-      radios_per_hour: row?.radios_per_hour ?? [],
-      radios_per_day: row?.radios_per_day ?? [],
+      radios_per_hour: chartRows('radios_per_hour', row?.radios_per_hour),
+      radios_per_day: chartRows('radios_per_day', row?.radios_per_day),
     };
   }
 
@@ -1034,8 +1018,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     );
     const row = result.rows[0];
     return {
-      prefix_collisions: row?.prefix_collisions ?? [],
-      hash_widths: row?.hash_widths ?? [],
+      prefix_collisions: chartRows('prefix_collisions', row?.prefix_collisions),
+      hash_widths: chartRows('hash_widths', row?.hash_widths),
     };
   }
 
@@ -1168,8 +1152,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     );
     const row = result.rows[0];
     return {
-      region_summary: row?.region_summary ?? [],
-      region_series: row?.region_series ?? [],
+      region_summary: chartRows('region_summary', row?.region_summary),
+      region_series: chartRows('region_series', row?.region_series),
       observer_diversity: row?.observer_diversity ?? {},
       signal_summary: row?.signal_summary ?? {},
     };
@@ -1427,12 +1411,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const pathHashPartsPromise = fetchPathHashParts(network, observer, query);
     const regionReceptionPromise = fetchRegionReceptionParts(network, observer, query);
 
-    const [
-      phResult, pdResult, rhResult, rdResult,
-      ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
-      pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
-      routeTypesResult, transportCodesResult, pathDecodeTrendResult,
-    ] = await Promise.all([
+    const chartParts = [
       countsRows('packetsPerHour'),
       countsRows('packetsPerDay'),
       radiosTotalsPromise.then((parts) => ({ rows: parts.radios_per_hour })),
@@ -1456,7 +1435,17 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       countsRows('routeTypes'),
       countsRows('transportCodes'),
       fetchMultibyteFactTrend(),
-    ]);
+    ] as const;
+    const [
+      phResult, pdResult, rhResult, rdResult,
+      ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+      pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
+      routeTypesResult, transportCodesResult, pathDecodeTrendResult,
+    ] = await Promise.all(chartParts).catch(async (error: unknown) => {
+      if (!chartAbort.signal.aborted) chartAbort.abort(error);
+      await Promise.allSettled([...chartParts, aggregatePartsPromise]);
+      throw error;
+    });
 
     const response = {
       phResult,
