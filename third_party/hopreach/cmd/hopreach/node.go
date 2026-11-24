@@ -125,6 +125,27 @@ func nodeCoverageFresh(entry *nodeCoverageMeta, node corescope.Node, cfg appConf
 		entry.PositionStatus == classifyStatus(node.LastHeard, cfg)
 }
 
+func nodeArtifactAuthorised(entry *nodeCoverageMeta, key string, generation int64) bool {
+	if generation <= 0 {
+		return true
+	}
+	if entry == nil || entry.Standard == nil {
+		return false
+	}
+	proof := entry.Standard.PublicRFNode
+	if proof == nil || proof.VisibilityGeneration <= 0 || proof.VisibilityGeneration > generation ||
+		proof.Key != key || proof.DatasetID != entry.DatasetID ||
+		proof.Lat != entry.Lat || proof.Lon != entry.Lon {
+		return false
+	}
+	for _, tile := range entry.Standard.Tiles {
+		if tile.PublicRFProof == nil || tile.PublicRFProof.VisibilityGeneration != proof.VisibilityGeneration {
+			return false
+		}
+	}
+	return true
+}
+
 func pruneNodeCoverage(index map[string]*nodeCoverageMeta, preserve string, now time.Time) {
 	cutoff := now.Add(-nodeCoverageRetention)
 	for key, entry := range index {
@@ -255,7 +276,7 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 	if err != nil {
 		return result, err
 	}
-	nodes, err := corescope.NewClient(cfg.apiURL, httpClient).FetchRepeaters(context.Background())
+	nodes, visibilityGeneration, err := corescope.NewClient(cfg.apiURL, httpClient).FetchRepeaterInputs(context.Background())
 	if err != nil {
 		return result, err
 	}
@@ -308,7 +329,8 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 		return result, nil
 	}
 
-	if existing := index[publicKey]; nodeCoverageFresh(existing, *node, cfg, now) && nodeTilesExist(cfg.outputDir, existing) {
+	if existing := index[publicKey]; nodeCoverageFresh(existing, *node, cfg, now) && nodeArtifactAuthorised(existing, publicKey, visibilityGeneration) &&
+		nodeTilesExist(cfg.outputDir, existing) {
 		result.State, result.DatasetID, result.Cached = "available", existing.DatasetID, true
 		return result, nil
 	}
@@ -378,6 +400,7 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 		coverage.ProgressiveOptions{
 			OutputDir: cfg.outputDir, Namespace: nodeCoverageNamespace, Tier: datasetID,
 			RunID: entry.RunID, Identity: publicKey, TileSize: cfg.coveragePublicationTileSize,
+			VisibilityGeneration: visibilityGeneration,
 			OnTile: func(completed, total int, _ []coverage.Tile) error {
 				entry.CompletedTiles, entry.TotalTiles = completed, total
 				entry.UpdatedAt = time.Now().UTC().Format(time.RFC3339)
@@ -390,6 +413,11 @@ func runNode(cfg appConfig, publicKey string) (result nodeRunResult, err error) 
 	}
 	note := fmt.Sprintf("Standard-tier coverage from this repeater alone (%s position); not its contribution to the merged best-server network raster.", positionStatus)
 	standard := buildCoverageMeta(tiles, rangeKm, cfg, note)
+	if visibilityGeneration > 0 {
+		standard.PublicRFNode = &publicRFNode{
+			Key: publicKey, DatasetID: datasetID, Lat: point.Lat, Lon: point.Lon, VisibilityGeneration: visibilityGeneration,
+		}
+	}
 	finished := time.Now().UTC()
 	entry.Standard = &standard
 	entry.State, entry.Failure = "available", ""

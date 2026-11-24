@@ -11,10 +11,8 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"image/png"
 	"math"
 	"net/http"
-	"os"
 	"path/filepath"
 
 	"hopreach/internal/compute"
@@ -180,8 +178,9 @@ func RasterSupersampledChunked(engine *compute.Engine, bounds propagation.Bounds
 // Tile is one piece of a coverage raster split for efficient browser
 // rendering — see WriteTiles.
 type Tile struct {
-	Image  string             `json:"image"`
-	Bounds propagation.Bounds `json:"bounds"`
+	Image         string             `json:"image"`
+	Bounds        propagation.Bounds `json:"bounds"`
+	PublicRFProof *PublicRFProof     `json:"public_rf_proof,omitempty"`
 }
 
 // maxTileDim caps each served tile's largest dimension. Without this, a
@@ -235,28 +234,4 @@ func WriteTiles(outputDir, baseName string, img *image.NRGBA, bounds propagation
 		}
 	}
 	return tiles, nil
-}
-
-// WritePNG atomically writes img as a PNG to path (write-tmp-then-rename).
-func WritePNG(path string, img image.Image) error {
-	tmp := path + ".tmp"
-	f, err := os.Create(tmp)
-	if err != nil {
-		return err
-	}
-	if err := png.Encode(f, img); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tmp)
-		return err
-	}
-	if err := f.Close(); err != nil {
-		os.Remove(tmp)
-		return err
-	}
-	return os.Rename(tmp, path)
 }

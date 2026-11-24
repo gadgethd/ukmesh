@@ -35,6 +35,9 @@ type ProgressiveOptions struct {
 	// signature. Node jobs use the full public key here even though their
 	// bounded filesystem tier uses only a short digest.
 	Identity string
+	// The generation belongs to the repeater input snapshot. It also fences
+	// the checkpoint so a resumed run cannot re-stamp an older PNG.
+	VisibilityGeneration int64
 	// Namespace optionally places both tiles and checkpoints below one
 	// additional, validated path segment. Global tiers leave this empty;
 	// on-demand node jobs use "nodes" so they cannot collide with the
@@ -236,6 +239,10 @@ func RasterProgressiveChunked(
 		digest := sha256.Sum256([]byte(signature + "\x00" + options.Identity))
 		signature = hex.EncodeToString(digest[:])
 	}
+	if options.VisibilityGeneration > 0 {
+		digest := sha256.Sum256([]byte(fmt.Sprintf("%s\x00public-rf:%d", signature, options.VisibilityGeneration)))
+		signature = hex.EncodeToString(digest[:])
+	}
 
 	tileParts := []string{options.OutputDir, "tiles"}
 	checkpointParts := []string{options.OutputDir, "checkpoints"}
@@ -274,8 +281,9 @@ func RasterProgressiveChunked(
 	progressUnitsPerTile := 1000
 	for _, tilePlan := range publicationTiles {
 		outputPath := filepath.Join(tileDir, tilePlan.name)
-		if _, ok := checkpoint.Completed[tilePlan.name]; ok {
-			if info, statErr := os.Stat(outputPath); statErr == nil && info.Size() > 0 {
+		if existing, ok := checkpoint.Completed[tilePlan.name]; ok {
+			proofMatches := options.VisibilityGeneration <= 0 || existing.PublicRFProof.matches(outputPath, options.VisibilityGeneration)
+			if info, statErr := os.Stat(outputPath); proofMatches && statErr == nil && info.Size() > 0 {
 				if progress != nil {
 					progress(completed*progressUnitsPerTile, len(publicationTiles)*progressUnitsPerTile)
 				}
@@ -304,12 +312,13 @@ func RasterProgressiveChunked(
 			return checkpointTiles(checkpoint), fmt.Errorf("progressive tile %s: %w", tilePlan.name, err)
 		}
 		img := marginsToImage(margins, tileWidth, tileHeight, p, maxAlpha)
-		if err := WritePNG(outputPath, img); err != nil {
+		proof, err := writePNG(outputPath, img, options.VisibilityGeneration)
+		if err != nil {
 			return checkpointTiles(checkpoint), fmt.Errorf("publishing tile %s: %w", tilePlan.name, err)
 		}
 		checkpoint.Completed[tilePlan.name] = Tile{
 			Image:  filepath.ToSlash(filepath.Join(append(publicParts, tilePlan.name)...)),
-			Bounds: tilePlan.bounds,
+			Bounds: tilePlan.bounds, PublicRFProof: proof,
 		}
 		completed++
 		if err := writeProgressiveCheckpoint(checkpointPath, checkpoint); err != nil {

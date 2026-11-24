@@ -54,6 +54,8 @@ import { observeHttpRequest } from './metrics/http.js';
 import { closeOperatorOperations } from './operations/operatorOperations.js';
 import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
 import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
+import { createPublicRfProjectionRoutes } from './rf/publicProjection.js';
+import { createRfVisibilityReader } from './rf/visibility.js';
 import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
 import { createPacketShareForwarder } from './owner/packetShareForwarder.js';
@@ -377,6 +379,14 @@ async function main() {
     express.json({ limit: '512kb' }),
     createHopReachCompatibilityRoutes(query),
   );
+
+  const publicRfOutput = process.env['RF_PUBLIC_PROJECTION_OUTPUT_DIRECTORY'];
+  if (publicRfOutput) {
+    app.use('/internal/rf-coverage-public', createPublicRfProjectionRoutes({
+      outputDirectory: publicRfOutput,
+      readVisibility: createRfVisibilityReader(query),
+    }));
+  }
 
   app.use(express.json({ limit: '50kb' }));
 

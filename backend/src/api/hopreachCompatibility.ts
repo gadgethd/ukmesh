@@ -3,10 +3,13 @@ import { isIP } from 'node:net';
 import { Router, type Request, type Response } from 'express';
 import type { QueryResultRow } from 'pg';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
+import { PUBLIC_RF_REPEATER_WHERE, RF_REPEATER_WHERE, publicRfGeneration } from '../rf/visibility.js';
+import { readPublicResponseGeneration } from '../privacy/responseGeneration.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   text: string,
   params?: unknown[],
+  signal?: AbortSignal,
 ) => Promise<{ rows: T[] }>;
 
 const MAX_PAGE_SIZE = 500;
@@ -157,21 +160,6 @@ function validPublicKeys(value: unknown): string[] | null {
   return [...unique];
 }
 
-const NODE_WHERE = `
-  n.role = 2
-  AND n.lat IS NOT NULL
-  AND n.lon IS NOT NULL
-  AND n.lat BETWEEN -90 AND 90
-  AND n.lon BETWEEN -180 AND 180
-  AND NOT (ABS(n.lat) < 1e-9 AND ABS(n.lon) < 1e-9)
-  AND (n.name IS NULL OR n.name NOT LIKE '%🚫%')
-  AND (
-    n.network = 'ukmesh'
-    OR EXISTS (
-      SELECT 1 FROM core.node_identity_sightings sighting
-      WHERE sighting.node_id = n.node_id AND sighting.network = 'ukmesh'
-    )
-  )`;
 
 async function fetchLinks(query: QueryFn, publicKeys: string[], days: number) {
   if (publicKeys.length === 0) return [] as HopReachLinkRow[];
@@ -236,11 +224,40 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
       res.status(400).json({ error: 'invalid pagination' });
       return;
     }
+    if (req.query['projection'] === 'public') {
+      res.setHeader('Cache-Control', 'no-store');
+      const expected = publicRfGeneration(req.query['generation']);
+      if (expected === null && (offset > 0 || req.query['generation'] !== undefined)) {
+        res.status(400).json({ error: 'invalid RF projection generation' });
+        return;
+      }
+      try {
+        const authority = (sql: string) => query<{ generation: string }>(sql, [], AbortSignal.timeout(2000));
+        const generation = await readPublicResponseGeneration(authority);
+        if (expected !== null && expected !== generation) throw new Error('RF_VISIBILITY_CHANGED');
+        const result = await query<HopReachNodeRow & { total: string }>(
+          `SELECT n.node_id AS public_key, n.name, n.lat, n.lon,
+                  n.last_seen AS last_heard, n.created_at AS first_seen, n.advert_count,
+                  COUNT(*) OVER ()::text AS total
+             FROM core.node_identity_nodes n
+            WHERE ${PUBLIC_RF_REPEATER_WHERE}
+            ORDER BY n.node_id
+            LIMIT $1 OFFSET $2`,
+          [limit, offset],
+          AbortSignal.timeout(5000),
+        );
+        if (await readPublicResponseGeneration(authority) !== generation) throw new Error('RF_VISIBILITY_CHANGED');
+        res.json({ nodes: result.rows.map(nodeDto), total: Number(result.rows[0]?.total ?? 0), visibility_generation: generation });
+      } catch {
+        res.status(503).json({ error: 'public RF acquisition unavailable' });
+      }
+      return;
+    }
     try {
       const [count, page] = await Promise.all([
         loadCached(nodeCountCache, nodeCountInFlight, 'all-repeaters', async () => {
           const result = await query<{ total: string }>(
-            `SELECT COUNT(*)::text AS total FROM core.node_identity_nodes n WHERE ${NODE_WHERE}`,
+            `SELECT COUNT(*)::text AS total FROM core.node_identity_nodes n WHERE ${RF_REPEATER_WHERE}`,
           );
           return Number(result.rows[0]?.total ?? 0);
         }),
@@ -250,7 +267,7 @@ export function createHopReachCompatibilityRoutes(query: QueryFn): Router {
                     n.last_seen AS last_heard, n.created_at AS first_seen,
                     n.advert_count
                FROM core.node_identity_nodes n
-              WHERE ${NODE_WHERE}
+              WHERE ${RF_REPEATER_WHERE}
               ORDER BY n.node_id
               LIMIT $1 OFFSET $2`,
             [limit, offset],

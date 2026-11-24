@@ -152,3 +152,48 @@ test('HopReach compatibility API handles UK pagination and coalesces concurrent 
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });
+
+test('public RF acquisition fences every page by one converged generation', async () => {
+  let generation = 62;
+  let changeDuringPage = false;
+  let policyReads = 0;
+  const query = async <T extends QueryResultRow>(sql: string, params?: unknown[]) => {
+    if (sql.includes('ops.public_visibility_state')) {
+      policyReads += 1;
+      return { rows: [{ generation: String(generation) }] as T[] };
+    }
+    assert(sql.includes('FROM core.private_node_prefixes') && sql.includes('FROM core.node_identity_aliases'));
+    const offset = Number(params?.[1]);
+    if (changeDuringPage) generation += 1;
+    return { rows: [{
+      public_key: offset === 0 ? KEY_A : KEY_B, name: 'Repeater',
+      lat: 50, lon: -2, last_heard: null, first_seen: null, advert_count: 1, total: '2',
+    }] as T[] };
+  };
+  const app = express();
+  app.use('/hopreach', createHopReachCompatibilityRoutes(query));
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    assert(address && typeof address === 'object');
+    const nodes = `http://127.0.0.1:${address.port}/hopreach/api/nodes?projection=public&limit=1`;
+    const first = await fetch(nodes);
+    assert.equal(first.status, 200);
+    assert.equal(first.headers.get('cache-control'), 'no-store');
+    assert.deepEqual((await first.json() as { visibility_generation: number }).visibility_generation, generation);
+    assert.equal((await fetch(nodes + '&offset=1')).status, 400);
+    assert.equal((await fetch(nodes + '&offset=1&generation=61')).status, 503);
+    const second = await fetch(nodes + '&offset=1&generation=62');
+    assert.equal(second.status, 200);
+    assert.equal((await second.json() as { nodes: Array<{ public_key: string }> }).nodes[0]?.public_key, KEY_B);
+    assert.equal(policyReads, 5);
+
+    changeDuringPage = true;
+    const raced = await fetch(nodes);
+    assert.equal(raced.status, 503);
+    assert(!(await raced.text()).includes(KEY_A));
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+});
