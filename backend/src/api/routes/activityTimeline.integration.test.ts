@@ -22,6 +22,12 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
   skip: endpoint ? false : 'owned TEST_SAMPLE_DATABASE_URL required', timeout: 180_000,
 }, async t => {
   assertLocalDatabaseUrl(endpoint!);
+  const previousFlag = process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'];
+  process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = 'true';
+  t.after(() => {
+    if (previousFlag === undefined) delete process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'];
+    else process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = previousFlag;
+  });
   t.mock.timers.enable({ apis: ['Date'], now: Date.now() });
   t.mock.method(console, 'log', () => undefined); t.mock.method(console, 'error', () => undefined);
   const admin = new pg.Pool({ connectionString: endpoint, max: 1 });
@@ -63,6 +69,11 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
      hop_count,path_hashes,path_hash_size_bytes,visibility_ok,is_private)
     SELECT time-INTERVAL '15 minutes',$1,NULL,$2,topic,topic_prefix,network,packet_type,
       route_type,hop_count,path_hashes,path_hash_size_bytes,TRUE,FALSE FROM mesh.packets LIMIT 1`, ['F'.repeat(64),peer]);
+  await pool.query(`UPDATE mesh.packets SET region_scope =
+    CASE WHEN time >= $1::timestamptz THEN '#North' ELSE '#north' END`, [packetTime]);
+  await pool.query("INSERT INTO core.region_scope_stats(region) VALUES ('North'), ('north')");
+  await pool.query(`INSERT INTO core.region_scope_members(region, node_id, packets)
+    VALUES ('North', $1, 25), ('north', $2, 1)`, [alias, peer]);
   await prepareSampleDataset(url.href);
   let hold = false, captured!: () => void, release!: () => void;
   const reached = new Promise<void>(resolve => { captured = resolve; });
@@ -93,6 +104,23 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
     { packetCount: 1, observerCount: 0, activeNodeIds: [peer] },
     { packetCount: 25, observerCount: 1, activeNodeIds: [receiver,peer] },
   ]);
+  assert.equal('region' in body, false);
+  const named = await fetch(target + '&region=North');
+  assert.equal(named.status, 200);
+  const namedBody = await named.json();
+  assert.equal(namedBody.region, 'North');
+  assert.equal(namedBody.buckets.length, 1);
+  assert.equal(namedBody.buckets[0].packetCount, 25);
+  assert.equal(namedBody.buckets[0].observerCount, 1);
+  assert.deepEqual(namedBody.buckets[0].activeNodeIds, [receiver]);
+  const distinct = await fetch(target + '&region=north');
+  assert.equal(distinct.status, 200);
+  const distinctBody = await distinct.json();
+  assert.equal(distinctBody.region, 'north');
+  assert.equal(distinctBody.buckets.length, 1);
+  assert.equal(distinctBody.buckets[0].packetCount, 1);
+  assert.equal(distinctBody.buckets[0].observerCount, 0);
+  assert.deepEqual(distinctBody.buckets[0].activeNodeIds, [peer]);
   const conditional = { cache: 'force-cache' as const, headers: { 'If-None-Match': first.headers.get('etag')! } };
   assert.equal((await fetch(target, conditional)).status, 304);
   t.mock.timers.setTime(Date.now() + 91_000); // Expire the complete snapshot before holding a cold load.
@@ -106,6 +134,12 @@ test('real timeline SQL preserves alias weights, duplicate receptions and null o
   assert.ok(!JSON.stringify(await withheld.json()).includes(peer));
   const pending = await fetch(target, conditional); assert.equal(pending.status, 500);
   assert.equal(pending.headers.get('cache-control'), 'no-store');
+  const scopedPending = await fetch(target + '&region=North', {
+    cache: 'force-cache', headers: { 'If-None-Match': named.headers.get('etag')! },
+  });
+  assert.equal(scopedPending.status, 500);
+  assert.equal(scopedPending.headers.get('cache-control'), 'no-store');
+  assert.ok(!JSON.stringify(await scopedPending.json()).includes(receiver));
   await prepareSampleDataset(url.href);
   const repaired = await fetch(target, conditional); assert.equal(repaired.status, 200);
   assert.equal(repaired.headers.get('cache-control'), PUBLIC_REVALIDATE);

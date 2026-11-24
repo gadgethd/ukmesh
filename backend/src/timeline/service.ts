@@ -5,7 +5,7 @@ export function createTimelineService(repository: ReturnType<typeof createTimeli
   const cache = createActivityTimelineCache();
   return {
     get(scope: TimelineScope, generation: number) {
-      const key = JSON.stringify([scope.network, scope.minutes, scope.bucketMinutes, generation]);
+      const key = JSON.stringify([scope.network, scope.region, scope.minutes, scope.bucketMinutes, generation]);
       return cache.get(key, generation, readReadyGeneration, () => repository.load(scope));
     },
     close: cache.shutdown,

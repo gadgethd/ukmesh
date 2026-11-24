@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import test from 'node:test';
-import express, { Router, type RequestHandler } from 'express';
+import express, { Router, type ErrorRequestHandler, type RequestHandler } from 'express';
 import type { QueryResultRow } from 'pg';
 import { PUBLIC_REVALIDATE } from '../../http/publicJson.js';
 import { networkFilters } from '../../platform/query/networkFilters.js';
@@ -79,4 +79,57 @@ test('timeline HTTP cache isolates network, window, bucket and authority generat
   generation = 2;
   assert.equal(await get('?network=ukmesh'), 5);
   assert.equal(loads, 5);
+});
+
+test('timeline uses canonical region predicates and keeps named cache entries distinct', async t => {
+  const previousFlag = process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'];
+  process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = 'true';
+  t.after(() => {
+    if (previousFlag === undefined) delete process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'];
+    else process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = previousFlag;
+  });
+  let loads = 0;
+  const router = Router(), limiter: RequestHandler = (_req, _res, next) => next();
+  const stop = registerActivityTimelineRoutes(router, {
+    limiter: limiter as Parameters<typeof registerActivityTimelineRoutes>[1]['limiter'], networkFilters,
+    getPublicVisibilityGeneration: async () => 1,
+    query: async <T extends QueryResultRow>(sql: string, params?: unknown[]) => {
+      assert.match(sql, /p\.region_scope = '#' \|\| \$2::text/);
+      assert.match(sql, /nc\.node_id IN \(SELECT member\.node_id/);
+      assert.match(sql, /FROM core\.region_scope_members m/);
+      assert.match(sql, /m\.region = \$2/);
+      assert.match(sql, /p\.visibility_ok IS TRUE/i);
+      assert.deepEqual(params?.slice(-3), [loads === 0 ? 'North' : 'north', '360 minutes', '15 minutes']);
+      return { rows: [{
+        bucket: '2026-11-12 12:00:00+00', packet_count: String(++loads), observer_count: '1',
+        active_node_ids: ['A'.repeat(64)],
+      }] as unknown as T[] };
+    },
+  });
+  t.after(stop);
+  const app = express(); app.use(router);
+  const handleError: ErrorRequestHandler = (error, _req, res, _next) => {
+    res.status(error.status ?? 500).json({ code: error.code });
+  };
+  app.use(handleError);
+  const server = app.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/activity/timeline?network=ukmesh`;
+  const north = await fetch(url + '&region=North');
+  assert.equal(north.status, 200);
+  assert.equal((await north.json()).region, 'North');
+  assert.equal((await fetch(url + '&region=%23North', {
+    cache: 'force-cache', headers: { 'If-None-Match': north.headers.get('etag')! },
+  })).status, 304);
+  const distinct = await fetch(url + '&region=north');
+  assert.equal(distinct.status, 200);
+  assert.equal((await distinct.json()).region, 'north');
+  const ambiguous = await fetch(url + '&region=North&region=north');
+  assert.equal(ambiguous.status, 400);
+  assert.equal((await ambiguous.json()).code, 'AMBIGUOUS_PARAMETER');
+  process.env['PUBLIC_FEATURE_REGION_SCOPING_ENABLED'] = 'false';
+  const disabled = await fetch(url + '&region=North');
+  assert.equal(disabled.status, 400);
+  assert.equal((await disabled.json()).code, 'FEATURE_DISABLED');
+  assert.equal(loads, 2);
 });

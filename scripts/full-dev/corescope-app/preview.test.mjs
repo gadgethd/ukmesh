@@ -116,6 +116,9 @@ test('isolated app edge serves the shell and credentials-free current projection
   assert.equal(await (await read('/icons/phosphor-sprite.svg')).text(), '<svg/>');
   assert.equal(await (await read('/api/runtime-config')).text(), '/api/runtime-config');
   assert.equal(await (await read('/api/regions/summary?network=ukmesh')).text(), '/api/regions/summary?network=ukmesh');
+  const timeline = '/api/activity/timeline?network=ukmesh&region=North&minutes=360&bucket=15';
+  assert.equal(await (await read(timeline)).text(), timeline);
+  assert.equal((await read(timeline, { method: 'POST' })).status, 405);
   assert.equal(await (await read('/terrain-tiles/3/4/5.png')).text(), '/terrain-tiles/3/4/5.png');
   assert.equal(await (await read('/sw.js')).text(), '/sw.js');
   assert.equal(await (await read('/icons/icon-192.png')).text(), '/icons/icon-192.png');

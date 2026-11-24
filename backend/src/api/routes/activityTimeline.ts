@@ -1,9 +1,10 @@
 import type { Router } from 'express';
 import type { QueryResultRow } from 'pg';
 import { resolvePublicNetworkScope } from '../../http/requestScope.js';
-import type { NetworkFilters } from '../../platform/query/networkFilters.js';
+import type { networkFilters } from '../../platform/query/networkFilters.js';
 import { parseBoundedInteger } from '../utils/input.js';
 import { publicJson } from '../../http/publicJson.js';
+import { parseRegionFilter } from '../../regions/filter.js';
 import { createTimelineRepository } from '../../timeline/repository.js';
 import { createTimelineService } from '../../timeline/service.js';
 
@@ -11,7 +12,7 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?
 
 type Deps = {
   query: QueryFn;
-  networkFilters: (network?: string, observer?: string) => NetworkFilters;
+  networkFilters: typeof networkFilters;
   limiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   getPublicVisibilityGeneration: () => Promise<number>;
 };
@@ -31,9 +32,10 @@ export function registerActivityTimelineRoutes(router: Router, deps: Deps): () =
       min: 5,
       max: 60,
     });
+    const region = parseRegionFilter(req.query['region']);
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      await publicJson(res, deps.getPublicVisibilityGeneration, generation => service.get({ network, minutes, bucketMinutes }, generation));
+      await publicJson(res, deps.getPublicVisibilityGeneration, generation => service.get({ network, region, minutes, bucketMinutes }, generation));
     } catch (err) {
       console.error('[api] GET /activity/timeline', (err as Error).message);
       res.status(500).json({ error: 'Internal server error' });
