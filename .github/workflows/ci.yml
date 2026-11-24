@@ -332,6 +332,7 @@ jobs:
           python -B -m unittest discover -s scripts/full-dev -p test_memory_policy.py -v
           python -B -m unittest discover -s scripts/full-dev/qualification -p test_runtime_logs.py -v
           python -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_resume.py -v
+          python -B -m unittest discover -s scripts/full-dev/qualification -p test_startup_readiness.py -v
           python -B -m unittest discover -s scripts/full-dev/lan -p test_policy.py -v
           node --test scripts/full-dev/lan/site/status.test.mjs
       - name: Test operator scripts
@@ -567,6 +568,10 @@ jobs:
       - name: Rehearse browser cache cutover and rollback
         working-directory: frontend
         run: npm run test:sw-cutover
+      - name: Rehearse independent DEV route rollback
+        env:
+          TEST_CORESCOPE_APP_EDGE: '1'
+        run: node --test scripts/full-dev/corescope-app/preview.test.mjs
       - name: Run production browser journeys
         working-directory: frontend
         run: npm run test:e2e

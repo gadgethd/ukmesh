@@ -9,7 +9,7 @@ import test from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 
-const require = createRequire(new URL('../../../backend/package.json', import.meta.url));
+const require = createRequire(new URL('../../../frontend/package.json', import.meta.url));
 const { WebSocket, WebSocketServer } = require('ws');
 
 async function listen(server) {

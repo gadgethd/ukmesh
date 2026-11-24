@@ -18,3 +18,7 @@
 
 - The deployed pin, fork main and upstream had diverged. The merge kept the deployed origin and session checks, and the refactor gave WebSocket transport its own module. The app and share screens use the same guided layout. A restored version-1 store verified historical targets and receipts in the built image.
 - The Health Check gitlink is the source pin for DEV, CI and release builds. BuildKit fetches that exact commit from the fork before installing dependencies from the fork’s lockfile. This binds the image source to its revision label even when a local checkout contains additional assets. DEV and release builds verify the selected pin. Remove the external lockfile and the image overlays together.
+
+## DEV qualification
+
+- Beacon readiness needs native connection events, process identity and the current broker epoch. Streaming hours of access logs through Docker repeatedly exhausted the probe budget. Filter the same journal by container and event fields when the service uses journald. The startup deadline and the separate intake, broker and target identity checks still apply.
