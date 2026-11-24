@@ -22,3 +22,4 @@
 ## DEV qualification
 
 - Beacon readiness needs native connection events, process identity and the current broker epoch. Streaming hours of access logs through Docker repeatedly exhausted the probe budget. Filter the same journal by container and event fields when the service uses journald. The startup deadline and the separate intake, broker and target identity checks still apply.
+- A completed companion build can disappear between Docker listing and inspection, aborting a valid transition. Retry only after confirming a listed ID disappeared. Reinspect the entire current set and require exact full IDs before comparing owned service and broker identities.

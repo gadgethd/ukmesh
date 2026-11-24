@@ -33,6 +33,26 @@ class TargetSafety(unittest.TestCase):
         options.update(overrides)
         return safety.select(NEW,previous,commit,**options)
 
+    def test_container_snapshot_retries_only_confirmed_list_disappearance(self):
+        complete=b'[{"Name":"/retained","Id":"stable"}]'
+        replies=iter(((0,b'stable build\n'),(1,complete),(0,b'stable\n'),(0,complete)))
+        calls=[]
+        def execute(args,**options):
+            calls.append((args,options))
+            code,body=next(replies)
+            return subprocess.CompletedProcess(args,code,body,b'')
+        self.assertEqual(safety.inspect_containers(execute_fn=execute),{'retained':{'Name':'/retained','Id':'stable'}})
+        self.assertEqual([args for args,_ in calls],[
+            ['ps','-aq','--no-trunc'],['inspect','stable','build'],['ps','-aq','--no-trunc'],['inspect','stable']])
+        self.assertIs(calls[1][1]['check'],False)
+
+    def test_container_snapshot_refuses_failure_without_disappearance(self):
+        def execute(args,**options):
+            code=0 if args[0]=='ps' else 1
+            return subprocess.CompletedProcess(args,code,b'stable\n',b'')
+        with self.assertRaisesRegex(RuntimeError,'snapshot inspection failed'):
+            safety.inspect_containers(execute_fn=execute)
+
     def test_torn_files_retry_only_exact_owned_request_and_durable_intent_first(self):
         def fail_between_files():
             intent=safety.read_intent(self.path)

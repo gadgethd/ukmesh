@@ -62,9 +62,23 @@ def inspect_containers(deadline=None,*,execute_fn=None):
         remaining=deadline-time.monotonic() if deadline is not None else 10
         if remaining<=0:raise TimeoutError('target inspection deadline')
         return (execute_fn or docker)(args,timeout=min(10,remaining),**options)
-    ids=execute(['ps','-aq']).stdout.decode().split()
-    items=json.loads(execute(['inspect',*ids]).stdout) if ids else []
-    return {item['Name'].lstrip('/'):item for item in items}
+    def listed_ids():
+        return execute(['ps','-aq','--no-trunc']).stdout.decode().split()
+    ids=listed_ids()
+    for _ in range(3):
+        if not ids:return {}
+        result=execute(['inspect',*ids],check=False)
+        if result.returncode==0:
+            items=json.loads(result.stdout)
+            if len(items)!=len(ids) or {item['Id'] for item in items}!=set(ids):
+                raise ValueError('Docker container snapshot incomplete')
+            return {item['Name'].lstrip('/'):item for item in items}
+        # A one-shot build can disappear after listing. Inspect a new complete
+        # set; the protection step still compares the owned service identities.
+        current=listed_ids()
+        if not set(ids).difference(current):raise RuntimeError('Docker container snapshot inspection failed')
+        ids=current
+    raise RuntimeError('Docker container snapshot did not stabilize')
 
 
 def inspect_snapshot(deadline=None,*,execute_fn=None):

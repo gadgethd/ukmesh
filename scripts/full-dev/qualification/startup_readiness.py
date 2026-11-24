@@ -72,7 +72,7 @@ def _run(argv,deadline,*,after_spawn=None,merge_stderr=False,spawn=subprocess.Po
 
 def docker_probe(args,deadline,**options):
     result=_run(['sg','docker','-c',shlex.join(['docker','--host','unix:///var/run/docker.sock',*args])],deadline,merge_stderr=options.get('merge_stderr',False))
-    if result.returncode:raise RuntimeError('native Docker read failed')
+    if result.returncode and options.get('check',True):raise RuntimeError('native Docker read failed')
     return result
 
 

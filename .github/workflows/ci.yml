@@ -333,6 +333,7 @@ jobs:
           python -B -m unittest discover -s scripts/full-dev/qualification -p test_runtime_logs.py -v
           python -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_resume.py -v
           python -B -m unittest discover -s scripts/full-dev/qualification -p test_startup_readiness.py -v
+          python -B -m unittest discover -s scripts/full-dev/qualification -p test_target_safety.py -v
           python -B -m unittest discover -s scripts/full-dev/lan -p test_policy.py -v
           node --test scripts/full-dev/lan/site/status.test.mjs
       - name: Test operator scripts
