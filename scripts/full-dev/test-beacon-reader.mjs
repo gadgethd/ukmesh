@@ -8,6 +8,7 @@ import test from 'node:test';
 const require = createRequire(new URL('../../backend/package.json', import.meta.url));
 const {Pool} = require('pg');
 const endpoint = process.env.BEACON_TEST_DATABASE_URL;
+const nativeTest = process.env.BEACON_TEST_NATIVE_BINARY;
 const script = readFileSync(new URL('./beacon-reader.sql', import.meta.url), 'utf8');
 
 // Same disposable database/role owner as test-corescope-reader.mjs. The source
@@ -68,8 +69,9 @@ test('Beacon history credential exposes only current public GroupText and exact 
       .match(/CREATE OR REPLACE FUNCTION public\.meshcore_path_matches_private\([\s\S]*?\$function\$;/)?.[0];
     assert.ok(valid && privatePath, 'exercise the existing authoritative privacy functions');
     await fixture.query(valid + '\n' + privatePath);
-    const raw = '1500AABBCCDDEEFF';
-    const uid = createHash('sha256').update(Buffer.from('14AABBCCDDEEFF', 'hex')).digest();
+    const payload = '11AABB01010101010101010101010101010101';
+    const raw = '1500' + payload;
+    const uid = createHash('sha256').update(Buffer.from('14' + payload, 'hex')).digest();
     const observedAt = '2026-11-24T01:02:03.123456Z';
     const rows = [
       {status: 'candidate-for-decode'},
@@ -113,6 +115,20 @@ test('Beacon history credential exposes only current public GroupText and exact 
     readerURL.username = role;
     readerURL.password = password;
     reader = new Pool({connectionString: readerURL.href, max: 1});
+    const checkNativeReader = phase => {
+      if (!nativeTest) return;
+      const run = spawnSync(nativeTest, ['-test.run=^TestPublicSourceFixtureIntegration$', '-test.v'], {
+        encoding: 'utf8', timeout: 5_000,
+        env: {
+          BEACON_PUBLIC_FIXTURE_URL: readerURL.href,
+          BEACON_PUBLIC_FIXTURE_PHASE: phase,
+          BEACON_PUBLIC_FIXTURE_OBSERVATIONS: rows.slice(0, 2).map(row => row.id).join(','),
+        },
+      });
+      assert.ifError(run.error);
+      assert.equal(run.status, 0, [run.stdout, run.stderr].join('\n').replaceAll(password, '[redacted]'));
+      assert.match(run.stdout, /--- PASS: TestPublicSourceFixtureIntegration\b/, 'the native fixture test ran');
+    };
     assert.deepEqual((await reader.query('SELECT current_user,session_user')).rows,
       [{current_user: role, session_user: role}]);
     assert.deepEqual((await reader.query('SELECT * FROM source_state')).rows, [{
@@ -124,6 +140,9 @@ test('Beacon history credential exposes only current public GroupText and exact 
       WHERE network = ANY($1::text[]) ORDER BY seq`, [['ukmesh']]);
     assert.deepEqual(visible.rows.map(row => row.observation_id), rows.filter(row => !row.hidden && !row.network).map(row => row.id));
     assert.deepEqual(visible.rows.map(row => row.raw_input_status), rows.filter(row => !row.hidden && !row.network).map(row => row.status));
+    const classification = await reader.query(`SELECT is_public_observation(id,$2) AS visible
+      FROM unnest($1::uuid[]) AS candidates(id)`, [[...rows.map(row => row.id), randomUUID()], observedAt]);
+    assert.deepEqual(classification.rows.map(row => row.visible), [...rows.map(row => !row.hidden), false]);
     assert.deepEqual(visible.rows.slice(0, 2).map(row => row.raw_hex), [raw, raw]);
     assert.ok(visible.rows.slice(2).every(row => row.raw_hex === null));
     assert.deepEqual(visible.rows[0].packet_uid, uid);
@@ -147,6 +166,7 @@ test('Beacon history credential exposes only current public GroupText and exact 
     const writes = await reader.query("SELECT has_table_privilege('beacon_public.packets', 'INSERT,UPDATE,DELETE,TRUNCATE') AS allowed");
     assert.equal(writes.rows[0].allowed, false);
     await assert.rejects(reader.query('INSERT INTO packets DEFAULT VALUES'));
+    checkNativeReader('ready');
     const unavailable = async reason => {
       assert.equal((await reader.query('SELECT ready FROM source_state')).rows[0].ready, false, reason);
       assert.equal((await reader.query('SELECT * FROM packets')).rowCount, 0, reason);
@@ -154,6 +174,7 @@ test('Beacon history credential exposes only current public GroupText and exact 
     };
     await fixture.query('UPDATE ops.packet_visibility_materialization_state SET visibility_generation=8');
     await unavailable('stale materialization');
+    checkNativeReader('unavailable');
     await fixture.query('UPDATE ops.packet_visibility_materialization_state SET visibility_generation=7');
     await fixture.query('UPDATE mesh.ingest_observation_ledger_coverage SET version=2');
     await unavailable('unknown ledger version');

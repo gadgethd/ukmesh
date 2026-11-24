@@ -74,24 +74,24 @@ AS $ready$
   )
 $ready$;
 
-CREATE OR REPLACE FUNCTION beacon_public.meshcore_path_is_valid(
-  path_hashes text[], path_hash_size_bytes integer
-) RETURNS boolean LANGUAGE sql IMMUTABLE SECURITY DEFINER
-SET search_path = pg_catalog
-AS $valid$
-  SELECT public.meshcore_path_is_valid(path_hashes, path_hash_size_bytes)
-$valid$;
-
-CREATE OR REPLACE FUNCTION beacon_public.meshcore_path_matches_private(
-  network text, rx_node_id text, src_node_id text,
-  path_hashes text[], path_hash_size_bytes integer
+-- The reader can execute this function, so bind it to an existing observation
+-- and return the same result for hidden and unknown observations. Arbitrary
+-- keys and paths must never become queries against the private prefix list.
+CREATE OR REPLACE FUNCTION beacon_public.is_public_observation(
+  input_id uuid, input_time timestamptz
 ) RETURNS boolean LANGUAGE sql STABLE SECURITY DEFINER
 SET search_path = pg_catalog
-AS $private$
-  SELECT public.meshcore_path_matches_private(
-    network, rx_node_id, src_node_id, path_hashes, path_hash_size_bytes
+AS $visible$
+  SELECT beacon_public.privacy_ready() AND EXISTS (
+    SELECT 1 FROM mesh.packets p
+    WHERE p.observation_id = input_id AND p.time = input_time
+      AND p.packet_type = 5 AND p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
+      AND public.meshcore_path_is_valid(p.path_hashes, p.path_hash_size_bytes)
+      AND NOT public.meshcore_path_matches_private(
+        p.network, p.rx_node_id, p.src_node_id, p.path_hashes, p.path_hash_size_bytes
+      )
   )
-$private$;
+$visible$;
 
 -- This source is only for GroupText (packet_type 5), not general raw packets.
 -- Consumers bind their network set and page by seq, never by observation time.
@@ -128,10 +128,7 @@ CROSS JOIN LATERAL (
 WHERE (SELECT beacon_public.privacy_ready())
   AND p.packet_type = 5
   AND p.visibility_ok IS TRUE AND p.is_private IS NOT TRUE
-  AND beacon_public.meshcore_path_is_valid(p.path_hashes, p.path_hash_size_bytes)
-  AND NOT beacon_public.meshcore_path_matches_private(
-    p.network, p.rx_node_id, p.src_node_id, p.path_hashes, p.path_hash_size_bytes
-  );
+  AND beacon_public.is_public_observation(p.observation_id, p.time);
 
 CREATE OR REPLACE VIEW beacon_public.ingest_observation_ledger
 WITH (security_barrier = true) AS
@@ -148,16 +145,14 @@ SELECT 1::integer AS source_contract_version,
        beacon_public.privacy_ready() AS ready;
 
 REVOKE ALL ON FUNCTION beacon_public.privacy_ready() FROM PUBLIC;
-REVOKE ALL ON FUNCTION beacon_public.meshcore_path_is_valid(text[], integer) FROM PUBLIC;
-REVOKE ALL ON FUNCTION beacon_public.meshcore_path_matches_private(text, text, text, text[], integer) FROM PUBLIC;
+REVOKE ALL ON FUNCTION beacon_public.is_public_observation(uuid, timestamptz) FROM PUBLIC;
 REVOKE ALL ON beacon_public.packets, beacon_public.ingest_observation_ledger,
   beacon_public.source_state FROM PUBLIC;
 GRANT USAGE ON SCHEMA beacon_public TO :"beacon_reader_role";
 GRANT SELECT ON beacon_public.packets, beacon_public.ingest_observation_ledger,
   beacon_public.source_state TO :"beacon_reader_role";
 GRANT EXECUTE ON FUNCTION beacon_public.privacy_ready(),
-  beacon_public.meshcore_path_is_valid(text[], integer),
-  beacon_public.meshcore_path_matches_private(text, text, text, text[], integer)
+  beacon_public.is_public_observation(uuid, timestamptz)
   TO :"beacon_reader_role";
 SELECT pg_catalog.format(
   'ALTER ROLE %I IN DATABASE %I SET search_path = pg_catalog, beacon_public',
