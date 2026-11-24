@@ -8,3 +8,4 @@ if [ "$wanted" != "$installed" ]; then
 fi
 node node_modules/typescript/bin/tsc -b
 node node_modules/vite/bin/vite.js build --mode companion --outDir /out
+node node_modules/vite/bin/vite.js build --mode ukmesh-feed --outDir /out/beacon-feed
