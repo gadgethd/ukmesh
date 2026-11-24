@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:http';
+import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer, get } from 'node:http';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -55,6 +55,7 @@ test('isolated app edge serves the shell and credentials-free current projection
   const assets = join(temporary, 'public');
   await mkdir(join(assets, 'icons'), { recursive: true });
   await writeFile(join(assets, 'map.js'), '/* preview map */');
+  await symlink('/etc/passwd', join(assets, 'redirected.js'));
   await writeFile(join(assets, 'icons/phosphor-sprite.svg'), '<svg/>');
   await writeFile(config, `server {
     listen 127.0.0.1:${edgePort};
@@ -90,22 +91,36 @@ test('isolated app edge serves the shell and credentials-free current projection
 
   assert.match(await (await read('/corescope/config.js')).text(), /\/corescope\/ws/);
   assert.equal(await (await read('/corescope/static/map.js')).text(), '/* preview map */');
+  assert.equal((await read('/corescope/static/redirected.js')).status, 403);
   assert.equal(await (await read('/icons/phosphor-sprite.svg')).text(), '<svg/>');
   assert.equal(await (await read('/api/runtime-config')).text(), '/api/runtime-config');
-  assert.equal(await (await read('/rf-coverage/tiles/precision/1-2.png?v=7')).text(),
-    '/rf-coverage/tiles/precision/1-2.png?v=7');
   const credentials = { Cookie: 'session=forbidden', Authorization: 'Bearer forbidden', Accept: 'application/json' };
   const nodes = await read('/corescope/api/nodes?q=a%2Bb', { headers: credentials });
   assert.equal(nodes.status, 200);
   assert.equal(nodes.headers.get('x-corescope-privacy-generation'), '7');
   assert.equal(nodes.headers.get('set-cookie'), null);
   assert.equal(await nodes.text(), '/api/nodes?q=a%2Bb');
+  const head = await read('/corescope/api/nodes', { method: 'HEAD', headers: credentials });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), '');
+  assert.equal(head.headers.get('set-cookie'), null);
   assert.equal((await read('/corescope/api/nodes', { method: 'POST' })).status, 405);
   assert.equal((await read('/corescope/ws')).status, 426);
   for (const route of ['/_projection-ready', '/corescope/api/public-projection-ready', '/corescope/api/debug/affinity',
-    '/corescope/api/backup', '/api/nodes', '/corescope/static/api/backup', '/corescope/static/../api/backup']) {
+    '/corescope/api/backup', '/api/nodes', '/corescope/static/api/backup', '/corescope/static/../api/backup',
+    '/rf-coverage/meta.json', '/rf-coverage/progress.json', '/rf-coverage/tiles/precision/1-2.png',
+    '/rf-coverage/tiles/nodes/n111111111111111111111111/1-2.png']) {
     assert.equal((await read(route)).status, 404, route);
   }
+  // Send a raw path to Nginx so URL normalization in Fetch cannot remove it first.
+  const rawStatus = path => new Promise((resolve, reject) => {
+    const request = get({ hostname: '127.0.0.1', port: edgePort, path }, response => {
+      response.resume();
+      resolve(response.statusCode);
+    });
+    request.on('error', reject);
+  });
+  assert.equal(await rawStatus('/corescope/static/%2e%2e/api/backup'), 404);
 
   const connect = () => new Promise((resolve, reject) => {
     const ws = new WebSocket(origin.replace(/^http/, 'ws') + '/corescope/ws?privacyGeneration=7', {
@@ -120,11 +135,11 @@ test('isolated app edge serves the shell and credentials-free current projection
   assert.equal(socketHeaders?.host, `127.0.0.1:${edgePort}`);
   assert.ok(requests.every(([, header]) => !header.authorization && !header.cookie));
   const actualReads = () => requests.filter(([route]) => route.startsWith('/api/nodes') || route.startsWith('/?'));
-  assert.equal(actualReads().length, 2);
+  assert.equal(actualReads().length, 3);
   for (const status of [403, 404]) {
     readiness = status;
     assert.equal((await read('/corescope/api/nodes')).status, 503);
     await assert.rejects(connect(), /Unexpected server response: 503/);
   }
-  assert.equal(actualReads().length, 2, 'no data or upgrade reached the upstream during authority loss');
+  assert.equal(actualReads().length, 3, 'no data or upgrade reached the upstream during authority loss');
 });

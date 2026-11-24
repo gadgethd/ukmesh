@@ -10,7 +10,7 @@
 ## Map ownership
 
 - CoreScope currently uses host-root URLs while UKMesh owns `/api`, `/ws`, terrain, RF coverage and the installed app’s service worker. Move the fork’s public client URLs behind one deployment config and give the gateway explicit routes. Keep authority and acquisition separate. The public server must use the approved projection, and the browser must expire the previous generation when the authority changes.
-- The isolated preview edge separates static files, CoreScope’s narrow read routes, and UKMesh’s regional coverage tiles. It checks the projection before forwarding CoreScope data or accepting a WebSocket upgrade. Cookies and authorization headers stay within their original services. Add each route alongside its parity tests. Keep the existing application ingress until the full map and installed-app checks pass.
+- The isolated preview edge separates static files, CoreScope’s narrow read routes, and the UKMesh runtime configuration. It checks the projection before forwarding CoreScope data or accepting a WebSocket upgrade. Cookies and authorization headers stay within their original services. Keep RF archives outside the preview edge. The shared archive manifest contains per-repeater location and tile references and must have a generation-fenced public projection before it can serve the new app. Keep the existing application ingress until the full map and installed-app checks pass.
 
 ## Health Check ownership
 
