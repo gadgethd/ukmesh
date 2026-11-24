@@ -23,6 +23,12 @@ export type PublicRouteDefinition = {
   sitemap: boolean;
 };
 
+const packetFeed = {
+  component: 'feed',
+  title: 'Live Packet Feed — UK Mesh Network',
+  description: 'Live LoRa adverts, messages and traceroutes from UK MeshCore observers.',
+} as const;
+
 export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   {
     path: '/',
@@ -52,20 +58,8 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     description: 'Live statistics for the UK MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
     sitemap: true,
   },
-  {
-    path: '/feed',
-    component: 'feed',
-    title: 'Live Packet Feed — UK Mesh Network',
-    description: 'Real-time decoded LoRa packet stream from UK MeshCore observers. Watch adverts, messages, and traceroutes as they arrive.',
-    sitemap: true,
-  },
-  {
-    path: '/feed/packets',
-    component: 'feed',
-    title: 'Live Packet Feed — UK Mesh Network',
-    description: 'Inspect public packets, observer reports and MeshCore paths.',
-    sitemap: false,
-  },
+  { ...packetFeed, path: '/feed', sitemap: true },
+  { ...packetFeed, path: '/feed/packets', sitemap: false },
   {
     path: '/repeater',
     component: 'repeater',

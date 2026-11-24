@@ -20,8 +20,11 @@ test('redirects never enter the sitemap', () => {
 });
 
 test('the packets route remains available without adding a duplicate sitemap entry', () => {
-  assert.equal(PUBLIC_ROUTES.find((route) => route.path === '/feed')?.component, 'feed');
+  const feed = PUBLIC_ROUTES.find((route) => route.path === '/feed');
   const packets = PUBLIC_ROUTES.find((route) => route.path === '/feed/packets');
+  assert.equal(feed?.component, 'feed');
   assert.equal(packets?.component, 'feed');
+  assert.equal(packets?.title, feed.title);
+  assert.equal(packets?.description, feed.description);
   assert.equal(packets?.sitemap, false);
 });
