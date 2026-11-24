@@ -32,6 +32,7 @@ test('isolated app edge serves the shell and credentials-free current projection
     requests.push([request.url, request.headers]);
     if (request.url === '/api/public-projection-ready') return response.writeHead(readiness).end();
     if (request.url === '/corescope-app-shell') return response.end('<title>CoreScope preview</title>');
+    if (request.url?.startsWith('/readyz')) return response.writeHead(readiness === 204 ? 200 : 503).end();
     response.writeHead(200, { 'X-CoreScope-Privacy-Generation': '7', 'Set-Cookie': 'not-forwarded=1' });
     response.end(request.url);
   });
@@ -49,20 +50,37 @@ test('isolated app edge serves the shell and credentials-free current projection
   t.after(() => { core.close(); ukmesh.close(); sockets.close(); });
   const reservation = createServer();
   const edgePort = await listen(reservation);
+  const feedReservation = createServer();
+  const feedPort = await listen(feedReservation);
   await new Promise(resolve => reservation.close(resolve));
+  await new Promise(resolve => feedReservation.close(resolve));
 
   const config = join(temporary, 'default.conf');
   const assets = join(temporary, 'public');
+  const beaconAssets = join(temporary, 'beacon-feed');
   await mkdir(join(assets, 'icons'), { recursive: true });
   await writeFile(join(assets, 'map.js'), '/* preview map */');
   await symlink('/etc/passwd', join(assets, 'redirected.js'));
   await writeFile(join(assets, 'icons/phosphor-sprite.svg'), '<svg/>');
-  await writeFile(config, `server {
+  await mkdir(join(beaconAssets, 'assets'), { recursive: true });
+  await writeFile(join(beaconAssets, 'ukmesh-feed.html'), '<title>Beacon Channels preview</title>');
+  await writeFile(join(beaconAssets, 'assets/channels-abcdef.js'), '/* Channels preview */');
+  const coreConfig = `server {
     listen 127.0.0.1:${edgePort};
+    proxy_read_timeout 10s;
     set $corescope_projection http://127.0.0.1:${corePort};
     set $ukmesh_app http://127.0.0.1:${ukmeshPort};
     include /etc/nginx/corescope-app/preview-locations.conf;
-  }\n`);
+  }\n`;
+  const feedConfig = include => `server {
+    listen 127.0.0.1:${feedPort};
+    proxy_read_timeout 10s;
+    set $beacon_projection http://127.0.0.1:${corePort};
+    ${include ? 'include /etc/nginx/ukmesh-ingress/beacon-feed-locations.conf;' : 'location = /feed { return 200 "Packet Feed default"; }'}
+    location = /feed/packets { return 200 "Packet Feed"; }
+    location / { return 404; }
+  }\n`;
+  await writeFile(config, coreConfig + feedConfig(true));
   const dockerfile = await readFile(new URL('../../../Dockerfile.app', import.meta.url), 'utf8');
   const image = dockerfile.match(/^FROM (nginx:\S+)$/m)?.[1];
   assert.ok(image, 'use the main app image pin');
@@ -70,7 +88,9 @@ test('isolated app edge serves the shell and credentials-free current projection
   const edge = spawn('docker', ['run', '--rm', '--name', name, '--network', 'host', '--memory', '32m',
     '--memory-swap', '32m', '-v', `${config}:/etc/nginx/conf.d/default.conf:ro`,
     '-v', `${fileURLToPath(new URL('.', import.meta.url))}:/etc/nginx/corescope-app:ro`,
-    '-v', `${assets}:/srv/corescope/public:ro`, image], { stdio: ['ignore', 'pipe', 'pipe'] });
+    '-v', `${fileURLToPath(new URL('../ingress', import.meta.url))}:/etc/nginx/ukmesh-ingress:ro`,
+    '-v', `${assets}:/srv/corescope/public:ro`, '-v', `${beaconAssets}:/srv/beacon-feed:ro`,
+    image], { stdio: ['ignore', 'pipe', 'pipe'] });
   let edgeLog = '';
   edge.stderr.on('data', data => { edgeLog += data.toString(); });
   edge.stdout.resume();
@@ -94,6 +114,9 @@ test('isolated app edge serves the shell and credentials-free current projection
   assert.equal((await read('/corescope/static/redirected.js')).status, 403);
   assert.equal(await (await read('/icons/phosphor-sprite.svg')).text(), '<svg/>');
   assert.equal(await (await read('/api/runtime-config')).text(), '/api/runtime-config');
+  assert.equal(await (await read('/api/regions/summary?network=ukmesh')).text(), '/api/regions/summary?network=ukmesh');
+  assert.equal(await (await read('/terrain-tiles/3/4/5.png')).text(), '/terrain-tiles/3/4/5.png');
+  assert.equal(await (await read('/sw.js')).text(), '/sw.js');
   const credentials = { Cookie: 'session=forbidden', Authorization: 'Bearer forbidden', Accept: 'application/json' };
   const nodes = await read('/corescope/api/nodes?q=a%2Bb', { headers: credentials });
   assert.equal(nodes.status, 200);
@@ -142,4 +165,47 @@ test('isolated app edge serves the shell and credentials-free current projection
     await assert.rejects(connect(), /Unexpected server response: 503/);
   }
   assert.equal(actualReads().length, 3, 'no data or upgrade reached the upstream during authority loss');
+
+  const feedOrigin = `http://127.0.0.1:${feedPort}`;
+  const feed = (path, options) => fetch(feedOrigin + path, { signal: AbortSignal.timeout(4_000), ...options });
+  assert.equal((await feed('/beacon/readyz')).status, 503);
+  readiness = 204;
+  assert.equal((await feed('/beacon/readyz')).status, 200);
+  const channels = await feed('/feed?region=UK');
+  assert.match(channels.headers.get('content-type'), /^text\/html/);
+  assert.match(await channels.text(), /Beacon Channels preview/);
+  assert.equal(await (await feed('/feed/packets?type=3')).text(), 'Packet Feed');
+  assert.equal(await (await feed('/beacon-feed/assets/channels-abcdef.js')).text(), '/* Channels preview */');
+  const messages = await feed('/beacon/api/v1/channels/7/messages?cursor=234', { headers: credentials });
+  assert.equal(messages.headers.get('set-cookie'), null);
+  assert.equal(await messages.text(), '/api/v1/channels/7/messages?cursor=234');
+  assert.equal((await feed('/beacon/api/v1/channels', { method: 'POST' })).status, 405);
+  assert.equal((await feed('/beacon/api/v1/admin')).status, 404);
+  assert.equal((await feed('/beacon/api/v1/channels/0/messages')).status, 404);
+  assert.equal((await feed('/beacon/ws')).status, 426);
+  const upgraded = new Promise((resolve, reject) => {
+    const ws = new WebSocket(feedOrigin.replace(/^http/, 'ws') + '/beacon/ws', {
+      origin: feedOrigin, headers: credentials, handshakeTimeout: 4_000,
+    });
+    ws.once('message', event => resolve(event.toString()));
+    ws.once('error', reject);
+  });
+  assert.equal(await upgraded, 'generation=7');
+  assert.ok(requests.every(([, header]) => !header.authorization && !header.cookie));
+
+  // Change just the Feed selection on the fixture and verify the live app
+  // and Packet Feed still resolve after Nginx loads the previous config.
+  await writeFile(config, coreConfig + feedConfig(false));
+  for (const args of [['nginx', '-t'], ['nginx', '-s', 'reload']]) {
+    const command = spawnSync('docker', ['exec', name, ...args], { encoding: 'utf8', timeout: 5_000 });
+    assert.equal(command.status, 0, command.stderr);
+  }
+  for (let attempt = 0; attempt < 30; attempt++) {
+    if (await (await feed('/feed', { headers: { connection: 'close' } })).text() === 'Packet Feed default') break;
+    assert.ok(attempt < 29, 'previous Feed default never returned');
+    await delay(100);
+  }
+  assert.equal((await feed('/beacon/readyz')).status, 404);
+  assert.equal(await (await feed('/feed/packets')).text(), 'Packet Feed');
+  assert.match(await (await read('/')).text(), /CoreScope preview/);
 });

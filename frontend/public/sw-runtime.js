@@ -1,13 +1,13 @@
 export const SW_CACHE_POLICY = Object.freeze({
-  version: 'v10',
-  tileCache: 'meshcore-tiles-v10',
-  appCache: 'meshcore-app-v10',
-  metadataCache: 'meshcore-meta-v10',
-  basemapMetadataCache: 'meshcore-basemap-v10',
-  previousTileCache: 'meshcore-tiles-v9',
-  previousAppCache: 'meshcore-app-v9',
-  previousMetadataCache: 'meshcore-meta-v9',
-  previousBasemapMetadataCache: 'meshcore-basemap-v9',
+  version: 'v11',
+  tileCache: 'meshcore-tiles-v11',
+  appCache: 'meshcore-app-v11',
+  metadataCache: 'meshcore-meta-v11',
+  basemapMetadataCache: 'meshcore-basemap-v11',
+  previousTileCache: 'meshcore-tiles-v10',
+  previousAppCache: 'meshcore-app-v10',
+  previousMetadataCache: 'meshcore-meta-v10',
+  previousBasemapMetadataCache: 'meshcore-basemap-v10',
   maxTileEntries: 6_000,
   maxTileBytes: 96 * 1024 * 1024,
   pruneTargetRatio: 0.9,
@@ -47,10 +47,21 @@ function isBasemapMetadataUrl(url) {
 
 function isAppAssetUrl(url, origin) {
   const parsed = new URL(url, origin);
-  if (parsed.origin !== origin || !parsed.pathname.startsWith('/assets/')) return false;
+  if (parsed.origin !== origin) return false;
+  if (/^\/corescope\/static\/[\w./-]+\.(?:js|css|svg|png|webp|woff2?|ico)$/.test(parsed.pathname)) {
+    return /^\d{1,14}$/.test(parsed.searchParams.get('v') ?? '');
+  }
+  if (!parsed.pathname.startsWith('/assets/')) return false;
   // MapLibre's worker bundle keeps a stable filename across releases; caching
   // it forever pairs a new page bundle with an old worker. Revalidate instead.
   return !parsed.pathname.endsWith('.mjs');
+}
+
+function isAppNavigation(request, origin) {
+  if (request.mode !== 'navigate') return false;
+  const { origin: requestOrigin, pathname } = new URL(request.url, origin);
+  return requestOrigin === origin
+    && !/^\/(?:api|beacon|corescope\/api|corescope\/ws|corescope\/config\.js|internal|rf-coverage|terrain-tiles|ws)(?:\/|$)/.test(pathname);
 }
 
 function estimatedResponseBytes(response) {
@@ -345,7 +356,7 @@ export function createServiceWorkerRuntime(environment) {
     shouldHandle: (request) => (
       isBasemapUrl(request.url)
       || isAppAssetUrl(request.url, environment.origin)
-      || request.mode === 'navigate'
+      || isAppNavigation(request, environment.origin)
     ),
     install: async () => {
       // No skipWaiting here: activation is controlled by an explicit message.
