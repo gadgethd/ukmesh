@@ -24,6 +24,7 @@ import {
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import { createPublicRamSource } from './ram/publicSource.js';
+import { createBeaconPublicAuthority } from './beacon/publicAuthority.js';
 import { createApiRuntime } from './api/routes.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
@@ -408,6 +409,7 @@ async function main() {
   // API routes
   app.use('/api', apiRuntime.router);
   app.use('/internal/ingest/public', createPublicRamSource());
+  app.use('/internal/beacon', createBeaconPublicAuthority());
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));

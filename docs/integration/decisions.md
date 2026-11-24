@@ -6,6 +6,7 @@
 - The UKMesh Packet Feed owns packet, watch and path behaviour. Keep it in the UKMesh website at `/feed/packets`. Keep the old feed active while the Beacon read and live contracts are being verified.
 - Beacon public routes cannot inherit the broad LAN proxy. A known decryption key or one-byte channel hash cannot authorize publication. The public gateway must validate the exact channel and observation against UKMesh visibility, and it must treat enrichment and old cached data as subject to revocation.
 - The restricted history source lives in the UKMesh qualification scripts. Beacon owns frame decoding and reconciles its short hash with the full UKMesh packet identity. The reader binds its cursor to the network set and privacy generation and checks the authority again after reading. Two hearings with equal times and content remain distinct by observation UUID. Tests use an owned database and a disposable read-only role. A public channel policy, authenticated message projection, and live delivery are required before routing user traffic.
+- The private Beacon authority shares the UKMesh channel registry and ready visibility check. Channel names and the one-byte wire hash are unsuitable keys for publication. Export only approved material, identify it by its full key fingerprint, and carry a registry revision alongside the visibility generation. The Beacon credential stays separate from the CoreScope stream credential.
 
 ## Map ownership
 
