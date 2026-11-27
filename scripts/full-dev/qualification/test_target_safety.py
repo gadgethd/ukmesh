@@ -53,6 +53,13 @@ class TargetSafety(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError,'snapshot inspection failed'):
             safety.inspect_containers(execute_fn=execute)
 
+    def test_running_archive_cannot_publish_during_a_target_change(self):
+        self.actual['containers'] = {'archive': {'State': {'Running': False, 'Restarting': True},
+            'Config': {'Labels': {'com.docker.compose.project': 'ukmesh-replay'}}}}
+        with self.assertRaisesRegex(ValueError, 'stop the DEV archive replay'):
+            self.select(lambda: self.fail('target changed while replay was active'))
+        self.assertFalse(self.path.exists())
+
     def test_torn_files_retry_only_exact_owned_request_and_durable_intent_first(self):
         def fail_between_files():
             intent=safety.read_intent(self.path)

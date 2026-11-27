@@ -5,27 +5,17 @@ type SiteLayoutProps = {
   brandName: string;
   footerName: string;
   appUrl: string;
-  showFeed?: boolean;
-  showLiveMap?: boolean;
-  showAbout?: boolean;
-  showInstall?: boolean;
-  showMqtt?: boolean;
-  showOpenSource?: boolean;
-  showBestPractice?: boolean;
-  showPackets: boolean;
-  showStats: boolean;
-  showRepeaterSearch?: boolean;
-  showCompanion?: boolean;
-  showRegions?: boolean;
-  showTopology?: boolean;
-  showSpam?: boolean;
+  integratedMap?: boolean;
 };
 
-type NavItem = {
-  to: string;
-  label: string;
-  enabled: boolean;
-};
+const primary = [
+  ['/repeater', 'Repeaters'], ['/regions', 'Regions'], ['/feed', 'Feed'],
+] as const;
+const healthCheckLink = ['/health-check', 'Health Check'] as const;
+const groups = [
+  ['Tools', [['/stats', 'Stats'], ['/topology', 'Topology'], ['/companion', 'Companions'], ['/spam', 'Spam']]],
+  ['Help', [['/install', 'Install'], ['/docs', 'Docs'], ['/open-source', 'Open Source']]],
+] as const;
 
 import { OWNER_SESSION_EVENT } from '../../utils/appEvents.js';
 import { fetchJson } from '../../utils/api.js';
@@ -52,25 +42,7 @@ function navClassName({ isActive }: { isActive: boolean }): string {
   return isActive ? 'site-nav__link site-nav__link--active' : 'site-nav__link';
 }
 
-export const SiteLayout: React.FC<SiteLayoutProps> = ({
-  brandName,
-  footerName,
-  appUrl,
-  showFeed = false,
-  showLiveMap = true,
-  showAbout = true,
-  showInstall = true,
-  showMqtt = true,
-  showOpenSource = true,
-  showBestPractice = false,
-  showPackets,
-  showStats,
-  showRepeaterSearch = false,
-  showCompanion = false,
-  showRegions = false,
-  showTopology = false,
-  showSpam = false,
-}) => {
+export const SiteLayout: React.FC<SiteLayoutProps> = ({ brandName, footerName, appUrl, integratedMap }) => {
   const { privacyGeneration } = useRuntimeFeatures();
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
   const [menuOpen, setMenuOpen] = useState(false);
@@ -85,43 +57,23 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
       return false;
     }
   });
-  const navItems: NavItem[] = ([
-    ['/feed', 'Feed', showFeed],
-    ['/repeater', 'Repeaters', showRepeaterSearch],
-    ['/companion', 'Companions', showCompanion],
-    ['/regions', 'Regions', showRegions],
-    ['/topology', 'Topology', showTopology],
-    ['/spam', 'Spam', showSpam],
-    ['/about', 'What is MeshCore', showAbout],
-    ['/install', 'Install', showInstall],
-    ['/mqtt', 'MQTT', showMqtt],
-    ['/packets', 'Packets', showPackets],
-    ['/open-source', 'Open Source', showOpenSource],
-    ['/stats', 'Stats', showStats],
-    ['/docs', 'Docs', showBestPractice],
-  ] satisfies [string, string, boolean][]).map(([to, label, enabled]) => ({ to, label, enabled }));
-
   const closeMenu = () => {
     setMenuOpen(false);
     navRef.current?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach(group => { group.open = false; });
   };
-  const renderLink = (item: NavItem) => <NavLink key={item.to} to={item.to} end={item.to === '/'} onClick={closeMenu} className={navClassName}>
-    {item.label}
-    {item.to === '/spam' && activeSpamIncidents > 0 && <span className="site-nav__badge" aria-label={`${activeSpamIncidents} active incidents`}>{activeSpamIncidents}</span>}
+  const renderLink = ([to, label]: readonly [string, string]) => <NavLink key={to} to={to} onClick={closeMenu} className={navClassName}>
+    {label}
+    {to === '/spam' && activeSpamIncidents > 0 && <span className="site-nav__badge" aria-label={`${activeSpamIncidents} active incidents`}>{activeSpamIncidents}</span>}
   </NavLink>;
-  const primary = navItems.filter(item => item.enabled && ['/repeater', '/feed', '/regions'].includes(item.to));
-  const tools = navItems.filter(item => item.enabled && ['/topology', '/companion', '/spam', '/stats', '/packets'].includes(item.to));
-  const help = navItems.filter(item => item.enabled && !primary.includes(item) && !tools.includes(item));
 
   useEffect(() => {
-    if (!showSpam) return;
     setActiveSpamIncidents(0);
     const controller = new AbortController();
     fetchJson('/api/spam/messages/status', { signal: controller.signal }, { maxBytes: 64 * 1024, validate: isSpamSummary })
       .then((value) => setActiveSpamIncidents(Number(value?.activeIncidents ?? 0)))
       .catch(() => {});
     return () => controller.abort();
-  }, [showSpam, privacyGeneration]);
+  }, [privacyGeneration]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -174,17 +126,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     };
   }, []);
 
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [menuOpen]);
-
   const acceptCookies = () => {
     try {
       localStorage.setItem(COOKIE_CONSENT_KEY, '1');
@@ -197,22 +138,25 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   return (
     <div className="site-layout">
       <a href="#site-main" className="ui-skip-link">Skip to content</a>
-      <nav ref={navRef} className="site-nav" aria-label="Main navigation">
+      <nav ref={navRef} className={`site-nav${integratedMap ? ' site-nav--embedded-tools' : ''}`} aria-label="Main navigation">
         <Link to="/" className="site-nav__brand" onClick={closeMenu}>
           <span className="site-nav__icon">◈</span>
           <span className="site-nav__name">{brandName}</span>
         </Link>
 
-        {showLiveMap && (
-            <a
+        {integratedMap ? (
+          <NavLink to="/live-map" onClick={closeMenu} className={state => `${navClassName(state)} site-nav__link--map`}>Live Map</NavLink>
+        ) : (
+          <a
               href={appUrl}
               className="site-nav__link site-nav__link--map site-nav__link--external"
               aria-label="Live Map (external app)"
               onClick={closeMenu}
             >
               Live Map <span className="site-nav__external-icon" aria-hidden="true">↗</span>
-            </a>
+          </a>
         )}
+        {integratedMap && renderLink(healthCheckLink)}
 
         <button
           ref={menuTrigger}
@@ -230,16 +174,16 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
           className={`site-nav__links${menuOpen ? ' site-nav__links--open' : ''}`}
         >
           {primary.map(renderLink)}
-          {[{ label: 'Tools', items: tools }, { label: 'Help', items: help }].filter(group => group.label === 'Tools' || group.items.length).map(group => (
-            <details className="site-nav__group" key={group.label} onToggle={event => {
+          {!integratedMap && renderLink(healthCheckLink)}
+          {groups.map(([label, items]) => (
+            <details className="site-nav__group" key={label} onToggle={event => {
               if (event.currentTarget.open) navRef.current?.querySelectorAll<HTMLDetailsElement>('details[open]').forEach(other => {
                 if (other !== event.currentTarget) other.open = false;
               });
             }}>
-              <summary className="site-nav__link">{group.label} <span aria-hidden="true">▾</span></summary>
+              <summary className="site-nav__link">{label} <span aria-hidden="true">▾</span></summary>
               <div className="site-nav__group-links">
-                {group.items.map(renderLink)}
-                {group.label === 'Tools' && <a href="https://healthcheck.ukmesh.com" className="site-nav__link" onClick={closeMenu}>Health Check</a>}
+                {items.map(renderLink)}
               </div>
             </details>
           ))}
@@ -269,19 +213,15 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
         <Link to="/open-source">Open Source</Link>
         <span className="site-footer__sep">·</span>
         <Link to="/privacy">Privacy</Link>
-        {showLiveMap && (
-          <>
-            <span className="site-footer__sep">·</span>
-            <a href={appUrl}>Live Map</a>
-          </>
-        )}
+        <span className="site-footer__sep">·</span>
+        {integratedMap ? <Link to="/live-map">Live Map</Link> : <a href={appUrl}>Live Map</a>}
       </footer>
 
       {!cookieConsent && (
         <div className="cookie-banner" role="dialog" aria-live="polite" aria-label="Cookie notice">
           <div className="cookie-banner__body">
-            <strong>Cookies, sadly.</strong>
-            <p>We only use them for the boring useful bits, like keeping logins alive and remembering site choices. No secret biscuit syndicate. <Link to="/privacy">Privacy policy</Link>.</p>
+            <strong>Cookies and site preferences</strong>
+            <p>Cookies keep you signed in and remember your preferences. <Link to="/privacy">Privacy policy</Link>.</p>
           </div>
           <button type="button" className="cookie-banner__button" onClick={acceptCookies}>Accept</button>
         </div>

@@ -1,16 +1,17 @@
 import '../../styles/repeater.css';
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { Link, useNavigationType, useSearchParams } from 'react-router';
 import { LoadingIndicator } from '../../components/LoadingIndicator.js';
 import { getCurrentSite } from '../../config/site.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
-import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
+import { useNodeLookup } from '../../hooks/useNodeNameSearch.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { ScopedCache } from '../../utils/scopedCache.js';
 import { scopeKey } from '../../utils/scope.js';
 import { Combobox, type ComboboxOption } from '../../components/ui/Combobox.js';
 import { ConfirmedNeighbours, type NodeLink } from '../../components/ConfirmedNeighbours.js';
 import { timeAgo } from '../../utils/time.js';
-import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
+import { isPublicRepeater, liveMapLink, nearestRepeaters } from '../../utils/exploreLinks.js';
 import type { MeshNode } from '../../types/domain.js';
 
 interface PacketHistory {
@@ -43,7 +44,6 @@ interface TopAdvertNode {
   last_advert_at: string;
 }
 
-type NodeDetailBundle = { links: NodeLink[]; history: PacketHistory[]; adverts: AdvertPacket[] };
 type PublicMapPage = {
   nodes: MeshNode[];
   page: {
@@ -57,48 +57,35 @@ type PublicMapPage = {
 const NODE_DETAIL_TTL_MS = 5 * 60_000;
 const MAP_PAGE_LIMIT = 2000;
 const MAP_MAX_PAGES = 100;
-const nodeDetailCache = new ScopedCache<NodeDetailBundle>({
-  name: 'repeater-detail',
-  ttlMs: NODE_DETAIL_TTL_MS,
-  maxEntries: 128,
-  maxBytes: 12 * 1024 * 1024,
-  maxInflight: 4,
-});
+function detailCache<Row>(name: string, limitMiB: number) {
+  return new ScopedCache<Row[]>({
+    name, ttlMs: NODE_DETAIL_TTL_MS, maxEntries: 128, maxBytes: limitMiB * 1024 * 1024, maxInflight: 4,
+  });
+}
 
-async function loadNodeDetails(
-  node: MeshNode,
-  network: string,
-  observer: string | undefined,
-  scopeKey: string,
-  signal: AbortSignal,
-): Promise<NodeDetailBundle> {
-  const cacheKey = node.node_id.toUpperCase();
-  const publicKey = node.public_key ?? node.node_id;
-  return nodeDetailCache.getOrLoad(scopeKey, cacheKey, async (loadSignal) => {
-    const requestScope = { network, observer };
-    const [links, history, adverts] = await Promise.all([
-      fetchJson<NodeLink[]>(
-        withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/links`, requestScope),
-        { signal: loadSignal, cache: 'no-store' },
-        { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
-      ),
-      fetchJson<PacketHistory[]>(
-        withScopeParams(`/api/nodes/${encodeURIComponent(node.node_id)}/history?hours=24`, requestScope),
-        { signal: loadSignal, cache: 'no-store' },
-        { timeoutMs: 8_000, maxBytes: 4 * 1024 * 1024 },
-      ),
-      fetchJson<AdvertPacket[]>(
-        withScopeParams(`/api/nodes/${encodeURIComponent(publicKey)}/adverts?hours=168`, requestScope),
-        { signal: loadSignal, cache: 'no-store' },
-        { timeoutMs: 8_000, maxBytes: 2 * 1024 * 1024 },
-      ),
-    ]);
-    return {
-      links: Array.isArray(links) ? links : [],
-      history: Array.isArray(history) ? history : [],
-      adverts: Array.isArray(adverts) ? adverts : [],
-    };
-  }, signal);
+const neighbourCache = detailCache<NodeLink>('repeater-neighbours', 3);
+const historyCache = detailCache<PacketHistory>('repeater-packet-history', 6);
+const advertCache = detailCache<AdvertPacket>('repeater-advert-history', 3);
+
+function useRepeaterDetail<Row>(path: string | undefined, scope: string, cache: ScopedCache<Row[]>, maxMiB: number) {
+  const [attempt, setAttempt] = useState(0);
+  const [result, setResult] = useState<{ key: string; rows: Row[] | null }>();
+  const key = JSON.stringify([scope, path, attempt]);
+  useEffect(() => {
+    cache.activateScope(scope);
+    if (!path) return;
+    const controller = new AbortController();
+    void cache.getOrLoad(scope, path, signal => fetchJson<Row[]>(
+      path, { signal, cache: 'no-store' },
+      { timeoutMs: 8_000, maxBytes: maxMiB * 1024 * 1024, validate: Array.isArray },
+    ), controller.signal).then(rows => {
+      if (!controller.signal.aborted) setResult({ key, rows });
+    }).catch(() => {
+      if (!controller.signal.aborted) setResult({ key, rows: null });
+    });
+    return () => controller.abort();
+  }, [cache, key, maxMiB, path, scope]);
+  return { rows: result?.key === key ? result.rows : undefined, retry: () => setAttempt(value => value + 1) };
 }
 
 async function loadCompleteNodeSnapshot(
@@ -240,101 +227,91 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const observer = site.observerId;
   const publicScope = { network, observer, privacyGeneration: runtimeFeatures.privacyGeneration };
   const detailScopeKey = scopeKey(publicScope);
-  useEffect(() => nodeDetailCache.activateScope(detailScopeKey), [detailScopeKey]);
-  const [searchQuery, setSearchQuery] = useState('');
-  const nameMatches = useNodeNameSearch(searchQuery, publicScope);
+  const [params, setParams] = useSearchParams();
+  const navigation = useNavigationType();
+  const searchQuery = (params.get('q') ?? '').slice(0, 160);
+  const requested = params.getAll('node');
+  const nodeKey = requested.length === 1 && /^[a-f0-9]{64}$/i.test(requested[0] ?? '') ? requested[0] : undefined;
+  const [searchAttempt, setSearchAttempt] = useState(0);
+  const lookup = useNodeLookup(searchQuery, publicScope, searchAttempt);
   const [showResults, setShowResults] = useState(false);
-  const [nodes, setNodes] = useState<MeshNode[]>([]);
-  const [loadingNodes, setLoadingNodes] = useState(true);
-  const [nodesError, setNodesError] = useState<string | null>(null);
   const [indexAttempt, setIndexAttempt] = useState(0);
-  const [topAdverts, setTopAdverts] = useState<TopAdvertNode[]>([]);
-  const [selectedNode, setSelectedNode] = useState<MeshNode | null>(null);
-  const [links, setLinks] = useState<NodeLink[]>([]);
-  const [history, setHistory] = useState<PacketHistory[]>([]);
-  const [adverts, setAdverts] = useState<AdvertPacket[]>([]);
-  const [loadingDetails, setLoadingDetails] = useState(false);
-  const [copiedKey, setCopiedKey] = useState(false);
-  const selectionSequenceRef = useRef(0);
-  const selectionControllerRef = useRef<AbortController | null>(null);
+  const [index, setIndex] = useState<{ key: string; attempt: number; nodes: MeshNode[] | null }>();
+  const currentIndex = index?.key === detailScopeKey && index.attempt === indexAttempt ? index.nodes : undefined;
+  const [top, setTop] = useState<{ key: string; rows: TopAdvertNode[] }>();
+  const topAdverts = top?.key === detailScopeKey ? top.rows : [];
+  const [copiedKey, setCopiedKey] = useState<string>();
+  const [copyFailed, setCopyFailed] = useState<string>();
+  const detailHeading = useRef<HTMLHeadingElement>(null);
+  const pendingFocus = useRef<string | undefined>(undefined);
+  const locationRequest = useRef(0);
+  const [nearby, setNearby] = useState<{ key: string; status: string; coords?: { latitude: number; longitude: number } }>();
+  const currentNearby = nearby?.key === detailScopeKey ? nearby : undefined;
 
   useEffect(() => {
-    const controller = new AbortController();
-    setLoadingNodes(true);
-    setNodesError(null);
-    setNodes([]);
-    setSelectedNode(null);
-    selectionControllerRef.current?.abort();
-    if (runtimeFeatures.privacyGeneration < 1) return () => controller.abort();
-    loadCompleteNodeSnapshot(controller.signal, network, observer)
-      .then(loadedNodes => {
-        if (!controller.signal.aborted) {
-          setNodes(loadedNodes);
-          setNodesError(null);
-        }
-      })
-      .catch((error: unknown) => {
-        if (!controller.signal.aborted) {
-          setNodes([]);
-          setNodesError(error instanceof Error ? error.message : 'Could not load repeater index');
-        }
-      })
-      .finally(() => {
-        if (!controller.signal.aborted) setLoadingNodes(false);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [network, observer, runtimeFeatures.privacyGeneration, indexAttempt]);
+    if (navigation === 'POP') setShowResults(Boolean(searchQuery) && !nodeKey);
+  }, [navigation, searchQuery, nodeKey]);
 
-  // Top adverting repeaters (last 24h) — served from a 1h backend cache.
   useEffect(() => {
+    if (runtimeFeatures.privacyGeneration < 1) return;
     const controller = new AbortController();
-    setTopAdverts([]);
-    if (runtimeFeatures.privacyGeneration < 1) return () => controller.abort();
-    fetchJson<TopAdvertNode[]>(
+    loadCompleteNodeSnapshot(controller.signal, network, observer).then(nodes => {
+      if (!controller.signal.aborted) setIndex({ key: detailScopeKey, attempt: indexAttempt, nodes });
+    }).catch(() => {
+      if (!controller.signal.aborted) setIndex({ key: detailScopeKey, attempt: indexAttempt, nodes: null });
+    });
+    return () => controller.abort();
+  }, [detailScopeKey, network, observer, runtimeFeatures.privacyGeneration, indexAttempt]);
+
+  useEffect(() => {
+    if (runtimeFeatures.privacyGeneration < 1) return;
+    const controller = new AbortController();
+    void fetchJson<TopAdvertNode[]>(
       withScopeParams('/api/nodes/top-adverts?hours=24&limit=10', { network, observer }),
       { signal: controller.signal, cache: 'default' },
-      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024 },
-    )
-      .then(rows => {
-        if (!controller.signal.aborted) {
-          setTopAdverts(Array.isArray(rows) ? rows : []);
-        }
-      })
-      .catch(() => {
-        // Degrade silently: the list is a convenience on top of search.
-        if (!controller.signal.aborted) setTopAdverts([]);
-      });
-    return () => {
-      controller.abort();
-    };
-  }, [network, observer, runtimeFeatures.privacyGeneration]);
+      { timeoutMs: 10_000, maxBytes: 2 * 1024 * 1024, validate: Array.isArray },
+    ).then(rows => {
+      if (!controller.signal.aborted) setTop({ key: detailScopeKey, rows });
+    }).catch(() => {});
+    return () => controller.abort();
+  }, [detailScopeKey, network, observer, runtimeFeatures.privacyGeneration]);
 
-  useEffect(() => () => selectionControllerRef.current?.abort(), []);
+  useEffect(() => () => { locationRequest.current += 1; }, [detailScopeKey]);
+
+  const matchesNode = (node: MeshNode) => node.node_id.toLowerCase() === nodeKey?.toLowerCase() && isPublicRepeater(node);
+  const visibleNode = nodeKey ? lookup.nodes.find(matchesNode) ?? currentIndex?.find(matchesNode) : undefined;
+  const directLookup = useNodeLookup(visibleNode ? '' : nodeKey ?? '', publicScope, indexAttempt);
+  const selectedNode = visibleNode ?? directLookup.nodes.find(matchesNode);
+  const selectedId = selectedNode?.node_id;
+  useEffect(() => {
+    if (!selectedId || selectedId !== pendingFocus.current) return;
+    detailHeading.current?.focus();
+    pendingFocus.current = undefined;
+  }, [selectedId]);
+  const nodePath = selectedNode && '/api/nodes/' + encodeURIComponent(selectedNode.node_id);
+  const requestScope = { network, observer };
+  const neighbours = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/links', requestScope), detailScopeKey, neighbourCache, 2);
+  const packetHistory = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/history?hours=24', requestScope), detailScopeKey, historyCache, 4);
+  const advertHistory = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/adverts?hours=168', requestScope), detailScopeKey, advertCache, 2);
+  const links = neighbours.rows ?? [];
+  const history = packetHistory.rows ?? [];
+  const adverts = advertHistory.rows;
+  const near = useMemo(() => currentNearby?.coords && currentIndex
+    ? nearestRepeaters(currentIndex, currentNearby.coords, 10) : undefined, [currentNearby, currentIndex]);
 
   const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return [];
-    const q = searchQuery.toLowerCase();
-    const localMatches = nodes
-      .filter(n => {
-        // Exclude nodes marked as disabled (🚫 in name)
-        if (n.name && n.name.includes(PROHIBITED_NODE_MARKER)) return false;
-        // Repeaters only (role=2); exclude companion radios (role=1) and room servers (role=3)
-        if (n.role !== undefined && n.role !== 2) return false;
-        const nameMatch = n.name && n.name.toLowerCase().includes(q);
-        const keyMatch = n.public_key && n.public_key.toLowerCase().includes(q);
-        const iataMatch = n.iata && n.iata.toLowerCase().includes(q);
-        return nameMatch || keyMatch || iataMatch;
-      });
-    const matches = new Map(nameMatches
-      .filter(n => !n.name?.includes(PROHIBITED_NODE_MARKER) && (n.role === undefined || n.role === null || n.role === 2))
-      .map(n => [n.node_id, n]));
-    for (const node of localMatches) {
-      if (!matches.has(node.node_id)) matches.set(node.node_id, node);
+    const q = searchQuery.trim().toLowerCase();
+    if (!q) return [];
+    const matches = new Map(lookup.nodes.filter(isPublicRepeater).map(node => [node.node_id, node]));
+    for (const node of currentIndex ?? []) {
+      if (matches.size >= 10) break;
+      if (!matches.has(node.node_id) && isPublicRepeater(node) && (node.name?.toLowerCase().includes(q)
+        || node.public_key?.toLowerCase().includes(q) || node.iata?.toLowerCase().includes(q))) {
+        matches.set(node.node_id, node);
+      }
     }
-    return Array.from(matches.values()).slice(0, 10);
-  }, [searchQuery, nodes, nameMatches]);
+    return [...matches.values()];
+  }, [searchQuery, currentIndex, lookup.nodes]);
   const searchOptions = useMemo<ComboboxOption[]>(() => searchResults.map((node) => ({
     id: node.node_id,
     label: node.name ?? node.node_id,
@@ -349,107 +326,144 @@ export const UKRepeaterSearchPage: React.FC = () => {
     ),
   })), [searchResults]);
 
-  const prediction = useMemo(() => {
-    if (!adverts.length) return null;
-    return predictNextAdvert(adverts);
-  }, [adverts]);
+  const prediction = useMemo(() => adverts?.length ? predictNextAdvert(adverts) : null, [adverts]);
 
-  const selectNode = async (node: MeshNode) => {
-    const sequence = selectionSequenceRef.current + 1;
-    selectionSequenceRef.current = sequence;
-    selectionControllerRef.current?.abort();
-    const controller = new AbortController();
-    selectionControllerRef.current = controller;
-    setSelectedNode(node);
-    setSearchQuery(node.name || node.public_key?.slice(0, 16) || '');
+  const selectNode = (node: string) => {
+    if (node === selectedId) detailHeading.current?.focus();
+    else pendingFocus.current = node;
+    const next = new URLSearchParams(params);
+    next.set('node', node);
+    if (next.toString() !== params.toString()) setParams(next);
     setShowResults(false);
-    setLoadingDetails(true);
-    setLinks([]);
-    setHistory([]);
-    setAdverts([]);
-    setCopiedKey(false);
+    setNearby(undefined);
+  };
 
-    try {
-      const details = await loadNodeDetails(node, network, observer, detailScopeKey, controller.signal);
-      if (controller.signal.aborted || sequence !== selectionSequenceRef.current) return;
-      setLinks(details.links);
-      setHistory(details.history);
-      setAdverts(details.adverts);
-    } catch {
-      // Ignore errors
-    } finally {
-      if (selectionControllerRef.current === controller) {
-        selectionControllerRef.current = null;
-      }
-      if (!controller.signal.aborted && sequence === selectionSequenceRef.current) {
-        setLoadingDetails(false);
-      }
+  const changeQuery = (query: string) => {
+    const next = new URLSearchParams(params);
+    if (query) next.set('q', query.slice(0, 160));
+    else next.delete('q');
+    if (next.toString() !== params.toString()) setParams(next, { replace: true });
+    setNearby(undefined);
+    locationRequest.current += 1;
+    setShowResults(Boolean(query.trim()));
+  };
+
+  const findNearby = () => {
+    setShowResults(false);
+    const request = ++locationRequest.current;
+    if (!navigator.geolocation) {
+      setNearby({ key: detailScopeKey, status: 'Location is unavailable. Search by name or observer code.' });
+      return;
     }
+    setNearby({ key: detailScopeKey, status: 'Waiting for location permission…' });
+    navigator.geolocation.getCurrentPosition(({ coords }) => {
+      if (locationRequest.current !== request) return;
+      setNearby({ key: detailScopeKey, status: 'Finding nearby repeaters…',
+        coords: { latitude: coords.latitude, longitude: coords.longitude } });
+    }, error => {
+      if (locationRequest.current !== request) return;
+      setNearby({ key: detailScopeKey, status: error.code === error.PERMISSION_DENIED
+        ? 'Location access was denied. Search by name or observer code.'
+        : 'Could not get your location. Search by name or observer code.' });
+    }, { enableHighAccuracy: false, timeout: 10_000, maximumAge: 300_000 });
   };
 
   const copyPublicKey = async () => {
-    if (selectedNode?.public_key) {
+    if (!selectedNode?.public_key) return;
+    const key = JSON.stringify([detailScopeKey, selectedNode.node_id]);
+    try {
       await navigator.clipboard.writeText(selectedNode.public_key);
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 2000);
+      setCopyFailed(undefined);
+      setCopiedKey(key);
+    } catch {
+      setCopiedKey(undefined);
+      setCopyFailed(key);
     }
   };
+  const copyIdentity = selectedNode && JSON.stringify([detailScopeKey, selectedNode.node_id]);
+  const canLoad = runtimeFeatures.privacyGeneration > 0;
+  const loadingNodes = canLoad && currentIndex === undefined;
+  const nodesError = !canLoad || currentIndex === null;
+  const retryIndex = () => {
+    if (!canLoad) window.location.reload();
+    else setIndexAttempt(value => value + 1);
+  };
+  const resolvingNode = Boolean(nodeKey) && (directLookup.status === 'loading' || loadingNodes);
 
   return (
     <>
-      <h1 className="ui-visually-hidden">Repeater search</h1>
-
       <section className="site-section repeater-page">
         <div className="site-content">
+          <h1>Repeater search</h1>
+          <div className="repeater-search-tools">
           <Combobox
               label="Search repeaters"
               value={searchQuery}
-              onValueChange={(value) => {
-                setSearchQuery(value);
-                setShowResults(true);
-              }}
-              onSelectionChange={(id) => {
-                const node = searchResults.find((entry) => entry.node_id === id);
-                if (node) void selectNode(node);
-              }}
+              onValueChange={changeQuery}
+              onSelectionChange={selectNode}
               options={searchOptions}
-              placeholder="Search by repeater name, IATA code, or public key..."
+              placeholder="Name, observer code or key prefix"
               className="repeater-search-box"
               inputClassName="repeater-search-box__input"
               popoverClassName="repeater-search-box__results"
               optionClassName="repeater-search-box__result"
               isOpen={showResults}
               onOpenChange={setShowResults}
-              autoFocus
-              emptyContent={loadingNodes ? (
+              emptyContent={lookup.status === 'loading' || loadingNodes ? (
                   <div className="repeater-search-box__no-results">
                     <LoadingIndicator label="Loading repeaters..." variant="inline" />
                   </div>
-                ) : nodesError ? (
+                ) : nodesError || lookup.status === 'error' ? (
                   <div className="repeater-search-box__no-results" role="alert">
-                    {nodesError}
+                    Could not complete repeater search.
                   </div>
                 ) : searchQuery && searchResults.length === 0 ? (
                   <div className="repeater-search-box__no-results">
                     No repeaters found matching "{searchQuery}"
                   </div>
                 ) : 'Type to search repeaters'}
-              footer={searchResults.length > 0 ? (
+              footer={lookup.status === 'error' ? (
+                  <button className="site-btn site-btn--ghost" type="button" onClick={() => {
+                    if (!canLoad) window.location.reload();
+                    else setSearchAttempt(value => value + 1);
+                  }}>Retry search</button>
+                ) : searchResults.length > 0 ? (
                   <div className="repeater-search-box__count">
                     {searchResults.length} result{searchResults.length !== 1 ? 's' : ''}
                   </div>
                 ) : null}
           />
+            <button type="button" className="site-btn site-btn--ghost" onClick={findNearby}>Find nearby</button>
+          </div>
+          {currentNearby && <p className="repeater-search-feedback" role="status">{near
+            ? near.length ? 'Nearest repeaters with public positions.' : 'No repeaters with public positions are available.'
+            : currentNearby.coords && nodesError ? 'Could not load nearby repeaters. Search by name or observer code.' : currentNearby.status}</p>}
+          {near && near.length > 0 && <ol className="repeater-top-list__items repeater-nearby" aria-label="Nearby repeaters">
+            {near.map(node => <li key={node.node_id}>
+              <button type="button" className="repeater-top-list__item" onClick={() => selectNode(node.node_id)}>
+                <span className="repeater-top-list__name">{node.name || node.node_id.slice(0, 16)}</span>
+                {node.iata && <span className="repeater-top-list__adverts">{node.iata}</span>}
+              </button>
+            </li>)}
+          </ol>}
 
           {!selectedNode ? (
             <div className="repeater-details-card">
-              {loadingNodes ? (
+              {requested.length && !resolvingNode ? (
+                <div className="repeater-details-card__empty" role="status">
+                  <h2>{directLookup.status === 'error' ? 'Could not open this repeater' : 'Repeater unavailable'}</h2>
+                  <p>{directLookup.status === 'error' ? 'Try loading the repeater again, or look it up by name.'
+                    : 'This link does not match a public repeater in the current network. Search for another repeater above.'}</p>
+                  {directLookup.status === 'error' && <button type="button" className="site-btn site-btn--ghost"
+                    onClick={retryIndex}>Retry repeater</button>}
+                </div>
+              ) : loadingNodes || resolvingNode ? (
                 <LoadingIndicator label="Loading repeater index..." variant="block" />
               ) : nodesError ? (
                 <div className="repeater-details-card__empty" role="alert">
                   <h3>Repeater index unavailable</h3>
-                  <p>{nodesError}</p>
-                  <button type="button" className="site-btn site-btn--ghost" onClick={() => setIndexAttempt(value => value + 1)}>Retry repeaters</button>
+                  <p>Search by name or try loading the full repeater index again.</p>
+                  <button type="button" className="site-btn site-btn--ghost" onClick={retryIndex}>Retry repeaters</button>
                 </div>
               ) : (
                 <div className="repeater-details-card__empty">
@@ -461,27 +475,14 @@ export const UKRepeaterSearchPage: React.FC = () => {
                   <p>Search for a repeater above, or pick one from the most active below.</p>
                   {topAdverts.length > 0 ? (
                     <div className="repeater-top-list">
-                      <p className="repeater-top-list__heading">Top adverting repeaters — last 24 hours</p>
+                      <p className="repeater-top-list__heading">Most adverts in the last 24 hours</p>
                       <ol className="repeater-top-list__items">
                         {topAdverts.map((entry, index) => (
                           <li key={entry.node_id}>
                             <button
                               type="button"
                               className="repeater-top-list__item"
-                              onClick={() => {
-                                void selectNode({
-                                  node_id: entry.node_id,
-                                  name: entry.name,
-                                  lat: entry.lat,
-                                  lon: entry.lon,
-                                  iata: entry.iata,
-                                  role: entry.role,
-                                  last_seen: entry.last_seen,
-                                  is_online: entry.is_online,
-                                  advert_count: entry.advert_count,
-                                  public_key: entry.node_id,
-                                });
-                              }}
+                              onClick={() => selectNode(entry.node_id)}
                             >
                               <span className="repeater-top-list__rank">{index + 1}</span>
                               <span className="repeater-top-list__name">
@@ -505,18 +506,23 @@ export const UKRepeaterSearchPage: React.FC = () => {
           ) : (
             <div className="repeater-details-card">
               <div className="repeater-details-card__header">
-                <h2>{selectedNode.name || 'Unknown Repeater'}</h2>
+                <div className="repeater-details-card__identity">
+                  <h2 ref={detailHeading} tabIndex={-1}>{selectedNode.name || 'Unnamed repeater'}</h2>
+                  <span>Last heard {timeAgo(selectedNode.last_seen, { empty: 'unknown' })}</span>
+                </div>
                 <span className={`repeater-details-card__status ${selectedNode.is_online ? 'repeater-details-card__status--online' : 'repeater-details-card__status--offline'}`}>
                   {selectedNode.is_online ? 'Online' : 'Offline'}
                 </span>
+                <a className="site-btn site-btn--primary" href={liveMapLink(site.mapHomeUrl, { node: {
+                  id: selectedNode.node_id, lat: selectedNode.lat, lon: selectedNode.lon,
+                } })}>View on Live Map</a>
+                <Link className="site-btn site-btn--ghost" to={`/health-check?${new URLSearchParams({ node: selectedNode.node_id })}`}>
+                  Health Check
+                </Link>
               </div>
 
               <div className="repeater-details-card__section">
                 <h3>
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="repeater-details-card__section-icon">
-                    <circle cx="12" cy="12" r="10" />
-                    <path d="M12 6v6l4 2" />
-                  </svg>
                   Details
                 </h3>
                 <div className="repeater-details-card__grid">
@@ -533,31 +539,17 @@ export const UKRepeaterSearchPage: React.FC = () => {
                         className="repeater-details-card__copy-btn"
                         onClick={copyPublicKey}
                       >
-                        {copiedKey ? (
-                          <>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="repeater-details-card__copy-icon">
-                              <polyline points="20 6 9 17 4 12" />
-                            </svg>
-                            Copied!
-                          </>
-                        ) : (
-                          <>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="repeater-details-card__copy-icon">
-                              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
-                              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
-                            </svg>
-                            Copy
-                          </>
-                        )}
+                        {copiedKey === copyIdentity ? 'Copied' : 'Copy public key'}
                       </button>
                     )}
+                    {copyFailed === copyIdentity && <span role="status">Could not copy the public key.</span>}
                   </div>
                   {[
                     ['Position', selectedNode.lat != null && selectedNode.lon != null
                       ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}` : 'Unknown'],
                     ['Elevation', selectedNode.elevation_m != null ? `${Math.round(selectedNode.elevation_m)} m` : 'N/A'],
                     ['Network', selectedNode.iata || 'N/A'], ['Hardware', selectedNode.hardware_model || 'Unknown'],
-                    ['Last Seen', timeAgo(selectedNode.last_seen)], ['Advert Count', selectedNode.advert_count?.toLocaleString() || '0'],
+                    ['Advert count', selectedNode.advert_count?.toLocaleString() || '0'],
                   ].map(([label, value]) => <div className="repeater-details-card__field" key={label}>
                     <span className="repeater-details-card__label">{label}</span>
                     <span className="repeater-details-card__value">{value}</span>
@@ -573,36 +565,32 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       </span>
                     </div>
                   )}
+                  {adverts === null && <div role="status">
+                    <p>Could not load advert history.</p>
+                    <button type="button" className="site-btn site-btn--ghost" onClick={advertHistory.retry}>Retry adverts</button>
+                  </div>}
                 </div>
               </div>
 
-              {loadingDetails ? (
-                <div className="repeater-details-card__loading">
-                  <LoadingIndicator label="Loading repeater details..." variant="inline" />
-                </div>
-              ) : (
-                <>
+              <>
                   <div className="repeater-details-card__section">
                     <h3>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="repeater-details-card__section-icon">
-                        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                        <circle cx="9" cy="7" r="4" />
-                        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                      </svg>
                       Confirmed Neighbours {links.length > 0 && <span className="repeater-details-card__count-badge">{links.length}</span>}
                     </h3>
-                    <ConfirmedNeighbours links={links} />
+                    {neighbours.rows === undefined ? <LoadingIndicator label="Loading neighbours…" variant="inline" />
+                      : neighbours.rows === null ? <div role="status"><p>Could not load neighbours.</p>
+                        <button type="button" className="site-btn site-btn--ghost" onClick={neighbours.retry}>Retry neighbours</button>
+                      </div> : <ConfirmedNeighbours links={links} />}
                   </div>
 
                   <div className="repeater-details-card__section">
                     <h3>
-                      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="repeater-details-card__section-icon">
-                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                      </svg>
                       Recent Packets {history.length > 0 && <span className="repeater-details-card__count-badge">{history.length}</span>}
                     </h3>
-                    {history.length === 0 ? (
+                    {packetHistory.rows === undefined ? <LoadingIndicator label="Loading packet history…" variant="inline" />
+                      : packetHistory.rows === null ? <div role="status"><p>Could not load packet history.</p>
+                        <button type="button" className="site-btn site-btn--ghost" onClick={packetHistory.retry}>Retry packet history</button>
+                      </div> : history.length === 0 ? (
                       <p className="repeater-details-card__empty-msg">No packet history available for this node.</p>
                     ) : (
                       <>
@@ -634,8 +622,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       </>
                     )}
                   </div>
-                </>
-              )}
+              </>
             </div>
           )}
         </div>

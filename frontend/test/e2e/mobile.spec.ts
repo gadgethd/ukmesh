@@ -207,7 +207,16 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   await installApiFixtures(page);
   await page.goto(`${dashboardOrigin}/`, { waitUntil: 'networkidle' });
 
-  await page.getByRole('button', { name: /Layers/ }).click();
+  const find = page.getByRole('button', { name: 'Find', exact: true });
+  await find.click();
+  const search = page.getByRole('dialog', { name: 'Find on the map' });
+  await expect(search.getByRole('combobox', { name: 'Search map nodes' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(search).toHaveCount(0);
+  await expect(find).toBeFocused();
+
+  const layers = page.getByRole('button', { name: 'Layers' });
+  await layers.click();
   const lineOfSight = page.getByRole('button', { name: 'Line of sight' });
   await expect(lineOfSight).toBeVisible();
   expect((await lineOfSight.boundingBox())?.width ?? 0).toBeGreaterThan(100);
@@ -218,6 +227,7 @@ test('map controls and disclaimer leave the map usable on a phone', async ({ pag
   expect(mapBox?.height ?? 0).toBeGreaterThan(300);
   await page.keyboard.press('Escape');
   await expect(page.getByRole('dialog', { name: 'Map settings' })).toHaveCount(0);
+  await expect(layers).toBeFocused();
 
   await page.getByRole('button', { name: 'Data disclaimer' }).click();
   const dialog = page.getByRole('dialog', { name: 'Data disclaimer' });

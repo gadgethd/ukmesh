@@ -70,6 +70,8 @@ docker info >/dev/null
 export COMPANION_UID=$(id -u) COMPANION_GID=$(id -g)
 source "$repo/scripts/full-dev/environment.sh"
 compose=(docker compose --project-name ukmesh-companions --env-file /dev/null -f "$repo/scripts/companion-dev/compose.yml")
+ui_override=$(python3 "$repo/scripts/full-dev/ui/control.py" file companions)
+if [[ -n $ui_override ]]; then compose+=(-f "$ui_override"); fi
 state="$repo/plans/companion-dev/runtime"
 mkdir -p "$state/bin" "$state/corescope" "$state/npm-cache" "$repo/plans/companion-dev/go-cache" "$repo/plans/companion-dev/go-mod"
 chmod 700 "$repo/plans/companion-dev" "$state"

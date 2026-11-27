@@ -10,6 +10,7 @@ import { lazyPathSettleRemainingMs } from '../features/pathing/timing.js';
 export function useFeedPathSelection(scope: PublicScope, epoch: number, selected: FeedPacket | null) {
   const key = scopeKey(scope);
   const pathKey = selected ? feedPathCacheKey(selected) : null;
+  const hasPathHashes = Boolean(selected?.path_hashes?.length);
   const current = useCommittedRef({ key, epoch, selected });
   const [pathTreeOpen, setPathTreeOpen] = useState(false);
   const [pathTreeStatus, setPathTreeStatus] = useState<PathTreeStatus>('idle');
@@ -66,10 +67,13 @@ export function useFeedPathSelection(scope: PublicScope, epoch: number, selected
     }
   }, [key, epoch, scope.network, scope.observer, scope.region, scope.privacyGeneration]);
   const run = useCommittedRef(fetchSelectedLazyPath);
+  useEffect(() => {
+    const packet = current.current.selected;
+    if (packet && hasPathHashes) void run.current(packet);
+  }, [key, epoch, pathKey, hasPathHashes]);
   const openPathTree = useCallback(() => {
     if (!selected) return;
     setPathTreeOpen(true);
-    void fetchSelectedLazyPath(selected);
-  }, [selected, fetchSelectedLazyPath]);
+  }, [selected]);
   return { selectedLazyPath, pathTreeStatus, pathTreeOpen, setPathTreeOpen, fetchSelectedLazyPath, openPathTree };
 }

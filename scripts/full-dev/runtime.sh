@@ -4,6 +4,9 @@ source "$repo/scripts/full-dev/environment.sh"
 export COMPOSE_PARALLEL_LIMIT=1
 compose=(docker compose --project-name ukmesh-full --env-file /dev/null \
   -f "$repo/docker-compose.yml" -f "$repo/scripts/full-dev/compose.yml")
+compose_build=("${compose[@]}")
+ui_override=$(python3 "$repo/scripts/full-dev/ui/control.py" file main)
+if [[ -n $ui_override ]]; then compose+=(-f "$ui_override"); fi
 
 # Bind-mounted files keep their old inode after atomic replacement. Their
 # content revisions make Compose recreate only the affected consumers.

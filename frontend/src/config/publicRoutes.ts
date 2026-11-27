@@ -1,6 +1,8 @@
 export type PublicRouteComponent =
   | 'home'
   | 'feed'
+  | 'live-map'
+  | 'health-check'
   | 'repeater'
   | 'companion'
   | 'install'
@@ -60,6 +62,20 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   },
   { ...packetFeed, path: '/feed', sitemap: true },
   { ...packetFeed, path: '/feed/packets', sitemap: false },
+  {
+    path: '/live-map',
+    component: 'live-map',
+    title: 'Live Map — UK Mesh Network',
+    description: 'Explore MeshCore nodes and paths on the CoreScope live map.',
+    sitemap: false,
+  },
+  {
+    path: '/health-check',
+    component: 'health-check',
+    title: 'Health Check — UK Mesh Network',
+    description: 'Send a test message on MeshCore and see which observers heard your radio.',
+    sitemap: true,
+  },
   {
     path: '/repeater',
     component: 'repeater',

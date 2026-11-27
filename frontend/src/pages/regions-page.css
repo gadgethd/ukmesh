@@ -25,7 +25,7 @@
 .regions-page__select:hover { border-color: var(--accent); background-color: #11243a; }
 .regions-page__select:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .regions-page__select option { background: #0d1828; color: #e8f4ff; }
-.regions-page__stats { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; margin-bottom: 12px; }
+.regions-page__stats { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .regions-page__stats > div { display: flex; flex-direction: column; padding: 14px 16px; background: var(--bg-panel); border: 1px solid var(--border); border-radius: var(--radius-lg); }
 .regions-page__stats strong { color: var(--text-primary); font: 600 22px/1.2 var(--font-mono); }
 .regions-page__stats span { margin-top: 4px; color: var(--text-muted); font-size: 11px; }

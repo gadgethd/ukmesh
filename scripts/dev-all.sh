@@ -23,10 +23,10 @@ action=${1:-start}
 service=${2:-}
 case "$action" in
   help|--help)
-    echo 'scripts/dev-all.sh [start|companions|build|status|stop|logs [SERVICE]|restart SERVICE|init|qualify PHASE|lan start [IP]|lan stop|lan status|hot ukmesh|hot beacon-web]'
+    echo 'scripts/dev-all.sh [start|companions|build|status|stop|logs [SERVICE]|restart SERVICE|init|qualify PHASE|lan start [IP]|lan refresh|lan stop|lan status|hot ukmesh|hot beacon-web|ui ACTION|replay ACTION]'
     echo 'start runs the complete lean stack. stop retains stores. hot enables editing; start restores built assets.'
     exit 0 ;;
-  start|companions|build|status|stop|logs|restart|init|qualify|lan|hot) ;;
+  start|companions|build|status|stop|logs|restart|init|qualify|lan|hot|ui|replay) ;;
   *) echo "Unknown action: $action" >&2; exit 2 ;;
 esac
 state="$repo/plans/companion-dev"
@@ -40,6 +40,13 @@ if [[ $action != status && $action != logs && ${UKMESH_COMPANION_LOCKED:-} != 1 
   fi
 fi
 case "$action" in
+  replay) shift; exec python3 "$repo/scripts/full-dev/replay/control.py" "$@" ;;
+  ui)
+    source "$repo/scripts/full-dev/runtime.sh"
+    source "$repo/scripts/companion-dev/revisions.sh"
+    load_companion_revisions
+    shift
+    exec python3 "$repo/scripts/full-dev/ui/control.py" "$@" ;;
   init|companions) exec bash "$repo/scripts/companion-dev/control.sh" "$@" ;;
   qualify) shift; exec bash "$repo/scripts/qualify-full-stack.sh" "${@:-all}" ;;
   lan)
@@ -59,14 +66,19 @@ case "$action" in
       stop)
         python3 "$control" stop
         refresh_lan_origins ;;
-      status) exec python3 "$control" status ;;
-      *) echo 'lan supports start [IP], stop or status' >&2; exit 2 ;;
+      refresh|status) exec python3 "$control" "$service" ;;
+      *) echo 'lan supports start [IP], refresh, stop or status' >&2; exit 2 ;;
     esac ;;
 
-  build|start|status)
+  start)
+    bash "$repo/scripts/full-dev/control.sh" start
+    bash "$repo/scripts/companion-dev/control.sh" start
+    exec python3 "$repo/scripts/full-dev/replay/control.py" resume ;;
+  build|status)
     bash "$repo/scripts/full-dev/control.sh" "$action"
     exec bash "$repo/scripts/companion-dev/control.sh" "$action" ;;
   stop)
+    python3 "$repo/scripts/full-dev/replay/control.py" suspend
     bash "$repo/scripts/companion-dev/control.sh" stop
     exec bash "$repo/scripts/full-dev/control.sh" stop ;;
   hot|restart|logs)

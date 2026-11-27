@@ -35,6 +35,16 @@ INTENT=STATE/'runtime/target-intent.json'
 VALUES={'UKMESH_DATABASE':'ukmesh','OWNER_DATABASE':'owner','BEACON_DATABASE':'beacon','CORESCOPE_DATA_DIR':'corescope'}
 
 
+def require_originals():
+    from fixtures import original_values, selection_values
+    originals = original_values()
+    if selection_values() != originals:
+        raise ValueError('select the original DEV stores first')
+    intent = read_intent()
+    if (intent and intent['status'] == 'pending') or changing(inspect_snapshot(), target_values(originals)):
+        raise ValueError('apply the original DEV stores first')
+
+
 class InactiveChangingConsumerError(ValueError):
     """The previous store must be resumed before publishing a changed target."""
 
@@ -131,6 +141,12 @@ def changing(snapshot,targets,scope=None):
             and row['refs']!=requested_refs(row,targets)}
 
 
+def archive_replay_running(snapshot):
+    return any((item['State']['Running'] or item['State'].get('Restarting', False))
+               and (item['Config'].get('Labels') or {}).get('com.docker.compose.project') == 'ukmesh-replay'
+               for item in snapshot.get('containers', {}).values())
+
+
 def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe,path=INTENT,prepare_fn=None):
     requested=target_values(values);intent=read_intent(path)
     actual=snapshot()
@@ -140,6 +156,7 @@ def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe
         return {'passed':True,'kind':'same-store-bootstrap','observability_required':False,
                 'note':'Missing/inactive intake is not asserted empty; same refs may bootstrap their existing stores.'}
     if not intent or intent['status']!='pending':raise ValueError('changing stores requires the owned pending selection intent')
+    if archive_replay_running(actual):raise ValueError('stop the DEV archive replay before changing data stores')
     assessed=assess_intent(intent,actual['consumers'],requested)
     if not assessed['may_observe']:raise ValueError('changing inactive consumer; resume previous retained store')
     assert_no_publishers()
@@ -158,6 +175,8 @@ def select(values,previous_values,commit,*,snapshot=inspect_snapshot,observe_fn=
     kwargs={} if lock_path is None else {'path':lock_path}
     with target_lease(exclusive=True,**kwargs):
         requested=target_values(values);prior=read_intent(path);actual=snapshot()
+        if requested_selection and requested_selection.get('token') and archive_replay_running(actual):
+            raise ValueError('stop the DEV archive replay before selecting a qualification fixture')
         if requested_selection and requested_selection.get('token') and any(
             item['State']['Running']
             and (item['Config'].get('Labels') or {}).get('com.docker.compose.project') == 'ukmesh-lan'

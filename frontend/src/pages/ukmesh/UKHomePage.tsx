@@ -1,10 +1,13 @@
 import '../site-content.css';
-import React, { useEffect, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useState } from 'react';
 import { Link } from 'react-router';
 import { LiveStatsSection } from '../../components/LiveStatsSection.js';
 import { getCurrentSite } from '../../config/site.js';
 import { fetchJson, withScopeParams } from '../../utils/api.js';
 import { useRuntimeFeatures } from '../../config/runtimeFeatures.js';
+import { scopeKey } from '../../utils/scope.js';
+
+const HomeRepeaterSearch = lazy(() => import('./HomeRepeaterSearch.js'));
 
 type RecentSummary = { packet_hash: string; time: string; summary?: string | null; packet_type?: number | null };
 function isRecentSummaries(value: unknown): value is RecentSummary[] {
@@ -17,9 +20,16 @@ function isRecentSummaries(value: unknown): value is RecentSummary[] {
 export const UKHomePage: React.FC = () => {
   const site = getCurrentSite();
   const { privacyGeneration } = useRuntimeFeatures();
-  const [recent, setRecent] = useState<RecentSummary[]>([]);
+  const scope = { network: site.networkFilter, observer: site.observerId, privacyGeneration };
+  const key = scopeKey(scope);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [recentAttempt, setRecentAttempt] = useState(0);
+  const [recentResult, setRecentResult] = useState<{ key: string; attempt: number; packets: RecentSummary[] | null }>();
+  const recent = privacyGeneration < 1 ? null
+    : recentResult?.key === key && recentResult.attempt === recentAttempt ? recentResult.packets : undefined;
+
   useEffect(() => {
-    setRecent([]);
+    if (privacyGeneration < 1) return;
     const controller = new AbortController();
     void fetchJson(
       withScopeParams('/api/packets/recent?limit=5', {
@@ -29,10 +39,10 @@ export const UKHomePage: React.FC = () => {
       { signal: controller.signal },
       { maxBytes: 256 * 1024, validate: isRecentSummaries },
     )
-      .then((packets) => { if (!controller.signal.aborted) setRecent(packets); })
-      .catch(() => {});
+      .then((packets) => { if (!controller.signal.aborted) setRecentResult({ key, attempt: recentAttempt, packets }); })
+      .catch(() => { if (!controller.signal.aborted) setRecentResult({ key, attempt: recentAttempt, packets: null }); });
     return () => controller.abort();
-  }, [privacyGeneration, site.networkFilter, site.observerId]);
+  }, [key, recentAttempt, privacyGeneration, site.networkFilter, site.observerId]);
 
   return (
     <>
@@ -41,23 +51,24 @@ export const UKHomePage: React.FC = () => {
           <div className="site-home__intro">
             <h1 className="site-home__title">UK Mesh Network</h1>
             <p className="site-home__body">
-              The UK-wide public site for MeshCore traffic, repeater coverage, observer ingestion, and the
-              supporting documentation behind the live map.
+              Find the repeaters that relay MeshCore traffic near you and see when they were last heard.
             </p>
-            <div className="site-home__actions">
-              <a href={site.appUrl} className="site-btn site-btn--primary">Open live map</a>
-              <Link to="/install" className="site-btn site-btn--ghost">Install MeshCore</Link>
-              <Link to="/stats" className="site-btn site-btn--ghost">Network stats</Link>
-            </div>
           </div>
 
           <section className="site-home__panel">
-            <h2>Network overview</h2>
-            <div className="site-home__meta">
-              {[['Coverage', 'United Kingdom'], ['Band', 'LoRa 868 MHz'], ['Channel', 'Public'], ['Observer ingest', 'Shared MQTT broker']].map(([label, value]) => <div className="site-home__meta-row" key={label}>
-                <span>{label}</span><strong>{value}</strong>
-              </div>)}
+            <h2>Explore your area</h2>
+            {searchOpen ? <Suspense fallback={<p className="site-home__search-loading" role="status">Opening repeater search…</p>}>
+              <HomeRepeaterSearch scope={scope} />
+            </Suspense> : <button type="button" className="site-btn site-btn--primary"
+              onClick={() => setSearchOpen(true)}>Find a repeater</button>}
+            <div className="site-home__actions">
+              <Link to="/regions" className="site-btn site-btn--ghost">Browse regions</Link>
+              {site.embeddedTools
+                ? <Link to="/live-map" className="site-btn site-btn--ghost">Open Live Map</Link>
+                : <a href={site.appUrl} className="site-btn site-btn--ghost">Open Live Map</a>}
             </div>
+            <p>MeshCore regions show where repeaters relay traffic for a named radio group.</p>
+            <Link to="/repeater">Browse repeaters and find nearby</Link>
           </section>
         </div>
       </section>
@@ -66,16 +77,22 @@ export const UKHomePage: React.FC = () => {
 
       <section className="site-section site-section--dark site-home-feed-section">
         <div className="site-content">
-          <div className="site-section__head"><h2>Recent feed</h2><Link to="/feed">Open live feed →</Link></div>
+          <div className="site-section__head"><h2>Recent packets</h2><Link to="/feed/packets">Open Packet Feed</Link></div>
           <div className="site-home-feed">
-            {recent.map((packet) => (
+            {recent?.map((packet) => (
               <article key={`${packet.packet_hash}:${packet.time}`}>
                 <code>{packet.packet_hash.slice(0, 12)}</code>
                 <span>{packet.summary || `Packet type ${packet.packet_type ?? 'unknown'}`}</span>
                 <time>{new Date(packet.time).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</time>
               </article>
             ))}
-            {recent.length === 0 && <p>Waiting for recent public packets…</p>}
+            {recent === undefined && <p role="status">Loading recent packets…</p>}
+            {recent === null && <div role="status"><p>Could not load recent packets.</p><button type="button"
+              className="site-btn site-btn--ghost" onClick={() => {
+                if (privacyGeneration < 1) window.location.reload();
+                else setRecentAttempt(value => value + 1);
+              }}>Retry packets</button></div>}
+            {recent?.length === 0 && <p>No recent public packets.</p>}
           </div>
         </div>
       </section>
@@ -83,31 +100,17 @@ export const UKHomePage: React.FC = () => {
       <section className="site-section">
         <div className="site-content">
           <div className="site-section__head">
-            <h2>What MeshCore is</h2>
-            <p>
-              MeshCore is open-source firmware for LoRa hardware. Nodes forward packets between each other, which is
-              what makes long regional chains, repeater coverage, and the wider UK map possible. This site is the public
-              documentation and analytics layer around that shared network.
-            </p>
-          </div>
-        </div>
-      </section>
-
-      <section className="site-section">
-        <div className="site-content">
-          <div className="site-section__head">
-            <h2>Use the network</h2>
-            <p>The public site covers the national network, the observer feed, and the operational pages that sit around the live map.</p>
+            <h2>Join the MeshCore network</h2>
+            <p>MeshCore is open-source firmware for LoRa radios. Repeaters forward packets so they can travel farther.</p>
           </div>
           <div className="site-home__cards">
             {[
-              { title: 'Get on the air', text: 'Flash a supported device, pair it to your phone, and use the UK public profile. That gets you onto the same channel used across the wider network.', label: 'Install guide', to: '/install' },
-              { title: 'Become an observer', text: 'Connect a repeater or room server to the broker, publish packets over MQTT, and add another view of the network from your own location.', label: 'Observer setup', to: '/install' },
-              { title: 'Inspect live traffic', text: 'The live app shows repeater positions, path predictions, coverage layers, decoded packets, and the supporting stats for the UK feed.', label: 'Open live map ↗', to: site.appUrl , external: true },
+              { title: 'Set up a radio', text: 'Install the firmware, pair your phone, and select the UK public profile.', label: 'Install MeshCore', to: '/install' },
+              { title: 'Become an observer', text: 'Report packets heard by your repeater or room server over MQTT.', label: 'Observer setup', to: '/install#mqtt-observer' },
+              { title: 'Check network activity', text: 'See packet counts, active nodes, and activity over time.', label: 'Network stats', to: '/stats' },
             ].map(card => <div className="site-home__card" key={card.title}>
               <h3>{card.title}</h3><p>{card.text}</p>
-              {card.external ? <a href={card.to} className="site-btn site-btn--primary">{card.label}</a>
-                : <Link to={card.to} className="site-btn site-btn--ghost">{card.label}</Link>}
+              <Link to={card.to} className="site-btn site-btn--ghost">{card.label}</Link>
             </div>)}
           </div>
         </div>

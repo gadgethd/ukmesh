@@ -14,8 +14,7 @@ export function useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashbo
 }) {
   const hasDashboard = dashboard !== null;
   const [liveResult, setLiveResult] = useState<{ scope: string; data: OwnerLiveResponse } | null>(null);
-  const [, setLiveLoading] = useState(false);
-  const [liveError, setLiveError] = useState<string | null>(null);
+  const [liveFailureScope, setLiveFailureScope] = useState<string | null>(null);
   const [lastHopResult, setLastHopResult] = useState<{ scope: string; points: LastHopStrengthPoint[] } | null>(null);
   const [lastHopError, setLastHopError] = useState<string | null>(null);
   const [, setLastHopLoading] = useState(false);
@@ -59,13 +58,10 @@ export function useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashbo
 
   useEffect(() => {
     setLiveResult(null);
-    setLiveError(null);
-    setLiveLoading(false);
+    setLiveFailureScope(null);
   }, [liveScope]);
 
   const retryLive = useVisibilityPoll(async (signal) => {
-    setLiveLoading(true);
-    setLiveError(null);
     const json = await fetchJson<OwnerLiveResponse>(
       `/api/owner/live?nodeId=${encodeURIComponent(selectedNodeId)}`,
       { cache: 'no-store', signal },
@@ -73,8 +69,7 @@ export function useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashbo
     );
     if (signal.aborted) return;
     setLiveResult({ scope: liveScope, data: json });
-    setLiveLoading(false);
-    setLiveError(null);
+    setLiveFailureScope(null);
   }, {
     enabled: hasDashboard && Boolean(ownerSessionKey) && Boolean(selectedNodeId),
     scopeKey: liveScope,
@@ -85,8 +80,7 @@ export function useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashbo
         clearOwnerSession();
         return;
       }
-      setLiveLoading(false);
-      setLiveError(pollError instanceof Error ? pollError.message : 'Unable to load live data');
+      setLiveFailureScope(liveScope);
     },
   });
 
@@ -163,7 +157,8 @@ export function useOwnerLive({ privacyGeneration, ownerSessionGeneration, dashbo
     },
   });
 
-  const livePanelState = { hasData: live !== null, error: liveError, onRetry: retryLive };
+  const livePanelState = { hasData: live !== null,
+    error: liveFailureScope === liveScope ? 'Could not load repeater health' : null, onRetry: retryLive };
 
   const mapPoints = useMemo(() => {
     const ownerNode = live?.ownerNode;

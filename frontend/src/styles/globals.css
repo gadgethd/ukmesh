@@ -29,7 +29,7 @@
   --bg-panel:       var(--ukmesh-panel);
   --bg-panel-alt:   var(--ukmesh-raised);
   --bg-secondary:   var(--bg-panel-alt);
-  --bg-hover:       #162030;
+  --bg-hover:       var(--ukmesh-hover);
   --bg-active:      #1a2840;
 
   /* Borders */
@@ -47,7 +47,7 @@
 
   /* Text */
   --text-primary:   var(--ukmesh-text);
-  --text-secondary: #8aa6c4;
+  --text-secondary: var(--ukmesh-muted);
   --text-muted:     var(--ukmesh-muted);
 
   /* Status */
@@ -68,7 +68,7 @@
   --radius-lg:      8px;
 
   /* Transitions */
-  --transition:     150ms ease;
+  --transition:     var(--ukmesh-motion);
   --transition-slow: 350ms ease;
 }
 
@@ -122,6 +122,10 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 8px;
+}
+.topbar__health-link {
+  text-decoration: none;
+  flex-shrink: 0;
 }
 
 .topbar__logo svg {

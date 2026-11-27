@@ -6,9 +6,9 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 
-async function installPublicPolicy(page: Page) {
+async function installPublicPolicy(page: Page, regionScoping = false) {
   await page.route('**/api/runtime-config', route => route.fulfill({ json: {
-    version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
+    version: 1, packetArcs: false, heatmap: false, regionScoping, privacyGeneration: 1, refreshAfterSeconds: 300,
   } }));
 }
 
@@ -181,6 +181,121 @@ test('former node names resolve to the current name in repeater search', async (
   await result.click();
   await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
   await expect(page.getByText(`${'A'.repeat(16)}…${'A'.repeat(8)}`, { exact: true })).toBeVisible();
+});
+
+test('local exploration keeps a former-name search, map link and partial repeater details', async ({ page }) => {
+  const id = 'A'.repeat(64);
+  const node = { node_id: id, name: 'Ridge current', lat: 54.5, lon: -1.5, role: 2,
+    last_seen: new Date().toISOString(), is_online: true };
+  const nearer = { ...node, node_id: 'C'.repeat(64), name: 'Hill repeater', lat: 54.6 };
+  const indexRequests: string[] = [];
+  let linkAttempts = 0;
+  await page.addInitScript(() => {
+    localStorage.setItem('meshcore-cookie-consent-v1', '1');
+    Object.defineProperty(navigator, 'geolocation', { configurable: true, value: { getCurrentPosition: (_success, error) =>
+      error({ code: 1, PERMISSION_DENIED: 1 }) } });
+  });
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/nodes/map') {
+      const query = url.searchParams.get('q') ?? '';
+      indexRequests.push(query);
+      return route.fulfill({ json: { nodes: query ? [node] : [node, nearer], page: { complete: true, snapshot: 'fixture' } } });
+    }
+    if (url.pathname.endsWith('/links')) return ++linkAttempts === 1
+      ? route.fulfill({ status: 502, json: {} }) : route.fulfill({ json: [] });
+    if (url.pathname.endsWith('/history')) return route.fulfill({ json: [{
+      time: new Date().toISOString(), src_node_id: 'B'.repeat(64), hop_count: 2,
+    }] });
+    if (url.pathname.endsWith('/adverts')) return route.fulfill({ json: [] });
+    return route.fulfill({ json: publicFixture(url.pathname, url.searchParams) ?? [] });
+  });
+  await installPublicPolicy(page);
+  await page.route('https://app.ukmesh.com/**', route => route.fulfill({ body: '<title>Live Map</title>' }));
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Find a repeater', exact: true }).click();
+  const input = page.getByRole('combobox', { name: 'Find a repeater' });
+  await input.fill('HarbourBeacon');
+  const result = page.getByRole('option', { name: /Ridge current/ });
+  await expect(result).toBeVisible();
+  expect(indexRequests).toEqual(['HarbourBeacon']);
+  expect(await page.evaluate(() => performance.getEntriesByType('resource').map(entry => entry.name)
+    .filter(url => /maplibre|MapLibreMap|deckgl/i.test(url)))).toEqual([]);
+  await input.press('ArrowDown');
+  await input.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Search repeaters' })).toHaveValue('HarbourBeacon');
+  await expect(page.getByText('Could not load neighbours.')).toBeVisible();
+  await expect(page.getByRole('table')).toBeVisible();
+  await page.getByRole('button', { name: 'Retry neighbours' }).click();
+  await expect(page.getByText('Could not load neighbours.')).toHaveCount(0);
+  await expect.poll(() => linkAttempts).toBe(2);
+  const map = page.getByRole('link', { name: 'View on Live Map' });
+  expect(new URL((await map.getAttribute('href'))!).searchParams.get('node')).toBe(id);
+  await map.click();
+  await page.goBack();
+  await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
+  await page.getByRole('button', { name: 'Find nearby' }).click();
+  await expect(page.getByText('Location access was denied.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
+  const lookupCount = indexRequests.length;
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'geolocation', { value: { getCurrentPosition: (success) =>
+      success({ coords: { latitude: 54.60123, longitude: -1.50123 } }) } });
+  });
+  await page.getByRole('button', { name: 'Find nearby' }).click();
+  const nearest = page.getByRole('list', { name: 'Nearby repeaters' }).getByRole('button').first();
+  await expect(nearest).toContainText('Hill repeater');
+  await page.keyboard.press('Tab');
+  await expect(nearest).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('heading', { name: 'Hill repeater' })).toBeVisible();
+  expect(indexRequests).toHaveLength(lookupCount);
+  expect(page.url()).not.toContain('54.60123');
+});
+
+test('a named region survives reload and Back and opens the same scope on the map', async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem('meshcore-cookie-consent-v1', '1'));
+  await installMapRoutes(page);
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    return route.fulfill({ json: publicFixture(url.pathname, url.searchParams) ?? {} });
+  });
+  await installPublicPolicy(page, true);
+  const fixture = publicFixture('/api/regions/summary') as { regions: Array<{ name: string }> };
+  const name = fixture.regions[0]!.name;
+  await page.goto(`/regions?region=${encodeURIComponent(name)}`);
+  const region = page.getByRole('combobox', { name: 'Filter by region' });
+  await expect(region).toHaveValue(name);
+  const map = page.getByRole('link', { name: 'Open region on Live Map' });
+  expect(new URL((await map.getAttribute('href'))!).hash).toBe(`#region=${name}`);
+  await page.reload();
+  await expect(region).toHaveValue(name);
+  await region.selectOption('');
+  await expect(region).toHaveValue('');
+  await page.goBack();
+  await expect(region).toHaveValue(name);
+  await page.goto('/regions?region=missing-public-region');
+  await expect(page.getByText('This region is unavailable.', { exact: false })).toBeVisible();
+  await expect(map).toHaveCount(0);
+});
+
+test('Health Check reviews a public repeater without handing its identity to the other service', async ({ page }) => {
+  const key = 'A'.repeat(64);
+  await page.route('**/api/**', route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/api/nodes/map') {
+      return route.fulfill({ json: { nodes: [{ node_id: key, name: 'Public relay', role: 2 }] } });
+    }
+    return route.fulfill({ json: publicFixture(url.pathname, url.searchParams) ?? {} });
+  });
+  await installPublicPolicy(page);
+  await page.goto(`/health-check?node=${key}`);
+  await expect(page.getByRole('heading', { name: 'Health Check', exact: true })).toBeVisible();
+  await expect(page.getByText('Public relay', { exact: true })).toBeVisible();
+  const handoff = page.getByRole('link', { name: 'Open Health Check', exact: true });
+  await expect(handoff).toHaveAttribute('href', 'https://healthcheck.ukmesh.com');
+  await expect(handoff).toHaveAttribute('referrerpolicy', 'no-referrer');
 });
 
 for (const width of [375, 768]) {

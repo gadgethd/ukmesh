@@ -6,7 +6,7 @@ fixture=$(mktemp -d)
 trap 'rm -rf -- "$fixture"' EXIT
 checkout="$fixture/repo with spaces"
 qualification="$checkout/scripts/full-dev/qualification"
-mkdir -p "$checkout/scripts/companion-dev" "$qualification" "$checkout/plans/dev-stack"
+mkdir -p "$checkout/scripts/companion-dev" "$checkout/scripts/full-dev/replay" "$qualification" "$checkout/plans/dev-stack"
 cp "$repo/scripts/dev-all.sh" "$checkout/scripts/"
 cp "$repo/scripts/full-dev/qualification/"{common,target_entry,target_lease}.py "$qualification/"
 cat > "$qualification/fixtures.py" <<'MOCK'
@@ -49,6 +49,13 @@ if [[ $name == full-dev && $1 == build ]]; then
 fi
 MOCK
  done
+cat > "$checkout/scripts/full-dev/replay/control.py" <<'MOCK'
+from pathlib import Path
+import sys
+
+with (Path(__file__).resolve().parents[3] / 'calls').open('a') as calls:
+    calls.write('replay ' + ' '.join(sys.argv[1:]) + '\n')
+MOCK
 cat > "$checkout/scripts/qualify-full-stack.sh" <<'MOCK'
 #!/usr/bin/env bash
 repo=$(cd -- "$(dirname -- "$0")/.." && pwd)
@@ -56,12 +63,15 @@ printf 'qualify %s\n' "$*" >> "$repo/calls"
 MOCK
 run() { env DOCKER_HOST=ssh://untrusted.invalid DATABASE_URL=postgres://untrusted.invalid UNTRUSTED_SETTING=discard bash "$checkout/scripts/dev-all.sh" "$@" > "$fixture/output" 2>&1; }
 run start
-[[ $(cat "$checkout/calls") == $'full-dev start\ncompanion-dev start' ]]
+[[ $(cat "$checkout/calls") == $'full-dev start\ncompanion-dev start\nreplay resume' ]]
 [[ $(cat "$checkout/plans/dev-stack/fixture-ready") == retained ]]
 [[ ! -f $checkout/dotenv-sourced ]]
 : > "$checkout/calls"
 run stop
-[[ $(cat "$checkout/calls") == $'companion-dev stop\nfull-dev stop' ]]
+[[ $(cat "$checkout/calls") == $'replay suspend\ncompanion-dev stop\nfull-dev stop' ]]
+: > "$checkout/calls"
+run replay status
+[[ $(cat "$checkout/calls") == 'replay status' ]]
 : > "$checkout/calls"
 run init
 [[ $(cat "$checkout/calls") == 'companion-dev init' ]]

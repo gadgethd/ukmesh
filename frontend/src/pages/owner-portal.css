@@ -304,6 +304,12 @@
   justify-content: space-between;
   gap: 12px;
 }
+
+.owner-head__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 .owner-summary-grid.site-stats-grid--6 {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }

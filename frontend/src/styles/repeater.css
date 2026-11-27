@@ -116,6 +116,38 @@
   letter-spacing: -0.02em;
 }
 
+.repeater-details-card__identity {
+  display: grid;
+  gap: 4px;
+  margin-inline-end: auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.repeater-details-card__identity span,
+.repeater-search-feedback {
+  color: var(--text-muted);
+}
+
+.repeater-search-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px;
+  margin-block: 16px;
+}
+
+.repeater-search-tools .repeater-search-box {
+  flex: 1 1 240px;
+  min-width: 0;
+  margin: 0;
+}
+
+.repeater-search-tools .site-btn,
+.repeater-details-card__header .site-btn {
+  min-height: 44px;
+}
+
 .repeater-details-card__status {
   padding: 4px 12px;
   border-radius: 20px;
@@ -1227,6 +1259,16 @@
 .repeater-page .repeater-top-list__item:hover {
   background: var(--bg-hover);
   border-bottom-color: var(--border-bright);
+}
+.repeater-page .repeater-nearby {
+  margin-bottom: 16px;
+}
+.repeater-nearby .repeater-top-list__item {
+  min-height: 44px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+.repeater-nearby .repeater-top-list__item:focus-visible {
+  outline-offset: -3px;
 }
 .repeater-page .repeater-top-list__rank {
   font: 12px var(--font-mono);

@@ -1,11 +1,28 @@
 :root {
-  --ukmesh-bg: #080d14;
-  --ukmesh-panel: #0d1520;
-  --ukmesh-raised: #111c2b;
-  --ukmesh-border: rgba(32, 80, 140, .35);
-  --ukmesh-accent: #00c4ff;
-  --ukmesh-text: #d6e8ff;
-  --ukmesh-muted: #8697b0;
+  color-scheme: dark;
+  --ukmesh-bg: #0a1017;
+  --ukmesh-panel: #101923;
+  --ukmesh-raised: #172330;
+  --ukmesh-hover: #1d2e3d;
+  --ukmesh-border: #2b3d4c;
+  --ukmesh-accent: #4cddf3;
+  --ukmesh-accent-ink: #08212a;
+  --ukmesh-focus: #87ebfa;
+  --ukmesh-text: #edf5f8;
+  --ukmesh-muted: #a3b8c7;
+  --ukmesh-success: #70e3a6;
+  --ukmesh-warning: #ffd475;
+  --ukmesh-danger: #ff8993;
   --ukmesh-font: 'Inter', system-ui, sans-serif;
   --ukmesh-mono: 'Share Tech Mono', 'Courier New', monospace;
+  --ukmesh-gutter: clamp(16px, 3vw, 40px);
+  --ukmesh-gap: clamp(16px, 2vw, 28px);
+  --ukmesh-control: 44px;
+  --ukmesh-radius: 10px;
+  --ukmesh-content: 1260px;
+  --ukmesh-motion: 150ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --ukmesh-motion: 0ms; }
 }

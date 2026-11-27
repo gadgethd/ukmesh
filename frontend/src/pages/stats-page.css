@@ -1,7 +1,7 @@
 /* ─── Stats page ─────────────────────────────────────────────────────────── */
 .stats-page__summary {
   display: grid;
-  grid-template-columns: repeat(6, 1fr);
+  grid-template-columns: repeat(6, minmax(0, 1fr));
   gap: 12px;
   margin: 0 0 32px;
 }
@@ -87,6 +87,7 @@
 }
 
 .stats-page__stat {
+  min-width: 0;
   background: var(--bg-panel);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
@@ -109,6 +110,7 @@
   font-weight: 700;
   font-family: var(--font-mono);
   line-height: 1;
+  overflow-wrap: anywhere;
 }
 
 .stats-page__stat-sub {
@@ -118,7 +120,7 @@
 
 .stats-page__row {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
   margin-bottom: 16px;
 }
@@ -330,10 +332,10 @@
 
 @media (max-width: 900px) {
   .stats-page__summary {
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
   .stats-page__row {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
   .stats-page__observer-metrics {
     grid-template-columns: repeat(3, minmax(0, 1fr));

@@ -6,6 +6,8 @@ from unittest.mock import patch
 
 import control
 from control import ROUTES, bind_address, render
+import fixtures
+import target_safety
 
 
 class LanPolicy(unittest.TestCase):
@@ -31,14 +33,24 @@ class LanPolicy(unittest.TestCase):
         _, after = render(routes, '192.168.2.22')
         self.assertNotEqual(before['services']['gateway']['volumes'], after['services']['gateway']['volumes'])
 
+    def test_tools_only_allow_the_bound_website_as_parent(self):
+        config, _ = render(json.loads(ROUTES.read_text()), '192.168.2.22')
+        self.assertIn('frame-src http://192.168.2.22:8082 http://192.168.2.22:8089 http://192.168.2.22:8084', config)
+        self.assertIn("frame-ancestors 'self' http://192.168.2.22:8083", config)
+        self.assertIn('frame-ancestors http://192.168.2.22:8083$health_csp_end', config)
+        self.assertIn('8082 $core_cookies;', config)
+        self.assertIn('8089 $health_cookies;', config)
+        self.assertIn('8084 "";', config)
+        self.assertNotIn('frame-ancestors http://192.168.2.22:8087', config)
+
     def test_up_rechecks_all_original_targets_before_exposing_prepared_ports(self):
         with tempfile.TemporaryDirectory() as runtime, patch.object(control, 'RUNTIME', Path(runtime)), \
                 patch.object(control, 'target_lease') as lease, patch.object(control, 'compose') as compose, \
-                patch.object(control, 'selection_values', return_value=control.original_values()) as selection, \
-                patch.object(control, 'read_intent', return_value=None), \
-                patch.object(control, 'inspect_snapshot', return_value={'consumers': {}}):
+                patch.object(fixtures, 'selection_values', return_value=fixtures.original_values()) as selection, \
+                patch.object(target_safety, 'read_intent', return_value=None), \
+                patch.object(target_safety, 'inspect_snapshot', return_value={'consumers': {}}):
             self.assertEqual(control.main('prepare', '127.0.0.1'), 0)
-            selection.return_value = {**control.original_values(), 'BEACON_DATABASE': 'fixture'}
+            selection.return_value = {**fixtures.original_values(), 'BEACON_DATABASE': 'fixture'}
             with self.assertRaisesRegex(ValueError, 'original DEV stores'):
                 control.main('up')
             compose.assert_not_called()
@@ -47,9 +59,9 @@ class LanPolicy(unittest.TestCase):
     def test_up_rejects_unapplied_originals_or_changed_rendered_config(self):
         with tempfile.TemporaryDirectory() as runtime, patch.object(control, 'RUNTIME', Path(runtime)), \
                 patch.object(control, 'target_lease'), patch.object(control, 'compose') as compose, \
-                patch.object(control, 'selection_values', return_value=control.original_values()), \
-                patch.object(control, 'read_intent', return_value=None) as intent, \
-                patch.object(control, 'inspect_snapshot', return_value={'consumers': {}}):
+                patch.object(fixtures, 'selection_values', return_value=fixtures.original_values()), \
+                patch.object(target_safety, 'read_intent', return_value=None) as intent, \
+                patch.object(target_safety, 'inspect_snapshot', return_value={'consumers': {}}):
             self.assertEqual(control.main('prepare', '127.0.0.1'), 0)
             intent.return_value = {'status': 'pending'}
             with self.assertRaisesRegex(ValueError, 'apply the original'):

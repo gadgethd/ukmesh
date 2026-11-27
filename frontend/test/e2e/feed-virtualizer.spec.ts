@@ -176,7 +176,7 @@ for (const width of [390, 1280]) {
   });
 }
 
-async function installQuietFeed(page: Page, deferSnapshot = false) {
+async function installQuietFeed(page: Page, deferSnapshot = false, capturedPath?: string[]) {
   await installMapRoutes(page);
   await installTerrainRoutes(page);
   await page.route('**/api/**', route => {
@@ -188,7 +188,7 @@ async function installQuietFeed(page: Page, deferSnapshot = false) {
       ? { version: 1, packetArcs: false, heatmap: false, regionScoping: true, privacyGeneration: 1, refreshAfterSeconds: 30 }
       : path === '/api/stats/charts' ? chartStats : [] });
   });
-  await page.addInitScript(deferSnapshot => {
+  await page.addInitScript(({ deferSnapshot, capturedPath }) => {
     localStorage.setItem('meshcore-cookie-consent-v1', '1');
     const count = { formats: 0 };
     Object.assign(window, { feedFormatProbe: count });
@@ -201,7 +201,9 @@ async function installQuietFeed(page: Page, deferSnapshot = false) {
     Date.prototype.toLocaleString = function (...args) { count.formats++; return locale.apply(this, args); };
     const packets = Array.from({ length: 30 }, (_, i) => ({ packet_hash: i.toString(16).padStart(64, 'A'),
       packet_type: deferSnapshot ? i % 5 + 1 : 5,
-      time: new Date(Date.now() - i * 1000).toISOString(), observer_iatas: ['ABC'], summary: `[Public] Quiet feed fixture ${i}` }));
+      time: new Date(Date.now() - i * 1000 - (capturedPath ? 15_000 : 0)).toISOString(),
+      path_hashes: capturedPath, hop_count: capturedPath?.length,
+      observer_iatas: ['ABC'], summary: `[Public] Quiet feed fixture ${i}` }));
     class FixtureWebSocket extends EventTarget {
       static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
       readyState = 0; onopen: ((event: Event) => void) | null = null; onmessage: ((event: MessageEvent) => void) | null = null;
@@ -220,7 +222,7 @@ async function installQuietFeed(page: Page, deferSnapshot = false) {
       }
     }
     Object.defineProperty(window, 'WebSocket', { value: FixtureWebSocket, configurable: true });
-  }, deferSnapshot);
+  }, { deferSnapshot, capturedPath });
 }
 
 for (const width of [320, 412]) {
@@ -276,8 +278,13 @@ test('feed clocks leave packet timestamps untouched and suspend while hidden', a
 });
 
 test('clearing packet filters preserves the chosen region and selection loads its map on demand', async ({ page }) => {
-  await installQuietFeed(page);
+  await installQuietFeed(page, false, ['AA', 'BB']);
   const scripts: string[] = [];
+  let pathRequests = 0;
+  await page.route('**/api/path-lazy/resolve?*', route => {
+    pathRequests++;
+    return route.fulfill({ json: { packetHash: 'A'.repeat(63) + '0', observerCount: 0, paths: [] } });
+  });
   page.on('request', request => { if (request.resourceType() === 'script') scripts.push(request.url()); });
   await page.goto('/feed');
   await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
@@ -288,13 +295,16 @@ test('clearing packet filters preserves the chosen region and selection loads it
   await expect(page.locator('.uk-feed-packet-row').first()).toBeVisible();
   await expect(page.getByRole('button', { name: 'ABC', exact: true })).toHaveClass(/--active/);
   expect(scripts.filter(url => /maplibre|deck-|PacketPathMap|PacketDetailPanel/.test(url))).toEqual([]);
+  expect(pathRequests).toBe(0);
   await page.locator('.uk-feed-packet-row').first().click();
+  await expect.poll(() => pathRequests).toBe(1);
   await expect.poll(() => scripts.some(url => /PacketPathMap/.test(url))).toBe(true);
   await expect(page.locator('.maplibregl-map')).toHaveCount(1);
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.locator('.maplibregl-map')).toHaveCount(1);
   await page.getByRole('button', { name: 'Repeater tree', exact: true }).click();
   await expect(page.getByRole('dialog', { name: 'Predicted repeater tree', exact: true })).toBeVisible();
+  expect(pathRequests).toBe(1);
   expect(scripts.filter(url => /PacketDetailPanel/.test(url))).toEqual([]);
   await page.keyboard.press('Escape');
   const details = page.getByRole('button', { name: 'Packet details', exact: true });

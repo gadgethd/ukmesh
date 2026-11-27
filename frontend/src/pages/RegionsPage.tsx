@@ -1,10 +1,14 @@
 import React, { lazy, useCallback, useEffect, useMemo, useState } from 'react';
+import { useSearchParams } from 'react-router';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { LazyMapBoundary } from '../components/Map/LazyMapBoundary.js';
 import { getCurrentSite } from '../config/site.js';
 import type { SiteConfig } from '../config/site.js';
-import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
+import { FAIL_CLOSED_RUNTIME_FEATURES, useRuntimeFeatures } from '../config/runtimeFeatures.js';
 import { fetchJson, withScopeParams } from '../utils/api.js';
+import { liveMapLink } from '../utils/exploreLinks.js';
+import { validRegionName } from '../utils/regionUrlState.js';
+import { scopeKey } from '../utils/scope.js';
 import {
   compactNumber,
   confidenceFor,
@@ -31,17 +35,24 @@ const CONFIDENCE_LABELS: Record<string, string> = {
 
 export const RegionsPage: React.FC = () => {
   const site = getCurrentSite();
-  const { privacyGeneration } = useRuntimeFeatures();
+  const runtime = useRuntimeFeatures();
+  const { privacyGeneration, regionScoping } = runtime;
   const network = site.networkFilter ?? site.network;
   const observer = site.observerId;
-  const [summary, setSummary] = useState<RegionSummaryPayload | null>(null);
-  const [repeatersPayload, setRepeatersPayload] = useState<RegionRepeatersPayload | null>(null);
-  const [unattributedPayload, setUnattributedPayload] = useState<UnattributedPayload | null>(null);
   const [unnamedVisible, setUnnamedVisible] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
-  const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const key = scopeKey({ network, observer, privacyGeneration });
+  const [result, setResult] = useState<{ key: string; attempt: number; data: {
+    summary: RegionSummaryPayload; repeatersPayload: RegionRepeatersPayload; unattributedPayload: UnattributedPayload | null;
+  } | null }>();
+  const current = result?.key === key && result.attempt === attempt ? result.data : undefined;
+  const { summary, repeatersPayload, unattributedPayload } = current ?? {};
+  const error = current === null || runtime === FAIL_CLOSED_RUNTIME_FEATURES;
+  const [params, setParams] = useSearchParams();
+  const regionValues = params.getAll('region');
+  const requestedRegion = regionValues.length === 1 && validRegionName(regionValues[0] ?? '') ? regionValues[0] : undefined;
+  const [nodeSelection, setNodeSelection] = useState<{ key: string; region: string | undefined; id: string }>();
+  const selectedNodeId = nodeSelection?.key === key && nodeSelection.region === requestedRegion ? nodeSelection.id : null;
   const [shapesVisible, setShapesVisible] = useState(true);
   const [repeatersVisible, setRepeatersVisible] = useState(true);
   const [roleFilter, setRoleFilter] = useState<'repeaters' | 'all'>('repeaters');
@@ -50,12 +61,6 @@ export const RegionsPage: React.FC = () => {
 
   useEffect(() => {
     const controller = new AbortController();
-    setSummary(null);
-    setRepeatersPayload(null);
-    setUnattributedPayload(null);
-    setError(null);
-    setSelectedRegion(null);
-    setSelectedNodeId(null);
     // Wait for the initial authority snapshot; starting at generation zero
     // would fetch, display, then discard the same workspace as config arrives.
     if (privacyGeneration < 1) return () => controller.abort();
@@ -78,15 +83,13 @@ export const RegionsPage: React.FC = () => {
     ])
       .then(([nextSummary, nextRepeaters, nextUnattributed]) => {
         if (controller.signal.aborted) return;
-        setSummary(nextSummary);
-        setRepeatersPayload(nextRepeaters);
-        setUnattributedPayload(nextUnattributed);
+        setResult({ key, attempt, data: { summary: nextSummary, repeatersPayload: nextRepeaters, unattributedPayload: nextUnattributed } });
       })
-      .catch((reason: unknown) => {
-        if ((reason as DOMException).name !== 'AbortError') setError((reason as Error).message);
+      .catch(() => {
+        if (!controller.signal.aborted) setResult({ key, attempt, data: null });
       });
     return () => controller.abort();
-  }, [network, observer, privacyGeneration, attempt]);
+  }, [network, observer, privacyGeneration, attempt, key]);
 
   const regions = useMemo(() => summary?.regions ?? [], [summary]);
   const displayRegions = useMemo(
@@ -123,9 +126,12 @@ export const RegionsPage: React.FC = () => {
     };
   }, [regions, repeaters, unattributedPayload]);
   const selectedRegionData = useMemo(
-    () => regions.find((region) => region.name === selectedRegion) ?? null,
-    [regions, selectedRegion],
+    () => regions.find((region) => region.name === requestedRegion) ?? null,
+    [regions, requestedRegion],
   );
+  const selectedRegion = selectedRegionData?.name ?? null;
+  const availableRegions = selectedRegionData && !displayRegions.includes(selectedRegionData)
+    ? [selectedRegionData, ...displayRegions] : displayRegions;
   const selectedRepeater = useMemo(
     () => repeaters.find((repeater) => repeater.nodeId === selectedNodeId) ?? null,
     [repeaters, selectedNodeId],
@@ -134,39 +140,34 @@ export const RegionsPage: React.FC = () => {
     () => (selectedRegionData ? memberIdSet(selectedRegionData) : null),
     [selectedRegionData],
   );
-  const handleRegionSelect = useCallback((region: string) => {
-    setSelectedRegion(region);
-    setSelectedNodeId(null);
-  }, []);
+  const handleRegionSelect = useCallback((region: string | null) => {
+    const next = new URLSearchParams(params);
+    if (region) next.set('region', region);
+    else next.delete('region');
+    if (next.toString() !== params.toString()) setParams(next);
+    setNodeSelection(undefined);
+  }, [params, setParams]);
   const handleRepeaterSelect = useCallback((nodeId: string) => {
-    setSelectedNodeId(nodeId);
-  }, []);
+    setNodeSelection({ key, region: requestedRegion, id: nodeId });
+  }, [key, requestedRegion]);
   const handleLowConfidenceToggle = useCallback((checked: boolean) => {
     setIncludeLowConfidence(checked);
-    if (!checked) {
-      // A region that just became hidden must not stay selected.
-      setSelectedRegion((current) => {
-        const target = current ? regions.find((region) => region.name === current) : undefined;
-        return target && !isEstablished(target) ? null : current;
-      });
-    }
-  }, [regions]);
+    if (!checked && selectedRegionData && !isEstablished(selectedRegionData)) handleRegionSelect(null);
+  }, [handleRegionSelect, selectedRegionData]);
   const generatedLabel = formatGeneratedAt(summary?.generatedAt ?? null);
 
   return (
     <div className="regions-page site-content">
       <header className="regions-page__header">
         <div>
-          <p className="regions-page__eyebrow">Network intelligence</p>
           <h1>MeshCore regions</h1>
           <p>
-            MeshCore scoped flood traffic carries a per-region transport code. This map shows the
-            regions active on the UK mesh, the repeaters observed relaying scoped traffic (green),
-            and repeaters with no scoped relay observed (red). Attribution is a cryptographic
-            candidate-name test against the region transport code — private regions stay
-            unattributed by design. Region names are community-defined keys, so shapes show where
-            scoped traffic is relayed (bridge repeaters excluded) rather than official boundaries.
+            Choose a region to see which repeaters relay its traffic. The shapes show where
+            repeaters have relayed traffic for these named radio groups.
           </p>
+          <details><summary>How regions are identified</summary><p>UKMesh checks public region names against the transport
+            code on received packets. Green repeaters have relayed scoped traffic. Red repeaters have no scoped relay
+            observations. Private region names stay unattributed, and region shapes exclude bridge repeaters.</p></details>
         </div>
         <div className="regions-page__controls">
           <label className="regions-page__toggle">
@@ -224,11 +225,11 @@ export const RegionsPage: React.FC = () => {
             <select
               className="regions-page__select"
               aria-label="Filter by region"
-              value={selectedRegion ?? 'all'}
-              onChange={(event) => setSelectedRegion(event.target.value === 'all' ? null : event.target.value)}
+              value={selectedRegion ?? ''}
+              onChange={(event) => handleRegionSelect(event.target.value || null)}
             >
-              <option value="all">All regions</option>
-              {displayRegions.map((region) => (
+              <option value="">All regions</option>
+              {availableRegions.map((region) => (
                 <option key={region.name} value={region.name}>{region.name}</option>
               ))}
             </select>
@@ -236,8 +237,18 @@ export const RegionsPage: React.FC = () => {
         </div>
       </header>
 
-      {error && <div className="regions-page__error" role="alert"><p>{error}</p><button type="button" className="site-btn site-btn--ghost" onClick={() => setAttempt(value => value + 1)}>Retry regions</button></div>}
+      {error && <div className="regions-page__error" role="alert">
+        <p>Could not load the regions list.</p>
+        <button type="button" className="site-btn site-btn--ghost" onClick={() => {
+          if (privacyGeneration < 1) window.location.reload();
+          else setAttempt(value => value + 1);
+        }}>Retry regions</button>
+      </div>}
       {!summary && !error && <div className="regions-page__pending"><LoadingIndicator label="Loading region scoping…" variant="inline" /></div>}
+      {summary && regionValues.length > 0 && !selectedRegionData && <div className="regions-page__error" role="status">
+        <p>This region is unavailable. Choose another region or browse all regions.</p>
+        <button type="button" className="site-btn site-btn--ghost" onClick={() => handleRegionSelect(null)}>Browse all regions</button>
+      </div>}
 
       {summary && (
         <>
@@ -252,7 +263,7 @@ export const RegionsPage: React.FC = () => {
           <div className="regions-page__workspace">
             <LazyMapBoundary className="regions-page__map" label="Regional repeater map">
             <RegionsMap
-              regions={displayRegions}
+              regions={availableRegions}
               includeLowConfidence={includeLowConfidence}
               repeaters={repeaters}
               shapesVisible={shapesVisible}
@@ -278,13 +289,15 @@ export const RegionsPage: React.FC = () => {
                 <RepeaterPanel
                   repeater={selectedRepeater}
                   site={site}
-                  onClear={() => setSelectedNodeId(null)}
+                  region={regionScoping ? selectedRegion : null}
+                  onClear={() => setNodeSelection(undefined)}
                 />
               ) : selectedRegionData ? (
                 <RegionPanel
                   region={selectedRegionData}
+                  mapUrl={regionScoping ? site.mapHomeUrl : undefined}
                   onMemberSelect={handleRepeaterSelect}
-                  onClear={() => setSelectedRegion(null)}
+                  onClear={() => handleRegionSelect(null)}
                 />
               ) : (
                 <>
@@ -352,9 +365,10 @@ export const RegionsPage: React.FC = () => {
   );
 };
 
-export function RepeaterPanel({ repeater, site, onClear }: {
+export function RepeaterPanel({ repeater, site, region, onClear }: {
   repeater: RegionRepeater;
   site: SiteConfig;
+  region?: string | null;
   onClear: () => void;
 }): React.ReactElement {
   const regionEntries = Object.entries(repeater.regions).sort((a, b) => b[1] - a[1]).slice(0, 12);
@@ -396,7 +410,8 @@ export function RepeaterPanel({ repeater, site, onClear }: {
       {repeater.lat != null && repeater.lon != null && (
         <a
           className="site-btn site-btn--primary"
-          href={`${site.mapHomeUrl}?map=${repeater.lat.toFixed(5)},${repeater.lon.toFixed(5)},13&node=${encodeURIComponent(repeater.nodeId)}`}
+          href={liveMapLink(site.mapHomeUrl, { region: region ?? undefined,
+            node: { id: repeater.nodeId, lat: repeater.lat, lon: repeater.lon } })}
         >
           Zoom to repeater on live map
         </a>
@@ -406,8 +421,9 @@ export function RepeaterPanel({ repeater, site, onClear }: {
   );
 }
 
-export function RegionPanel({ region, onMemberSelect, onClear }: {
+export function RegionPanel({ region, mapUrl, onMemberSelect, onClear }: {
   region: RegionSummary;
+  mapUrl?: string;
   onMemberSelect: (nodeId: string) => void;
   onClear: () => void;
 }): React.ReactElement {
@@ -421,6 +437,7 @@ export function RegionPanel({ region, onMemberSelect, onClear }: {
         {compactNumber(region.packetsTotal)} scoped packets · {region.memberCount} significant relay
         members ({region.repeaterMemberCount} repeaters)
       </span>
+      {mapUrl && <a className="site-btn site-btn--primary" href={liveMapLink(mapUrl, { region: region.name })}>Open region on Live Map</a>}
       {topMembers.length > 0 ? (
         <>
           <span className="regions-page__note">Top relay members</span>

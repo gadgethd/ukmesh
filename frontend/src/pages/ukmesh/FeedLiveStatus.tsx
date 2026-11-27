@@ -31,6 +31,8 @@ export const FeedLiveStatus = React.memo(function FeedLiveStatus({ packets, conn
       <span className={`uk-feed-live-dot uk-feed-live-dot--${feedConnectionDot(status)}`} aria-hidden="true" />
       <span className="uk-feed-stats__label" role="status">{feedConnectionLabel(status)}</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
+      <span className="uk-feed-stats__label">Last update {timeAgo(connection.lastMessageAt, { now, empty: 'unavailable' })}</span>
+      <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
       <span className="uk-feed-stats__label">{observerCount} observer{observerCount === 1 ? '' : 's'}</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
       <span className="uk-feed-stats__label">{activity.packetsLastMin} pkt/min</span>

@@ -11,13 +11,33 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'qualification'))
 
 from common import STATE, command, docker, read_json, write_json
-from fixtures import original_values, selection_values
 from target_lease import target_lease
-from target_safety import changing, inspect_snapshot, read_intent, target_values
+from target_safety import require_originals
 
 RUNTIME = STATE / 'runtime' / 'lan'
 ROUTES = HERE / 'site' / 'routes.json'
 PRIVATE_LANS = tuple(ipaddress.ip_network(network) for network in ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16'))
+
+
+def tool_headers(routes, address):
+    ports = {route['id']: route['port'] for route in routes}
+    site, core, health, beacon = (f'http://{address}:{ports[key]}' for key in ('website', 'corescope', 'health', 'beacon-web'))
+    substitutions = {'SITE': site, 'CORE': core, 'HEALTH': health, 'BEACON': beacon,
+                     'CORE_PORT': str(ports['corescope']), 'HEALTH_PORT': str(ports['health']),
+                     'BEACON_PORT': str(ports['beacon-web'])}
+    maps = (HERE / 'tool-headers.conf').read_text()
+    for name, value in substitutions.items():
+        maps = maps.replace(f'@{name}@', value)
+    security = '    proxy_hide_header Content-Security-Policy;\n'
+    embedded_ancestors = f'    add_header Content-Security-Policy "frame-ancestors \'self\' {site}" always;\n'
+    return maps, {
+        'website': security + '    add_header Content-Security-Policy $embedded_site_policy always;\n',
+        'corescope': embedded_ancestors,
+        'beacon-web': embedded_ancestors,
+        'health': security + '    proxy_hide_header X-Frame-Options;\n'
+                  '    add_header Content-Security-Policy $embedded_health_policy always;\n'
+                  '    add_header X-Frame-Options $embedded_health_frame_options always;\n',
+    }
 
 
 def bind_address(value, local):
@@ -37,19 +57,13 @@ def local_bind(value):
     return bind_address(value, set() if value == '127.0.0.1' else assigned_addresses())
 
 
-def require_originals():
-    originals = original_values()
-    if selection_values() != originals:
-        raise ValueError('start LAN access on the original DEV stores')
-    intent = read_intent()
-    if (intent and intent['status'] == 'pending') or changing(inspect_snapshot(), target_values(originals)):
-        raise ValueError('apply the original DEV stores before starting LAN access')
-
-
 def render(routes, address):
     if {route['port'] for route in routes} != set(range(8081, 8090)) or len(routes) != 9:
         raise ValueError('LAN routes must cover the nine existing service ports once')
-    base = (HERE / 'nginx.conf').read_text()
+    tool_maps, tool_listeners = tool_headers(routes, address)
+    base = (HERE / 'nginx.conf').read_text() + '\n' + tool_maps
+    proxy = (HERE / 'lan-proxy.inc').read_text().replace(
+        'location / {\n', 'location / {\n    proxy_set_header Cookie $lan_proxy_cookie;\n', 1)
     listeners = []
     ports = []
     for route in routes:
@@ -72,10 +86,10 @@ def render(routes, address):
                 restricted += f'    if ($method_and_path = "{method} {path}") {{ return 404; }}\n'
         listeners.append(
             f'server {{\n    listen {port};\n    set $upstream {upstream};\n'
-            f'{restricted}    include /etc/nginx/lan-proxy.inc;\n}}\n'
+            f'{restricted}{tool_listeners.get(route["id"], "")}{proxy}}}\n'
         )
     config = base + '\n' + '\n'.join(listeners)
-    revision = hashlib.sha256(config.encode() + (HERE / 'lan-proxy.inc').read_bytes()).hexdigest()
+    revision = hashlib.sha256(config.encode()).hexdigest()
     override = {'services': {
         'site': {'ports': [f'{address}:8080:8080'], 'environment': {'LAN_BIND_ADDRESS': address},
                  'labels': {'ukmesh.routes.revision': hashlib.sha256(ROUTES.read_bytes()).hexdigest()}},
@@ -89,6 +103,9 @@ def compose(args, *, include_override=True):
     override = RUNTIME / 'compose.json'
     if include_override and override.is_file():
         files.extend(['-f', str(override)])
+        ui = command(['python3', str(HERE.parent / 'ui/control.py'), 'file', 'lan']).stdout.decode().strip()
+        if ui:
+            files.extend(['-f', ui])
     result = docker(['compose', '--project-name', 'ukmesh-lan', '--env-file', '/dev/null', *files, *args],
                     timeout=100, check=False)
     sys.stdout.buffer.write(result.stdout)
@@ -131,6 +148,11 @@ def main(action, *arguments):
         with target_lease():
             require_originals()
             return active(action, arguments)
+    if action == 'refresh':
+        with target_lease():
+            require_originals()
+            active('prepare', (read_json(selected)['address'],))
+            return active('up', ())
     if action == 'stop':
         with target_lease():
             status = compose(['stop'], include_override=False)
@@ -139,7 +161,7 @@ def main(action, *arguments):
             return status
     if action == 'status':
         return compose(['ps', '-a'])
-    raise ValueError('expected LAN prepare, up, stop or status')
+    raise ValueError('expected LAN prepare, up, refresh, stop or status')
 
 
 if __name__ == '__main__':
