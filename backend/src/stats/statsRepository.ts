@@ -166,10 +166,23 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     activeQueries = Math.max(0, activeQueries - 1);
   };
 
-  const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+  const backfillBudgetMs = settingInteger('STATS_BACKFILL_DURATION_BUDGET_MS', 300_000, 60_000, 900_000);
+  const backfillTimeoutMs = settingInteger('STATS_BACKFILL_QUERY_TIMEOUT_MS', 360_000, 120_000, 900_000);
+
+  type BoundedQueryFn = <T extends QueryResultRow = QueryResultRow>(
     text: string,
     params?: unknown[],
     parentSignal?: AbortSignal,
+    budgetMs?: number,
+    timeoutMs?: number,
+  ) => Promise<{ rows: T[] }>;
+
+  const runBoundedQuery: BoundedQueryFn = async <T extends QueryResultRow = QueryResultRow>(
+    text: string,
+    params?: unknown[],
+    parentSignal?: AbortSignal,
+    budgetMs = queryBudgetMs,
+    timeoutMs = queryTimeoutMs,
   ) => {
     const controller = new AbortController();
     const startedAt = performance.now();
@@ -180,8 +193,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
     const timeout = setTimeout(() => {
       timeoutFired = true;
-      controller.abort(new Error(`STATS_QUERY_TIMEOUT_${queryTimeoutMs}MS`));
-    }, queryTimeoutMs);
+      controller.abort(new Error(`STATS_QUERY_TIMEOUT_${timeoutMs}MS`));
+    }, timeoutMs);
     try {
       await acquireQuerySlot();
       acquired = true;
@@ -189,11 +202,11 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       const result = await deps.query<T>(text, params, controller.signal);
       const durationMs = Math.round(performance.now() - startedAt);
       const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-      if (durationMs > queryBudgetMs || result.rows.length > maxResultRows) {
+      if (durationMs > budgetMs || result.rows.length > maxResultRows) {
         console.error('[stats-query-budget] exceeded', {
           source,
           durationMs,
-          durationBudgetMs: queryBudgetMs,
+          durationBudgetMs: budgetMs,
           returnedRows: result.rows.length,
           returnedRowBudget: maxResultRows,
         });
@@ -202,13 +215,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       return result;
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
-      if (timeoutFired || durationMs > queryBudgetMs) {
+      if (timeoutFired || durationMs > budgetMs) {
         const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
         console.error('[stats-query-budget] query failed after budget', {
           source,
           durationMs,
-          durationBudgetMs: queryBudgetMs,
-          queryTimeoutMs,
+          durationBudgetMs: budgetMs,
+          queryTimeoutMs: timeoutMs,
         });
       }
       throw error;
@@ -218,6 +231,14 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       if (acquired) releaseQuerySlot();
     }
   };
+
+  const query: QueryFn = (text, params, signal) => runBoundedQuery(text, params, signal);
+  // Window backfills are bounded server-side but legitimately exceed the chart
+  // budget (the 8-day multibyte fact rebuild is a one-shot after a visibility
+  // generation change). Giving them the chart budget meant they never
+  // completed, so every refresh retried and the whole chart snapshot failed.
+  const backfillQuery: QueryFn = (text, params, signal) =>
+    runBoundedQuery(text, params, signal, backfillBudgetMs, backfillTimeoutMs);
   const limitedQuery: QueryFn = query;
 
   async function loadChartSnapshot(scope: string, visibilityGeneration: number) {
@@ -819,6 +840,19 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
         throw error;
       }
     };
+    const chartBackfillQuery: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+      text: string,
+      params: unknown[] = filters.params,
+      signal: AbortSignal = chartAbort.signal,
+    ) => {
+      const snapshot = bindChartSnapshot(text, params, aggregateAsOf);
+      try {
+        return await backfillQuery<T>(snapshot.text, snapshot.params, signal);
+      } catch (error) {
+        if (!chartAbort.signal.aborted) chartAbort.abort(error);
+        throw error;
+      }
+    };
     // Shadow the repository query helper for this function so every raw chart
     // query, including observer summaries and fact readiness checks, shares one
     // bounded asOf timestamp.
@@ -832,7 +866,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       aggregateAsOf.toISOString(),
       visibilityGeneration,
     ];
-    const coverage = await ensureMultibyteFactsCoverWindow(query, {
+    const coverage = await ensureMultibyteFactsCoverWindow(chartBackfillQuery, {
       windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
       cutoff: aggregateAsOf,
       visibilityGeneration,
