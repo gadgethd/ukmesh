@@ -255,9 +255,23 @@ async function loadState(client: pg.PoolClient): Promise<State> {
 
 /**
  * Translate a pre-131 cursor (time, hash, rx_node_id) to the unique
- * (time, observation_id) cursor instead of refusing to resume. The minimum
- * observation id at the checkpointed instant cannot skip work: rows already
- * resolved are excluded by the packet_uid IS NULL filter.
+ * (time, observation_id) cursor instead of refusing to resume.
+ *
+ * The legacy cursor named the last row the old tool *read*, but the old page
+ * key was (time, packet_hash): rows sharing `last_time` with a lower
+ * observation id and a higher hash sort after the checkpoint row, so they were
+ * never visited again. The translated cursor must therefore sit strictly
+ * *below* every observation at the checkpointed instant.
+ *
+ * `MIN(observation_id)` over the instant is not enough. The page predicate is
+ * exclusive (`observation_id > last_observation_id`), so a cursor equal to the
+ * minimum skips the row that holds it — and that row can be precisely one the
+ * legacy hash cursor never read. `CURSOR_FLOOR` is below every UUID, so
+ * `(last_time, CURSOR_FLOOR)` re-reads the whole instant. Replay is
+ * idempotent because only rows with `packet_uid IS NULL` are updated.
+ *
+ * `last_time` is kept: every earlier instant was fully visited under the old
+ * `time`-first ordering.
  */
 async function migrateLegacyCheckpoint(
   client: pg.PoolClient,
@@ -265,21 +279,7 @@ async function migrateLegacyCheckpoint(
   dryRun: boolean,
 ): Promise<State> {
   if (!state.last_time) return state;
-  let observationId = CURSOR_FLOOR;
-  if (state.last_hash) {
-    const legacy = await client.query<{ observation_id: string | null }>(`
-      SELECT observation_id::text AS observation_id
-        FROM mesh.packets
-       WHERE time = $1::timestamptz
-         AND packet_hash = $2
-         AND COALESCE(rx_node_id, '') = $3
-         AND observation_id IS NOT NULL
-       ORDER BY observation_id
-       LIMIT 1
-    `, [state.last_time, state.last_hash, state.last_rx_node_id ?? '']);
-    observationId = legacy.rows[0]?.observation_id ?? CURSOR_FLOOR;
-  }
-  const migrated = { ...state, last_observation_id: observationId };
+  const migrated = { ...state, last_observation_id: CURSOR_FLOOR };
   if (!dryRun) {
     await client.query(`
       UPDATE ops.packet_identity_backfill_state
@@ -288,7 +288,7 @@ async function migrateLegacyCheckpoint(
              last_rx_node_id = NULL,
              updated_at = NOW()
        WHERE singleton
-    `, [observationId]);
+    `, [CURSOR_FLOOR]);
   }
   return migrated;
 }
