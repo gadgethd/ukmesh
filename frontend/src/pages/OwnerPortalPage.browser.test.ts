@@ -291,8 +291,11 @@ for (const target of ['packet-sharing', 'public-feed'] as const) {
       await openOwnerDashboard(page, target);
       const section = page.getByRole('region', { name: target === 'packet-sharing' ? 'Share packets' : 'Public feed', exact: true });
       const toggle = section.getByRole('switch').first();
+      const saveResponse = (status: number) => page.waitForResponse(response =>
+        response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/owner/${target}`
+          && response.status() === status, { timeout: 14_000 });
       await expect(toggle).not.toBeChecked();
-      await toggle.check();
+      await Promise.all([saveResponse(503), toggle.check()]);
       await expect(section.getByRole('alert')).toContainText('Your selection is kept');
       await expect(toggle).toBeChecked();
       await expect(section.getByText(target === 'packet-sharing' ? 'Packet sharing is off' : 'Public feed is off', { exact: true })).toBeVisible();
@@ -300,7 +303,7 @@ for (const target of ['packet-sharing', 'public-feed'] as const) {
       await expect.poll(() => reads, { timeout: 12_000 }).toBeGreaterThan(before);
       await expect(toggle).toBeChecked();
       await expect(section.getByRole('alert')).toContainText('Your selection is kept');
-      await section.getByRole('button', { name: 'Retry saving', exact: true }).click();
+      await Promise.all([saveResponse(200), section.getByRole('button', { name: 'Retry saving', exact: true }).click()]);
       await expect.poll(() => writes).toBe(2);
       await expect(section.getByRole('alert')).toHaveCount(0);
       await expect(section.getByText(target === 'packet-sharing' ? '1 site enabled' : 'Public feed is on', { exact: true })).toBeVisible();
