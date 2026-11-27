@@ -95,17 +95,12 @@ test('default-off ignores region hashes and preserves global socket/poll request
   const fixture = await installRegionFixture(page, false);
   await page.goto('/#region=eng-ne');
   await page.locator('.app-shell').waitFor({ timeout: 30_000 });
-  const mobile = testInfo.project.name === 'dashboard-mobile';
-  const search = await openMapSearch(page, mobile);
+  const search = await openMapSearch(page, testInfo.project.name === 'dashboard-mobile');
   await search.fill('Europe');
   await expect(page.getByRole('option', { name: /Europe/ })).toBeVisible();
   await search.fill('eng-ne');
   await expect(page.getByRole('option', { name: /eng-ne/ })).toBeVisible();
-  if (mobile) {
-    await page.getByRole('button', { name: 'Close menu', exact: true }).click();
-    await expect(page.getByRole('dialog', { name: 'Find on the map' })).toHaveCount(0);
-  }
-  await expect(page.getByRole('combobox', { name: 'Region', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Region', exact: true, includeHidden: true })).toHaveCount(0);
   expect(fixture.requested.some((url) => url.pathname.endsWith('/regions/summary'))).toBe(false);
   expect(fixture.requested.some((url) => url.searchParams.has('region'))).toBe(false);
   expect(await page.evaluate(() => (window as unknown as { regionSockets: { url: string }[] }).regionSockets.every((socket) => !new URL(socket.url).searchParams.has('region')))).toBe(true);
