@@ -24,7 +24,10 @@ const roleBootstrap = [
   readFileSync(new URL('../../../scripts/bootstrap-reader-roles.sql', import.meta.url), 'utf8'),
 ];
 const allMigrations = loadMigrationFiles();
-const HEAD = '136_node_status_radio.sql';
+// Derive the head from the directory so adding a migration never needs a
+// matching edit here.
+const HEAD = allMigrations.at(-1)?.name;
+if (!HEAD) throw new Error('no migrations found');
 // Everything before 078 is unaffected by this change; splitting the band there
 // lets the second test insert the legacy relations at the point they would have
 // existed on a live database.
