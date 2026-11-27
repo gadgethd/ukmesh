@@ -2,13 +2,12 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 const endpoint=process.env.TEST_INGEST_DATABASE_URL;
 test('ledger compaction preserves complete history and rejects archived replays for current and prior SQL writers', {skip:endpoint?false:'owned PostgreSQL required',timeout:60000},async(t)=>{
-  assert.ok(['localhost','127.0.0.1'].includes(new URL(endpoint!).hostname));
-  const admin=new pg.Pool({connectionString:endpoint});const name=`archive_${process.pid}_${Date.now()}`;
-  await admin.query(`CREATE DATABASE ${name}`);const url=new URL(endpoint!);url.pathname='/'+name;
-  const pool=new pg.Pool({connectionString:url.toString(),max:3});
-  t.after(async()=>{await pool.end();await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);await admin.end();});
+  const fixture = await createDisposableDatabase(t, endpoint!, 'archive');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 3 });
+  fixture.addCleanup(() => pool.end());
   await pool.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
   await pool.query(fs.readFileSync(new URL('./migrations/059_ingest_observation_ledger.sql',import.meta.url),'utf8'));
   await pool.query(`INSERT INTO ingest_observation_ledger(observation_id,observed_at,packet_hash,network,created_at)
@@ -17,11 +16,16 @@ test('ledger compaction preserves complete history and rejects archived replays 
   await pool.query('BEGIN');await pool.query(fs.readFileSync(new URL('./migrations/070_ingest_ledger_archive.sql',import.meta.url),'utf8'));await pool.query('COMMIT');
   const old=(await pool.query('SELECT * FROM ingest_observation_ledger ORDER BY seq LIMIT 1')).rows[0];
   // Keep a stale repeatable-read writer open across compaction.
-  const stale=await pool.connect();await stale.query('BEGIN ISOLATION LEVEL REPEATABLE READ');await stale.query('SELECT count(*) FROM ingest_observation_ledger');
+  const stale = await pool.connect();
   try{
+    await stale.query('BEGIN ISOLATION LEVEL REPEATABLE READ');
+    await stale.query('SELECT count(*) FROM ingest_observation_ledger');
     await pool.query("CALL compact_ingest_observation_ledger(NULL,NULL)");
     await assert.rejects(stale.query('INSERT INTO ingest_observation_ledger(observation_id,observed_at,packet_hash,network) VALUES($1,NOW(),$2,$3) ON CONFLICT(observation_id) DO NOTHING',[old.observation_id,old.packet_hash,old.network]), /serialize|concurrent update/);
-  }finally{await stale.query('ROLLBACK');stale.release();}
+  } finally {
+    try { await stale.query('ROLLBACK'); }
+    finally { stale.release(); }
+  }
   for(let n=0;n<3;n++)await pool.query('CALL compact_ingest_observation_ledger(NULL,NULL)');
   assert.equal((await pool.query('SELECT count(*)::int n FROM ingest_observation_ledger')).rows[0].n,0);
   const after=await pool.query("SELECT count(*)::int n,md5(string_agg(row(seq,observation_id,observed_at,packet_hash,network,created_at)::text,'' ORDER BY seq)) digest FROM ingest_observation_history");

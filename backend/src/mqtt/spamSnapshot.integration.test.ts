@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import pg from 'pg';
+import { createDisposableDatabase } from '../db/fixtures/disposableDatabase.js';
 import { closeDb } from '../db/runtime.js';
 import type { DatabaseQueryFn } from '../db/contracts.js';
 import { spamDetectorRefreshHealthy } from '../metrics/spam.js';
@@ -11,15 +12,10 @@ const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
 test('spam snapshots execute complete bounded SQL and retain verdicts on a rejected refresh', {
   skip: databaseUrl ? false : 'TEST_INGEST_DATABASE_URL is not configured', timeout: 60_000,
 }, async t => {
-  const admin = new pg.Pool({ connectionString: databaseUrl, max: 1 });
-  const database = `meshcore_spam_${process.pid}_${Date.now()}`;
-  const url = new URL(databaseUrl!); url.pathname = `/${database}`;
-  await admin.query(`CREATE DATABASE "${database}"`);
-  const fixture = new pg.Pool({ connectionString: url.toString(), max: 2 });
-  t.after(async () => {
-    await fixture.end(); await closeDb();
-    await admin.query(`DROP DATABASE "${database}" WITH (FORCE)`); await admin.end();
-  });
+  const database = await createDisposableDatabase(t, databaseUrl!, 'meshcore_spam');
+  const fixture = new pg.Pool({ connectionString: database.url, max: 2 });
+  database.addCleanup(closeDb);
+  database.addCleanup(() => fixture.end());
   const query: DatabaseQueryFn = (sql, params) => fixture.query(sql, params);
   await fixture.query(`CREATE SCHEMA core; CREATE SCHEMA mesh;
     CREATE TABLE core.nodes (node_id text, advert_count integer, last_seen timestamptz);
