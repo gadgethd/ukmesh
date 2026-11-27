@@ -131,6 +131,12 @@ services:
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-2}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
+      # The 17-dimension chart snapshot takes ~170 s end to end; a 60 s
+      # per-query budget aborted every refresh and froze the published
+      # snapshot. Keep these above the measured cost of the slowest
+      # dimension and shrink the dimensions instead (see #57).
+      STATS_QUERY_DURATION_BUDGET_MS: ${STATS_QUERY_DURATION_BUDGET_MS:-300000}
+      STATS_CHART_QUERY_TIMEOUT_MS: ${STATS_CHART_QUERY_TIMEOUT_MS:-300000}
       WARMUP_NETWORKS: ${WARMUP_NETWORKS:-ukmesh}
       DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"
@@ -573,6 +579,7 @@ services:
         condition: service_healthy
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
+      - ./tropo-data:/usr/share/nginx/html/tropo/data:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
@@ -939,7 +946,7 @@ services:
 
   grafana:
     <<: *internal-hosts
-    image: grafana/grafana@sha256:0a2874cf39c6487093c682215f7c7903ed8646d78ae5f911af945d2dfcc0a447
+    image: grafana/grafana:12.4.15@sha256:2894082f6cf7081aefdc1389265c04000812309208c190d75e8c65f7a30e4b7e
     restart: always
     logging: *json-log-limits
     mem_limit: "512m"
