@@ -59,6 +59,12 @@ services:
     ports: !override ["127.0.0.1:3100:3000", "127.0.0.1:9091:9091"]
     volumes: !override
       - ./scripts/local-sample/mosquitto-acl:/mosquitto/config/acl:ro
+      - type: bind
+        source: ${MQTT_INGEST_PASSWORD_HOST_DIR:-./deploy/mqtt-credentials}
+        target: /run/ukmesh-mqtt
+        read_only: true
+        bind:
+          create_host_path: false
       - mosquitto_log:/mosquitto/log:ro
       - timescaledb_data:/health-volumes/database:ro
       - redis_data:/health-volumes/redis:ro

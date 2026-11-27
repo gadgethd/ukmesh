@@ -109,6 +109,7 @@ services:
       MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
       MQTT_USERNAME: ${MQTT_USERNAME:-backend}
       MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_INGEST_PASSWORD_FILE: /run/ukmesh-mqtt/password
       MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
       MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ${MQTT_DELIVERY_PROBE_TOPIC_PREFIX:-}
       MESHCORE_SITE_ID: ${MESHCORE_SITE_ID:-ukmesh}
@@ -260,6 +261,12 @@ services:
       - ${BACKUP_RECEIPT_HOST_DIR:-./backup-receipts}:/backup-receipts:ro
       - ${RESTORE_RECEIPT_TRUST_HOST_DIR:-${BACKUP_RECEIPT_VERIFY_KEY_HOST_DIR:-./restore-receipt-trust}}:/etc/meshcore/restore-receipt:ro
       - ${OWNER_AUTH_INVENTORY_HOST_DIR:-./backup-receipts}:/owner-auth-inventory:ro
+      - type: bind
+        source: ${MQTT_INGEST_PASSWORD_HOST_DIR:-./deploy/mqtt-credentials}
+        target: /run/ukmesh-mqtt
+        read_only: true
+        bind:
+          create_host_path: false
     group_add:
       - "1883"
     read_only: true
@@ -501,8 +508,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      backend:
-        condition: service_healthy
       link-worker:
         condition: service_healthy
 
@@ -579,7 +584,7 @@ services:
       - ./rf-coverage/boundaries/uk-operational-v1.geojson:/config/uk-operational-v1.geojson:ro
     depends_on:
       backend:
-        condition: service_healthy
+        condition: service_started
 
   app-ukmesh:
     <<: [*internal-hosts, *application-hardening]

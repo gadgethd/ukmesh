@@ -329,6 +329,46 @@ addresses and private node identities.
 - [SRTM cache, alert delivery, observer review, and planned publication](runbook-srtm-alerts-observers.md)
 - [Database compression and retention gates](db-lifecycle.md)
 
+### Rotate the ingest password on the current broker
+
+Mount a private directory as `MQTT_INGEST_PASSWORD_HOST_DIR` for the backend.
+The default is `deploy/mqtt-credentials`, which is excluded from Git and Docker
+builds. Keep the `password` file readable by the backend user and writable only
+by the operator. A missing file leaves the environment credential in use. The
+file contains one UTF-8 password. It can end in a single newline.
+
+Apply the broker's password change and reload Mosquitto. Put the candidate
+password in a separate file in the mounted directory and rename it over
+`password`. The backend tests the candidate on a separate clean session with a
+QoS 1 round trip. On success it reconnects the existing persistent client and
+checks session resumption and delivery before reporting completion. Public HTTP
+and the packet processor continue running through the reconnect. A rejected
+candidate leaves the previous credential selected. A broker reload can close
+the previous connection. In that case, recovery with the old password also
+requires restoring it on the broker. Retain a protected copy of both files
+until the new session is verified.
+
+The file controls only the password. A different broker or MQTT principal
+requires a separate ACL and backlog handoff. The WebSocket and database privacy
+checks remain independent of the transport credentials.
+
+### Add a verified MQTT owner
+
+Use `scripts/newuser.sh` from the managed deployment. Give it the exact node
+public key with `--confirm-owner-grant`. The script can create the broker
+credential and verify login before recording the owner grant. Broker log
+discovery alone supplies a fingerprint for review. Confirm every key being
+granted.
+
+The recorded grant is audited and stays pending until the running reconciler
+applies the ACL. The command verifies the active grant, generation and broker
+file. If it reports pending readback, retry the same explicit approval with
+`--watch` for the existing credential, or `--link` for an existing owner.
+Previously revoked grants require a separate reauthorization review. Normal
+provisioning completes through its own readback without a backend restart.
+Deployment readiness still compares any configured inventory baseline against
+the current policy. Promote approved evidence using the procedure below.
+
 ### Owner authorization baseline refresh
 
 `/readyz` validates owner accounts, grants, configured grants and ACL evidence

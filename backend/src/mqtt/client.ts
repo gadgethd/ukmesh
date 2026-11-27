@@ -11,6 +11,7 @@ import { deliveryProbeTopics } from './deliveryProbeTopics.js';
 import { createBrokerBacklogMonitor } from './brokerBacklog.js';
 import { connectPersistentMqtt, subscribePersistentTopics } from './persistentClient.js';
 import { assertSupportedIngestConnections, loadMqttIntakeConfig } from './ingestConfig.js';
+import { pollMqttPassword, readMqttPassword, reconnectMqttTransport, verifyMqttPassword } from './passwordReload.js';
 import { waitForShutdownStep } from './shutdownDeadline.js';
 import { mqttIntakeDeliveriesTotal, mqttIntakeQueueWait, mqttWireAckDuration, mqttIngestQueueDepth, mqttIngestOutcomesTotal, mqttDeliveryProbeEnabled, mqttDeliveryProbeHealthy, mqttDeliveryProbeLastSuccess, mqttDeliveryProbeRecoveries } from '../metrics/ingest.js';
 
@@ -36,6 +37,9 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
   const deliveryProbes: Array<{ probe: ReturnType<typeof createDeliveryProbe>; timer: NodeJS.Timeout }> = [];
   let deliveryHealth: DeliveryHealth = { state: 'disabled', lastSuccessAt: null, recoveries: 0 };
   let mqttStopping = false;
+  const passwordReload = new AbortController();
+  let stopPasswordPoll: (() => Promise<void>) | undefined;
+  let changingPassword = false;
   let mqttDurabilityFailure: string | undefined;
 
   function setMqttRuntimeStatus(state: MqttRuntimeStatus['state'], lastError?: string): void {
@@ -49,6 +53,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
   function getMqttRuntimeStatus(): MqttRuntimeStatus {
     const lastError = deliveryHealth.state === 'stalled' ? 'MQTT_QOS1_DELIVERY_STALLED' : mqttDurabilityFailure;
     return { ...mqttRuntimeStatus, delivery: { ...deliveryHealth },
+      ...(changingPassword ? { state: 'reconnecting' as const } : {}),
       ...(lastError ? { state: 'error' as const, lastError } : {}) };
   }
 
@@ -84,6 +89,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
 
   /** Publish through the authenticated ingest connection on the internal broker. */
   async function publishMqtt(topic: string, payload: string): Promise<void> {
+    if (changingPassword) throw new Error('MQTT_PUBLISH_RECONNECTING');
     const client = mqttClients.find((candidate) => candidate.connected);
     if (!client) throw new Error("MQTT_PUBLISH_NOT_CONNECTED");
     await client.publishAsync(topic, payload, { qos: 0, retain: false });
@@ -99,6 +105,24 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
     if (mqttStopping) return;
 
     const brokerUrl = process.env['MQTT_BROKER_URL'] ?? 'ws://mosquitto:9001';
+    const username = process.env['MQTT_USERNAME'];
+    const passwordFile = process.env['MQTT_INGEST_PASSWORD_FILE']?.trim();
+    const verifyPassword = username && passwordFile ? (password: string) => (
+      verifyMqttPassword(brokerUrl, username, password, probeTopics.topic, passwordReload.signal)
+    ) : undefined;
+    let password = process.env['MQTT_PASSWORD'];
+    if (verifyPassword && passwordFile) {
+      try {
+        const candidate = await readMqttPassword(passwordFile);
+        if (candidate !== null && candidate !== password) {
+          await verifyPassword(candidate);
+          password = candidate;
+        }
+      } catch {
+        if (!mqttStopping) console.warn('[mqtt] password file rejected during startup; using the bootstrap credential');
+      }
+    }
+    if (mqttStopping) return;
     const redactedUrl = brokerUrl.replace(/\/\/[^@]*@/, '//***:***@');
     console.log(`[mqtt] connecting to ${redactedUrl}`);
     console.log(`[mqtt] channels: ${processor.channelNames.join(', ')}`);
@@ -115,10 +139,52 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         reconnectPeriod: 5000,
         connectTimeout: 30000,
         clientId: MQTT_INGEST_CONNECTIONS > 1 ? `${MQTT_CLIENT_ID}-${index + 1}` : MQTT_CLIENT_ID,
-        username: process.env['MQTT_USERNAME'],
-        password: process.env['MQTT_PASSWORD'],
+        username,
+        password,
       });
       mqttClients.push(client);
+      let establishedSession = false;
+      let probeStream: MqttClient['stream'] | undefined;
+      let rotation: {
+        previousStream: MqttClient['stream'];
+        requiresSession: boolean;
+        finish: (error?: Error) => void;
+      } | undefined;
+
+      // The MQTT.js client, durable admission and packet processor stay alive.
+      // A delivery belongs to its original stream, so an unacknowledged packet
+      // on the replaced stream is redelivered by the persistent broker session.
+      const rotatePassword = async (candidate: string) => {
+        const signal = passwordReload.signal;
+        signal.throwIfAborted();
+        const previousPassword = client.options.password;
+        changingPassword = true;
+        try {
+          await new Promise<void>((resolve, reject) => {
+            const finish = (error?: Error) => {
+              clearTimeout(timer);
+              signal.removeEventListener('abort', abort);
+              rotation = undefined;
+              if (error) reject(error);
+              else resolve();
+            };
+            const abort = () => finish(new Error('MQTT_PASSWORD_ROTATION_STOPPED'));
+            const timer = setTimeout(() => finish(new Error('MQTT_PASSWORD_ROTATION_TIMEOUT')), 45_000);
+            timer.unref();
+            signal.addEventListener('abort', abort, { once: true });
+            rotation = { previousStream: client.stream, requiresSession: establishedSession, finish };
+            client.options.password = candidate;
+            reconnectMqttTransport(client);
+          });
+          console.log('[mqtt] password reloaded on the persistent session');
+        } catch (error) {
+          client.options.password = previousPassword;
+          if (!signal.aborted) reconnectMqttTransport(client);
+          throw error;
+        } finally {
+          changingPassword = false;
+        }
+      };
       mqttDeliveryProbeEnabled.set(1);
       let previousRecoveries = 0;
       const probeTopic = probeTopics.topic;
@@ -142,6 +208,9 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
           if (health.lastSuccessAt) mqttDeliveryProbeLastSuccess.set(Date.parse(health.lastSuccessAt) / 1000);
           if (health.recoveries > previousRecoveries) mqttDeliveryProbeRecoveries.inc(health.recoveries - previousRecoveries);
           previousRecoveries = health.recoveries;
+          if (health.state === 'healthy' && probeStream === client.stream && rotation?.previousStream !== probeStream) {
+            rotation?.finish();
+          }
         },
       });
       deliveryHealth = probe.status();
@@ -164,7 +233,8 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         },
       ));
 
-      client.on('connect', () => {
+      client.on('connect', (ack) => {
+        const stream = client.stream;
         setMqttRuntimeStatus('connected');
         console.log(`[mqtt] connected${connectionLabel}`);
         const topicFilters = Array.from(TOPIC_PREFIXES, prefix => {
@@ -178,6 +248,13 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         if (probeTopics.subscription) topicFilters.push(probeTopics.subscription);
         subscribePersistentTopics(client, topicFilters, {
           ready: () => {
+            if (stream !== client.stream || !client.connected) return;
+            if (rotation && rotation.previousStream !== stream && rotation.requiresSession && !ack.sessionPresent) {
+              rotation.finish(new Error('MQTT_PASSWORD_ROTATION_SESSION_NOT_RESUMED'));
+              return;
+            }
+            establishedSession = true;
+            probeStream = stream;
             probe.connect();
             brokerBacklog?.subscribe();
           },
@@ -196,6 +273,7 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         }
       });
       client.on('close', () => {
+        probeStream = undefined;
         probe.disconnect();
         if (!mqttClients.some((candidate) => candidate.connected)) {
           setMqttRuntimeStatus('disconnected');
@@ -208,11 +286,29 @@ export function createMqttRuntime(deps: { events: IngestEvents; committedFollowU
         setMqttRuntimeStatus('reconnecting');
         console.log(`[mqtt] reconnecting…${connectionLabel}`);
       });
+      if (verifyPassword && passwordFile) {
+        stopPasswordPoll = pollMqttPassword({
+          signal: passwordReload.signal,
+          read: () => readMqttPassword(passwordFile),
+          current: () => client.options.password,
+          verify: verifyPassword,
+          rotate: rotatePassword,
+          rejected: (error) => {
+            if (error instanceof Error && error.message === 'MQTT_PASSWORD_ROTATION_SESSION_NOT_RESUMED') {
+              console.error('[mqtt] broker did not resume the persistent ingest session during password rotation');
+            }
+            console.warn('[mqtt] password rotation rejected; retaining the previous credential');
+          },
+        });
+      }
     }
   }
 
   async function stopMqttClient(timeoutMs = 20_000): Promise<void> {
     mqttStopping = true;
+    passwordReload.abort();
+    // A blocked read from the optional secret mount cannot delay the ACK drain.
+    void stopPasswordPoll?.();
     for (const { probe, timer } of deliveryProbes.splice(0)) { clearInterval(timer); probe.disconnect(); }
     mqttDeliveryProbeEnabled.set(0);
     const deadline = Date.now() + timeoutMs;
