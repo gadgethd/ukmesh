@@ -825,22 +825,19 @@ test(
 
 const RUN_LOCK_KEY = 'meshcore.packet_identity_backfill';
 
-/** True when another session holds the run lock; the probe always releases its own. */
 async function advisoryLockIsHeld(pool: Fixture): Promise<boolean> {
-  const client = await pool.connect();
-  try {
-    const result = await client.query<{ locked: boolean }>(
-      'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
-      [RUN_LOCK_KEY],
-    );
-    if (result.rows[0]!.locked) {
-      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [RUN_LOCK_KEY]);
-      return false;
-    }
-    return true;
-  } finally {
-    client.release();
-  }
+  // A try-lock probe can win the exact lock the starting backfill needs.
+  // PostgreSQL stores the high and low halves of a bigint advisory key in pg_locks.
+  const result = await pool.query<{ locked: boolean }>(`
+    SELECT EXISTS (
+      SELECT 1 FROM pg_locks
+       WHERE locktype = 'advisory' AND granted AND objsubid = 1
+         AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
+         AND classid = ((hashtext($1)::bigint >> 32) & 4294967295)::oid
+         AND objid = hashtext($1)::oid
+    ) AS locked
+  `, [RUN_LOCK_KEY]);
+  return result.rows[0]!.locked;
 }
 
 async function waitForLock(pool: Fixture, held: boolean, timeoutMs: number): Promise<void> {
