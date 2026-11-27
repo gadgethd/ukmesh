@@ -355,7 +355,7 @@ test('a failed unlock destroys the session instead of returning a locked connect
   assert.equal(client.destroyed, true);
 });
 
-test('a legacy checkpoint is migrated to the observation cursor and resumes', async () => {
+test('a legacy checkpoint resumes from the cursor floor, not its own page key', async () => {
   const legacyHash = sha256Hex('0100DD');
   const env = makeEnv({
     legacyObservationId: LEGACY_OBS,
@@ -376,15 +376,17 @@ test('a legacy checkpoint is migrated to the observation cursor and resumes', as
   assert.equal(result.selected, 1);
   assert.equal(result.resolved, 1);
   const legacyLookup = client.queries.find(
-    (query) => query.sql.includes('FROM mesh.packets') && query.sql.includes('packet_hash = $2'),
+    (query) => query.sql.includes('FROM mesh.packets') && query.sql.includes('time = $1::timestamptz'),
   );
-  assert.deepEqual(legacyLookup?.values, ['2026-10-01T00:00:00.000Z', legacyHash, 'RX1']);
+  assert.equal(legacyLookup, undefined,
+    'the legacy hash/receiver page key must not be consulted: it is what skipped same-instant rows');
   const migrationUpdate = client.queries.find((query) => query.sql.includes('SET last_observation_id = $1::uuid'));
-  assert.deepEqual(migrationUpdate?.values, [LEGACY_OBS]);
+  assert.deepEqual(migrationUpdate?.values, [CURSOR_FLOOR],
+    'a cursor at the minimum observation id would still skip the row that holds it (the page predicate is exclusive)');
   const migrationIndex = client.queries.indexOf(migrationUpdate!);
   const firstBegin = client.queries.findIndex((query) => query.sql === 'BEGIN');
   assert.ok(migrationIndex >= 0 && migrationIndex < firstBegin);
-  assert.equal(env.batchQueries[0]?.values.includes(LEGACY_OBS), true);
+  assert.equal(env.batchQueries[0]?.values.includes(CURSOR_FLOOR), true);
 });
 
 test('a legacy checkpoint with no matching row resumes from the start of its timestamp', async () => {
