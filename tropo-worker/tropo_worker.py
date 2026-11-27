@@ -25,6 +25,7 @@ import tempfile
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
 
 import numpy as np
 from PIL import Image
@@ -38,6 +39,7 @@ FILTER_URL = "https://nomads.ncep.noaa.gov/cgi-bin/filter_gfs_0p25.pl"
 USER_AGENT = "ukmesh-tropo/1.0 (ukmesh.com; amateur radio non-commercial)"
 LEVELS = (1000, 975, 950, 925, 900, 850)
 BBOX = {"north": 62.0, "south": 49.0, "west": -12.0, "east": 5.0}
+LAND_BOUNDARY = Path(__file__).with_name("uk-boundary.geojson")
 FORECAST_HOURS = tuple(range(0, 73, 3))
 SCALE = 8  # PNG upscale factor for smooth rendering
 
@@ -202,7 +204,8 @@ def colour_lut() -> np.ndarray:
 
 def render_png(index: np.ndarray, path: str) -> None:
     height, width = index.shape
-    smooth = Image.fromarray(index.astype(np.float32), mode="F").resize(
+    # GFS rows run south -> north (row 0 = 49N); map images need north at the top.
+    smooth = Image.fromarray(np.flipud(index).astype(np.float32), mode="F").resize(
         (width * SCALE, height * SCALE), Image.Resampling.BICUBIC
     )
     values = np.clip(np.rint(np.asarray(smooth)), 0, 150).astype(np.uint8)
@@ -210,8 +213,57 @@ def render_png(index: np.ndarray, path: str) -> None:
     Image.fromarray(rgba, mode="RGBA").save(path, optimize=True)
 
 
-def peak_location(index: np.ndarray, meta: dict[str, float]) -> dict[str, float]:
-    row, column = np.unravel_index(int(np.nanargmax(index)), index.shape)
+def point_in_ring(lon: float, lat: float, ring: list[list[float]]) -> bool:
+    """Ray-cast a point against one polygon ring (lon/lat degrees)."""
+    inside = False
+    previous = len(ring) - 1
+    for current in range(len(ring)):
+        x_current, y_current = ring[current][0], ring[current][1]
+        x_previous, y_previous = ring[previous][0], ring[previous][1]
+        if (y_current > lat) != (y_previous > lat):
+            crossing = (x_previous - x_current) * (lat - y_current) / (y_previous - y_current) + x_current
+            if lon < crossing:
+                inside = not inside
+        previous = current
+    return inside
+
+
+def load_land_mask(meta: dict[str, float]) -> np.ndarray:
+    """Rasterise UK land at GFS grid-cell centres (row 0 = south)."""
+    with open(LAND_BOUNDARY, encoding="utf-8") as handle:
+        boundary = json.load(handle)
+    rings: list[list[list[float]]] = []
+    for feature in boundary.get("features", []):
+        geometry = feature.get("geometry") or {}
+        if geometry.get("type") == "Polygon":
+            polygons = [geometry["coordinates"]]
+        elif geometry.get("type") == "MultiPolygon":
+            polygons = geometry["coordinates"]
+        else:
+            continue
+        for polygon in polygons:
+            rings.append(polygon[0])
+    if not rings:
+        raise ValueError("UK boundary contains no polygons")
+    width = int(meta["ni"])
+    height = int(meta["nj"])
+    mask = np.zeros((height, width), dtype=bool)
+    for row in range(height):
+        lat = meta["lat0"] + row * meta["dlat"]
+        for column in range(width):
+            lon = (meta["lon0"] + column * meta["dlon"] + 180.0) % 360.0 - 180.0
+            mask[row, column] = any(point_in_ring(lon, lat, ring) for ring in rings)
+    if not mask.any():
+        raise ValueError("UK land mask is empty")
+    return mask
+
+
+def peak_location(index: np.ndarray, meta: dict[str, float], mask: np.ndarray | None = None) -> dict[str, float]:
+    if mask is not None and mask.any():
+        search = np.where(mask, index, -np.inf)
+    else:
+        search = index
+    row, column = np.unravel_index(int(np.nanargmax(search)), index.shape)
     lat = meta["lat0"] + row * meta["dlat"]
     lon = meta["lon0"] + column * meta["dlon"]
     if lon > 180:
@@ -223,6 +275,7 @@ def run(out_dir: str, cycle: dt.datetime, hours: tuple[int, ...]) -> None:
     os.makedirs(out_dir, exist_ok=True)
     staging = tempfile.mkdtemp(prefix=".staging-", dir=out_dir)
     steps = []
+    land_mask = None
     png_width = 0
     png_height = 0
     started = dt.datetime.now(dt.timezone.utc)
@@ -232,6 +285,21 @@ def run(out_dir: str, cycle: dt.datetime, hours: tuple[int, ...]) -> None:
             data = fetch_grib(cycle, forecast_hour)
             fields, meta = parse_grib(data)
             index, duct = compute_index(fields)
+            if land_mask is None:
+                land_mask = load_land_mask(meta)
+                log(f"UK land mask: {int(land_mask.sum())} of {land_mask.size} grid cells")
+            land_valid = land_mask & np.isfinite(index)
+            if not land_valid.any():
+                land_valid = np.isfinite(index)
+            land_index = index[land_valid]
+            land_duct = duct[land_valid]
+            if land_index.size:
+                max_index = float(np.nanmax(land_index))
+                peak_duct = float(np.nanmax(land_duct))
+                pct_strong = float((land_index >= 85).mean() * 100.0)
+                pct_ducting = float((land_index >= 100).mean() * 100.0)
+            else:
+                max_index = peak_duct = pct_strong = pct_ducting = 0.0
             file_name = f"step-{offset:03d}.png"
             render_png(index, os.path.join(staging, file_name))
             png_width = int(index.shape[1] * SCALE)
@@ -241,11 +309,11 @@ def run(out_dir: str, cycle: dt.datetime, hours: tuple[int, ...]) -> None:
                 "forecast_hour": forecast_hour,
                 "valid": (cycle + dt.timedelta(hours=forecast_hour)).isoformat().replace("+00:00", "Z"),
                 "file": file_name,
-                "max_index": round(float(np.nanmax(index)), 1),
-                "peak_duct": round(float(np.nanmax(duct)), 1),
-                "pct_strong": round(float((index >= 85).mean() * 100.0), 1),
-                "pct_ducting": round(float((index >= 100).mean() * 100.0), 1),
-                "peak": peak_location(index, meta),
+                "max_index": round(max_index, 1),
+                "peak_duct": round(peak_duct, 1),
+                "pct_strong": round(pct_strong, 1),
+                "pct_ducting": round(pct_ducting, 1),
+                "peak": peak_location(index, meta, land_mask),
             })
             log(
                 f"f{forecast_hour:03d} max_index={steps[-1]['max_index']:.0f} "
@@ -257,11 +325,13 @@ def run(out_dir: str, cycle: dt.datetime, hours: tuple[int, ...]) -> None:
             "cycle": f"{cycle:%H}Z",
             "model": "NOAA GFS 0.25°",
             "bounds": BBOX,
+            "index_basis": "UK land cells (Natural Earth 1:50m United Kingdom boundary)",
+            "land_cells": int(land_mask.sum()) if land_mask is not None else 0,
             "width": png_width,
             "height": png_height,
             "steps": steps,
             "source": "NOAA/NCEP GFS",
-            "attribution": "Forecast data: NOAA/NCEP GFS (public domain). Basemap: OpenFreeMap / OpenStreetMap.",
+            "attribution": "Forecast data: NOAA/NCEP GFS (public domain). Boundary: Natural Earth (public domain). Basemap: OpenStreetMap contributors.",
         }
         # Move images into place first, then atomically replace the manifest.
         for step in steps:

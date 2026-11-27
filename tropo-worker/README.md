@@ -21,5 +21,11 @@ The index is 0–150:
 - `100` — physical ducting threshold (`dM/dz <= 0`)
 - `150` — very strong duct (`dM/dz <= -55 N/km`)
 
+Headline `max_index`, `peak_duct`, `pct_strong` and `pct_ducting` are computed
+over UK land grid cells only, using the bundled Natural Earth 1:50m United
+Kingdom boundary (`uk-boundary.geojson`, public domain). The PNG shading still
+covers the full forecast area, including surrounding waters. GFS rows run
+south-to-north; PNGs are flipped north-up for the map overlay.
+
 GFS data is public domain under NOAA's NODD terms. Attribution is requested
-and NOAA endorsement must not be implied.
+and NOAA endorsement must not be implied. Natural Earth is public domain.

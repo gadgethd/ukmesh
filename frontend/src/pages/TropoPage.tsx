@@ -87,8 +87,9 @@ export const TropoPage: React.FC = () => {
           <h1>Tropospheric ducting</h1>
           <p>
             A five-day forecast of anomalous VHF/UHF propagation over the UK and surrounding waters,
-            derived from NOAA&apos;s GFS pressure-level profiles. The shading shows where the lower
-            atmosphere is closest to trapping radio waves; index 100 is the physical ducting threshold.
+            derived from NOAA&apos;s GFS pressure-level profiles. Headline figures use UK land cells;
+            the shading shows the wider forecast area, including surrounding waters. Index 100 is the
+            physical ducting threshold.
           </p>
         </div>
         {data && (
@@ -121,14 +122,14 @@ export const TropoPage: React.FC = () => {
           )}
           {!stale && quiet && (
             <div className="tropo-page__notice" role="status">
-              No ducting-threshold crossings are forecast in this run. The shading still shows where the
-              lower atmosphere is closest to ducting.
+              No UK land cell reaches the ducting threshold in this run. The shading still shows where
+              the lower atmosphere is closest to ducting.
             </div>
           )}
           {!stale && !quiet && !hasDucting && (
             <div className="tropo-page__notice" role="status">
-              Enhanced bending is forecast, but no grid point reaches the ducting threshold. The shading
-              shows where the lower atmosphere is closest to trapping.
+              Enhanced bending is forecast, but no UK land cell reaches the ducting threshold. The
+              shading shows where the lower atmosphere is closest to trapping.
             </div>
           )}
 
@@ -139,7 +140,7 @@ export const TropoPage: React.FC = () => {
             </div>
             <div>
               <strong style={{ color: tier.color }}>{Math.round(step.max_index)}</strong>
-              <span>peak index / 150</span>
+              <span>UK land peak / 150</span>
             </div>
             <div>
               <strong>{step.peak_duct > 0 ? Math.round(step.peak_duct) : '—'}</strong>
@@ -147,7 +148,7 @@ export const TropoPage: React.FC = () => {
             </div>
             <div>
               <strong>{step.pct_ducting > 0 ? `${step.pct_ducting.toFixed(1)}%` : 'None'}</strong>
-              <span>area at ducting threshold</span>
+              <span>UK land at ducting threshold</span>
             </div>
             <div className="tropo-page__stat--time">
               <strong>{best ? formatValidShort(best.valid) : '—'}</strong>
@@ -210,7 +211,7 @@ export const TropoPage: React.FC = () => {
 
               <div className="tropo-page__meter">
                 <div>
-                  <span>Peak index</span>
+                  <span>UK land peak index</span>
                   <strong style={{ color: tier.color }}>{Math.round(step.max_index)}</strong>
                 </div>
                 <div className="tropo-page__meter-bar" aria-hidden="true">
@@ -227,6 +228,7 @@ export const TropoPage: React.FC = () => {
 
               <h2>How to read it</h2>
               <ul className="tropo-page__tips">
+                <li><strong>UK land basis.</strong> Headline index, peak and threshold area use UK land grid cells; the map shading covers the surrounding waters too.</li>
                 <li><strong>Index 100</strong> means the modified-refractivity gradient has reached zero — the physical threshold for trapping.</li>
                 <li><strong>Read the paths, not the pixel.</strong> What matters is whether a duct runs along the direction you care about.</li>
                 <li><strong>Timing matters.</strong> Land paths often peak overnight and early morning; sea paths can peak in the afternoon.</li>
