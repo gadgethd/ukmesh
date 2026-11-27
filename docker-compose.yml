@@ -543,6 +543,7 @@ services:
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
       - rf_coverage_data:/rf-coverage-data:ro
+      - ./tropo-data:/usr/share/nginx/html/tropo/data:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
