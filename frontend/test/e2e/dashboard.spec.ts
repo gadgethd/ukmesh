@@ -272,6 +272,53 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   expect(tileErrors).toEqual([]);
 });
 
+test('RF coverage survives a forced basemap fallback with 3D terrain', async ({ page }) => {
+  // #181: the basemap watchdog retries once, then swaps in the bundled fallback
+  // style. A style swap removes every application source, so RF coverage must be
+  // re-added on the following style.load while the preserved DEM keeps
+  // isStyleLoaded() false. Without that re-add (pre-92b6df06) no RF tile is
+  // requested after the swap, which is the failure this test forces.
+  test.setTimeout(90_000);
+  const basemapLogs: string[] = [];
+  let fallbackAt: number | null = null;
+  page.on('console', (message) => {
+    const text = message.text();
+    if (!text.startsWith('[basemap]')) return;
+    basemapLogs.push(text);
+    if (text.includes('using bundled fallback')) fallbackAt ??= Date.now();
+  });
+  const coverageRequests: number[] = [];
+  page.on('request', (request) => {
+    if (new URL(request.url()).pathname.startsWith('/rf-coverage/tiles/')) {
+      coverageRequests.push(Date.now());
+    }
+  });
+  // Fail only the vector tiles. The style itself must keep loading so the
+  // watchdog reaches retry → fallback instead of the blocking load modal.
+  await page.route('https://tiles.openfreemap.org/fixture/**', (route) => route.abort('failed'));
+
+  await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
+
+  await expect.poll(() => coverageRequests.length, {
+    message: 'RF coverage must load before the basemap is disturbed',
+    timeout: 30_000,
+  }).toBeGreaterThan(0);
+
+  const fallbackChip = page.locator('.map-basemap-status--fallback');
+  await expect(fallbackChip).toContainText('Using backup basemap', { timeout: 45_000 });
+  expect(basemapLogs.some((line) => line.includes('retrying with cache-busted style'))).toBe(true);
+  expect(fallbackAt).not.toBeNull();
+
+  const fallbackStartedAt = fallbackAt!;
+  await expect.poll(
+    () => coverageRequests.filter((at) => at >= fallbackStartedAt).length,
+    {
+      message: 'RF coverage must be re-added after the fallback style swap',
+      timeout: 20_000,
+    },
+  ).toBeGreaterThan(0);
+});
+
 test('map modes update layers and produce a shareable URL', async ({ page }, testInfo) => {
   // Two 4,600-node bootstraps and an axe scan share this budget, including cold Vite compilation.
   test.setTimeout(45_000);
