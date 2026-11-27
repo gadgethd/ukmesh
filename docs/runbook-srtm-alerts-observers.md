@@ -36,11 +36,25 @@ backoff and moves exhausted deliveries into a `.dead.json` record. Pending items
 and the last successful delivery time survive receiver restarts.
 
 If `ALERT_FORWARD_URL` is unset or invalid, the receiver operates in archive-only
-mode. It still accepts alerts after the local receipt is persisted, but both
-`/healthz` and `/readyz` return 503 so Compose and operators see degraded
-delivery. Health JSON includes `pending_count`, `queue_oldest_age_seconds`,
-`dead_letter_count`, `last_success_at`, and `last_error`. Resolve any dead-letter
-or aged-queue condition before treating a firing alert as delivered.
+mode. It still archives each receipt, but `POST /alerts` returns 503 with
+`Retry-After: 5` instead of 202 so a producer does not treat the alert as
+delivered and retries once forwarding is restored. `/healthz` stays 200 with
+`"status":"degraded"` (liveness only), while `/readyz` returns 503 and gates
+Alertmanager through Compose `depends_on`. Health JSON includes
+`pending_count`, `queue_oldest_age_seconds`, `dead_letter_count`,
+`last_success_at`, and `last_error`. A never-delivered volume reports
+`last_success_at: null` but is still ready when forwarding is configured and the
+queue is empty; readiness does not wait for a first success. Resolve any
+dead-letter or aged-queue condition before treating a firing alert as delivered.
+
+`GET /metrics` on the same internal port exposes Prometheus text (0.0.4):
+`meshcore_alert_receiver_pending_count`,
+`meshcore_alert_receiver_dead_letter_count`,
+`meshcore_alert_receiver_queue_oldest_age_seconds`,
+`meshcore_alert_receiver_last_success_timestamp_seconds` (0 means never), and
+the `enqueued_total`, `forwarded_total`, `failed_total`, and
+`dead_lettered_total` process-lifetime counters, plus `forward_configured` and
+`queue_ready` gauges.
 
 ```bash
 docker compose exec -T alertmanager amtool \

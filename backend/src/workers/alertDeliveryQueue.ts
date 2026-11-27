@@ -29,6 +29,12 @@ export type AlertDeliveryQueueMetrics = {
   deadLetterCount: number;
   lastSuccessAt: string | null;
   lastError: string | null;
+  // Process-lifetime counters. They reset when the receiver restarts; alert on
+  // rates, not absolute values, and treat dead_letter_count for durable state.
+  enqueuedTotal: number;
+  forwardedTotal: number;
+  failedTotal: number;
+  deadLetteredTotal: number;
 };
 
 export class AlertQueueFullError extends Error {
@@ -46,6 +52,10 @@ export class DurableAlertQueue {
   private lastSuccessAt: string | null = null;
   private deadLetterCount = 0;
   private lastError: string | null = null;
+  private enqueuedTotal = 0;
+  private forwardedTotal = 0;
+  private failedTotal = 0;
+  private deadLetteredTotal = 0;
   private enqueueTail: Promise<void> = Promise.resolve();
   private processing = false;
   private closing = false;
@@ -112,6 +122,7 @@ export class DurableAlertQueue {
         const deadPath = this.deadPath(id);
         await rename(file, deadPath);
         this.deadLetterCount += 1;
+        this.deadLetteredTotal += 1;
         this.lastError = `quarantined invalid queue record ${id}: ${(error as Error).message}`;
       }
     }
@@ -156,6 +167,10 @@ export class DurableAlertQueue {
       deadLetterCount: this.deadLetterCount,
       lastSuccessAt: this.lastSuccessAt,
       lastError: pendingError ?? this.lastError,
+      enqueuedTotal: this.enqueuedTotal,
+      forwardedTotal: this.forwardedTotal,
+      failedTotal: this.failedTotal,
+      deadLetteredTotal: this.deadLetteredTotal,
     };
   }
 
@@ -179,6 +194,7 @@ export class DurableAlertQueue {
       };
       await this.writeAtomic(this.pendingPath(record.id), record);
       this.records.set(record.id, record);
+      this.enqueuedTotal += 1;
       this.schedule(0);
     } finally {
       release();
@@ -222,11 +238,13 @@ export class DurableAlertQueue {
           const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
           const failed = { ...attempted, lastError: message };
           this.lastError = message;
+          this.failedTotal += 1;
           console.error(`[alert-receiver] forward attempt ${attempts}/${this.options.maxAttempts} failed: ${message}`);
           if (attempts >= this.options.maxAttempts) {
             await this.writeAtomic(this.deadPath(record.id), failed);
             this.records.delete(record.id);
             this.deadLetterCount += 1;
+            this.deadLetteredTotal += 1;
             console.error(`[alert-receiver] dead-lettered alert ${record.id} after ${attempts} attempts`);
             try {
               await this.removeFile(pendingPath);
@@ -248,6 +266,7 @@ export class DurableAlertQueue {
           await this.removeFile(pendingPath);
           this.records.delete(record.id);
           this.lastSuccessAt = deliveredAt;
+          this.forwardedTotal += 1;
           this.lastError = null;
         } catch (error) {
           // Keep the persisted pending record so a process restart or the next
