@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
@@ -49,18 +49,23 @@ async function waitFor<T>(read: () => Promise<T>, accept: (value: T) => boolean)
 
 const ALERT_TOKEN = 'owned-audit-test-token';
 
+async function listenStub(t: TestContext, stub: http.Server): Promise<number> {
+  stub.listen(0, '127.0.0.1');
+  await once(stub, 'listening');
+  t.after(() => {
+    stub.closeAllConnections();
+    return new Promise<void>((resolve) => stub.close(() => resolve()));
+  });
+  return (stub.address() as AddressInfo).port;
+}
+
 async function receiver(forwardUrl: string, options: { directory?: string; keepFiles?: boolean; queueMax?: number; token?: string } = {}) {
   const dir = options.directory ?? await mkdtemp(path.join(tmpdir(), 'auditwave-alert-test-'));
-  const reservation = http.createServer();
-  reservation.listen(0, '127.0.0.1');
-  await once(reservation, 'listening');
-  const port = (reservation.address() as AddressInfo).port;
-  await new Promise<void>((resolve) => reservation.close(() => resolve()));
   const receipt = path.join(dir, 'alerts.jsonl');
   // Only a local throwaway process receives this environment. Never load the
   // real .env or use the live receiver for notification tests.
   const child = spawn(process.execPath, ['--import', 'tsx', 'src/workers/alert-receiver.ts'], {
-    env: { PATH: process.env['PATH'], ALERT_RECEIVER_PORT: String(port), ALERT_RECEIVER_PATH: receipt,
+    env: { PATH: process.env['PATH'], ALERT_RECEIVER_PORT: '0', ALERT_RECEIVER_PATH: receipt,
       ALERT_RECEIVER_TOKEN: options.token ?? ALERT_TOKEN, ALERT_FORWARD_URL: forwardUrl, ALERT_FORWARD_MAX_ATTEMPTS: '2',
       ALERT_FORWARD_BACKOFF_BASE_MS: '1', ALERT_FORWARD_BACKOFF_CAP_MS: '1',
       ...(options.queueMax ? { ALERT_FORWARD_QUEUE_MAX: String(options.queueMax) } : {}) },
@@ -78,9 +83,21 @@ async function receiver(forwardUrl: string, options: { directory?: string; keepF
     await terminate();
     if (!options.keepFiles) await rm(dir, { recursive: true, force: true });
   };
+  const listening = /listening on internal port (\d+);/;
+  let port: number;
   try {
-    await waitFor(async () => output, (value) => value.includes('listening on internal port'));
-  } catch (error) { await close(); throw error; }
+    const started = await waitFor(async () => {
+      assert.equal(child.exitCode, null, output);
+      assert.equal(child.signalCode, null, output);
+      return listening.exec(output);
+    }, (match) => match !== null);
+    assert.ok(started);
+    port = Number(started[1]);
+  } catch (error) {
+    await terminate();
+    if (!options.directory) await rm(dir, { recursive: true, force: true });
+    throw error;
+  }
   return { base: `http://127.0.0.1:${port}`, receipt, logs: () => output, close, terminate, directory: dir };
 }
 
@@ -103,7 +120,7 @@ test('unconfigured or invalid forwarding logs a startup warning and readiness is
   }
 });
 
-test('Alertmanager and synthetic forwarding both require a successful stub delivery before readiness becomes healthy', { timeout: 10_000 }, async () => {
+test('Alertmanager and synthetic forwarding both require a successful stub delivery before readiness becomes healthy', { timeout: 10_000 }, async (t) => {
   const received: Array<{ content: string; allowed_mentions: { parse: string[] } }> = [];
   const stub = http.createServer(async (req, res) => {
     const chunks: Buffer[] = [];
@@ -111,9 +128,7 @@ test('Alertmanager and synthetic forwarding both require a successful stub deliv
     received.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
     res.writeHead(204).end();
   });
-  stub.listen(0, '127.0.0.1');
-  await once(stub, 'listening');
-  const forwardUrl = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/secret-stub-token`;
+  const forwardUrl = `http://127.0.0.1:${await listenStub(t, stub)}/secret-stub-token`;
   const child = await receiver(forwardUrl);
   try {
     assert.match(child.logs(), /forwardConfigured=true/);
@@ -138,17 +153,13 @@ test('Alertmanager and synthetic forwarding both require a successful stub deliv
     }
   } finally {
     await child.close();
-    stub.closeAllConnections();
-    await new Promise<void>((resolve) => stub.close(() => resolve()));
   }
 });
 
-test('failed stub deliveries remain unready and reach bounded retries', { timeout: 10_000 }, async () => {
+test('failed stub deliveries remain unready and reach bounded retries', { timeout: 10_000 }, async (t) => {
   let calls = 0;
   const stub = http.createServer((_req, res) => { calls += 1; res.writeHead(503).end(); });
-  stub.listen(0, '127.0.0.1');
-  await once(stub, 'listening');
-  const child = await receiver(`http://127.0.0.1:${(stub.address() as AddressInfo).port}/failed`);
+  const child = await receiver(`http://127.0.0.1:${await listenStub(t, stub)}/failed`);
   try {
     await fetch(`${child.base}/alerts`, { method: 'POST', headers: { Authorization: `Bearer ${ALERT_TOKEN}` }, body: JSON.stringify({
       service: 'meshcore-analytics', kind: 'alert', check: 'test-only',
@@ -160,8 +171,6 @@ test('failed stub deliveries remain unready and reach bounded retries', { timeou
     assert.equal((await fetch(`${child.base}/readyz`)).status, 503);
   } finally {
     await child.close();
-    stub.closeAllConnections();
-    await new Promise<void>((resolve) => stub.close(() => resolve()));
   }
 });
 
@@ -249,7 +258,7 @@ test('alert ingress fails closed when the receiver token is unconfigured', async
   } finally { await child.close(); }
 });
 
-test('accepted alert survives receiver SIGKILL and a full queue refuses new work', { timeout: 15_000 }, async () => {
+test('accepted alert survives receiver SIGKILL and a full queue refuses new work', { timeout: 15_000 }, async (t) => {
   const replies: http.ServerResponse[] = [];
   let calls = 0;
   let hold = true;
@@ -258,9 +267,7 @@ test('accepted alert survives receiver SIGKILL and a full queue refuses new work
     if (hold) replies.push(res);
     else res.writeHead(204).end();
   });
-  stub.listen(0, '127.0.0.1');
-  await once(stub, 'listening');
-  const url = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/restart-stub`;
+  const url = `http://127.0.0.1:${await listenStub(t, stub)}/restart-stub`;
   const first = await receiver(url, { keepFiles: true, queueMax: 1 });
   let second: Awaited<ReturnType<typeof receiver>> | undefined;
   try {
@@ -281,8 +288,6 @@ test('accepted alert survives receiver SIGKILL and a full queue refuses new work
     for (const reply of replies) reply.destroy();
     await first.close();
     await second?.close();
-    stub.closeAllConnections();
-    await new Promise<void>((resolve) => stub.close(() => resolve()));
     await rm(first.directory, { recursive: true, force: true });
   }
 });
@@ -318,7 +323,7 @@ test('deployed receiver bearer authentication survives the durability changes', 
   } finally { await child.close(); }
 });
 
-test('authenticated redrive retains dead letters and restores readiness only after delivery, including restart', { timeout: 15_000 }, async () => {
+test('authenticated redrive retains dead letters and restores readiness only after delivery, including restart', { timeout: 15_000 }, async (t) => {
   let mode: 'fail' | 'hold' | 'success' = 'fail';
   let calls = 0;
   const held: http.ServerResponse[] = [];
@@ -327,9 +332,7 @@ test('authenticated redrive retains dead letters and restores readiness only aft
     if (mode === 'hold') held.push(res);
     else res.writeHead(mode === 'fail' ? 503 : 204).end();
   });
-  stub.listen(0, '127.0.0.1');
-  await once(stub, 'listening');
-  const url = `http://127.0.0.1:${(stub.address() as AddressInfo).port}/owned-redrive`;
+  const url = `http://127.0.0.1:${await listenStub(t, stub)}/owned-redrive`;
   const child = await receiver(url, { keepFiles: true });
   let restarted: Awaited<ReturnType<typeof receiver>> | undefined;
   try {
@@ -385,8 +388,6 @@ test('authenticated redrive retains dead letters and restores readiness only aft
     for (const res of held) res.destroy();
     await child.close();
     await restarted?.close();
-    stub.closeAllConnections();
-    await new Promise<void>((resolve) => stub.close(() => resolve()));
     await rm(child.directory, { recursive: true, force: true });
   }
 });
