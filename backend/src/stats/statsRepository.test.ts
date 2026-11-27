@@ -51,6 +51,76 @@ test('multibyte fact cutover removes both raw decode scans and binds the privacy
   assert.equal(calls.some((call) => call.text.includes('row_number() OVER () AS obs_id')), false);
 });
 
+test('a multibyte rebuild can exceed the chart budget while chart queries retain their limit', async (t) => {
+  let now = 0;
+  let factsReady = false;
+  let slowChart = false;
+  let rebuildCutoff: unknown;
+  t.mock.method(performance, 'now', () => now);
+  const repository = createStatsRepository({
+    networkFilters: () => ({
+      params: [], packets: '', packetsAlias: () => '', nodes: '', nodesAlias: () => '',
+    }),
+    query: async <T extends QueryResultRow>(text: string, params?: unknown[]): Promise<{ rows: T[] }> => {
+      if (text.includes('FROM mesh.multibyte_path_fact_state')) {
+        return { rows: [{ ready: factsReady }] as unknown as T[] };
+      }
+      if (text.includes('INSERT INTO mesh.multibyte_path_facts')) {
+        assert.equal(params?.[2], 12);
+        rebuildCutoff = params?.[1];
+        now += 61_000;
+        factsReady = true;
+        return { rows: [{ affected_rows: 4 }] as unknown as T[] };
+      }
+      if (text.includes('AS radios_per_hour')) {
+        if (slowChart) now += 61_000;
+        else assert.deepEqual(params, [rebuildCutoff]);
+      }
+      return { rows: [] };
+    },
+  });
+
+  await repository.fetchChartsData('ukmesh', undefined, 12);
+  assert.equal(factsReady, true);
+  slowChart = true;
+  await assert.rejects(repository.fetchChartsData('ukmesh', undefined, 12), /STATS_QUERY_BUDGET_EXCEEDED/);
+});
+
+test('a hung multibyte rebuild cancels at its own timeout before chart queries start', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let rebuildStarted!: (signal: AbortSignal) => void;
+  const started = new Promise<AbortSignal>(resolve => { rebuildStarted = resolve; });
+  let chartQueries = 0;
+  const repository = createStatsRepository({
+    networkFilters: () => ({
+      params: [], packets: '', packetsAlias: () => '', nodes: '', nodesAlias: () => '',
+    }),
+    query: async <T extends QueryResultRow>(
+      text: string, _params?: unknown[], signal?: AbortSignal,
+    ): Promise<{ rows: T[] }> => {
+      if (text.includes('FROM mesh.multibyte_path_fact_state')) return { rows: [] };
+      if (text.includes('INSERT INTO mesh.multibyte_path_facts')) {
+        assert.ok(signal);
+        return new Promise((_, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          rebuildStarted(signal);
+        });
+      }
+      chartQueries++;
+      return { rows: [] };
+    },
+  });
+
+  const refresh = repository.fetchChartsData('ukmesh', undefined, 12);
+  const rejection = assert.rejects(refresh, /STATS_QUERY_TIMEOUT_360000MS/);
+  const signal = await started;
+  t.mock.timers.tick(120_000);
+  assert.equal(signal.aborted, false);
+  t.mock.timers.tick(240_000);
+  await rejection;
+  assert.equal(chartQueries, 0);
+});
+
 test('aggregate shadow comparison requires exact keys and applies the documented count tolerance', () => {
   assert.deepEqual(
     compareAggregateShadowRows(
