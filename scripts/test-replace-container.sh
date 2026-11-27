@@ -148,7 +148,9 @@ case "$command_name" in
   image)
     test "${1:-}" = "inspect"
     if [[ "$*" == *org.ukmesh.runtime-layout* ]]; then
-      if [[ $MOCK_RELEASE_SERVICE == mqtt-ingest ]]; then printf 'split-v1\n'; fi
+      if [[ $MOCK_RELEASE_SERVICE == mqtt-ingest || ( $MOCK_CHANGE_RUNTIME_LAYOUT == true && $2 == "$MOCK_DESIRED_IMAGE" ) ]]; then
+        printf 'split-v1\n'
+      fi
     else
       printf '%s\n' "$MOCK_SOURCE_REVISION"
     fi
@@ -314,6 +316,7 @@ run_case() {
     MOCK_COMPAT_READY="$compat_ready" \
     MOCK_FAIL_DESIRED_DEPLOY="$fail_desired_deploy" \
     MOCK_RELEASE_SERVICE="$service" \
+    MOCK_CHANGE_RUNTIME_LAYOUT="$([[ $expected_status == layout_rejected ]] && printf true || printf false)" \
     MOCK_DOCKER_LOG="${test_root}/docker.log" \
     MOCK_COSIGN_LOG="${test_root}/cosign.log" \
     COSIGN_PUBLIC_KEY="$cosign_public_key" \
@@ -332,6 +335,14 @@ run_case() {
       >"${test_root}/stdout.log" 2>"${test_root}/stderr.log"
   local status=$?
   set -e
+
+  if [[ $expected_status == layout_rejected ]]; then
+    test "$status" -eq 65
+    grep -Fq 'Changing the MQTT runtime layout requires' "${test_root}/stderr.log"
+    ! grep -Eq '^compose .* (up|run) ' "${test_root}/docker.log"
+    printf '%s passed\n' "$case_name"
+    return 0
+  fi
 
   if [ "$adoption_mode" != "valid" ] && [ "$adoption_mode" != "overlay" ] && [ "$adoption_mode" != "long_service_list" ]; then
     if [ "$status" -ne 65 ]; then
@@ -419,6 +430,7 @@ run_case \
   2 \
   public-key
 run_case failed_ingest_deploy_rolls_back_independently true true rolled_back 2 public-key valid mqtt-ingest
+run_case runtime_layout_change_stops_before_migrations true false layout_rejected 0 public-key
 run_case \
   incompatible_schema_stops_before_deploy \
   false \
@@ -440,5 +452,5 @@ for service in tagger-worker hopreach; do
   run_case "${service}_supports_signed_release_preflight" false false stopped 0 keyless valid "$service"
 done
 
-printf 'replace-container rollback, compatibility and Compose adoption drills passed (19/19)\n'
+printf 'replace-container rollback, compatibility and Compose adoption drills passed (20/20)\n'
 bash "${script_dir}/test-check-compose-adoption.sh"
