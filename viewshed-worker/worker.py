@@ -1161,20 +1161,47 @@ SIDE_EFFECT_MARKER_KEY = 'viewshed:side-effects:{node_id}'
 SIDE_EFFECT_MARKER_TTL_S = 90 * 24 * 60 * 60  # 90 days — long enough to cover retry windows
 
 
-def side_effects_complete(r_client, node_id: str) -> bool:
+def coverage_generation(db, node_id: str) -> Optional[str]:
+    """Identity of the coverage row whose side effects the marker vouches for.
+
+    A node-keyed marker from an earlier computation must not certify a newer
+    row: model-version bumps and elevation backfills recompute coverage while
+    the old marker is still present. The generation is the row's
+    ``model_version`` plus its ``calculated_at`` epoch, both written by
+    ``store_coverage`` in the same upsert.
+    """
+    with db.cursor() as cur:
+        cur.execute(
+            '''SELECT model_version, EXTRACT(EPOCH FROM calculated_at)::text
+               FROM core.node_coverage
+               WHERE node_id = %s''',
+            (node_id,),
+        )
+        row = cur.fetchone()
+    if row is None or row[0] is None or row[1] is None:
+        return None
+    return f'{int(row[0])}:{row[1]}'
+
+
+def side_effects_complete(r_client, node_id: str, generation: Optional[str]) -> bool:
+    """True only when the stored marker belongs to this exact coverage row."""
+    if not generation:
+        return False
     try:
-        return bool(r_client.exists(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id)))
+        return r_client.get(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id)) == generation
     except Exception:
         # If Redis is down we cannot confirm completion; treat as incomplete so
         # the caller replays (which will also fail and re-raise, NACKing the job).
         return False
 
 
-def mark_side_effects_complete(r_client, node_id: str) -> None:
-    r_client.set(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id), '1', ex=SIDE_EFFECT_MARKER_TTL_S)
+def mark_side_effects_complete(r_client, node_id: str, generation: Optional[str]) -> None:
+    if not generation:
+        raise RuntimeError(f'cannot mark side effects for {node_id[:12]}… without a coverage generation')
+    r_client.set(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id), generation, ex=SIDE_EFFECT_MARKER_TTL_S)
 
 
-def replay_coverage_side_effects(db, r_client, node_id: str) -> None:
+def replay_coverage_side_effects(db, r_client, node_id: str, generation: Optional[str]) -> None:
     """Re-enqueue link jobs and re-publish notifications for a node whose
     coverage row exists but whose post-commit side effects never completed."""
     with db.cursor() as cur:
@@ -1191,14 +1218,21 @@ def replay_coverage_side_effects(db, r_client, node_id: str) -> None:
         return
     geom, strength_geoms, radius_m, elevation_m = row
     if WORKER_MODE in ('all', 'link'):
-        _replay_link_jobs(db, r_client, node_id, radius_m)
+        if not _replay_link_jobs(db, r_client, node_id, radius_m):
+            # Fail closed: keeping the job NACKed is better than marking a
+            # coverage row complete while its physical links were never queued.
+            raise RuntimeError(f'link replay incomplete for {node_id[:12]}…')
     _publish_coverage_notifications(r_client, node_id, geom, strength_geoms, elevation_m)
-    mark_side_effects_complete(r_client, node_id)
+    mark_side_effects_complete(r_client, node_id, generation)
     log.info(f'Replayed missing side effects for {node_id[:12]}…')
 
 
-def _replay_link_jobs(db, r_client, node_id: str, radius_m: Optional[float]) -> None:
-    """Reload the node position and enqueue physical link jobs (idempotent)."""
+def _replay_link_jobs(db, r_client, node_id: str, radius_m: Optional[float]) -> bool:
+    """Reload the node position and enqueue physical link jobs (idempotent).
+
+    Returns False when the position is unavailable, so the caller can avoid
+    recording completion for work that was never admitted.
+    """
     with db.cursor() as cur:
         cur.execute(
             'SELECT lat, lon FROM core.nodes WHERE node_id = %s',
@@ -1207,8 +1241,9 @@ def _replay_link_jobs(db, r_client, node_id: str, radius_m: Optional[float]) -> 
         row = cur.fetchone()
     if row is None or row[0] is None or row[1] is None:
         log.warning(f'Cannot replay link jobs for {node_id[:12]}…: no position')
-        return
+        return False
     enqueue_physical_link_jobs_for_node(db, r_client, node_id, row[0], row[1], radius_m)
+    return True
 
 
 def _publish_coverage_notifications(r_client, node_id: str, geom, strength_geoms, elevation_m) -> None:
@@ -2281,11 +2316,13 @@ def process_job(
                 return
 
         if already_calculated(db, node_id, require_predicted_links=is_planned):
-            if not is_planned and not side_effects_complete(r_client, node_id):
-                # BUG-006: coverage exists but the post-commit side effects
-                # (link jobs + notifications) never completed — replay them
-                # instead of silently skipping.
-                replay_coverage_side_effects(db, r_client, node_id)
+            if not is_planned:
+                # BUG-006: the marker is generation-scoped, so a marker written
+                # by an earlier coverage row cannot vouch for this one after a
+                # model-version bump or elevation backfill.
+                generation = coverage_generation(db, node_id)
+                if not side_effects_complete(r_client, node_id, generation):
+                    replay_coverage_side_effects(db, r_client, node_id, generation)
             log.info(f'Coverage already exists for {node_id[:12]}…, skipping')
             return
 
@@ -2361,9 +2398,9 @@ def process_job(
         _publish_coverage_notifications(r_client, node_id, geom, strength_geoms, elevation_m)
         if not is_planned:
             # BUG-006: only after EVERY side effect succeeds do we record the
-            # completion marker, so a crash/Redis failure here is detected on
-            # retry and the side effects replayed instead of skipped forever.
-            mark_side_effects_complete(r_client, node_id)
+            # completion marker, keyed to this exact coverage generation, so a
+            # crash/Redis failure here is detected on retry and replayed.
+            mark_side_effects_complete(r_client, node_id, coverage_generation(db, node_id))
     except PermanentOutOfScope as exc:
         store_permanent_coverage(
             db,
