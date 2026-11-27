@@ -18,6 +18,7 @@ type SiteLayoutProps = {
   showCompanion?: boolean;
   showRegions?: boolean;
   showTopology?: boolean;
+  showTropo?: boolean;
   showSpam?: boolean;
 };
 
@@ -55,6 +56,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
   showCompanion = false,
   showRegions = false,
   showTopology = false,
+  showTropo = false,
   showSpam = false,
 }) => {
   const COOKIE_CONSENT_KEY = 'meshcore-cookie-consent-v1';
@@ -75,6 +77,7 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({
     { to: '/companion', label: 'Companions', enabled: showCompanion },
     { to: '/regions', label: 'Regions', enabled: showRegions },
     { to: '/topology', label: 'Topology', enabled: showTopology },
+    { to: '/tropo', label: 'Tropo', enabled: showTropo },
     { to: '/spam', label: 'Spam', enabled: showSpam },
     { to: '/about', label: 'What is MeshCore', enabled: showAbout },
     { to: '/install', label: 'Install', enabled: showInstall },
