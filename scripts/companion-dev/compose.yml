@@ -35,6 +35,7 @@ services:
     memswap_limit: *companion-build-memory
   beacon-db:
     logging: *service-journal
+    restart: unless-stopped
     image: postgres@sha256:a49f7438ba03589f9b1ca062f2da82e899b48ea1dc50d2449fa09a70be83ebca # 16-bookworm
     environment:
       POSTGRES_USER: beacon_dev
@@ -52,6 +53,7 @@ services:
     shm_size: 1g
   beacon-redis:
     logging: *service-journal
+    restart: unless-stopped
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     command: [redis-server, --save, "", --appendonly, "no"]
     healthcheck:
@@ -63,6 +65,7 @@ services:
     memswap_limit: *companion-beacon-redis-memory
   corescope-ingestor:
     <<: *go
+    restart: unless-stopped
     environment:
       <<: *go-env
       GOMEMLIMIT: ${CORESCOPE_INGEST_GOMEMLIMIT:-192MiB}
@@ -87,6 +90,7 @@ services:
     stop_grace_period: 30s
   corescope:
     <<: *go
+    restart: unless-stopped
     environment:
       <<: *go-env
       # Leave room under the cgroup limit for SQLite and other native allocations.
@@ -127,6 +131,7 @@ services:
     memswap_limit: *companion-beacon-migrate-memory
   beacon:
     <<: *go
+    restart: unless-stopped
     entrypoint: [/bin/companions/beacon]
     command: []
     working_dir: /tmp
@@ -179,6 +184,7 @@ services:
     memswap_limit: *companion-web-build-memory
   beacon-web:
     logging: *service-journal
+    restart: unless-stopped
     image: ${APP_IMAGE:-ukmesh-full-app:local}
     environment:
       COMPANION_SOURCE_REVISION: ${COMPANION_WEB_SOURCE:-unknown}

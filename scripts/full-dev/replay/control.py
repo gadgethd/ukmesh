@@ -12,7 +12,7 @@ from prepare import prepare
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent / 'qualification'))
-from common import REPO, STATE, command, docker, docker_group_command, read_json, sql, write_json
+from common import MIN_FREE_BYTES, REPO, STATE, command, docker, docker_group_command, read_json, sql, write_json
 from fixtures import original_values, selection_values
 from target_lease import target_lease
 from target_safety import require_originals
@@ -30,7 +30,8 @@ def compose(*args):
     invocation = ['docker', '--host', 'unix:///var/run/docker.sock', 'compose', '--env-file', '/dev/null',
                   '-f', str(HERE / 'compose.yml'), *args]
     result = command(docker_group_command(invocation), timeout=60, check=False,
-                     environment_overrides={'REPLAY_UID': str(os.getuid()), 'REPLAY_GID': str(os.getgid())})
+                     environment_overrides={'REPLAY_UID': str(os.getuid()), 'REPLAY_GID': str(os.getgid()),
+                                            'REPLAY_DISK_RESERVE_BYTES': str(MIN_FREE_BYTES)})
     sys.stdout.buffer.write(result.stdout)
     sys.stderr.buffer.write(result.stderr)
     return result.returncode

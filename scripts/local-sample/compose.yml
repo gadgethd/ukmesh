@@ -10,6 +10,7 @@ services:
       file: ../../docker-compose.postgres.yml
       service: postgres
     logging: *service-journal
+    restart: unless-stopped
     container_name: ukmesh-sample-db
     environment:
       POSTGRES_USER: meshcore
@@ -26,10 +27,12 @@ services:
       retries: 60
   redis:
     logging: *service-journal
+    restart: unless-stopped
     image: redis@sha256:8b81dd37ff027bec4e516d41acfbe9fe2460070dc6d4a4570a2ac5b9d59df065
     container_name: ukmesh-sample-redis
     ports: ["127.0.0.1:6380:6379"]
-    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "160mb", "--maxmemory-policy", "noeviction"]
+    command: ["redis-server", "--save", "", "--appendonly", "yes", "--appendfsync", "everysec", "--maxmemory", "160mb", "--maxmemory-policy", "noeviction"]
+    volumes: [sample-redis:/data]
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
@@ -60,6 +63,7 @@ services:
     volumes: [sample-mqtt-log:/mosquitto/log, sample-mqtt-control:/mosquitto/control, sample-mqtt-data:/mosquitto/data]
   mqtt:
     logging: *service-journal
+    restart: unless-stopped
     image: ukmesh-sample-mosquitto:2.1.2-session-accounting-v1
     build:
       context: ./mosquitto
@@ -90,6 +94,7 @@ services:
     memswap_limit: *sample-mqtt-memory
 volumes:
   sample-db:
+  sample-redis:
   sample-mqtt-log:
   sample-mqtt-control:
   sample-mqtt-data:

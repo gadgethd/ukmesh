@@ -18,7 +18,7 @@ services:
     networks: [full, companions]
     mem_limit: 96m
     memswap_limit: 96m
-    restart: "no"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s
@@ -33,7 +33,7 @@ services:
     networks: [full, companions]
     mem_limit: 64m
     memswap_limit: 64m
-    restart: "no"
+    restart: unless-stopped
     healthcheck:
       test: ["CMD", "nginx", "-t"]
       interval: 30s
