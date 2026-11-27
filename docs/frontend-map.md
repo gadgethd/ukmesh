@@ -89,9 +89,13 @@ The CI browser job runs this check on every change.
 
 ### Source graph and release targets (October 2026)
 
-MapLibre is pinned to 6.11.2. `src/plugins/maplibre-source.ts` reconstructs
+MapLibre is pinned to 6.19.0. `src/plugins/maplibre-source.ts` reconstructs
 its unmodified TypeScript/generated shader sources from the integrity-locked
-npm package's source maps. The upstream index-array barrel (which source maps
+npm package's source maps. 6.19.0 no longer ships source maps for the two
+`-shared` bundles, so the inventory requires the four renderer/worker maps and
+treats the shared maps as optional; it still fails closed unless the recovered
+sources contain `src/index.ts`, `src/source/worker.ts` and
+`src/util/actor_messages.ts`. The upstream index-array barrel (which source maps
 omit because it has no statements) is reproduced explicitly. No network fetch
 or mutable upstream checkout occurs during this step. The version check fails
 closed on an unqualified library upgrade. Requalify the emitted worker and

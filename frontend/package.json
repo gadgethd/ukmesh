@@ -23,7 +23,7 @@
     "@deck.gl/layers": "^9.4.1",
     "@deck.gl/mapbox": "^9.4.1",
     "fuse.js": "^7.5.0",
-    "maplibre-gl": "6.11.2",
+    "maplibre-gl": "6.19.0",
     "react": "19.3.1",
     "react-aria-components": "^1.22.1",
     "react-dom": "19.3.1",
