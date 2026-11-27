@@ -55,6 +55,12 @@ async function openOwnerDashboard(page: Page, resource: 'live' | 'live-last-hop'
   ]);
 }
 
+function waitForOwnerResponse(page: Page, resource: string, method: 'GET' | 'POST', status: number) {
+  return page.waitForResponse(response => response.request().method() === method
+    && new URL(response.url()).pathname === `/api/owner/${resource}`
+    && response.status() === status, { timeout: 14_000 });
+}
+
 for (const failure of ['http503', 'timeout', 'invalidSchema'] as const) {
   browserTest(`owner panels show ${failure} and immediate retry restores every panel`, { timeout: 35_000 }, async () => {
     let attempts = 0;
@@ -70,7 +76,7 @@ for (const failure of ['http503', 'timeout', 'invalidSchema'] as const) {
     try {
       await openOwnerDashboard(page, 'live');
       if (failure === 'timeout') {
-        for (const label of labels) await expect(page.getByText(`Loading ${label}…`, { exact: true })).toBeVisible();
+        await Promise.all(labels.map(label => expect(page.getByText(`Loading ${label}…`, { exact: true })).toBeVisible()));
         await expect(page.getByText('No direct sender nodes found in the last 24 hours.')).toHaveCount(0);
       }
       for (const label of labels) await expect(page.getByRole('button', { name: `Retry ${label}`, exact: true })).toBeVisible({ timeout: 14_000 });
@@ -213,7 +219,7 @@ browserTest('a new comparison window hides old repeater series until every new s
     await route.fulfill({ json: { points: [point(next ? 'New hop' : 'Old hop', next ? 30 : id === second ? 20 : 10)] } }); return true;
   });
   try {
-    await openOwnerDashboard(page, 'live-last-hop');
+    await Promise.all([waitForOwnerResponse(page, 'live-last-hop', 'GET', 200), openOwnerDashboard(page, 'live-last-hop')]);
     await expect(page.getByRole('button', { name: 'Old hop (10)', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Add Second repeater to the RX strength comparison', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Second repeater (20)', exact: true })).toBeVisible();
@@ -291,11 +297,8 @@ for (const target of ['packet-sharing', 'public-feed'] as const) {
       await openOwnerDashboard(page, target);
       const section = page.getByRole('region', { name: target === 'packet-sharing' ? 'Share packets' : 'Public feed', exact: true });
       const toggle = section.getByRole('switch').first();
-      const saveResponse = (status: number) => page.waitForResponse(response =>
-        response.request().method() === 'POST' && new URL(response.url()).pathname === `/api/owner/${target}`
-          && response.status() === status, { timeout: 14_000 });
       await expect(toggle).not.toBeChecked();
-      await Promise.all([saveResponse(503), toggle.check()]);
+      await Promise.all([waitForOwnerResponse(page, target, 'POST', 503), toggle.check()]);
       await expect(section.getByRole('alert')).toContainText('Your selection is kept');
       await expect(toggle).toBeChecked();
       await expect(section.getByText(target === 'packet-sharing' ? 'Packet sharing is off' : 'Public feed is off', { exact: true })).toBeVisible();
@@ -303,7 +306,8 @@ for (const target of ['packet-sharing', 'public-feed'] as const) {
       await expect.poll(() => reads, { timeout: 12_000 }).toBeGreaterThan(before);
       await expect(toggle).toBeChecked();
       await expect(section.getByRole('alert')).toContainText('Your selection is kept');
-      await Promise.all([saveResponse(200), section.getByRole('button', { name: 'Retry saving', exact: true }).click()]);
+      await Promise.all([waitForOwnerResponse(page, target, 'POST', 200),
+        section.getByRole('button', { name: 'Retry saving', exact: true }).click()]);
       await expect.poll(() => writes).toBe(2);
       await expect(section.getByRole('alert')).toHaveCount(0);
       await expect(section.getByText(target === 'packet-sharing' ? '1 site enabled' : 'Public feed is on', { exact: true })).toBeVisible();

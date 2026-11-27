@@ -55,3 +55,11 @@ export async function installTerrainRoutes(page: Page) {
     body: FLAT_TERRAIN_TILE,
   }));
 }
+
+export async function openMapSearch(page: Page, mobile: boolean) {
+  if (mobile) {
+    await page.getByRole('button', { name: 'Find', exact: true }).click();
+    return page.getByRole('dialog', { name: 'Find on the map' }).getByRole('combobox', { name: 'Search map nodes' });
+  }
+  return page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true });
+}

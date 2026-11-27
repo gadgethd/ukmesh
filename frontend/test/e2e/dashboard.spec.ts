@@ -1,6 +1,6 @@
-import { expect, test, type Page, type Response } from '@playwright/test';
+import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+import { installMapRoutes, installTerrainRoutes, openMapSearch, RF_COVERAGE_TILE } from './mapFixtures.js';
 import { nodeMapHandle } from '../browserMapHandle.js';
 import { encodeInitialStateColumns, INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER } from '../../src/contracts/initialStateColumns.generated.js';
 
@@ -161,14 +161,6 @@ test('compact bootstrap hydrates the actual map and malformed compact state clos
   await expect.poll(async () => page.evaluate(() =>
     (window.WebSocket as typeof WebSocket & { closedCodes: number[] }).closedCodes.includes(1002))).toBe(true);
 });
-
-async function openMapSearch(page: Page, mobile: boolean) {
-  if (mobile) {
-    await page.getByRole('button', { name: 'Find', exact: true }).click();
-    return page.getByRole('dialog', { name: 'Find on the map' }).getByRole('combobox', { name: 'Search map nodes' });
-  }
-  return page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true });
-}
 
 test('map search and realtime load no nodes without valid privacy authority', async ({ page }, testInfo) => {
   const nodeRequests: string[] = [];

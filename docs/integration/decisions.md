@@ -29,5 +29,5 @@
 
 - The repeater input owns immediate edits, including composition. Persist the query in the URL for reload and history navigation. A router transition can arrive after Chromium has started composing the next edit.
 - Give each mobile feed status metric an explicit grid slot. Adding a freshness label shifted the other labels through the old numbered slots and let changing text move the packet list.
-- Exercise mobile map search through Find and check the website navigation's visible tab order. Keep the privacy, alias and focus restoration assertions.
-- Owner browser tests wait for the first data request before checking the panels. Tests that hold a draft across a failed save await the fixture's error or success response before checking the result in the UI. This keeps startup and CSRF lookup time outside the panel assertions.
+- Share the Find interaction across the dashboard and Regions browser suites. Both suites need the visible mobile search, and Layers has no search input. Check the website navigation's visible tab order and retain the privacy, alias and focus restoration assertions.
+- Browser tests wait for the owner or topology fixture requests before checking the dependent UI. Owner timeout tests inspect the loading panels together while the request is pending. Owner comparison and save tests wait for the relevant responses before checking the results. This keeps cold startup and CSRF lookup time outside those assertions.
