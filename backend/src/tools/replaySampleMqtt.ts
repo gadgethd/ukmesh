@@ -304,6 +304,18 @@ export async function replayPairedSoakPackets(directory: string, broker: URL, co
   await publishReplay(broker.href, pairedPublishes(directory, count, 'observer'), count, speed, 1, 1, 'observer');
 }
 
+/** The fixture controller verifies the owned targets and seed cohort before calling this helper. */
+export async function replayOwnedSeedBatch(rows: readonly { row: Row; rawHex: string }[]): Promise<void> {
+  if (rows.length < 1 || rows.length > 360) throw new Error('invalid fixture seed batch size');
+  const publishes = rows.map(({ row, rawHex }, index) => ({
+    atMs: index * 1_000,
+    topic: row['topic']!,
+    label: row['packet_hash']!,
+    payload: Buffer.from(JSON.stringify(packetReplayEnvelope(row, rawHex, 'observer'))),
+  }));
+  await publishReplay(DEFAULT_BROKER, publishes, rows.length, 30, 1, 1, 'observer');
+}
+
 export async function replaySampleMqtt(args: string[]): Promise<void> {
   const directory = path.resolve(option(args, 'data-dir') ?? defaultDataDir());
   const envelopeFormat = option(args, 'envelope-format') ?? 'legacy';

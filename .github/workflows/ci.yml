@@ -69,6 +69,7 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_startup_readiness.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_session.py -v
+          python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_fixture_seed.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p 'test_target_*.py' -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_companion_ingest_state.py -v
           python3 -B -m unittest discover -s scripts/full-dev/qualification -p test_node_invocation.py -v

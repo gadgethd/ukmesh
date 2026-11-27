@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from functools import cache
 from pathlib import Path
 import re
 import shutil
@@ -99,7 +100,7 @@ def host_sample() -> dict:
             "cpu_ticks": [int(value) for value in Path("/proc/stat").read_text().splitlines()[0].split()[1:]]}
 
 
-def native_pss(manifest: dict) -> dict:
+def native_pss(manifest: dict, *, parents) -> dict:
     roots = set()
     for service in manifest["services"]:
         if service.get("kind") != "process" or not service.get("pid_file"):
@@ -116,12 +117,10 @@ def native_pss(manifest: dict) -> dict:
             roots.add(pid)
         except (FileNotFoundError, ProcessLookupError):
             continue
-    return process_memory(process_family(roots))
+    return process_memory(process_family(roots, parents=parents() if roots else {}))
 
 
-def process_family(roots: set[int], *, proc_root: Path = Path('/proc')) -> set[int]:
-    if not roots:
-        return set()
+def process_parents(proc_root: Path = Path('/proc')) -> dict[int, int]:
     parents = {}
     for entry in proc_root.iterdir():
         if not entry.name.isdigit():
@@ -131,6 +130,15 @@ def process_family(roots: set[int], *, proc_root: Path = Path('/proc')) -> set[i
             parents[int(entry.name)] = status["PPid"]
         except (FileNotFoundError, ProcessLookupError, PermissionError, KeyError):
             continue
+    return parents
+
+
+def process_family(roots: set[int], *, proc_root: Path = Path('/proc'),
+                   parents: dict[int, int] | None = None) -> set[int]:
+    if not roots:
+        return set()
+    if parents is None:
+        parents = process_parents(proc_root)
     selected = set(roots)
     while True:
         descendants = {pid for pid, parent in parents.items() if parent in selected}
@@ -160,13 +168,27 @@ def process_memory(selected: set[int], *, proc_root: Path = Path('/proc'), best_
             "unreadable_processes": unreadable}
 
 
+CONTAINER_SAMPLE_TEMPLATE = (
+    '{"Name":{{json .Name}},"Id":{{json .Id}},"RestartCount":{{json .RestartCount}},'
+    '"State":{"Pid":{{json .State.Pid}},"OOMKilled":{{json .State.OOMKilled}},'
+    '"StartedAt":{{json .State.StartedAt}},'
+    '"Health":{{with index .State "Health"}}{"Status":{{json .Status}}}{{else}}{}{{end}}},'
+    '"HostConfig":{"Memory":{{json .HostConfig.Memory}},"MemorySwap":{{json .HostConfig.MemorySwap}}},'
+    '"CoreScopeData":['
+    '{{if and (eq (index .Config.Labels "com.docker.compose.project") "ukmesh-companions") '
+    '(eq (index .Config.Labels "com.docker.compose.service") "corescope")}}'
+    '{{range .Mounts}}{{if eq .Destination "/data"}}{{json .Source}},{{end}}{{end}}{{end}}null]}'
+)
+
+
 def container_samples() -> list[dict]:
     ids = docker(["ps", "-q"]).stdout.decode().split()
     if not ids:
         return []
-    inspected = json.loads(docker(["inspect", *ids]).stdout)
+    inspected = docker(["inspect", "--type", "container", "--format", CONTAINER_SAMPLE_TEMPLATE, *ids])
     result = []
-    for item in inspected:
+    for line in inspected.stdout.splitlines():
+        item = json.loads(line)
         pid = item["State"]["Pid"]
         # A resident can exit between Docker's process list and cgroup reads.
         # Its absence remains visible to the required coverage and stability gates.
@@ -174,12 +196,9 @@ def container_samples() -> list[dict]:
             continue
         try:
             resident = running_container_sample(item, container_cgroup(pid))
-            labels = item.get("Config", {}).get("Labels", {})
-            if labels.get("com.docker.compose.project") == "ukmesh-companions" \
-                    and labels.get("com.docker.compose.service") == "corescope":
-                mounts = [Path(mount["Source"]) for mount in item.get("Mounts", []) if mount["Destination"] == "/data"]
-                if len(mounts) == 1 and mounts[0].resolve().is_relative_to(REPO / "plans"):
-                    resident["sqlite"] = sqlite_sizes(mounts[0])
+            mounts = [Path(source) for source in item.get("CoreScopeData", []) if source is not None]
+            if len(mounts) == 1 and mounts[0].resolve().is_relative_to(REPO / "plans"):
+                resident["sqlite"] = sqlite_sizes(mounts[0])
             result.append(resident)
         except (FileNotFoundError, ProcessLookupError):
             continue
@@ -369,16 +388,18 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
     start = time.monotonic()
     next_database_sample = start
     next_harness_sample = start
+    collector_cpu = time.thread_time()
     with output.open("x") as stream:
         output.chmod(0o600)
         while True:
             host = host_sample()
             containers = container_samples()
-            native = native_pss(manifest)
+            parents = cache(process_parents)
+            native = native_pss(manifest, parents=parents)
             row = {"host": host, "containers": containers, "native": native,
                    "runtime_working_bytes": sum(item["working_bytes"] for item in containers) + native["total_bytes"]}
             if time.monotonic() >= next_harness_sample:
-                row["harness"] = process_memory(process_family({os.getpid()}), best_effort=True)
+                row["harness"] = process_memory(process_family({os.getpid()}, parents=parents()), best_effort=True)
                 next_harness_sample = time.monotonic() + 10
             if time.monotonic() >= next_database_sample:
                 row["databases"] = database_samples(targets)
@@ -394,6 +415,7 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
                 stop_event.wait(interval)
             else:
                 time.sleep(min(interval, seconds - elapsed))
+    collector_cpu = time.thread_time() - collector_cpu
     required = {service.get("container", service["name"]) for service in manifest["services"]
                 if service.get("required", True) and service.get("kind", "container") == "container"}
     # The raw samples already live on disk. Decode them after load so the
@@ -404,6 +426,7 @@ def sample(run: Path, *, seconds: int, interval: float, warmup: int,
     harness = [row["harness"] for row in rows if "harness" in row]
     result["harness"] = {
         "samples": len(harness),
+        "collector_cpu_seconds": collector_cpu,
         "pss_peak_bytes": max((row["total_bytes"] for row in harness), default=0),
         "swap_pss_peak_bytes": max((row["swap_total_bytes"] for row in harness), default=0),
         "complete_swap_coverage": bool(harness) and all(row["swap_coverage_complete"] for row in harness),

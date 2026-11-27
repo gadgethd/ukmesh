@@ -80,7 +80,12 @@ class EffectiveMemoryEvidence(unittest.TestCase):
             (group/'memory.swap.max').write_text('512')
             item={'Name':'/api','Id':'id','RestartCount':0,'State':{'Pid':123,'OOMKilled':False,'StartedAt':'now'},
                   'HostConfig':{'Memory':1024,'MemorySwap':1024}}
-            def docker(args):return type('Result',(),{'stdout':b'id\n' if args==['ps','-q'] else json.dumps([item]).encode()})()
+            def docker(args):
+                if args == ['ps', '-q']:
+                    return type('Result', (), {'stdout': b'id\n'})()
+                self.assertEqual(args, ['inspect', '--type', 'container', '--format',
+                                        resources.CONTAINER_SAMPLE_TEMPLATE, 'id'])
+                return type('Result', (), {'stdout': (json.dumps(item) + '\n').encode()})()
             with patch.object(resources,'docker',side_effect=docker),patch.object(resources,'container_cgroup',return_value=group):
                 row=resources.container_samples()[0]
             self.assertEqual(row['working_bytes'],90)
@@ -120,7 +125,7 @@ class EffectiveMemoryEvidence(unittest.TestCase):
     def test_process_exit_still_fails_required_resident_coverage(self):
         item = {'Name': '/api', 'State': {'Pid': 123}}
         def docker(args):
-            output = b'id\n' if args == ['ps', '-q'] else json.dumps([item]).encode()
+            output = b'id\n' if args == ['ps', '-q'] else (json.dumps(item) + '\n').encode()
             return type('Result', (), {'stdout': output})()
 
         with patch.object(resources, 'docker', side_effect=docker), patch.object(

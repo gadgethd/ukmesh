@@ -134,7 +134,7 @@ def restore_current(run: Path) -> None:
 
 def qualify(token: str, run: Path, args: list[str]) -> int:
     if not args or args[0] not in ('access', 'core-projection', 'operations', 'parity',
-                                 'reads', 'recovery', 'sample', 'smoke', 'soak', 'traffic'):
+                                 'reads', 'recovery', 'sample', 'seed', 'smoke', 'soak', 'traffic'):
         raise ValueError('select one canonical owned fixture workload')
     if any(option == '--run' or option.startswith('--run=') for option in args[1:]):
         raise ValueError('the fixture session owns the qualification evidence path')
@@ -190,7 +190,7 @@ def qualify(token: str, run: Path, args: list[str]) -> int:
                 raise InterruptedError(reason)
             require_running(cancellation)
 
-            with target_lease():
+            with target_lease(exclusive=args[0] == 'seed'):
                 selected = read_json(STATE / 'runtime/selected-fixture.json')
                 if selected.get('token') != token:
                     raise ValueError('selected fixture changed before workload startup')
