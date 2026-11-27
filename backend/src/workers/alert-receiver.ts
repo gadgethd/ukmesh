@@ -197,6 +197,10 @@ const emptyQueueMetrics: AlertDeliveryQueueMetrics = {
   deadLetterCount: 0,
   lastSuccessAt: null,
   lastError: null,
+  enqueuedTotal: 0,
+  forwardedTotal: 0,
+  failedTotal: 0,
+  deadLetteredTotal: 0,
 };
 
 export function deriveDeliveryHealth(
@@ -208,7 +212,9 @@ export function deriveDeliveryHealth(
     return { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' };
   }
   if (!queueReady) return { degraded: true, detail: 'durable forwarding queue is not ready' };
-  if (!metrics.lastSuccessAt) return { degraded: true, detail: 'no successful forward since startup' };
+  // Readiness means "able to accept". A fresh volume has never forwarded an
+  // alert (lastSuccessAt is null) and must still be ready, otherwise Compose
+  // never starts Alertmanager and no alert can ever reach this process.
   if (metrics.deadLetterCount > 0) {
     return { degraded: true, detail: `${metrics.deadLetterCount} alert(s) are dead-lettered` };
   }
@@ -225,6 +231,85 @@ export function deriveDeliveryHealth(
       : 'forwarding destination and durable queue are ready',
   };
 }
+
+function metric(name: string, help: string, type: 'gauge' | 'counter', value: number): string {
+  return `# HELP ${name} ${help}\n# TYPE ${name} ${type}\n${name} ${value}\n`;
+}
+
+/** Prometheus text exposition (version 0.0.4) for the alert receiver. */
+export function renderAlertReceiverMetrics(
+  metrics: AlertDeliveryQueueMetrics,
+  forwardConfigured: boolean,
+  queueReady: boolean,
+): string {
+  const parsedLastSuccess = metrics.lastSuccessAt === null ? Number.NaN : Date.parse(metrics.lastSuccessAt);
+  const lastSuccessSeconds = Number.isFinite(parsedLastSuccess)
+    ? Math.max(0, parsedLastSuccess / 1_000)
+    : 0;
+  return [
+    metric(
+      'meshcore_alert_receiver_forward_configured',
+      'Whether ALERT_FORWARD_URL is configured (0 means archive-only mode).',
+      'gauge',
+      forwardConfigured ? 1 : 0,
+    ),
+    metric(
+      'meshcore_alert_receiver_queue_ready',
+      'Whether the durable forwarding queue finished initializing.',
+      'gauge',
+      queueReady ? 1 : 0,
+    ),
+    metric(
+      'meshcore_alert_receiver_pending_count',
+      'Alerts waiting in the durable forwarding queue.',
+      'gauge',
+      metrics.pendingCount,
+    ),
+    metric(
+      'meshcore_alert_receiver_dead_letter_count',
+      'Dead-lettered alerts retained on the alert volume.',
+      'gauge',
+      metrics.deadLetterCount,
+    ),
+    metric(
+      'meshcore_alert_receiver_queue_oldest_age_seconds',
+      'Age of the oldest alert waiting for forwarding; 0 when the queue is empty.',
+      'gauge',
+      metrics.oldestQueueAgeSeconds,
+    ),
+    metric(
+      'meshcore_alert_receiver_last_success_timestamp_seconds',
+      'Unix time of the last successful forward; 0 when this volume has never delivered.',
+      'gauge',
+      lastSuccessSeconds,
+    ),
+    metric(
+      'meshcore_alert_receiver_enqueued_total',
+      'Alerts durably enqueued for forwarding since this process started.',
+      'counter',
+      metrics.enqueuedTotal,
+    ),
+    metric(
+      'meshcore_alert_receiver_forwarded_total',
+      'Alerts successfully forwarded since this process started.',
+      'counter',
+      metrics.forwardedTotal,
+    ),
+    metric(
+      'meshcore_alert_receiver_failed_total',
+      'Failed forwarding attempts since this process started.',
+      'counter',
+      metrics.failedTotal,
+    ),
+    metric(
+      'meshcore_alert_receiver_dead_lettered_total',
+      'Alerts moved to the dead-letter state since this process started.',
+      'counter',
+      metrics.deadLetteredTotal,
+    ),
+  ].join('');
+}
+
 
 function deliveryHealth() {
   const metrics = deliveryQueue?.metrics() ?? emptyQueueMetrics;
@@ -267,6 +352,16 @@ const server = http.createServer(async (req, res) => {
       last_success_at: health.metrics.lastSuccessAt,
       last_error: health.metrics.lastError,
     });
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/metrics') {
+    const metrics = deliveryQueue?.metrics() ?? emptyQueueMetrics;
+    res.writeHead(200, {
+      'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    res.end(renderAlertReceiverMetrics(metrics, Boolean(FORWARD_URL), deliveryQueueReady));
     return;
   }
   if (req.method !== 'POST' || req.url !== '/alerts') {
@@ -330,6 +425,15 @@ const server = http.createServer(async (req, res) => {
       json(res, 503, { error: 'could not persist alert receipt' });
       return;
     }
+    // D1: archive-only mode cannot deliver to an operator. Returning 202 would
+    // tell Alertmanager the alert was handled, so keep the receipt but ask the
+    // producer to retry once forwarding is configured.
+    res.setHeader('retry-after', '5');
+    json(res, 503, {
+      error: 'archive-only mode: ALERT_FORWARD_URL is not configured',
+      archived: true,
+    });
+    return;
   }
   json(res, 202, { accepted: true });
 });
