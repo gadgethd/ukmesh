@@ -233,7 +233,14 @@ test('local exploration keeps a former-name search, map link and partial repeate
   const map = page.getByRole('link', { name: 'View on Live Map' });
   expect(new URL((await map.getAttribute('href'))!).searchParams.get('node')).toBe(id);
   await map.click();
+  // Back navigation reloads the index and restores the debounced name lookup.
+  // Wait for both before measuring requests caused by nearby selection.
+  const restoredLookups = Promise.all(['', 'HarbourBeacon'].map(query => page.waitForResponse(response => {
+    const url = new URL(response.url());
+    return response.ok() && url.pathname === '/api/nodes/map' && (url.searchParams.get('q') ?? '') === query;
+  })));
   await page.goBack();
+  await restoredLookups;
   await expect(page.getByRole('heading', { name: 'Ridge current' })).toBeVisible();
   await page.getByRole('button', { name: 'Find nearby' }).click();
   await expect(page.getByText('Location access was denied.', { exact: false })).toBeVisible();
