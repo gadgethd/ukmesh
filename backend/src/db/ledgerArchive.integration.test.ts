@@ -8,7 +8,29 @@ test('ledger compaction preserves complete history and rejects archived replays 
   const admin=new pg.Pool({connectionString:endpoint});const name=`archive_${process.pid}_${Date.now()}`;
   await admin.query(`CREATE DATABASE ${name}`);const url=new URL(endpoint!);url.pathname='/'+name;
   const pool=new pg.Pool({connectionString:url.toString(),max:3});
-  t.after(async()=>{await pool.end();await admin.query(`DROP DATABASE ${name} WITH (FORCE)`);await admin.end();});
+  t.after(async()=>{
+    // `DROP DATABASE ... WITH (FORCE)` terminates every remaining backend on
+    // the scratch database. A pool client that has not finished closing at
+    // that instant emits "terminating connection due to administrator command"
+    // as an uncaught error, which fails an otherwise-passing test. Absorb only
+    // that specific post-end termination, never a real query failure.
+    pool.on('error', (error: Error) => {
+      if (!/terminating connection due to administrator command/i.test(error.message)) {
+        console.error('[ledgerArchive] pool error during teardown', error);
+      }
+    });
+    await pool.end();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const { rows } = await admin.query(
+        'SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = $1',
+        [name],
+      );
+      if ((rows[0]?.n ?? 0) === 0) break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await admin.query(`DROP DATABASE IF EXISTS ${name} WITH (FORCE)`);
+    await admin.end();
+  });
   await pool.query('CREATE EXTENSION IF NOT EXISTS timescaledb');
   await pool.query(fs.readFileSync(new URL('./migrations/059_ingest_observation_ledger.sql',import.meta.url),'utf8'));
   await pool.query(`INSERT INTO ingest_observation_ledger(observation_id,observed_at,packet_hash,network,created_at)
