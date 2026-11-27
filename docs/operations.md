@@ -358,6 +358,32 @@ mqtt-ingest`, its broker connection and its database access. Keep the broker
 session and volume intact. If a targeted restart is needed, restart
 `mqtt-ingest` and verify that commit and acknowledgement counters advance.
 
+### DEV recovery and storage
+
+The DEV database, broker, Redis, companion services, and LAN entry points use
+Docker's `unless-stopped` restart policy. An intentional stop remains in effect.
+Migration and initialisation jobs finish and exit. The main API and ingest
+services each keep their own restart policy and readiness check.
+
+The sample Redis service writes an append-only file to the `sample-redis`
+volume and syncs it once a second. Preserve that volume during a restart or
+rebuild. The MQTT durable commit boundary remains PostgreSQL. Restore Redis
+state from the old volume before switching an existing DEV installation from
+an anonymous volume.
+
+Local archive replay pauses below the qualification disk reserve of 10 GiB.
+It retains its cursor and resumes automatically once 10.5 GiB is available.
+`scripts/dev-all.sh replay status` reports `pauseReason: disk-reserve` when
+the guard is active. This pause applies only to the archive player. The broker
+and MQTT ingest keep running. Preserve databases, fixture stores and evidence
+when reclaiming disk space.
+
+WebSocket snapshots prewarm once on startup. After expiry, the first reader
+refreshes the snapshot. DEV permits two concurrent snapshot builds and reads
+the 24-hour message history through the analytics pool, leaving the HTTP pool
+available for interactive reads. The synthetic monitor still exercises full
+snapshot delivery.
+
 ### Rotate the ingest password on the current broker
 
 Mount a private directory as `MQTT_INGEST_PASSWORD_HOST_DIR` for MQTT ingest.

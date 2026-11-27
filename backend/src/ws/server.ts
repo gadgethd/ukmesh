@@ -22,7 +22,7 @@ import {
 import { authorizePublicWsMessage } from './privacy.js';
 import { subscribeLive } from './liveBus.js';
 import { createPublicPolicyReader } from '../privacy/policyReader.js';
-import { query } from '../db/runtime.js';
+import { analyticsQuery, query } from '../db/runtime.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
 import { trustedClientIp } from '../http/trustedProxy.js';
 import { websocketAdmissionsTotal, websocketClients, publicLiveOutcomesTotal } from '../metrics/websocket.js';
@@ -219,7 +219,7 @@ async function fetchInitialState(network: string | undefined, observer: string |
           { limit: 7, network, observer, region },
         ),
         readRecentWithPending(
-          (hashes) => getRecentMessages(200, network, observer, signal, undefined, hashes, region),
+          (hashes) => getRecentMessages(200, network, observer, signal, analyticsQuery, hashes, region),
           // Message history is group-text only: keep the pending merge in the
           // same contract as getRecentMessages (packet_type = 5).
           { limit: 200, network, observer, region, includePayload: true, packetTypes: [5], rowKind: 'messages' },
@@ -409,7 +409,7 @@ export function initWebSocketServer(
 
   const warmInitialState = () => {
     for (const net of WARMUP_NETWORKS) {
-      fetchInitialState(net, undefined).catch(() => { /* best-effort */ });
+      initialStateGate.run(() => fetchInitialState(net, undefined)).catch(() => { /* best-effort */ });
     }
   };
 
@@ -483,11 +483,9 @@ export function initWebSocketServer(
 
   if (WARMUP_NETWORKS.length > 0) {
     const warmup = setTimeout(warmInitialState, 10_000).unref();
-    const refresh = setInterval(warmInitialState, INITIAL_STATE_TTL_MS).unref();
-    wss.once('close', () => {
-      clearTimeout(warmup);
-      clearInterval(refresh);
-    });
+    // After startup the first reader refreshes an expired snapshot. The
+    // full-day message read used to run every minute even with no readers.
+    wss.once('close', () => clearTimeout(warmup));
   }
 
   const clientScopes = new Map<WebSocket, ClientScope>();

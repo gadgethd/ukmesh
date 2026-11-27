@@ -24,8 +24,10 @@ services:
     environment:
       REPLAY_SPEED: "60"
       REPLAY_RATE: "16"
+      REPLAY_DISK_RESERVE_BYTES: ${REPLAY_DISK_RESERVE_BYTES:?Set by the DEV replay controller}
     volumes:
       - ./play.mjs:/app/dev-replay/play.mjs:ro
+      - ./disk-reserve.mjs:/app/dev-replay/disk-reserve.mjs:ro
       - ../../../plans/lean-runtime/runtime/replay/input:/archive:ro
       - ../../../plans/lean-runtime/runtime/replay/progress:/progress
     networks: [ingress]

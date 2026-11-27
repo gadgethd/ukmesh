@@ -39,6 +39,41 @@ class LocalMemoryPolicy(unittest.TestCase):
         self.check_pairs(compose('scripts/local-sample/compose.yml'),
                          {'db':2048,'redis':256,'mqtt-log-init':16,'mqtt':256})
 
+    def test_dev_services_recover_and_initialisation_jobs_remain_one_shot(self):
+        groups = [
+            (('scripts/local-sample/compose.yml',), ('db', 'redis', 'mqtt'), ('mqtt-log-init',)),
+            (('scripts/companion-dev/compose.yml',),
+             ('beacon', 'beacon-db', 'beacon-redis', 'beacon-web', 'corescope', 'corescope-ingestor'),
+             ('beacon-migrate', 'build', 'web-build')),
+            (('scripts/full-dev/lan/compose.yml',), ('site', 'gateway'), ()),
+            (('docker-compose.yml', 'scripts/full-dev/compose.yml'), ('external-test',), ('alert-bootstrap',)),
+        ]
+        for files, resident, one_shot in groups:
+            services = compose(*files)
+            for name in resident:
+                self.assertEqual(services[name]['restart'], 'unless-stopped', name)
+            for name in one_shot:
+                self.assertEqual(services[name].get('restart', 'no'), 'no', name)
+
+    def test_sample_redis_has_a_stable_persistent_store(self):
+        redis = compose('scripts/local-sample/compose.yml')['redis']
+        self.assertEqual(redis['volumes'][0]['source'], 'sample-redis')
+        self.assertEqual(redis['volumes'][0]['target'], '/data')
+        options = dict(zip(redis['command'][1::2], redis['command'][2::2]))
+        self.assertEqual(options['--appendonly'], 'yes')
+        self.assertEqual(options['--appendfsync'], 'everysec')
+        self.assertEqual(options['--maxmemory-policy'], 'noeviction')
+
+    def test_dev_websocket_snapshot_concurrency_stays_below_the_http_pool(self):
+        files = ('docker-compose.yml', 'scripts/full-dev/compose.yml')
+        backend = compose(*files)['backend']['environment']
+        self.assertEqual(backend['WS_INITIAL_STATE_CONCURRENCY'], '2')
+        self.assertEqual(backend['DATABASE_POOL_MAX'], '8')
+        self.assertEqual(compose(*files, WS_INITIAL_STATE_CONCURRENCY='3')['backend']['environment']
+                         ['WS_INITIAL_STATE_CONCURRENCY'], '3')
+        ci = compose('docker-compose.yml', 'docker-compose.ci.yml')['backend']['environment']
+        self.assertEqual(ci['WS_INITIAL_STATE_CONCURRENCY'], '8')
+
     def postgres_settings(self, service):
         command = service['command']
         self.assertEqual(command[0], 'postgres')

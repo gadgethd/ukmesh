@@ -47,6 +47,7 @@ services:
       REDIS_PASSWORD: ""
       ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924${FULL_DEV_LAN_APP_ORIGINS:-}
       OWNER_ACL_MODE: shadow
+      WS_INITIAL_STATE_CONCURRENCY: ${WS_INITIAL_STATE_CONCURRENCY:-2}
       OWNER_ACL_UNMANAGED_USERS: ""
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
       DATA_LIFECYCLE_RETENTION_ENABLED: "false"
@@ -185,6 +186,7 @@ services:
       - ./plans/lean-runtime/runtime/prometheus.yml:/etc/prometheus/prometheus.yml:ro
   external-test:
     image: ${BACKEND_IMAGE}
+    restart: unless-stopped
     command: [node, /dev-tools/external-test.mjs]
     volumes: ["./scripts/full-dev/external-test.mjs:/dev-tools/external-test.mjs:ro"]
     ports: ["127.0.0.1:3107:8080"]
@@ -217,5 +219,6 @@ networks:
     name: ukmesh-sample_default
 volumes:
   timescaledb_data: {external: true, name: ukmesh-sample_sample-db}
+  redis_data: {external: true, name: ukmesh-sample_sample-redis}
   mosquitto_log: {external: true, name: ukmesh-sample_sample-mqtt-log}
   mosquitto_control: {external: true, name: ukmesh-sample_sample-mqtt-control}
