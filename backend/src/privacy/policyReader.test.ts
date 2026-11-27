@@ -71,3 +71,22 @@ test('a late concurrent read cannot replace a newer certified prefix index', asy
   assert.equal(await read(), current);
   assert.equal(current?.currentGeneration, 8);
 });
+
+test('a delayed read cannot reuse an index after a concurrent fence refuses authority', async () => {
+  let release!: (rows: never) => void;
+  const held = new Promise<never>(resolve => { release = resolve; });
+  const row = (active: boolean, prefixes: [] | null) => ({
+    rows: [{ generation: '7', materialized_generation: '7', remat_active: active, prefixes }],
+  }) as never;
+  let calls = 0;
+  const read = createPublicPolicyReader(async () => {
+    if (++calls === 1) return row(false, []);
+    if (calls === 2) return held;
+    return row(true, null);
+  });
+  assert.equal((await read())?.currentGeneration, 7);
+  const inFlight = read();
+  assert.equal(await read(), null);
+  release(row(false, null));
+  assert.equal(await inFlight, null);
+});

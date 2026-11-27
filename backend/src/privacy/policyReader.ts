@@ -8,8 +8,15 @@ export type PublicPolicyQuery = <T extends QueryResultRow = QueryResultRow>(
 /** Load one authoritative policy snapshot for an entire public read batch. */
 export function createPublicPolicyReader(query: PublicPolicyQuery) {
   let cached: PublicPrivacyPolicy | null = null;
+  let invalidation = 0;
   return async (): Promise<PublicPrivacyPolicy | null> => {
     const captured = cached;
+    const capturedInvalidation = invalidation;
+    const forget = () => {
+      if (cached !== captured) return;
+      cached = null;
+      invalidation++;
+    };
     const { rows } = await query<{
       generation: string;
       materialized_generation: string;
@@ -39,7 +46,7 @@ export function createPublicPolicyReader(query: PublicPolicyQuery) {
         )), '[]'::jsonb) FROM core.private_node_prefixes prefix)
       END AS prefixes FROM authority
     `, [captured?.currentGeneration ?? null], AbortSignal.timeout(30_000)).catch((error: unknown) => {
-      if (cached === captured) cached = null;
+      forget();
       throw error;
     });
     const state = rows[0];
@@ -47,14 +54,16 @@ export function createPublicPolicyReader(query: PublicPolicyQuery) {
     if (!state || !Number.isSafeInteger(generation) || generation < 1
       || Number(state.materialized_generation) !== generation
       || state.remat_active !== false) {
-      if (cached === captured) cached = null;
+      forget();
       return null;
     }
-    // A concurrent fence may already have seen a newer generation.
-    if (cached !== captured && cached && generation < cached.currentGeneration) return null;
+    // A concurrent fence may already have seen a newer generation or an
+    // uncertified state while this statement was in flight.
+    if (capturedInvalidation !== invalidation
+      || (cached !== captured && cached && generation < cached.currentGeneration)) return null;
     if (captured?.currentGeneration === generation && state.prefixes === null) return captured;
     if (!Array.isArray(state.prefixes)) {
-      if (cached === captured) cached = null;
+      forget();
       return null;
     }
     const policy = new PrivatePrefixCache();
