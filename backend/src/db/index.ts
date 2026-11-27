@@ -880,6 +880,56 @@ function identityDecryptionCteSql(cteName: string, windowSql: string, scopeClaus
     )`;
 }
 
+/**
+ * Resolve one packet observation's durable decryption through its identity.
+ *
+ * `mesh.packet_decryptions` is keyed by the observation hash that was
+ * decrypted. A row whose UID group has several observation hashes may be the
+ * representative without carrying the decryption, so joining its exact hash
+ * reports NULL. This resolves the sibling set through
+ * `mesh.packets.packet_uid` (indexed by `packets_packet_uid_idx`) and keeps the
+ * exact-hash row as a fallback, which is also the whole join under the `hash`
+ * rollback authority.
+ *
+ * This is the per-row counterpart to `identityDecryptionCteSql`. The channel
+ * history window is 90 days, so a window-wide identity CTE — the shape the
+ * five-minute and 24-hour readers use — would scan the whole window on every
+ * page. A lateral lookup is bounded to one decryption per observation and
+ * stays on the UID index.
+ */
+function identityDecryptionJoinSql(alias: string): {
+  joins: string;
+  summary: string;
+  decrypted: string;
+} {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(alias)) {
+    throw new Error(`unsafe SQL alias: ${JSON.stringify(alias)}`);
+  }
+  const exactAlias = `${alias}_exact`;
+  const exactJoin =
+    `LEFT JOIN mesh.packet_decryptions ${exactAlias} ON ${exactAlias}.packet_hash = p.packet_hash`;
+  if (packetIdentityReadAuthority() === 'hash') {
+    return {
+      joins: exactJoin,
+      summary: `${exactAlias}.summary`,
+      decrypted: `${exactAlias}.decrypted`,
+    };
+  }
+  return {
+    joins: `LEFT JOIN LATERAL (
+        SELECT pd.summary, pd.decrypted
+          FROM mesh.packets sib
+          JOIN mesh.packet_decryptions pd ON pd.packet_hash = sib.packet_hash
+         WHERE sib.packet_uid = p.packet_uid
+         ORDER BY pd.created_at DESC, pd.packet_hash
+         LIMIT 1
+      ) ${alias} ON p.packet_uid IS NOT NULL
+      ${exactJoin}`,
+    summary: `COALESCE(${alias}.summary, ${exactAlias}.summary)`,
+    decrypted: `COALESCE(${alias}.decrypted, ${exactAlias}.decrypted)`,
+  };
+}
+
 export async function getRecentPackets(
   limit = 200,
   network?: string,
@@ -1119,15 +1169,25 @@ export async function getChannelMessageHistory(
   limit = 50,
   network?: string,
   observer?: string,
+  readQuery: QueryFn = analyticsQuery,
 ) {
   const normalizedChannel = channel.trim().toLowerCase();
   if (!isPublicChannelName(normalizedChannel)) return [];
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   // A historical packet may retain the ingest-time "[encrypted]" marker in
-  // payload while mesh.packet_decryptions has the channel-specific summary. Prefer
-  // the durable decryption summary for channel matching and display.
-  const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
+  // payload while mesh.packet_decryptions has the channel-specific summary.
+  // Prefer the durable decryption summary for channel matching and display,
+  // resolved through the packet identity: the decrypted observation of a UID
+  // group is not necessarily the observation this page returns.
+  const decryption = identityDecryptionJoinSql('pd');
+  const summaryExpr = `COALESCE(NULLIF(BTRIM(${decryption.summary}), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
+  const channelHashExpr = `COALESCE(
+             p.payload->>'channelHash',
+             p.payload->'decrypted'->>'channelHash',
+             ${decryption.decrypted}->>'channelHash',
+             ''
+           )`;
   const historyWindow = `NOW() - INTERVAL '90 days'`;
   const historyBatchLimit = 100;
   const selectionLimit = Math.min(100, Math.max(limit, Math.ceil(limit * 1.5)));
@@ -1136,10 +1196,10 @@ export async function getChannelMessageHistory(
   let cursorHash = '\uffff';
 
   while (selected.size < selectionLimit) {
-    const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
+    const batch = await readQuery<{ packet_hash: string; time: Date }>(
       `SELECT p.time, p.packet_hash
        FROM mesh.packets p
-       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       ${decryption.joins}
        WHERE p.packet_type = 5
          AND p.time > ${historyWindow}
          AND (
@@ -1154,12 +1214,7 @@ export async function getChannelMessageHistory(
          AND p.is_private IS NOT TRUE
          AND (
            LOWER(${summaryExpr}) LIKE ('[' || $4 || ']%')
-           OR LOWER(COALESCE(
-             p.payload->>'channelHash',
-             p.payload->'decrypted'->>'channelHash',
-             pd.decrypted->>'channelHash',
-             ''
-           )) = ANY($5::text[])
+           OR LOWER(${channelHashExpr}) = ANY($5::text[])
          )
        ORDER BY p.time DESC, p.packet_hash DESC
        LIMIT $1`,
@@ -1183,7 +1238,7 @@ export async function getChannelMessageHistory(
   if (selectedHashes.length === 0) return [];
 
   const detailScope = buildScopePlaceholders(2, network, observer);
-  const res = await analyticsQuery(
+  const res = await readQuery(
     `WITH channel_candidates AS MATERIALIZED (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
@@ -1195,7 +1250,7 @@ export async function getChannelMessageHistory(
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
       FROM mesh.packets p
-      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      ${decryption.joins}
       LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases src_alias

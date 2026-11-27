@@ -22,6 +22,7 @@
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import { loadCurrentPublicPrivacyPolicy, type QueryFn } from '../db/packetBatch.js';
 import { query } from '../db/index.js';
+import { packetIdentityReadAuthority } from '../db/packetIdentityRead.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
 
@@ -99,11 +100,42 @@ async function resolveCanonicalAliases(nodeIds: string[]): Promise<Map<string, s
   return new Map(result.rows.map((row) => [row.source_node_id, row.canonical_node_id]));
 }
 
+/**
+ * Resolve a pending observation's durable decryption summary by identity.
+ *
+ * A pending row is not necessarily the observation that was decrypted: the
+ * decryption table is keyed by observation hash, and an earlier (or later)
+ * observation of the same wire content can be the one holding the decryption.
+ * Resolve the stored UID for this hash, then read the newest decryption across
+ * its sibling observations; keep the exact-hash row as a fallback for hashes
+ * that are not in `mesh.packets` yet and for the `hash` rollback authority.
+ */
 export async function resolvePendingSummaries(entries: PendingSummary[], readQuery: QueryFn = query): Promise<Map<string, string | null>> {
-  const result = await readQuery(`
-    SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
+  const exact = `SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
     FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
-    LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
+    LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash`;
+  const identity = `SELECT p.packet_hash,
+           COALESCE(p.payload->>'_summary', identity_dec.summary, exact_dec.summary) AS summary
+    FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
+    LEFT JOIN LATERAL (
+      SELECT pk.packet_uid
+        FROM mesh.packets pk
+       WHERE pk.packet_hash = p.packet_hash
+       LIMIT 1
+    ) owner ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT pd.summary
+        FROM mesh.packets sib
+        JOIN mesh.packet_decryptions pd ON pd.packet_hash = sib.packet_hash
+       WHERE sib.packet_uid = owner.packet_uid
+       ORDER BY pd.created_at DESC, pd.packet_hash
+       LIMIT 1
+    ) identity_dec ON TRUE
+    LEFT JOIN mesh.packet_decryptions exact_dec ON exact_dec.packet_hash = p.packet_hash`;
+  const result = await readQuery(
+    packetIdentityReadAuthority() === 'hash' ? exact : identity,
+    [JSON.stringify(entries)],
+  );
   return new Map(result.rows.map(row => [String(row.packet_hash), row.summary === null ? null : String(row.summary)]));
 }
 
