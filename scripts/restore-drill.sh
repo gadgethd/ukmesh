@@ -298,6 +298,12 @@ docker exec -i "$postgres_name" pg_restore \
   -U meshcore -d meshcore_owner_auth --no-owner --no-acl --exit-on-error \
   <"$payload_dir/owner-auth.dump"
 echo "PostgreSQL datasets restored."
+# pg_dump restores data, not cluster role config: the app's owner queries are
+# unqualified and rely on a search_path that includes core. Set it at the database
+# level so a restored cluster behaves like the live one.
+docker exec "$postgres_name" psql -U meshcore -d meshcore -q -c \
+  "ALTER DATABASE meshcore SET search_path = core, mesh, public"
+
 
 echo "Restoring Redis durable state..."
 docker run --rm -i \
@@ -387,12 +393,13 @@ docker build \
   --tag "$application_image" \
   "$project_dir" >/dev/null
 database_url="postgresql://meshcore:${restore_password}@timescaledb:5432/meshcore"
-owner_database_url="postgresql://meshcore:${restore_password}@timescaledb:5432/meshcore_owner_auth"
+owner_database_url="postgresql://meshcore:${restore_password}@timescaledb:5432/meshcore"
 redis_url="redis://redis:6379"
 
 docker run --rm \
   --network "$network_name" \
   -e "DATABASE_URL=$database_url" \
+  -e "POSTGRES_PASSWORD=$restore_password" \
   -e DATABASE_STATEMENT_TIMEOUT_MS=0 \
   -e MIGRATION_016_PRIVATE_PREFIXES_APPROVAL=supersede-016-and-017-with-authoritative-privacy-and-026 \
   -e NODE_ENV=production \
@@ -409,6 +416,7 @@ docker run -d \
   --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   -v "$mosquitto_config_volume:/mosquitto/config:ro" \
   -e "DATABASE_URL=$database_url" \
+  -e "POSTGRES_PASSWORD=$restore_password" \
   -e "OWNER_DATABASE_URL=$owner_database_url" \
   -e "REDIS_URL=$redis_url" \
   -e "REDIS_PASSWORD=$restore_password" \
@@ -443,8 +451,8 @@ docker exec "$backend_name" wget -qO- 'http://127.0.0.1:3000/api/stats?network=u
   | jq -e '.totalNodes >= 0' >/dev/null
 
 owner_lookup_count="$(
-  docker exec "$postgres_name" psql -U meshcore -d meshcore_owner_auth -Atc \
-    'SELECT COUNT(*) FROM owner_accounts oa LEFT JOIN owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username'
+  docker exec "$postgres_name" psql -U meshcore -d meshcore -Atc \
+    'SELECT COUNT(*) FROM core.owner_accounts oa LEFT JOIN core.owner_account_nodes oan ON oan.mqtt_username = oa.mqtt_username'
 )"
 case "$owner_lookup_count" in
   ''|*[!0-9]*) echo "owner lookup verification failed" >&2; exit 65 ;;
