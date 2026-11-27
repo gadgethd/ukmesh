@@ -100,7 +100,7 @@ export async function createOwnerSession(
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`owner-session:${normalized}`]);
     await client.query(
-      `INSERT INTO owner_sessions (session_id, mqtt_username, created_at, last_seen_at, expires_at)
+      `INSERT INTO core.owner_sessions (session_id, mqtt_username, created_at, last_seen_at, expires_at)
        VALUES ($1, $2, clock_timestamp(), clock_timestamp(), to_timestamp($3 / 1000.0))`,
       [sessionId, normalized, expiresAt],
     );
@@ -108,12 +108,12 @@ export async function createOwnerSession(
       `WITH ranked AS (
          SELECT session_id,
                 ROW_NUMBER() OVER (ORDER BY created_at DESC, session_id DESC) AS retained_rank
-           FROM owner_sessions
+           FROM core.owner_sessions
           WHERE mqtt_username = $1
             AND revoked_at IS NULL
             AND expires_at > NOW()
        )
-       UPDATE owner_sessions target
+       UPDATE core.owner_sessions target
           SET revoked_at = NOW()
          FROM ranked
         WHERE target.session_id = ranked.session_id
@@ -122,7 +122,7 @@ export async function createOwnerSession(
       [normalized, ownerSessionMaxPerUser, sessionId],
     );
     await client.query(
-      `DELETE FROM owner_sessions
+      `DELETE FROM core.owner_sessions
         WHERE (revoked_at IS NOT NULL OR expires_at <= NOW())
           AND COALESCE(revoked_at, expires_at) < NOW() - ($1 * INTERVAL '1 day')`,
       [ownerSessionRetentionDays],
@@ -144,7 +144,7 @@ export async function isOwnerSessionActive(sessionId: string, mqttUsername: stri
     const result = await ownerPool.query<{ active: boolean }>(
       `SELECT EXISTS (
          SELECT 1
-           FROM owner_sessions
+           FROM core.owner_sessions
           WHERE session_id = $1
             AND mqtt_username = $2
             AND revoked_at IS NULL
@@ -161,7 +161,7 @@ export async function isOwnerSessionActive(sessionId: string, mqttUsername: stri
 export async function touchOwnerSession(sessionId: string): Promise<void> {
   if (!sessionId) return;
   await ownerPool.query(
-    `UPDATE owner_sessions
+    `UPDATE core.owner_sessions
         SET last_seen_at = NOW()
       WHERE session_id = $1
         AND revoked_at IS NULL
@@ -174,7 +174,7 @@ export async function touchOwnerSession(sessionId: string): Promise<void> {
 export async function revokeOwnerSession(sessionId: string): Promise<void> {
   if (!sessionId) return;
   await ownerPool.query(
-    `UPDATE owner_sessions
+    `UPDATE core.owner_sessions
         SET revoked_at = NOW()
       WHERE session_id = $1
         AND revoked_at IS NULL`,
@@ -186,7 +186,7 @@ export async function revokeOwnerSessionsForUsername(mqttUsername: string): Prom
   const normalized = mqttUsername.trim();
   if (!normalized) return;
   await ownerPool.query(
-    `UPDATE owner_sessions
+    `UPDATE core.owner_sessions
         SET revoked_at = NOW()
       WHERE mqtt_username = $1
         AND revoked_at IS NULL`,
@@ -196,7 +196,7 @@ export async function revokeOwnerSessionsForUsername(mqttUsername: string): Prom
 
 export async function revokeAllOwnerSessions(): Promise<void> {
   await ownerPool.query(
-    `UPDATE owner_sessions
+    `UPDATE core.owner_sessions
         SET revoked_at = NOW()
       WHERE revoked_at IS NULL`,
   );
@@ -508,8 +508,8 @@ export async function revokeOwnerGrant(
       const remaining = await client.query<{ active: boolean }>(
         `SELECT EXISTS (
            SELECT 1
-             FROM owner_account_nodes oan
-             JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
+             FROM core.owner_account_nodes oan
+             JOIN core.owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
             WHERE oan.mqtt_username = $1
               AND oa.is_active = TRUE
               AND oan.revoked_at IS NULL
@@ -521,7 +521,7 @@ export async function revokeOwnerGrant(
       );
       if (remaining.rows[0]?.active !== true) {
         await client.query(
-          `UPDATE owner_sessions
+          `UPDATE core.owner_sessions
               SET revoked_at = NOW()
             WHERE mqtt_username = $1
               AND revoked_at IS NULL`,
