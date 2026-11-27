@@ -30,3 +30,4 @@
 - The repeater input owns immediate edits, including composition. Persist the query in the URL for reload and history navigation. A router transition can arrive after Chromium has started composing the next edit.
 - Give each mobile feed status metric an explicit grid slot. Adding a freshness label shifted the other labels through the old numbered slots and let changing text move the packet list.
 - Exercise mobile map search through Find and check the website navigation's visible tab order. Keep the privacy, alias and focus restoration assertions.
+- Owner browser tests wait for the first data request before checking the panels. Startup and cold module loading had consumed the assertion window before the tests reached the loading, refresh and write behavior they verify.

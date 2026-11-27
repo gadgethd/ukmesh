@@ -1,6 +1,6 @@
 import { browserLane, browserLaunchOptions } from '../../test/browserLane.js';
 import assert from 'node:assert/strict';
-import { chromium, expect, type Route } from '@playwright/test';
+import { chromium, expect, type Page, type Route } from '@playwright/test';
 
 const { browserTest, origin: base } = browserLane('OWNER_BROWSER_TESTS', 'OWNER_BROWSER_BASE_URL', 'http://127.0.0.1:3004');
 const first = 'A'.repeat(64), second = 'B'.repeat(64), peerId = 'C'.repeat(64);
@@ -47,6 +47,14 @@ async function setup(handler: (route: Route) => Promise<void>, extra?: (route: R
   return { browser, context, page, errors };
 }
 
+async function openOwnerDashboard(page: Page, resource: 'live' | 'live-last-hop' | 'packet-sharing' | 'public-feed') {
+  await Promise.all([
+    page.waitForRequest(request => request.method() === 'GET'
+      && new URL(request.url()).pathname === `/api/owner/${resource}`, { timeout: 14_000 }),
+    page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' }),
+  ]);
+}
+
 for (const failure of ['http503', 'timeout', 'invalidSchema'] as const) {
   browserTest(`owner panels show ${failure} and immediate retry restores every panel`, { timeout: 35_000 }, async () => {
     let attempts = 0;
@@ -60,7 +68,7 @@ for (const failure of ['http503', 'timeout', 'invalidSchema'] as const) {
       await route.fulfill({ json: live() });
     });
     try {
-      await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
+      await openOwnerDashboard(page, 'live');
       if (failure === 'timeout') {
         for (const label of labels) await expect(page.getByText(`Loading ${label}…`, { exact: true })).toBeVisible();
         await expect(page.getByText('No direct sender nodes found in the last 24 hours.')).toHaveCount(0);
@@ -93,7 +101,7 @@ browserTest('owner refresh failure retains data and changing node cannot show th
     else await route.fulfill({ json: live() });
   });
   try {
-    await page.goto(`${base}/login`, { waitUntil: 'domcontentloaded' });
+    await openOwnerDashboard(page, 'live');
     await expect(page.getByText('Packet content', { exact: true })).toBeVisible();
     await expect(page.getByRole('alert').filter({ hasText: 'Showing the last successful data' }).first()).toBeVisible({ timeout: 15_000 });
     await expect(page.getByText('Packet content', { exact: true })).toBeVisible();
@@ -138,7 +146,7 @@ browserTest('a completed A write cannot replace B settings or its next destinati
     await route.fulfill({ json: sharingSettings(id, id === second ? ['another-site'] : []) }); return true;
   });
   try {
-    await page.goto(`${base}/login`);
+    await openOwnerDashboard(page, 'packet-sharing');
     await expect(page.getByRole('switch', { name: 'Share packets with RelayLens' })).not.toBeChecked();
     await page.getByTitle('Turn packet sharing on for RelayLens').click();
     await expect.poll(() => Boolean(pending)).toBe(true);
@@ -174,7 +182,7 @@ browserTest('an old public-feed write cannot publish into a new login session', 
     await route.fulfill({ json: publicFeedSettings() }); return true;
   });
   try {
-    await page.goto(`${base}/login`);
+    await openOwnerDashboard(page, 'public-feed');
     const control = page.getByRole('switch', { name: 'Publish packets and enable read-only public feed access' });
     await expect(control).not.toBeChecked();
     await page.getByTitle('Turn the public feed on', { exact: true }).click();
@@ -205,7 +213,7 @@ browserTest('a new comparison window hides old repeater series until every new s
     await route.fulfill({ json: { points: [point(next ? 'New hop' : 'Old hop', next ? 30 : id === second ? 20 : 10)] } }); return true;
   });
   try {
-    await page.goto(`${base}/login`);
+    await openOwnerDashboard(page, 'live-last-hop');
     await expect(page.getByRole('button', { name: 'Old hop (10)', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Add Second repeater to the RX strength comparison', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Second repeater (20)', exact: true })).toBeVisible();
@@ -241,7 +249,7 @@ browserTest('a delayed CSRF lookup cannot submit an unmounted owner action under
     await route.fulfill({ json: sharingSettings(first) }); return true;
   });
   try {
-    await page.goto(`${base}/login`);
+    await openOwnerDashboard(page, 'packet-sharing');
     await expect(page.getByRole('switch', { name: 'Share packets with RelayLens' })).not.toBeChecked();
     await page.getByTitle('Turn packet sharing on for RelayLens').click();
     await expect.poll(() => Boolean(heldCsrf)).toBe(true);
@@ -280,7 +288,7 @@ for (const target of ['packet-sharing', 'public-feed'] as const) {
       return true;
     });
     try {
-      await page.goto(`${base}/login`);
+      await openOwnerDashboard(page, target);
       const section = page.getByRole('region', { name: target === 'packet-sharing' ? 'Share packets' : 'Public feed', exact: true });
       const toggle = section.getByRole('switch').first();
       await expect(toggle).not.toBeChecked();
