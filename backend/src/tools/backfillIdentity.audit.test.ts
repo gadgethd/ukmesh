@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import test from 'node:test';
+import pg from 'pg';
 import { loadMigrationFiles } from '../db/migrations.js';
 import { backfillPackets } from './backfillPacketIdentity.js';
 
@@ -513,4 +514,103 @@ test('migration 135 widens the status check and adds the per-chunk columns', () 
   assert.match(sql, /ADD COLUMN IF NOT EXISTS decompressed_chunks TEXT\[\] NOT NULL DEFAULT '\{\}'::text\[\]/);
   assert.match(sql, /'packets_partial'/);
   assert.match(sql, /pg_get_constraintdef\(oid\) LIKE '%packets_complete%'/);
+});
+
+/**
+ * Migration 133's unique index must be enforced by the database, not just
+ * declared in SQL. The migration comment documents a duplicate pre-check; a
+ * database that already holds duplicates must be caught before the index is
+ * applied, and a database that passes it must reject the next duplicate.
+ *
+ * Runs against a disposable database on the fixture server so the index is
+ * created by the shipped migration file exactly as production applies it.
+ */
+const fixtureDatabaseUrl = process.env['TEST_BACKFILL_DATABASE_URL'];
+const fixtureSkip = fixtureDatabaseUrl
+  ? false
+  : 'loopback TEST_BACKFILL_DATABASE_URL required for the migration 133 fixture';
+
+test('migration 133 rejects a duplicate (time, observation_id) and reports a valid unique index', {
+  skip: fixtureSkip,
+  timeout: 120_000,
+}, async (t) => {
+  assert.ok(fixtureDatabaseUrl, 'TEST_BACKFILL_DATABASE_URL is required');
+  const endpoint = new URL(fixtureDatabaseUrl);
+  assert.ok(
+    ['localhost', '127.0.0.1', '::1', '[::1]'].includes(endpoint.hostname),
+    'only an isolated loopback test database is permitted',
+  );
+
+  const admin = new pg.Pool({ connectionString: fixtureDatabaseUrl, max: 1 });
+  const name = `meshcore_identity_133_${process.pid}_${Date.now()}`;
+  await admin.query(`CREATE DATABASE "${name}"`);
+  const owned = new URL(fixtureDatabaseUrl);
+  owned.pathname = `/${name}`;
+  const pool = new pg.Pool({ connectionString: owned.toString(), max: 1 });
+  t.after(async () => {
+    await pool.end();
+    await admin.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    await admin.end();
+  });
+
+  const instant = '2026-11-02T09:00:00.000Z';
+  const first = randomUUID();
+  const second = randomUUID();
+  await pool.query(`
+    CREATE SCHEMA mesh;
+    CREATE TABLE mesh.packets (
+      time TIMESTAMPTZ NOT NULL,
+      observation_id UUID
+    );
+  `);
+  await pool.query(
+    `INSERT INTO mesh.packets (time, observation_id) VALUES ($1::timestamptz, $2::uuid), ($1::timestamptz, $3::uuid)`,
+    [instant, first, second],
+  );
+
+  // The exact pre-check the migration tells operators to run. A non-zero
+  // result means the index must not be applied: fix the duplicates first.
+  const duplicateCheck = `
+    SELECT time, observation_id, count(*)
+      FROM mesh.packets
+     WHERE observation_id IS NOT NULL
+     GROUP BY time, observation_id
+    HAVING count(*) > 1`;
+  const before = await pool.query(duplicateCheck);
+  assert.equal(before.rowCount, 0, 'the fixture must be duplicate-free before migration 133 is applied');
+
+  const sql = readFileSync(
+    new URL('../db/migrations/133_packets_observation_id_unique.sql', import.meta.url),
+    'utf8',
+  );
+  await pool.query('BEGIN');
+  await pool.query(sql);
+  await pool.query('COMMIT');
+
+  const catalog = await pool.query<{ indisunique: boolean; indisvalid: boolean; indisready: boolean }>(`
+    SELECT i.indisunique, i.indisvalid, i.indisready
+      FROM pg_index i
+     WHERE i.indexrelid = 'mesh.packets_time_observation_id_uidx'::regclass
+  `);
+  assert.equal(catalog.rowCount, 1, 'migration 133 must create packets_time_observation_id_uidx');
+  assert.deepEqual(catalog.rows[0], { indisunique: true, indisvalid: true, indisready: true });
+
+  await assert.rejects(
+    pool.query(
+      'INSERT INTO mesh.packets (time, observation_id) VALUES ($1::timestamptz, $2::uuid)',
+      [instant, first],
+    ),
+    (error: unknown) => {
+      const pgError = error as { code?: string; constraint?: string };
+      assert.equal(pgError.code, '23505', 'a duplicate observation key must raise unique_violation');
+      assert.equal(pgError.constraint, 'packets_time_observation_id_uidx');
+      return true;
+    },
+  );
+
+  // Rows with no observation id stay outside the key, as the backfill assumes.
+  await pool.query(
+    'INSERT INTO mesh.packets (time, observation_id) VALUES ($1::timestamptz, NULL), ($1::timestamptz, NULL)',
+    [instant],
+  );
 });
