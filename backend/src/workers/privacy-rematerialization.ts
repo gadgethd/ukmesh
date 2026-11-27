@@ -33,85 +33,49 @@ type QueueRow = {
 };
 type Chunk = { range_start: Date; range_end: Date };
 
-// The two assignment expressions below are copied verbatim from migration 049.
-// Keep packet privacy semantics here aligned with the deployed DB function.
-const PACKET_UPDATE_SQL = `UPDATE mesh.packets p
-     SET is_private = EXISTS (
-           SELECT 1
-           FROM core.private_node_prefixes pp
-           WHERE (
-               pp.network = p.network
-               OR (
-                 pp.network IN ('ukmesh', 'northeast', 'teesside')
-                 AND p.network IN ('ukmesh', 'northeast', 'teesside')
-               )
-             )
-             AND (
-               pp.node_id IN (p.rx_node_id, p.src_node_id)
-               OR (
-                 p.path_hash_size_bytes = pp.prefix_size_bytes
-                 AND EXISTS (
-                   SELECT 1
-                   FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
-                   WHERE UPPER(packet_prefix) = pp.prefix
-                 )
-               )
-             )
-         ),
-         visibility_ok = (
-           (COALESCE(cardinality(p.path_hashes), 0) = 0 OR p.path_hash_size_bytes BETWEEN 1 AND 3)
-           AND NOT EXISTS (
-             SELECT 1
-             FROM core.private_node_prefixes pp
-             WHERE (
-                 pp.network = p.network
-                 OR (
-                   pp.network IN ('ukmesh', 'northeast', 'teesside')
-                   AND p.network IN ('ukmesh', 'northeast', 'teesside')
-                 )
-               )
-               AND (
-                 pp.node_id IN (p.rx_node_id, p.src_node_id)
-                 OR (
-                   p.path_hash_size_bytes = pp.prefix_size_bytes
-                   AND EXISTS (
-                     SELECT 1
-                     FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS packet_prefix
-                     WHERE UPPER(packet_prefix) = pp.prefix
-                   )
-                 )
-               )
-           )
-         )
-   WHERE p.time >= $1 AND p.time < $2
-     AND (
-       p.rx_node_id = $3 OR p.src_node_id = $3
-       OR ((p.network = $4 OR (p.network IN ('ukmesh', 'northeast', 'teesside')
-         AND $4 IN ('ukmesh', 'northeast', 'teesside')))
-         AND EXISTS (
-           SELECT 1 FROM unnest(COALESCE(p.path_hashes, ARRAY[]::text[])) AS pp
-           WHERE UPPER(pp) IN (UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6)))
-         ))
-     )`;
+// A compressed chunk has no usable ctid. These values identify the class of
+// rows with the same result, including historical duplicate/null observation
+// IDs. Ignore current flag values until UPDATE, where they may have changed.
+function chunkUpdateSql(target: Target): string {
+  const pathMatch = target === 'packets'
+    ? `EXISTS (SELECT 1 FROM unnest(p.path_hashes) AS hop
+        WHERE UPPER(hop) IN (UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6))))`
+    : `p.path_hashes && ARRAY[UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6))]::text[]`;
+  const input = 'c.network, c.rx_node_id, c.src_node_id, c.path_hashes, c.path_hash_size_bytes';
+  const classification = target === 'packets'
+    ? `public.meshcore_packet_visibility(${input}) AS flags`
+    : `(SELECT public.meshcore_path_matches_private(${input}) AS is_private OFFSET 0) AS flags`;
+  const visible = target === 'packets' ? 'flags.visibility_ok'
+    : 'public.meshcore_path_is_valid(c.path_hashes, c.path_hash_size_bytes) AND NOT flags.is_private';
 
-const PATH_UPDATE_SQL = `UPDATE mesh.packet_paths path
-       SET is_private = meshcore_path_matches_private(
-             path.network, path.rx_node_id, path.src_node_id,
-             path.path_hashes, path.path_hash_size_bytes
-           ),
-           visibility_ok = meshcore_path_is_valid(
-             path.path_hashes, path.path_hash_size_bytes
-           ) AND NOT meshcore_path_matches_private(
-             path.network, path.rx_node_id, path.src_node_id,
-             path.path_hashes, path.path_hash_size_bytes
-           )
-     WHERE path.time >= $1 AND path.time < $2
-       AND (path.rx_node_id = $3 OR path.src_node_id = $3
-         OR ((path.network = $4 OR (path.network IN ('ukmesh', 'northeast', 'teesside')
-           AND $4 IN ('ukmesh', 'northeast', 'teesside')))
-           AND path.path_hashes && ARRAY[
-             UPPER(LEFT($3, 2)), UPPER(LEFT($3, 4)), UPPER(LEFT($3, 6))
-           ]::text[]))`;
+  return `WITH candidates AS (
+      SELECT DISTINCT p.time, p.packet_hash, p.network, p.rx_node_id, p.src_node_id,
+             p.path_hashes, p.path_hash_size_bytes
+        FROM mesh.${target} p
+       WHERE p.time >= $1 AND p.time < $2
+         AND (p.rx_node_id = $3 OR p.src_node_id = $3
+           OR ((p.network = $4 OR (p.network IN ('ukmesh', 'northeast', 'teesside')
+              AND $4 IN ('ukmesh', 'northeast', 'teesside'))) AND ${pathMatch}))
+    ), classified AS MATERIALIZED (
+      SELECT c.*, flags.is_private, ${visible} AS visibility_ok
+        FROM candidates c CROSS JOIN LATERAL ${classification}
+    )
+    UPDATE mesh.${target} p
+       SET is_private = c.is_private, visibility_ok = c.visibility_ok
+      FROM classified c
+     WHERE p.time >= $1 AND p.time < $2
+       AND p.time = c.time AND p.packet_hash = c.packet_hash AND p.network = c.network
+       AND p.rx_node_id IS NOT DISTINCT FROM c.rx_node_id
+       AND p.src_node_id IS NOT DISTINCT FROM c.src_node_id
+       AND p.path_hashes IS NOT DISTINCT FROM c.path_hashes
+       AND p.path_hash_size_bytes IS NOT DISTINCT FROM c.path_hash_size_bytes
+       AND (p.is_private, p.visibility_ok) IS DISTINCT FROM (c.is_private, c.visibility_ok)`;
+}
+
+const CHUNK_UPDATES = {
+  packets: chunkUpdateSql('packets'),
+  packet_paths: chunkUpdateSql('packet_paths'),
+};
 
 export type PrivacyClaimReconciliation = {
   /** Rows whose lease had expired and are now retryable or terminally failed. */
@@ -188,7 +152,7 @@ async function processChunk(pool: pg.Pool, row: QueueRow, chunk: Chunk, timeoutM
       await client.query("SET LOCAL lock_timeout = '5s'");
       await client.query(`SET LOCAL statement_timeout = '${timeoutMs}ms'`);
       await client.query('SET LOCAL timescaledb.max_tuples_decompressed_per_dml_transaction = 0');
-      await client.query(row.target === 'packets' ? PACKET_UPDATE_SQL : PATH_UPDATE_SQL, [
+      await client.query(CHUNK_UPDATES[row.target], [
         chunk.range_start, chunk.range_end, row.node_id, row.network,
       ]);
       await client.query('COMMIT');
@@ -199,10 +163,10 @@ async function processChunk(pool: pg.Pool, row: QueueRow, chunk: Chunk, timeoutM
       await client.query('ROLLBACK').catch(() => {});
       if (attempt === 3) throw error;
       observeWorkerOutcome('privacy_remat', 'chunk', 'retry');
-      await delay(attempt * 1_000);
     } finally {
       client.release();
     }
+    await delay(attempt * 1_000);
   }
 }
 
@@ -264,14 +228,10 @@ export async function processNextPrivacyRematerialization(
   if (!row) return false;
   console.log(`[privacy-remat] pass start id=${row.id} target=${row.target} attempt=${row.attempts}`);
   try {
-    // The queue targets are relation names, and the P1 band moves `packets`
-    // and `packet_paths` from public to mesh. Pinning hypertable_schema =
-    // 'public' matched no chunk at all after the move, so the pass completed,
-    // bumped the generation, and left every row unrematerialized.
     const chunks = await pool.query<Chunk>(`
       SELECT range_start, range_end
         FROM timescaledb_information.chunks
-       WHERE hypertable_name = $1
+       WHERE hypertable_schema = 'mesh' AND hypertable_name = $1
        ORDER BY range_start
     `, [row.target]);
     for (const [index, chunk] of chunks.rows.entries()) {
