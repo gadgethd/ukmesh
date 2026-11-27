@@ -167,7 +167,7 @@ export const TropoPage: React.FC = () => {
                 <strong>{data.model}</strong>
                 <span>{formatValid(step.valid)} · {step.forecast_hour === 0 ? 'analysis' : `+${step.forecast_hour} h`}</span>
                 <span>Forecast area 49–62°N · 12°W–5°E</span>
-                <span>© OpenFreeMap · OpenStreetMap</span>
+                <span>Basemap © OpenStreetMap contributors · Natural Earth</span>
               </div>
               <div className="tropo-page__legend">
                 <strong>Ducting potential</strong>

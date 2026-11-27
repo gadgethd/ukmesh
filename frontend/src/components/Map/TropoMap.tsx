@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ImageSource, Map as MapLibreMap } from 'maplibre-gl';
 import { Map, Marker, NavigationControl, Popup } from './maplibre.js';
-import { OPENFREEMAP_STYLE_DARK } from './mapConfig.js';
+import { buildFallbackStyle } from './basemapFallback.js';
 import type { TropoBounds, TropoPeak } from '../../pages/tropoModel.js';
 
 type TropoMapProps = {
@@ -53,7 +53,7 @@ export function TropoMap({ bounds, imageUrl, peak, maxIndex }: TropoMapProps): R
     if (!containerRef.current || mapRef.current) return undefined;
     const map = new Map({
       container: containerRef.current,
-      style: OPENFREEMAP_STYLE_DARK,
+      style: buildFallbackStyle('dark'),
       center: [-2.4, 54.5],
       zoom: 5.1,
       minZoom: 4,
@@ -64,12 +64,17 @@ export function TropoMap({ bounds, imageUrl, peak, maxIndex }: TropoMapProps): R
     mapRef.current = map;
     map.addControl(new NavigationControl({ showCompass: false }), 'bottom-right');
 
-    map.on('load', () => {
+    let fitted = false;
+    const install = () => {
+      if (!map.getStyle()) return;
       const boundsForImage = boundsRef.current;
-      map.fitBounds(
-        [[boundsForImage.west, boundsForImage.south], [boundsForImage.east, boundsForImage.north]],
-        { padding: 26, duration: 0 },
-      );
+      if (!fitted) {
+        map.fitBounds(
+          [[boundsForImage.west, boundsForImage.south], [boundsForImage.east, boundsForImage.north]],
+          { padding: 26, duration: 0 },
+        );
+        fitted = true;
+      }
       if (!map.getSource('tropo')) {
         map.addSource('tropo', {
           type: 'image',
@@ -106,9 +111,13 @@ export function TropoMap({ bounds, imageUrl, peak, maxIndex }: TropoMapProps): R
         });
       }
       setReady(true);
-    });
+    };
+    map.on('style.load', install);
+    map.on('load', install);
 
     return () => {
+      map.off('style.load', install);
+      map.off('load', install);
       markerRef.current?.remove();
       markerRef.current = null;
       popupRef.current = null;
