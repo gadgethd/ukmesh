@@ -228,6 +228,57 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  identity-backfill:
+    # `backfillIdentity.compressed.test.ts` builds a real hypertable with a
+    # compressed chunk and drives the shipped CLI; plain PostgreSQL cannot stand
+    # in for chunk compression. The file skips itself when no fixture is
+    # supplied, so this job provides TimescaleDB and treats a skip as a failure.
+    name: Identity Backfill (TimescaleDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: timescale/timescaledb@sha256:22e8a5ae7aef121d1537afe946dd7cc5deeeb63ab36ce19849d671bd3b663509
+        env:
+          POSTGRES_PASSWORD: identity-backfill-password
+        ports:
+          - 55435:5432
+        options: >-
+          --shm-size=1g
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      TEST_BACKFILL_DATABASE_URL: postgresql://postgres:identity-backfill-password@127.0.0.1:55435/postgres
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: backend/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - name: Run the TimescaleDB identity-backfill suite
+        run: |
+          node --import tsx --test --test-reporter=tap \
+            src/tools/backfillIdentity.compressed.test.ts | tee identity-backfill.tap
+          node scripts/assert-audit-tests-ran.mjs \
+            identity-backfill.tap \
+            src/tools/backfillIdentity.compressed.test.ts \
+            --min-tests=15
+      - name: Preserve identity-backfill output
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: identity-backfill-tap-${{ github.run_id }}-${{ github.run_attempt }}
+          path: backend/identity-backfill.tap
+          if-no-files-found: ignore
+          retention-days: 7
+
   frontend:
     if: github.event_name != 'schedule'
     name: Frontend
