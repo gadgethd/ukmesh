@@ -81,6 +81,15 @@ export default defineConfig(({ command }) => ({
           includeDependenciesRecursively: false,
           groups: [
             { name: 'map-math', test: /\/node_modules\/(?:gl-matrix|earcut|@mapbox|pbf|quickselect|tinyqueue|kdbush|@maplibre)\//, priority: 50, includeDependenciesRecursively: true },
+            // maplibre 6.19's map state imports zustand/vanilla at module scope, and
+            // the module worker shares the renderer chunk graph. Keep the vanilla
+            // store in a chunk of its own: folded into the lazily imported
+            // `components/Map/maplibre.ts` facade it creates a facade<->core cycle
+            // that runs setWorkerUrl() before `config` exists, and folded into the
+            // React chunk it drags the app entry (and its `document` access) into
+            // the worker.
+            { name: 'zustand', test: /\/node_modules\/zustand\/(?:esm\/)?vanilla\./, priority: 30 },
+            { name: 'react', test: /\/node_modules\/(?:react|react-dom)\//, priority: 40 },
             { name: 'maplibre', test: /ukmesh-maplibre-source/, priority: 20 },
             { name: 'deck', test: /\/node_modules\/(?:@deck\.gl|@luma\.gl|@math\.gl|@loaders\.gl)\//, priority: 18, includeDependenciesRecursively: true },
             { name: 'recharts', test: /\/node_modules\/recharts\//, priority: 15, includeDependenciesRecursively: true },

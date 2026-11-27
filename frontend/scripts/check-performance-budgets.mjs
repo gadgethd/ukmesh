@@ -46,7 +46,10 @@ const budgets = [
     name: 'all JavaScript',
     measure: await measure((file) => file.endsWith('.js')),
     raw: 3_200 * KIB,
-    gzip: 900 * KIB,
+    // MapLibre 6.19's zustand-backed map state costs ~17 KiB gzip over 6.11.2
+    // and the old 900 KiB ceiling had ~48 bytes of headroom. CI measures
+    // 906.2 KiB on this branch; 910 keeps ~3.8 KiB of headroom.
+    gzip: 910 * KIB,
   },
   {
     name: 'all CSS',
