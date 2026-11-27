@@ -272,17 +272,16 @@ map visit. Lighthouse still exercises the populated route and its map work.
 Renderer mounting yields one painted frame to the static content before the
 download/evaluation starts; it uses animation frames and cancels on unmount.
 
-The stats page requests `GET /api/stats/charts?sections=overview` initially and
-selects `traffic`, `observers`, `paths` or `signal` when its tab changes. The API
-accepts up to five distinct comma-separated names, always includes summary and
-snapshot metadata, and preserves the complete response when `sections` is absent.
-The full canonical snapshot remains the only persisted/cached representation;
-projection happens inside the fresh delivery privacy fences. Selected responses
-identify section, network, observer and generation. The browser validates nested
-values and this identity, cancels obsolete tab/scope requests, and clears old data
-and decoded-path selection when authority changes. Live observer polling runs
-only on the Observers tab. Stats HTTP responses require revalidation; runtime
-configuration and owner/session reads retain `no-store`.
+The Packets view loads observer codes from `GET /api/feed/regions`. The server
+coalesces matching cache misses, bounds the lookup to ten seconds and caches
+completed results for five minutes by network, observer and visibility
+generation. The browser checks those fields before updating the filter options.
+
+The historical charts API runs on demand. `GET /api/stats/charts` accepts up to
+five distinct comma-separated sections and includes summary and snapshot
+metadata. The full canonical snapshot remains the persisted representation.
+Projection and delivery recheck visibility authority. Stats responses require
+revalidation. Runtime configuration and owner/session reads use `no-store`.
 
 Polling cadences and deadlines live in `frontend/src/config/polling.ts`. The
 shared visibility scheduler aborts reads when hidden and refreshes immediately

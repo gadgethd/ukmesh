@@ -1,7 +1,7 @@
 import { onCLS, onINP, onLCP } from 'web-vitals';
 import { isTelemetryDisabled } from './clientErrors.js';
 
-const routes = new Set(['/', '/docs', '/stats', '/feed', '/regions', '/topology']);
+const routes = new Set(['/', '/docs', '/feed', '/regions', '/topology']);
 export function publicVitalRoute(pathname: string): string | null {
   const route = pathname.length > 1 ? pathname.replace(/\/$/, '') : pathname;
   return routes.has(route) ? route : null;

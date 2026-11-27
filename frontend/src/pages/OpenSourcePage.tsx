@@ -23,7 +23,7 @@ const FRONTEND: LibEntry[] = [
   { name: '@deck.gl/mapbox',     role: 'Native deck.gl integration with the MapLibre map',           url: 'https://deck.gl/docs/api-reference/mapbox/overview' },
   { name: 'Zustand',             role: 'Lightweight client state management for UI atoms',           url: 'https://zustand-demo.pmnd.rs' },
   { name: 'react-router',        role: 'Client-side routing between pages',                          url: 'https://reactrouter.com' },
-  { name: 'Recharts',            role: 'Chart components for stats and history graphs',              url: 'https://recharts.org' },
+  { name: 'Recharts',            role: 'Chart components for owner history and link quality',        url: 'https://recharts.org' },
 ];
 
 const BACKEND: LibEntry[] = [

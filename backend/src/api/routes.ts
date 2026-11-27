@@ -40,6 +40,7 @@ import {
 } from './bootstrap/limiters.js';
 import { createHealthRoutes } from './routes/health.js';
 import { registerMiscRoutes } from './routes/misc.js';
+import { registerFeedRegionRoute } from './routes/feedRegions.js';
 import { registerNodeRoutes } from './routes/nodes.js';
 import nodeStatusRoutes from './routes/nodeStatus.js';
 import radioRoutes from './routes/radio.js';
@@ -175,6 +176,7 @@ export function createApiRuntime(healthRuntime: HealthRuntime, ingestRuntime: In
     getPublicVisibilityGeneration,
     packetDetailLimiter: PACKET_DETAIL_LIMITER,
   });
+  const closeFeedRegions = registerFeedRegionRoute(router, analyticsQuery, getPublicResponseGeneration);
   const ownerService = registerOwnerRoutes(router, {
     ownerCookieName: OWNER_COOKIE_NAME,
     ownerLiveCacheTtlMs: OWNER_LIVE_CACHE_TTL_MS,
@@ -278,7 +280,7 @@ export function createApiRuntime(healthRuntime: HealthRuntime, ingestRuntime: In
     startBackgroundWork() {
       if (started || closed) return;
       started = true;
-      statsService.startChartsWarmup();
+      statsService.startSummaryWarmup();
       health.start();
     },
     close() {
@@ -288,6 +290,7 @@ export function createApiRuntime(healthRuntime: HealthRuntime, ingestRuntime: In
       statsService.close();
       ownerService.close();
       closeTimeline();
+      closeFeedRegions();
       closeNodes();
       closeTopology();
       caches.close();

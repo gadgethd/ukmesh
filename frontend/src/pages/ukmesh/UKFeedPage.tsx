@@ -1,5 +1,4 @@
 import { POLLING } from '../../config/polling.js';
-import { parseStatsSection } from '../../features/stats/sections.js';
 import React, { useMemo, useEffect, useLayoutEffect, useState, useRef } from 'react';
 import './feed-page.css';
 import { getCurrentSite } from '../../config/site.js';
@@ -43,6 +42,7 @@ import {
   type MessageScope,
 } from '../../features/packets/feedModel.js';
 import {
+  parseFeedRegions,
   validatedRegionSelection,
 } from '../../features/packets/feedState.js';
 
@@ -53,7 +53,11 @@ export const UKFeedPage: React.FC = () => {
   const scopeKey = publicScopeKey({ ...scope, privacyGeneration });
   const session = useRealtimeScopeSession({ ...scope, privacyGeneration });
   const scopeEpoch = session.nodeEpoch;
-  const [selectedIata, setSelectedIata] = useState<string>(() => localStorage.getItem('uk-feed-iata') ?? 'all');
+  const [selectedIata, setSelectedIata] = useState<string>(() => {
+    const requested = new URLSearchParams(window.location.search).get('region')?.trim().toUpperCase();
+    if (requested && /^[A-Z0-9]{2,8}$/.test(requested)) return requested;
+    return localStorage.getItem('uk-feed-iata') ?? 'all';
+  });
   const [selectedMessageScope, setSelectedMessageScope] = useState<MessageScope>(() => {
     const stored = localStorage.getItem('uk-feed-message-scope');
     return stored === 'all' || (stored !== null && (MESSAGE_SCOPE_CHANNELS as readonly string[]).includes(stored))
@@ -61,8 +65,9 @@ export const UKFeedPage: React.FC = () => {
       : 'all';
   });
   const [messagesOnly, setMessagesOnly] = useState<boolean>(() => localStorage.getItem('uk-feed-messages-only') === '1');
-  const [regionOptions, setRegionOptions] = useState<string[]>([]);
-  const [regionOptionsStatus, setRegionOptionsStatus] = useState<'loading' | 'ready' | 'failed'>('loading');
+  const [regions, setRegions] = useState<{ scopeKey: string; options: string[]; status: 'ready' | 'failed' } | null>(null);
+  const scopedRegions = regions?.scopeKey === scopeKey ? regions : null;
+  const regionOptionsStatus = scopedRegions?.status ?? 'loading';
   const [selectedPacketHash, setSelectedPacketHash] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedPacketType, setSelectedPacketType] = useState<string | null>(() => {
@@ -139,33 +144,23 @@ export const UKFeedPage: React.FC = () => {
 
 
 
-  useEffect(() => {
-    setRegionOptionsStatus('loading');
-    setRegionOptions([]);
-  }, [scopeKey]);
-
   useVisibilityPoll(async (signal) => {
     const payload = await fetchJson<unknown>(
-      withScopeParams('/api/stats/charts?sections=observers', scope),
+      withScopeParams('/api/feed/regions', scope),
       { cache: 'no-cache', signal },
       { timeoutMs: POLLING.ordinaryTimeout, maxBytes: 4 * 1024 * 1024 },
     );
     if (signal.aborted) return;
-    const selected = parseStatsSection(payload, 'observers', { network: scope.network ?? 'ukmesh',
-      observer: scope.observer ?? null, generation: privacyGeneration });
-    if (!selected) throw new Error('Observer regions no longer match the feed scope');
-    const json = selected.data;
-    const values = (json.observerRegions ?? [])
-      .map((region) => String(region.iata ?? '').trim().toUpperCase())
-      .filter((iata) => /^[A-Z0-9]{2,8}$/.test(iata));
-    setRegionOptions(Array.from(new Set(values)).sort((a, b) => a.localeCompare(b)));
-    setRegionOptionsStatus('ready');
+    const options = parseFeedRegions(payload, { ...scope, privacyGeneration });
+    if (!options) throw new Error('Observer regions no longer match the feed scope');
+    setRegions({ scopeKey, options, status: 'ready' });
   }, {
     enabled: privacyGeneration > 0,
     scopeKey: `feed-regions:${scopeKey}`,
     intervalMs: POLLING.feedRegions,
     timeoutMs: POLLING.ordinaryTimeout,
-    onError: () => setRegionOptionsStatus('failed'),
+    onError: () => setRegions(previous => ({ scopeKey, status: 'failed',
+      options: previous?.scopeKey === scopeKey ? previous.options : [] })),
   });
 
   const packets: FeedPacket[] = useMemo(() => {
@@ -209,13 +204,13 @@ export const UKFeedPage: React.FC = () => {
   }, [historicalMessages, retainedMessagePackets, selectedMessageScope]);
 
   const availableIatas = useMemo(() => {
-    const values = new Set(regionOptions);
+    const values = new Set(scopedRegions?.options);
     for (const packet of packets) {
       for (const iata of packetObserverIatas(packet, nodeMap)) values.add(iata);
     }
     if (regionOptionsStatus !== 'ready' && selectedIata !== 'all') values.add(selectedIata);
     return Array.from(values).sort((a, b) => a.localeCompare(b));
-  }, [nodeMap, packets, regionOptions, regionOptionsStatus, selectedIata]);
+  }, [nodeMap, packets, scopedRegions, regionOptionsStatus, selectedIata]);
 
   useEffect(() => {
     const validated = validatedRegionSelection(

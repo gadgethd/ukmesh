@@ -637,18 +637,11 @@ export function createStatsService(deps: StatsServiceDeps) {
     return promise;
   }
 
-  function startChartsWarmup(): void {
+  function startSummaryWarmup(): void {
     if (closed || warmupStarted) return;
     warmupStarted = true;
     const warmupNetworks = (process.env['WARMUP_NETWORKS'] ?? 'ukmesh,test')
       .split(',').map((s: string) => s.trim()).filter(Boolean);
-
-    const warmCharts = async () => {
-      for (const net of warmupNetworks) {
-        if (closed) return;
-        await getCharts(net, undefined).catch(() => { /* best-effort */ });
-      }
-    };
 
     const warmStats = async () => {
       for (const net of warmupNetworks) {
@@ -657,30 +650,15 @@ export function createStatsService(deps: StatsServiceDeps) {
       }
     };
 
-    const coldRegenDeferMs = Math.max(
-      0,
-      Math.min(15 * 60_000, Number(process.env['CHARTS_COLD_REGEN_DEFER_MS'] ?? 60_000) || 0),
-    );
-
-    // Populate the lightweight summary first, then defer the persisted-snapshot
-    // check. Fresh durable rows never regenerate; missing or genuinely stale
-    // rows can regenerate after WS initial-state has had time to warm.
     initialStatsWarmup = new Promise<void>((resolve) => {
       settleInitialDelay = resolve;
       const timer = setTimeout(() => { warmTimers.delete(timer); resolve(); }, 5_000);
       timer.unref();
       warmTimers.add(timer);
     }).then(warmStats);
-    void initialStatsWarmup.finally(() => {
-      if (closed) return;
-      const timer = setTimeout(() => { warmTimers.delete(timer); void warmCharts(); }, coldRegenDeferMs);
-      timer.unref();
-      warmTimers.add(timer);
-    });
     const statsTimer = setInterval(() => void warmStats(), statsCacheTtlMs);
-    const chartTimer = setInterval(() => void warmCharts(), Math.min(60_000, chartsCacheTtlMs));
-    statsTimer.unref(); chartTimer.unref();
-    warmTimers.add(statsTimer); warmTimers.add(chartTimer);
+    statsTimer.unref();
+    warmTimers.add(statsTimer);
   }
 
   async function computeStatsSummary(network: string | undefined, observer: string | undefined): Promise<unknown> {
@@ -823,7 +801,7 @@ export function createStatsService(deps: StatsServiceDeps) {
       for (const cache of [channelTrafficCache, observerActivityCache, liveObserverCache]) { cache.shutdown(); cache.clear(); }
       channelTrafficInflight.clear(); observerActivityInflight.clear(); liveObserverInflight.clear(); statsInflight.clear(); chartSnapshotLoads.clear();
     },
-    startChartsWarmup,
+    startSummaryWarmup,
     getCharts,
     getStatsSummary,
     getObserverActivity,

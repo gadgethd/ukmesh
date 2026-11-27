@@ -10,8 +10,7 @@ export function watchEntryHref(entry: WatchEntry): string {
   if (entry.category === 'node') target.searchParams.set('node', entry.id);
   if (entry.category === 'search') target.searchParams.set('search', entry.id);
   if (entry.category === 'region' || entry.category === 'observer') {
-    target.pathname = '/stats';
-    target.searchParams.set('tab', 'observers');
+    target.pathname = '/feed/packets';
     target.searchParams.set('region', entry.id);
   }
   if (entry.category === 'packet_type') {

@@ -1,8 +1,6 @@
 /** Shared request cadence and deadline policy. Values are milliseconds. */
 export const POLLING = Object.freeze({
   ordinaryTimeout: 15_000,
-  stats: 5 * 60_000,
-  liveObservers: 60_000,
   feedRegions: 60_000,
   feedTags: 15_000,
   feedClock: 5_000,

@@ -87,8 +87,7 @@ try {
             let reported = false;
             const check = () => {
               if (reported) return;
-              const ready = route === '/stats' ? document.querySelector('.stats-page__stat-value')?.textContent === '120'
-                : route === '/regions' ? document.querySelector('.regions-page__stats strong')?.textContent === '1'
+              const ready = route === '/regions' ? document.querySelector('.regions-page__stats strong')?.textContent === '1'
                 : route === '/feed' || route === '/' ? document.querySelector('main')?.textContent?.includes('Synthetic CI message')
                 : document.querySelector('main h1')?.textContent === 'UK Mesh documentation';
               if (!ready) return;
@@ -124,7 +123,7 @@ try {
             onlyCategories: ['performance', 'accessibility', 'seo'] }, mode === 'desktop' ? desktopConfig : undefined, page);
           if (!result || result.lhr.runtimeError) throw new Error(result?.lhr.runtimeError?.message || 'missing Lighthouse result');
           if (missing.size) throw new Error(`unhandled CI fixtures: ${[...missing].join(', ')}`);
-          const required = route === '/stats' ? '/api/stats/charts' : route === '/regions' ? '/api/regions/summary' : null;
+          const required = route === '/regions' ? '/api/regions/summary' : null;
           if (required && !seen.has(required)) throw new Error(`expected populated view did not request ${required}`);
           if (!populated) {
             await writeFile(path.join(output, 'fixture-failure.html'), await page.content());

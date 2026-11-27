@@ -665,14 +665,6 @@
 .timeline-control__meta { display: flex; gap: 14px; margin-top: 3px; color: var(--text-secondary); font: 10px var(--font-mono); }
 .timeline-control__body p { margin: 5px 0 0; color: var(--text-muted); font-size: 11px; }
 
-.stats-page__health { padding: 2px 6px; border-radius: 999px; font: 10px var(--font-mono); text-transform: uppercase; }
-.stats-page__health--healthy { background: rgba(0, 230, 118, 0.12); color: var(--online); }
-.stats-page__health--watch { background: var(--amber-dim); color: var(--amber); }
-.stats-page__health--poor { background: rgba(255, 23, 68, 0.12); color: var(--danger); }
-.stats-page__observer-watch { display: flex; gap: 5px; margin: 0 0 8px; }
-.stats-page__observer-watch button { padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius); background: transparent; color: var(--text-muted); font: 10px var(--font-mono); cursor: pointer; }
-.stats-page__observer-watch button:hover { color: var(--amber); border-color: var(--amber); }
-
 .watchlist-panel { margin-top: 8px; border-top: 1px solid var(--border); padding-top: 7px; }
 .watchlist-panel summary {
   display: flex;

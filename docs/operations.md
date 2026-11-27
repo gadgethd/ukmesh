@@ -809,7 +809,11 @@ measurements keep their source timestamp; expired samples, offline Wills and
 undated retained status cannot renew observer presence.
 
 Observer activity at `/api/stats/observers/live` is privacy-filtered and scoped
-to the last 15 minutes, with a bounded 60-second cache. The Stats page refreshes
-this independently of historical charts. Charts regenerate every 30 minutes
-in the background; the previous complete snapshot remains available during
-refresh, and the page displays its generation time rather than its fetch time.
+to the last 15 minutes, with a bounded 60-second cache. The Packets view gets
+its filter options from `/api/feed/regions`, which lists public observer region
+codes seen in the past seven days for the requested scope.
+
+Historical charts refresh when a client requests `/api/stats/charts` and the
+snapshot is more than 30 minutes old. The previous complete snapshot remains
+available within its retention window during the refresh. Use its
+`snapshot.generatedAt` value to check when it was computed.

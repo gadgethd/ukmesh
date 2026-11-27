@@ -19,6 +19,11 @@ type QueryFn = <T extends QueryResultRow = QueryResultRow>(
   signal?: AbortSignal,
 ) => Promise<{ rows: T[] }>;
 
+type QueryLimits = {
+  durationBudgetMs: number;
+  timeoutMs: number;
+};
+
 type StatsRepositoryDeps = {
   networkFilters: (network?: string, observer?: string, opts?: { includePrivacy?: boolean }) => NetworkFilters;
   query: QueryFn;
@@ -140,8 +145,14 @@ export function compareAggregateShadowRows(
 
 export function createStatsRepository(deps: StatsRepositoryDeps) {
   const { networkFilters } = deps;
-  const queryBudgetMs = settingInteger('STATS_QUERY_DURATION_BUDGET_MS', 60_000, 1_000, 600_000);
-  const queryTimeoutMs = settingInteger('STATS_CHART_QUERY_TIMEOUT_MS', 120_000, 1_000, 300_000);
+  const chartLimits = {
+    durationBudgetMs: settingInteger('STATS_QUERY_DURATION_BUDGET_MS', 60_000, 1_000, 600_000),
+    timeoutMs: settingInteger('STATS_CHART_QUERY_TIMEOUT_MS', 120_000, 1_000, 300_000),
+  };
+  const backfillLimits = {
+    durationBudgetMs: settingInteger('STATS_BACKFILL_DURATION_BUDGET_MS', 300_000, 60_000, 900_000),
+    timeoutMs: settingInteger('STATS_BACKFILL_QUERY_TIMEOUT_MS', 360_000, 120_000, 900_000),
+  };
   const maxResultRows = settingInteger('STATS_CHART_MAX_RESULT_ROWS', 100_000, 1, 1_000_000);
   const queryConcurrency = Math.max(
     1,
@@ -167,12 +178,13 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     activeQueries = Math.max(0, activeQueries - 1);
   };
 
-  function enforceQueryBudget(source: string, returnedRows: number, durationMs?: number) {
-    if ((durationMs ?? 0) <= queryBudgetMs && returnedRows <= maxResultRows) return;
+  function enforceQueryBudget(source: string, returnedRows: number, durationMs?: number,
+    durationBudgetMs = chartLimits.durationBudgetMs) {
+    if ((durationMs ?? 0) <= durationBudgetMs && returnedRows <= maxResultRows) return;
     console.error('[stats-query-budget] exceeded', {
       source,
       durationMs,
-      durationBudgetMs: queryBudgetMs,
+      durationBudgetMs,
       returnedRows,
       returnedRowBudget: maxResultRows,
     });
@@ -185,11 +197,12 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     return rows;
   }
 
-  const query: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+  async function runBoundedQuery<T extends QueryResultRow>(
+    { durationBudgetMs, timeoutMs }: QueryLimits,
     text: string,
     params?: unknown[],
     parentSignal?: AbortSignal,
-  ) => {
+  ): Promise<{ rows: T[] }> {
     const controller = new AbortController();
     const startedAt = performance.now();
     let timeoutFired = false;
@@ -199,8 +212,8 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
     const timeout = setTimeout(() => {
       timeoutFired = true;
-      controller.abort(new Error(`STATS_QUERY_TIMEOUT_${queryTimeoutMs}MS`));
-    }, queryTimeoutMs);
+      controller.abort(new Error(`STATS_QUERY_TIMEOUT_${timeoutMs}MS`));
+    }, timeoutMs);
     try {
       await acquireQuerySlot();
       acquired = true;
@@ -208,17 +221,17 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       const result = await deps.query<T>(text, params, controller.signal);
       const durationMs = Math.round(performance.now() - startedAt);
       const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
-      enforceQueryBudget(source, result.rows.length, durationMs);
+      enforceQueryBudget(source, result.rows.length, durationMs, durationBudgetMs);
       return result;
     } catch (error) {
       const durationMs = Math.round(performance.now() - startedAt);
-      if (timeoutFired || durationMs > queryBudgetMs) {
+      if (timeoutFired || durationMs > durationBudgetMs) {
         const source = text.match(/\bFROM\s+([a-z_][a-z0-9_.]*)/i)?.[1] ?? 'unknown';
         console.error('[stats-query-budget] query failed after budget', {
           source,
           durationMs,
-          durationBudgetMs: queryBudgetMs,
-          queryTimeoutMs,
+          durationBudgetMs,
+          queryTimeoutMs: timeoutMs,
         });
       }
       throw error;
@@ -227,8 +240,9 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       parentSignal?.removeEventListener('abort', abortFromParent);
       if (acquired) releaseQuerySlot();
     }
-  };
-  const limitedQuery: QueryFn = query;
+  }
+  const query: QueryFn = (text, params, signal) => runBoundedQuery(chartLimits, text, params, signal);
+  const backfillQuery: QueryFn = (text, params, signal) => runBoundedQuery(backfillLimits, text, params, signal);
 
   async function loadChartSnapshot(scope: string, visibilityGeneration: number) {
     return loadStoredChartSnapshot(query, scope, visibilityGeneration);
@@ -304,16 +318,18 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   async function fetchChannelTraffic(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer, { includePrivacy: false });
     return query<{ channel: string; count: string; total_count: string }>(`
-      WITH decoded_group_packets AS (
-        SELECT
-          COALESCE(p.payload->>'_summary', '') AS summary,
-          NULLIF(TRIM((regexp_match(COALESCE(p.payload->>'_summary', ''), '^\\[([^\\]]+)\\]'))[1]), '') AS parsed_channel
+      WITH group_summaries AS (
+        SELECT COALESCE(p.payload->>'_summary', '') AS summary, COUNT(*) AS observations
         FROM mesh.packets p
         WHERE p.time > NOW() - INTERVAL '24 hours'
           AND p.packet_type = 5
           ${filters.packetsAlias('p')}
-      ),
-      group_packets AS (
+        GROUP BY 1
+      ), decoded_group_packets AS MATERIALIZED (
+        SELECT summary, observations,
+          NULLIF(TRIM((regexp_match(summary, '^\\[([^\\]]+)\\]'))[1]), '') AS parsed_channel
+        FROM group_summaries
+      ), group_packets AS (
         SELECT
           COALESCE(
             CASE
@@ -325,17 +341,18 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
               WHEN summary ILIKE '%encrypted%' THEN 'Encrypted'
               ELSE 'Unknown'
             END
-          ) AS channel
+          ) AS channel,
+          observations
         FROM decoded_group_packets
       ),
       channel_counts AS (
-        SELECT channel, COUNT(*)::text AS count
+        SELECT channel, SUM(observations)::bigint AS count
         FROM group_packets
         GROUP BY channel
       )
-      SELECT channel, count, SUM(count::bigint) OVER ()::text AS total_count
+      SELECT channel, count::text, SUM(count) OVER ()::text AS total_count
       FROM channel_counts
-      ORDER BY count::bigint DESC, channel ASC
+      ORDER BY channel_counts.count DESC, channel ASC
       LIMIT 12
     `, filters.params);
   }
@@ -1217,23 +1234,20 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     const filters = networkFilters(network, observer);
     const aggregateAsOf = new Date();
     const chartAbort = new AbortController();
-    const chartQuery: QueryFn = async <T extends QueryResultRow = QueryResultRow>(
+    const snapshotQuery = (execute: QueryFn): QueryFn => async <T extends QueryResultRow = QueryResultRow>(
       text: string,
       params: unknown[] = filters.params,
       signal: AbortSignal = chartAbort.signal,
     ) => {
       const snapshot = bindChartSnapshot(text, params, aggregateAsOf);
       try {
-        return await limitedQuery<T>(snapshot.text, snapshot.params, signal);
+        return await execute<T>(snapshot.text, snapshot.params, signal);
       } catch (error) {
         if (!chartAbort.signal.aborted) chartAbort.abort(error);
         throw error;
       }
     };
-    // Shadow the repository query helper for this function so every raw chart
-    // query, including observer summaries and fact readiness checks, shares one
-    // bounded asOf timestamp.
-    const query = chartQuery;
+    const chartQuery = snapshotQuery(query);
     const aggregateReadsEnabled = aggregateReadsEnabledFor(network);
     const aggregateShadowEnabled = aggregateShadowEnabledFor(network);
     const multibyteCutoffPlaceholder = `$${filters.params.length + 1}`;
@@ -1243,7 +1257,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       aggregateAsOf.toISOString(),
       visibilityGeneration,
     ];
-    const coverage = await ensureMultibyteFactsCoverWindow(query, {
+    const coverage = await ensureMultibyteFactsCoverWindow(snapshotQuery(backfillQuery), {
       windowStart: new Date(aggregateAsOf.getTime() - (8 * 24 * 60 * 60 * 1_000)),
       cutoff: aggregateAsOf,
       visibilityGeneration,
@@ -1256,7 +1270,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       });
     }
 
-    const fetchMultibyteFactSummary = () => query<{
+    const fetchMultibyteFactSummary = () => chartQuery<{
       latest_multibyte_at: string | null;
       latest_multibyte_hash: string | null;
       multibyte_packets_24h: string;
@@ -1336,7 +1350,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       multibyteFactParams,
     );
 
-    const fetchMultibyteFactTrend = () => query<{
+    const fetchMultibyteFactTrend = () => chartQuery<{
       day: string;
       multibyte_count: string;
       fully_decoded_count: string;
@@ -1391,7 +1405,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     let legacyCountsPromise: Promise<AggregateChartParts> | null = null;
     const legacyCounts = (): Promise<AggregateChartParts> => {
       if (!legacyCountsPromise) {
-        legacyCountsPromise = fetchLegacyChartCounts(network, observer, query);
+        legacyCountsPromise = fetchLegacyChartCounts(network, observer, chartQuery);
       }
       return legacyCountsPromise;
     };
@@ -1407,9 +1421,9 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       aggregateRows(key, () => legacyCounts().then((parts) => ({ rows: parts[key] })));
     // Same-snapshot scans consolidated: radios+totals, the path-hash unnest and
     // the region/reception parts each scan once and fan out to their slots.
-    const radiosTotalsPromise = fetchRadiosAndTotals(network, observer, query);
-    const pathHashPartsPromise = fetchPathHashParts(network, observer, query);
-    const regionReceptionPromise = fetchRegionReceptionParts(network, observer, query);
+    const radiosTotalsPromise = fetchRadiosAndTotals(network, observer, chartQuery);
+    const pathHashPartsPromise = fetchPathHashParts(network, observer, chartQuery);
+    const regionReceptionPromise = fetchRegionReceptionParts(network, observer, chartQuery);
 
     const chartParts = [
       countsRows('packetsPerHour'),

@@ -4,7 +4,7 @@ import postcss from 'postcss';
 
 const sourceRoot = path.resolve('src');
 const globalsPath = path.join(sourceRoot, 'styles', 'globals.css');
-const featureSelector = /^\.(?:owner-|stats-page|uk-feed|feed-|spam-|topology-|map-|node-dock|node-popup|mobile-controls|filter-panel|packet-feed)/;
+const featureSelector = /^\.(?:owner-|uk-feed|feed-|spam-|topology-|map-|node-dock|node-popup|mobile-controls|filter-panel|packet-feed)/;
 
 async function cssFiles(directory) {
   const entries = await fs.readdir(directory, { withFileTypes: true });

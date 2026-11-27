@@ -39,10 +39,6 @@ export function statsEndpoint(scope: ApiScope = {}): string {
   return withScopeParams('/api/stats', scope);
 }
 
-export function chartStatsEndpoint(scope: ApiScope = {}): string {
-  return withScopeParams('/api/stats/charts', scope);
-}
-
 export function uncachedEndpoint(url: string): string {
   const sep = url.includes('?') ? '&' : '?';
   return `${url}${sep}_ts=${Date.now()}`;

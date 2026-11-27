@@ -1,4 +1,3 @@
-import { chartStats } from './fixtures/chartStats.mjs';
 import { expect, test, type Page, type Route, type TestInfo } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 
@@ -46,10 +45,9 @@ async function fulfillApi(route: Route) {
   if (pathname === '/api/runtime-config') return route.fulfill({ json: {
     version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300,
   } });
-  if (pathname === '/api/stats/observers/live') return route.fulfill({ json: {
-    generatedAt: new Date().toISOString(), windowMinutes: 15, regions: [],
+  if (pathname === '/api/feed/regions') return route.fulfill({ json: {
+    network: 'ukmesh', observer: null, visibilityGeneration: 1, regions: ['LHR'],
   } });
-  if (pathname === '/api/stats/charts') return route.fulfill({ json: chartStats });
   if (pathname === '/api/stats') {
     return route.fulfill({
       json: {
@@ -202,111 +200,28 @@ async function expectNoSeriousAxeIssues(page: Page) {
 const publicRoutes = [
   '/',
   '/feed',
+  '/feed/packets',
   '/repeater',
   '/companion',
   '/install',
   '/docs',
   '/login',
   '/open-source',
-  '/stats',
   '/topology',
   '/spam',
 ] as const;
 
-test('observer activity refreshes independently of an old chart snapshot', async ({ page }) => {
+test('old stats links lead to live packets without requesting charts', async ({ page }) => {
   await installFixtures(page);
-  const generatedAt = '2026-11-01T12:00:00Z';
-  await page.route('**/api/stats/charts?**', route => route.fulfill({ json: {
-    ...chartStats, snapshot: { ...chartStats.snapshot, generatedAt }, observerRegions: [{
-      iata: 'EDI', activeObservers: 0, observers: 4, packets7d: 120, packets24h: 20,
-      lastPacketAt: generatedAt, series: [], health: { score: 0, status: 'poor', factors: {} },
-    }],
-  } }));
-  let activeObservers = 2;
-  await page.route('**/api/stats/observers/live?**', route => route.fulfill({ json: {
-    generatedAt: new Date().toISOString(), windowMinutes: 15,
-    regions: [{ iata: 'EDI', activeObservers, lastPacketAt: new Date().toISOString() }],
-  } }));
-  await page.goto('/stats?tab=observers');
-  const card = page.locator('#observer-region-EDI');
-  await expect(card.getByText('Receiving packets', { exact: true })).toBeVisible();
-  await expect(card.getByText('2 / 4', { exact: true })).toBeVisible();
-  const timestamp = page.getByText(/^Chart data as of/);
-  await expect(timestamp).toContainText('2026');
-  const originalTimestamp = await timestamp.textContent();
-  activeObservers = 3;
-  await page.getByRole('button', { name: /refresh/i }).click();
-  await expect(card.getByText('3 / 4', { exact: true })).toBeVisible();
-  await expect(timestamp).toHaveText(originalTimestamp!);
-});
-
-test('stats request only the active section and cancel a stale refresh on tab change', async ({ page }) => {
-  await installFixtures(page);
-  const fields: Record<string, (keyof typeof chartStats)[]> = {
-    overview: ['packetsPerHour', 'packetsPerDay', 'radiosPerHour', 'radiosPerDay', 'observerDiversity'],
-    traffic: ['packetTypes', 'channelTraffic', 'routeTypes', 'transportCodes'],
-    observers: ['observerRegions', 'observerDiversity'],
-    paths: ['pathHashes', 'hopDistribution', 'prefixCollisions', 'pathDecodeTrend'], signal: ['signalSummary'],
-  };
-  const requested: string[] = [];
-  let delayedRefresh = false;
-  let malformed = false;
-  await page.route('**/api/stats/charts?**', async route => {
-    const section = new URL(route.request().url()).searchParams.get('sections')!;
-    expect(fields[section]).toBeTruthy();
-    requested.push(section);
-    if (delayedRefresh && section === 'overview') await new Promise(resolve => setTimeout(resolve, 600));
-    await route.fulfill({ json: {
-      snapshot: chartStats.snapshot, summary: chartStats.summary,
-      representation: { sections: [section], scope: { network: 'ukmesh', observer: null }, visibilityGeneration: 1 },
-      ...Object.fromEntries(fields[section].map(key => [key, chartStats[key]])),
-      ...(malformed ? { signalSummary: { ...chartStats.signalSummary, avgRssi: 'invalid' } } : {}),
-    } });
+  const chartRequests: string[] = [];
+  page.on('request', request => {
+    if (new URL(request.url()).pathname === '/api/stats/charts') chartRequests.push(request.url());
   });
   await page.goto('/stats');
-  await expect(page.getByText('Observed packets (24h)', { exact: true })).toBeVisible();
-  expect(requested).toEqual(['overview']);
-  delayedRefresh = true;
-  const oldRequest = page.waitForRequest(request => request.url().includes('sections=overview'));
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await oldRequest;
-  await page.getByRole('tab', { name: 'Paths', exact: true }).click();
-  await expect(page.getByRole('tab', { name: 'Paths', exact: true })).toHaveAttribute('aria-selected', 'true');
-  await expect(page.getByText('Multibyte Packets (24h)', { exact: true })).toBeVisible();
-  await page.waitForTimeout(700);
-  await expect(page.getByText('Multibyte Packets (24h)', { exact: true })).toBeVisible();
-  for (const tab of ['Traffic', 'Observers', 'Signal']) {
-    await page.getByRole('tab', { name: tab, exact: true }).click();
-    await expect(page.getByRole('tab', { name: tab, exact: true })).toHaveAttribute('aria-selected', 'true');
-    await expect.poll(() => requested.at(-1)).toBe(tab.toLowerCase());
-  }
-  expect(requested).toEqual(['overview', 'overview', 'paths', 'traffic', 'observers', 'signal']);
-  malformed = true;
-  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
-  await expect(page.getByRole('alert')).toContainText('malformed');
-  await expect(page.getByText('RSSI samples', { exact: true })).toBeVisible();
-});
-
-test('a changed stats privacy generation closes the old path dialog and rejects an old snapshot', async ({ page }) => {
-  await installFixtures(page);
-  let generation = 1;
-  await page.route('**/api/runtime-config', route => route.fulfill({ json: {
-    version: 1, packetArcs: false, heatmap: false, privacyGeneration: generation, refreshAfterSeconds: 300,
-  } }));
-  await page.goto('/stats?tab=paths');
-  await page.getByRole('button', { name: 'North -> South', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
-  await expect(dialog).toBeVisible();
-  generation = 2;
-  await page.evaluate(() => {
-    Object.defineProperty(document, 'visibilityState', { value: 'hidden', configurable: true });
-    document.dispatchEvent(new Event('visibilitychange'));
-    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true });
-    document.dispatchEvent(new Event('visibilitychange'));
-  });
-  await expect(dialog).toBeHidden();
-  await expect(page.getByRole('alert')).toContainText('malformed or no longer matches this scope');
-  await expect(page.getByRole('button', { name: 'North -> South', exact: true })).toHaveCount(0);
+  await expect(page).toHaveURL(/\/feed\/packets$/);
+  await expect(page.getByRole('button', { name: 'LHR', exact: true })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Stats', exact: true, includeHidden: true })).toHaveCount(0);
+  expect(chartRequests).toEqual([]);
 });
 
 for (const route of publicRoutes) {
@@ -340,116 +255,6 @@ test('dashboard dialogs trap focus, close with Escape, and restore the trigger',
   await page.keyboard.press('Escape');
   await expect(initialDialog).toBeHidden();
   await expect(trigger).toBeFocused();
-});
-
-test('stats tabs support Arrow, Home, and End and the path dialog restores focus', async ({ page }) => {
-  await installFixtures(page);
-  const mapRequests: string[] = [];
-  page.on('request', request => {
-    if (/\/assets\/.*(?:maplibre|deck-|DecodedPathMapView|StatsDecodedPathDialog|Dialog-)/i.test(request.url())) mapRequests.push(request.url());
-  });
-  await page.goto('/stats');
-
-  const overview = page.getByRole('tab', { name: 'Overview' });
-  await expect(overview).toHaveAttribute('aria-selected', 'true');
-  expect(mapRequests).toEqual([]);
-  await overview.focus();
-  await page.keyboard.press('ArrowLeft');
-  await expect(page.getByRole('tab', { name: 'Signal' })).toBeFocused();
-  await expect(page.getByRole('tab', { name: 'Signal' })).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('ArrowRight');
-  await expect(overview).toBeFocused();
-  await expect(overview).toHaveAttribute('aria-selected', 'true');
-  expect(await page.getByRole('tab').evaluateAll(tabs => tabs.every(tab => {
-    const panel = document.getElementById(tab.getAttribute('aria-controls') ?? '');
-    return panel?.getAttribute('role') === 'tabpanel' && panel.getAttribute('aria-labelledby') === tab.id;
-  }))).toBe(true);
-  await page.keyboard.press('Tab');
-  await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toBeFocused();
-  await page.keyboard.press('Shift+Tab');
-  await expect(overview).toBeFocused();
-  await page.keyboard.press('End');
-  await expect(page.getByRole('tab', { name: 'Signal' })).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('Home');
-  await expect(overview).toHaveAttribute('aria-selected', 'true');
-  await page.keyboard.press('ArrowRight');
-  await expect(page.getByRole('tab', { name: 'Traffic' })).toHaveAttribute('aria-selected', 'true');
-
-  const paths = page.getByRole('tab', { name: 'Paths' });
-  await paths.click();
-  const pathTrigger = page.getByRole('button', { name: 'North -> South' }).first();
-  await pathTrigger.click();
-  const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
-  await expect(dialog).toBeVisible();
-  await expect(dialog.locator('canvas.maplibregl-canvas')).toBeVisible();
-  await expect(dialog.locator('canvas#deckgl-overlay')).toBeVisible();
-  await page.keyboard.press('Escape');
-  await expect(dialog).toBeHidden();
-  await expect(pathTrigger).toBeFocused();
-});
-
-test.describe('lazy path-map delivery failures', () => {
-  test.use({ serviceWorkers: 'block' });
-  test('the unopened path dialog stays deferred and its pending load can be closed and reopened', async ({ page }) => {
-    await installFixtures(page);
-    let release!: () => void;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    let requests = 0;
-    await page.route(/\/(?:assets\/StatsDecodedPathDialog-[^/]+\.js|src\/components\/stats\/StatsDecodedPathDialog\.tsx)/, async route => {
-      requests++; await gate; await route.continue();
-    });
-    try {
-      await page.goto('/stats?tab=paths&region=LHR');
-      const trigger = page.getByRole('button', { name: 'North -> South' }).first();
-      await expect(trigger).toBeVisible();
-      expect(requests).toBe(0);
-      await trigger.click();
-      await expect.poll(() => requests).toBeGreaterThan(0);
-      const pending = page.locator('.stats-page__path-status');
-      await expect(pending.getByRole('status')).toBeVisible();
-      await pending.getByRole('button', { name: 'Close', exact: true }).click();
-      await expect(pending).toHaveCount(0);
-      await expect(trigger).toBeFocused();
-      release();
-      await trigger.click();
-      const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
-      await expect(dialog).toBeVisible();
-      await expect(dialog.locator('canvas.maplibregl-canvas')).toBeVisible();
-      await expect(dialog.locator('canvas#deckgl-overlay')).toBeVisible();
-      await page.keyboard.press('Escape');
-      await expect(dialog).toBeHidden();
-      await expect(trigger).toBeFocused();
-      expect(new URL(page.url()).searchParams.get('region')).toBe('LHR');
-    } finally { release(); }
-  });
-
-  test('a failed deferred dialog leaves the stats page usable and restores focus on close', async ({ page }) => {
-    await installFixtures(page);
-    await page.route(/\/(?:assets\/StatsDecodedPathDialog-[^/]+\.js|src\/components\/stats\/StatsDecodedPathDialog\.tsx)/, route => route.abort());
-    await page.goto('/stats?tab=paths');
-    const trigger = page.getByRole('button', { name: 'North -> South' }).first();
-    await trigger.click();
-    const fallback = page.locator('.stats-page__path-status');
-    await expect(fallback.getByRole('alert')).toContainText('The map could not be loaded');
-    await expect(page.getByRole('tablist', { name: 'Stats sections' })).toBeVisible();
-    await fallback.getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(fallback).toHaveCount(0);
-    await expect(trigger).toBeFocused();
-  });
-
-  test('a failed lazy path-map chunk leaves an accessible error and a working close button', async ({ page }) => {
-    await installFixtures(page);
-    let blocked = 0;
-    await page.route(/\/(?:assets\/DecodedPathMapView-[^/]+\.js|src\/components\/stats\/DecodedPathMapView\.tsx)/,
-      route => { blocked++; return route.abort(); });
-    await page.goto('/stats?tab=paths');
-    await page.getByRole('button', { name: 'North -> South' }).first().click();
-    const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
-    await expect(dialog.getByRole('alert')).toContainText('The path map could not be loaded');
-    expect(blocked).toBeGreaterThan(0);
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
-    await expect(dialog).toBeHidden();
-  });
 });
 
 test('repeater search exposes keyboard selection and tolerates IME composition', async ({ page }) => {
@@ -515,40 +320,4 @@ test('keyboard-only dashboard flow selects a node, reads details, and toggles a 
   await theme.focus();
   await page.keyboard.press('Enter');
   await expect(theme).toContainText('Light');
-});
-
-test.describe('inactive stats module delivery', () => {
-  test.use({ serviceWorkers: 'block' });
-  test('a failed inactive stats module leaves tabs available for recovery', async ({ page }) => {
-    await installFixtures(page);
-    await page.route(/\/assets\/StatsSignal-[^/]+\.js/, route => route.abort('failed'));
-    await page.goto('/stats');
-    await page.getByRole('tab', { name: 'Signal', exact: true }).click();
-    await expect(page.getByRole('tabpanel', { name: 'Signal', exact: true }).getByRole('alert')).toContainText('The stats section could not be loaded.');
-    await page.getByRole('tab', { name: 'Overview', exact: true }).click();
-    await expect(page.getByRole('tabpanel', { name: 'Overview', exact: true })).toContainText('Observed packets (24h)');
-  });
-
-  test('a pending stats module keeps the loading workspace reserved', async ({ page }) => {
-    await installFixtures(page);
-    await page.setViewportSize({ width: 390, height: 844 });
-    let release!: () => void;
-    let requests = 0;
-    const gate = new Promise<void>(resolve => { release = resolve; });
-    await page.route(/\/assets\/StatsTraffic-[^/]+\.js/, async route => {
-      requests++;
-      await gate;
-      await route.continue();
-    });
-    try {
-      await page.goto('/stats?tab=traffic');
-      await expect.poll(() => requests).toBe(1);
-      const panel = page.getByRole('tabpanel', { name: 'Traffic', exact: true });
-      await expect(panel.getByLabel('Loading stats', { exact: true })).toBeVisible();
-      expect((await panel.boundingBox())!.height).toBeGreaterThan(700);
-      await expect(page.getByRole('tab', { name: 'Overview', exact: true })).toBeVisible();
-      release();
-      await expect(panel.getByText('Packet types', { exact: true })).toBeVisible();
-    } finally { release(); }
-  });
 });

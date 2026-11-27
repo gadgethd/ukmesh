@@ -1,4 +1,3 @@
-import { chartStats } from './fixtures/chartStats.mjs';
 import { expect, test, type Page } from '@playwright/test';
 import { installMapRoutes, installTerrainRoutes } from './mapFixtures.js';
 
@@ -72,7 +71,7 @@ for (const width of [390, 1280]) {
     await page.route('**/api/**', route => {
       const url = route.request().url();
       return route.fulfill({ json: url.includes('runtime-config') ? { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 30 }
-        : url.includes('stats') ? chartStats : [] });
+        : url.includes('/api/feed/regions') ? { network: 'ukmesh', observer: null, visibilityGeneration: 1, regions: ['ABC'] } : [] });
     });
     await page.addInitScript(() => {
       localStorage.setItem('meshcore-cookie-consent-v1', '1');
@@ -186,7 +185,7 @@ async function installQuietFeed(page: Page, deferSnapshot = false, capturedPath?
     }
     return route.fulfill({ json: path === '/api/runtime-config'
       ? { version: 1, packetArcs: false, heatmap: false, regionScoping: true, privacyGeneration: 1, refreshAfterSeconds: 30 }
-      : path === '/api/stats/charts' ? chartStats : [] });
+      : path === '/api/feed/regions' ? { network: 'ukmesh', observer: null, visibilityGeneration: 1, regions: ['ABC'] } : [] });
   });
   await page.addInitScript(({ deferSnapshot, capturedPath }) => {
     localStorage.setItem('meshcore-cookie-consent-v1', '1');

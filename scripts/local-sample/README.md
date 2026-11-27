@@ -89,8 +89,8 @@ views. Node privacy triggers remain enabled in `--fast` mode. A bulk import
 invalidates visibility certification; `sample:prepare` explicitly converges
 privacy using the actual generation, rebuilds retained paths and multibyte
 facts, and refreshes identity/sighting models. The stack then runs the existing
-stats rollup backfill. Chart snapshots are populated by backend warm-up/API
-reads; verify meaningful data before timing them. Preparation disables the
+stats rollup backfill. Request `/api/stats/charts` to populate a chart snapshot
+before measuring chart reads, then verify it contains meaningful data. Preparation disables the
 owned fixture's scheduled Timescale jobs and enables `pg_stat_statements` so
 retention/background work does not change comparisons. This is not a runbook
 for activating production lifecycle policies.

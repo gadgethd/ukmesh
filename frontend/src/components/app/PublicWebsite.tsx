@@ -5,7 +5,6 @@ import { getCurrentSite } from '../../config/site.js';
 import { ToolFrame } from '../../pages/ukmesh/ToolFrame.js';
 
 const OpenSourcePage = lazy(() => import('../../pages/OpenSourcePage.js').then(({ OpenSourcePage: Component }) => ({ default: Component })));
-const StatsPage = lazy(() => import('../../pages/StatsPage.js').then(({ StatsPage: Component }) => ({ default: Component })));
 const ContactPage = lazy(() => import('../../pages/ContactPage.js').then(({ ContactPage: Component }) => ({ default: Component })));
 const PrivacyPage = lazy(() => import('../../pages/PrivacyPage.js').then(({ PrivacyPage: Component }) => ({ default: Component })));
 const OwnerPortalPage = lazy(() => import('../../pages/OwnerPortalPage.js').then(({ OwnerPortalPage: Component }) => ({ default: Component })));
@@ -34,7 +33,6 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   docs: <UKBestPracticePage />,
   owner: <OwnerPortalPage />,
   'open-source': <OpenSourcePage />,
-  stats: <StatsPage />,
   spam: <SpamPage />,
   topology: <TopologyPage />,
   regions: <RegionsPage />,

@@ -422,6 +422,44 @@
 .uk-feed-path-modal {
   width: min(960px, calc(100vw - 32px));
   max-height: min(90vh, 920px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-bright);
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  box-sizing: border-box;
+}
+
+.uk-feed-path-modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.uk-feed-path-modal__title {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 16px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.uk-feed-path-modal__summary {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.uk-feed-path-modal__close {
+  width: auto;
+  min-width: 110px;
 }
 
 .uk-feed-path-modal__body {
@@ -433,8 +471,12 @@
   gap: 16px;
 }
 
-.uk-feed-path-modal__body .stats-page__path-modal-map {
+.uk-feed-path-modal__map {
   flex: 0 0 auto;
+  height: 420px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
 }
 
 .uk-feed-path-modal__body .uk-feed-path-tree {
@@ -451,6 +493,29 @@
 .uk-feed-path-modal .uk-feed-path-tree__meta span {
   min-width: 0;
   overflow-wrap: anywhere;
+}
+
+@media (max-width: 640px) {
+  .uk-feed-path-modal {
+    max-height: min(90dvh, calc(100dvh - 20px));
+    padding: 14px;
+    gap: 12px;
+  }
+
+  .uk-feed-path-modal__header {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .uk-feed-path-modal__close {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .uk-feed-path-modal__map {
+    height: min(46dvh, 320px);
+  }
 }
 
 .uk-feed-stats__latest {

@@ -31,3 +31,10 @@
 - Give each mobile feed status metric an explicit grid slot. Adding a freshness label shifted the other labels through the old numbered slots and let changing text move the packet list.
 - Share the Find interaction across the dashboard and Regions browser suites. Both suites need the visible mobile search, and Layers has no search input. Check the website navigation's visible tab order and retain the privacy, alias and focus restoration assertions.
 - Browser tests wait for the owner or topology fixture requests before checking the dependent UI. Owner timeout tests inspect the loading panels together while the request is pending. Owner comparison and save tests wait for the relevant responses before checking the results. This keeps cold startup and CSRF lookup time outside those assertions.
+
+## Stats refresh
+
+- Give multibyte fact coverage checks and rebuilds their own budget. They share the analytics pool and statement limit with chart reads, and reuse the chart cutoff and cancellation. The chart budget was also limiting the eight-day rebuild when privacy authority changed.
+- Count identical GroupText summaries before classifying channels. DEV kept accepting MQTT while repeated channel counts exceeded the chart query budget. The scan still applies the network and observer predicates and the database privacy policy. Grouping the counts keeps the complete 24-hour total and the existing channel labels.
+- Let the Packets view load observer codes from a scoped feed lookup. Its region picker was requesting a complete chart calculation for one field. The lookup keeps the same seven-day observation window and checks the current visibility generation before delivery.
+- Remove the historical Stats page and its periodic chart refresh together. Keep the lightweight summary warmup and serve existing chart API clients on request. The historical widgets, route budgets and browser checks belong to the retired page.

@@ -5,6 +5,7 @@ const METRIC_NETWORKS = new Set(['ukmesh', 'teesside', 'test']);
 const METRIC_ANALYSIS_WORKLOADS = new Set(['spam-analysis', 'path-learning']);
 
 const METRIC_CACHES = new Set([
+  'api_feed_regions',
   'api_stats',
   'api_inferred_nodes',
   'api_node_links',
