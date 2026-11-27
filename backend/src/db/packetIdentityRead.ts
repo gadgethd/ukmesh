@@ -45,17 +45,19 @@ export function packetDecryptionJoinSql(
   }
 
   return {
-    joins: `LEFT JOIN LATERAL (
-      SELECT pd.summary, pd.decrypted
-        FROM mesh.packets sib
-        JOIN mesh.packet_decryptions pd ON pd.packet_hash = sib.packet_hash
-       WHERE sib.packet_uid = ${uidSql}
-         ${siblingScopeSql}
-       ORDER BY pd.created_at DESC, pd.packet_hash
-       LIMIT 1
-    ) identity_dec ON TRUE
+    joins: `LEFT JOIN LATERAL (${packetSiblingDecryptionSql(uidSql, siblingScopeSql)}) identity_dec ON TRUE
     ${exact}`,
     summary: 'COALESCE(identity_dec.summary, exact_dec.summary)',
     decrypted: 'COALESCE(identity_dec.decrypted, exact_dec.decrypted)',
   };
+}
+
+export function packetSiblingDecryptionSql(uidSql: string, siblingScopeSql: string): string {
+  return `SELECT pd.summary, pd.decrypted
+    FROM mesh.packets sib
+    JOIN mesh.packet_decryptions pd ON pd.packet_hash = sib.packet_hash
+    WHERE sib.packet_uid = ${uidSql}
+      ${siblingScopeSql}
+    ORDER BY pd.created_at DESC, pd.packet_hash
+    LIMIT 1`;
 }

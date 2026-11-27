@@ -189,21 +189,22 @@ export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
       const patternParameter = `$${limitParameter + 2}`;
       const narrowSearch = search !== undefined && search.length >= 3;
       const literalPattern = narrowSearch ? `%${search.replace(/[\\%_]/g, '\\$&')}%` : undefined;
-      const candidateMatch = (expression: string) => `LOWER(${expression}) LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)`;
+      const candidateMatch = (lowercaseExpression: string) => narrowSearch
+        ? `${lowercaseExpression} LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)`
+        : `STRPOS(${lowercaseExpression}, LOWER(${searchParameter})) > 0`;
       // Candidate matches may include a non-representative alias. Reapply the
       // original substring/history predicate below after hydrating the entire
       // identity, so this optimisation cannot change search results.
-      const searchCandidates = narrowSearch ? `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
+      const searchCandidates = search ? `SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(raw.node_id))) AS node_id
         FROM core.nodes raw LEFT JOIN core.node_identity_aliases a
           ON a.source_node_id = UPPER(BTRIM(raw.node_id))
-        WHERE core.node_literal_search_text(raw.name, raw.node_id, raw.iata)
-          LIKE LOWER(${patternParameter}) ESCAPE pg_catalog.chr(92)
+        WHERE ${candidateMatch('core.node_literal_search_text(raw.name, raw.node_id, raw.iata)')}
         UNION SELECT canonical_node_id FROM core.node_identity_aliases
           WHERE STRPOS(LOWER(canonical_node_id), LOWER(${searchParameter})) > 0
         UNION SELECT COALESCE(a.canonical_node_id, UPPER(BTRIM(h.node_id)))
           FROM core.node_name_history h JOIN core.nodes raw ON raw.node_id = h.node_id
           LEFT JOIN core.node_identity_aliases a ON a.source_node_id = UPPER(BTRIM(raw.node_id))
-          WHERE ${candidateMatch('h.name')}` : undefined;
+          WHERE ${candidateMatch('LOWER(h.name)')}` : undefined;
       const scopedCandidates = filters.nodeCandidates;
       const candidateIds = scopedCandidates && searchCandidates
         ? `SELECT node_id FROM (${scopedCandidates.idsSql}) scope_ids WHERE node_id IN (${searchCandidates})`
@@ -234,7 +235,7 @@ export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
           idsSql: candidateIds,
           // Indexed observer hydration already avoids a broad scan. Other
           // candidate sets use their cardinality, including small regions.
-          projection: narrowSearch || scopedCandidates?.rowHydration !== 'indexed-points' ? 'adaptive' : 'bulk',
+          projection: searchCandidates || scopedCandidates?.rowHydration !== 'indexed-points' ? 'adaptive' : 'bulk',
           rowHydration: scopedCandidates?.rowHydration ?? 'ordered-scan',
         } : undefined,
       });
