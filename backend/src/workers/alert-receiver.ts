@@ -200,6 +200,10 @@ const emptyQueueMetrics: AlertDeliveryQueueMetrics = {
   resolvedDeadLetterCount: 0,
   lastSuccessAt: null,
   lastError: null,
+  enqueuedTotal: 0,
+  forwardedTotal: 0,
+  failedTotal: 0,
+  deadLetteredTotal: 0,
 };
 
 export function deriveDeliveryHealth(
@@ -211,7 +215,6 @@ export function deriveDeliveryHealth(
     return { degraded: true, detail: 'archive-only mode: ALERT_FORWARD_URL is not configured' };
   }
   if (!queueReady) return { degraded: true, detail: 'durable forwarding queue is not ready' };
-  if (!metrics.lastSuccessAt) return { degraded: true, detail: 'no successful forward since startup' };
   if (metrics.unresolvedDeadLetterCount > 0) {
     return { degraded: true, detail: `${metrics.unresolvedDeadLetterCount} alert(s) are dead-lettered` };
   }
@@ -221,6 +224,7 @@ export function deriveDeliveryHealth(
   if (metrics.oldestQueueAgeSeconds > 5 * 60) {
     return { degraded: true, detail: `oldest alert has waited ${metrics.oldestQueueAgeSeconds}s for delivery` };
   }
+  if (!metrics.lastSuccessAt) return { degraded: true, detail: 'no successful forward recorded' };
   return {
     degraded: false,
     detail: metrics.pendingCount > 0
@@ -229,10 +233,34 @@ export function deriveDeliveryHealth(
   };
 }
 
+function renderAlertReceiverMetrics(metrics: AlertDeliveryQueueMetrics): string {
+  const lastSuccess = Date.parse(metrics.lastSuccessAt ?? '');
+  const values: ReadonlyArray<readonly [string, 'gauge' | 'counter', number, string]> = [
+    ['forward_configured', 'gauge', Number(Boolean(FORWARD_URL)), 'Whether alert forwarding is configured.'],
+    ['queue_ready', 'gauge', Number(deliveryQueueReady), 'Whether the durable forwarding queue has initialized.'],
+    ['pending_count', 'gauge', metrics.pendingCount, 'Alerts waiting in the durable forwarding queue.'],
+    ['dead_letter_count', 'gauge', metrics.deadLetterCount, 'Dead letters retained on the alert volume.'],
+    ['unresolved_dead_letter_count', 'gauge', metrics.unresolvedDeadLetterCount, 'Dead letters awaiting successful redrive.'],
+    ['resolved_dead_letter_count', 'gauge', metrics.resolvedDeadLetterCount, 'Dead letters resolved by redrive.'],
+    ['queue_oldest_age_seconds', 'gauge', metrics.oldestQueueAgeSeconds, 'Age of the oldest queued alert in seconds.'],
+    ['last_success_timestamp_seconds', 'gauge', Number.isFinite(lastSuccess) ? lastSuccess / 1_000 : 0, 'Unix time of the last successful forward or 0.'],
+    ['enqueued_total', 'counter', metrics.enqueuedTotal, 'Alerts and redrives durably enqueued since process start.'],
+    ['forwarded_total', 'counter', metrics.forwardedTotal, 'Successful forwarding attempts since process start.'],
+    ['failed_total', 'counter', metrics.failedTotal, 'Failed forwarding attempts since process start.'],
+    ['dead_lettered_total', 'counter', metrics.deadLetteredTotal, 'New dead letters since process start.'],
+  ];
+  return values.map(([suffix, type, value, help]) => {
+    const name = `meshcore_alert_receiver_${suffix}`;
+    return `# HELP ${name} ${help}\n# TYPE ${name} ${type}\n${name} ${value}\n`;
+  }).join('');
+}
+
 function deliveryHealth() {
   const metrics = deliveryQueue?.metrics() ?? emptyQueueMetrics;
   return {
-    ...deriveDeliveryHealth(Boolean(FORWARD_URL), deliveryQueueReady, metrics),
+    ...(FORWARD_URL && !RECEIVER_TOKEN
+      ? { degraded: true, detail: 'alert receiver token is not configured' }
+      : deriveDeliveryHealth(Boolean(FORWARD_URL), deliveryQueueReady, metrics)),
     metrics,
   };
 }
@@ -272,6 +300,15 @@ const server = http.createServer(async (req, res) => {
       last_success_at: health.metrics.lastSuccessAt,
       last_error: health.metrics.lastError,
     });
+    return;
+  }
+  if (req.method === 'GET' && req.url === '/metrics') {
+    res.writeHead(200, {
+      'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-content-type-options': 'nosniff',
+    });
+    res.end(renderAlertReceiverMetrics(deliveryQueue?.metrics() ?? emptyQueueMetrics));
     return;
   }
   const redriveRoute = req.url?.match(/^\/alerts\/dead-letters\/(.+)\/redrive$/);
@@ -358,6 +395,13 @@ const server = http.createServer(async (req, res) => {
       json(res, 503, { error: 'could not persist alert receipt' });
       return;
     }
+    // Archive receipts for diagnosis while asking the producer to retry delivery.
+    res.setHeader('retry-after', '5');
+    json(res, 503, {
+      error: 'archive-only mode: ALERT_FORWARD_URL is not configured',
+      archived: true,
+    });
+    return;
   }
   json(res, 202, { accepted: true });
 });

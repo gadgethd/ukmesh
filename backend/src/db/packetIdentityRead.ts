@@ -29,3 +29,33 @@ export function packetIdentityKeySql(
     ? `UPPER(COALESCE(encode(${alias}.packet_uid, 'hex'), ${alias}.packet_hash))`
     : `${alias}.packet_hash`;
 }
+
+/** Select the latest eligible sibling decryption with an exact-hash fallback.
+ * Callers supply the UID expression and scope for their bounded read of p.
+ * Avoid a window-wide scan when the reader already has a small candidate set.
+ */
+export function packetDecryptionJoinSql(
+  uidSql: string,
+  siblingScopeSql: string,
+  authority: PacketIdentityReadAuthority = packetIdentityReadAuthority(),
+): { joins: string; summary: string; decrypted: string } {
+  const exact = 'LEFT JOIN mesh.packet_decryptions exact_dec ON exact_dec.packet_hash = p.packet_hash';
+  if (authority === 'hash') {
+    return { joins: exact, summary: 'exact_dec.summary', decrypted: 'exact_dec.decrypted' };
+  }
+
+  return {
+    joins: `LEFT JOIN LATERAL (
+      SELECT pd.summary, pd.decrypted
+        FROM mesh.packets sib
+        JOIN mesh.packet_decryptions pd ON pd.packet_hash = sib.packet_hash
+       WHERE sib.packet_uid = ${uidSql}
+         ${siblingScopeSql}
+       ORDER BY pd.created_at DESC, pd.packet_hash
+       LIMIT 1
+    ) identity_dec ON TRUE
+    ${exact}`,
+    summary: 'COALESCE(identity_dec.summary, exact_dec.summary)',
+    decrypted: 'COALESCE(identity_dec.decrypted, exact_dec.decrypted)',
+  };
+}

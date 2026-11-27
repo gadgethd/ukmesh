@@ -318,9 +318,17 @@ verification, checkpoint restart tests, and rollback. Do not delete the
 
 The machine-readable `/api/health` contract includes the configured
 `MAINTENANCE_ACTIVE=1` and bounded `MAINTENANCE_MESSAGE` notice. The former
-website `/health` page was removed; public navigation links to the separate
-health-check application. Keep maintenance text free of hostnames, credentials,
-addresses and private node identities.
+website `/health` page moved to `/health-check`. This route embeds the
+Health Check service and keeps the site navigation visible. Keep maintenance
+text free of hostnames, credentials, addresses and private node identities.
+
+## Tagger service
+
+The tagger defaults to Jev. Set `TYPESAFE_API_URL`, `TYPESAFE_API_KEY` and
+`TYPESAFE_MODEL` for that service. To use a local model endpoint, set
+`TAGGER_BACKEND=local`, `TAGGER_URL` and `TAGGER_MODEL_ID`. Supply
+`TAGGER_API_KEY` when the endpoint requires authentication. The full DEV
+overlay selects its own local fixture endpoint.
 
 ## Operational runbooks
 
@@ -795,6 +803,14 @@ Run the backup immediately, verify the signature/checksum, and perform the
 isolated drill. Investigate target capacity or scheduling after a fresh
 verified receipt restores the recovery guarantee.
 
+### On-demand chart refresh failures
+
+If a client reports stale data, inspect the `snapshot.generatedAt` value from
+`/api/stats/charts` and look for `[stats] chart refresh failed` or
+`STATS_QUERY_BUDGET_EXCEEDED` in backend logs. Chart refresh runs on request.
+A refresh aborts the snapshot when a dimension exceeds its budget. Identify
+the slow dimension and measure it before changing its query budget.
+
 ### TelemetryIntegrityFailures
 
 Inspect aggregate rejection reasons and a bounded redacted sample. Treat
@@ -934,3 +950,35 @@ Historical charts refresh when a client requests `/api/stats/charts` and the
 snapshot is more than 30 minutes old. The previous complete snapshot remains
 available within its retention window during the refresh. Use its
 `snapshot.generatedAt` value to check when it was computed.
+
+### ObserverRegistrationWebhookFailing
+
+Observer registrations are announced to the operator Discord webhook configured
+by `OBSERVER_REGISTRATION_WEBHOOK_URL`. Delivery is fire-and-forget: a failed
+notification never fails the public registration request, and the request stays
+in `core.observer_registration_requests` for the operator page. The backend
+exports `meshcore_observer_registration_webhook_deliveries_total{outcome}` with
+one increment per delivery attempt (two attempts per notification).
+
+An increase in `outcome="failure"` pages because the operator loses the timely
+notification even though the submission survives. Confirm the variable is still
+a valid Discord webhook (`GET` returns the webhook object), that the backend has
+outbound HTTPS, and that `backend/src/security/outboundWebhook.ts` is not
+rejecting the resolved address (private/reserved answers, non-443 ports and
+plain HTTP are refused by design). There is no retry after the second attempt;
+re-announce from the operator page if the request is still actionable.
+
+### ObserverRegistrationWebhookSilent
+
+`ObserverRegistrationWebhookSilent` fires when at least one registration was
+accepted in the last six hours and no successful delivery was recorded in the
+same window. Its usual causes are an unset or empty
+`OBSERVER_REGISTRATION_WEBHOOK_URL` (the notification function returns without
+attempting a delivery, so the failure counter never moves), a rotated Discord
+webhook, or a DNS/egress failure. The absence of a successful-delivery series is
+treated as zero; never read it as "no submissions".
+
+Accepted and duplicate submissions are counted separately in
+`meshcore_observer_registration_submissions_total{outcome}`. Duplicates are
+deliberately not announced, so a burst of duplicates with no accepted
+submissions cannot page.

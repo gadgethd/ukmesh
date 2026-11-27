@@ -56,6 +56,10 @@ export type AlertDeliveryQueueMetrics = {
   resolvedDeadLetterCount: number;
   lastSuccessAt: string | null;
   lastError: string | null;
+  enqueuedTotal: number;
+  forwardedTotal: number;
+  failedTotal: number;
+  deadLetteredTotal: number;
 };
 
 export class AlertQueueFullError extends Error {
@@ -78,6 +82,10 @@ export class DurableAlertQueue {
   private processing = false;
   private closing = false;
   private admissionFault: string | null = null;
+  private enqueuedTotal = 0;
+  private forwardedTotal = 0;
+  private failedTotal = 0;
+  private deadLetteredTotal = 0;
 
   constructor(private readonly options: {
     directory: string;
@@ -135,6 +143,7 @@ export class DurableAlertQueue {
         await rename(file, this.deadPath(id));
         await this.syncDirectory();
         this.deadIds.add(id);
+        this.deadLetteredTotal += 1;
         this.lastError = `quarantined invalid queue record ${id}: ${(error as Error).message}`;
         continue;
       }
@@ -198,6 +207,10 @@ export class DurableAlertQueue {
       resolvedDeadLetterCount: this.resolutions.size,
       lastSuccessAt: this.lastSuccessAt,
       lastError: this.admissionFault ?? pendingError ?? this.lastError,
+      enqueuedTotal: this.enqueuedTotal,
+      forwardedTotal: this.forwardedTotal,
+      failedTotal: this.failedTotal,
+      deadLetteredTotal: this.deadLetteredTotal,
     };
   }
 
@@ -298,6 +311,7 @@ export class DurableAlertQueue {
       throw error;
     }
     this.records.set(record.id, record);
+    this.enqueuedTotal += 1;
     this.schedule(0);
   }
 
@@ -358,6 +372,7 @@ export class DurableAlertQueue {
           const message = (error instanceof Error ? error.message : String(error)).slice(0, 500);
           const failed = { ...attempted, lastError: message };
           this.lastError = message;
+          this.failedTotal += 1;
           console.error(`[alert-receiver] forward attempt ${attempts}/${this.options.maxAttempts} failed: ${message}`);
           if (attempts >= this.options.maxAttempts) {
             await this.exhaust(failed, message);
@@ -368,6 +383,7 @@ export class DurableAlertQueue {
           continue;
         }
 
+        this.forwardedTotal += 1;
         const deliveredAt = new Date(this.now()).toISOString();
         try {
           if (attempted.redrive) {
@@ -469,7 +485,10 @@ export class DurableAlertQueue {
     const failed = { ...record, lastError: message };
     this.records.set(record.id, failed);
     await this.writeImmutable(record.redrive ? this.failedPath(record.id, record.redrive.requestId) : this.deadPath(record.id), failed);
-    if (!record.redrive) this.deadIds.add(record.id);
+    if (!record.redrive && !this.deadIds.has(record.id)) {
+      this.deadIds.add(record.id);
+      this.deadLetteredTotal += 1;
+    }
     await this.removeFile(this.pendingPath(record));
     this.records.delete(record.id);
   }

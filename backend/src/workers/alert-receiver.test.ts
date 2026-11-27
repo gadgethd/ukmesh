@@ -110,9 +110,12 @@ test('unconfigured or invalid forwarding logs a startup warning and readiness is
       const ready = await fetch(`${child.base}/readyz`);
       assert.equal(ready.status, 503);
       assert.match((await ready.json() as { detail: string }).detail, /archive-only/);
-      assert.equal((await fetch(`${child.base}/alerts`, { method: 'POST', headers: { Authorization: `Bearer ${ALERT_TOKEN}` }, body: JSON.stringify({
+      const response = await fetch(`${child.base}/alerts`, { method: 'POST', headers: { Authorization: `Bearer ${ALERT_TOKEN}` }, body: JSON.stringify({
         service: 'meshcore-analytics', check: 'readiness', kind: 'alert',
-      }) })).status, 202);
+      }) });
+      assert.equal(response.status, 503);
+      assert.equal(response.headers.get('retry-after'), '5');
+      assert.equal((await response.json() as { archived: boolean }).archived, true);
       assert.match(await readFile(child.receipt, 'utf8'), /"source":"synthetic"/);
       assert.equal((await fetch(`${child.base}/readyz`)).status, 503);
       assert.doesNotMatch(child.logs(), /forward succeeded/);
@@ -168,17 +171,22 @@ test('failed stub deliveries remain unready and reach bounded retries', { timeou
     const dead = (await readdir(`${child.receipt}.queue`)).find((name) => name.endsWith('.dead.json'))!;
     assert.equal(JSON.parse(await readFile(path.join(`${child.receipt}.queue`, dead), 'utf8')).attempts, 2);
     assert.equal(calls, 2);
+    const metrics = await (await fetch(`${child.base}/metrics`)).text();
+    assert.match(metrics, /^meshcore_alert_receiver_failed_total 2$/m);
+    assert.match(metrics, /^meshcore_alert_receiver_dead_lettered_total 1$/m);
+    assert.match(metrics, /^meshcore_alert_receiver_unresolved_dead_letter_count 1$/m);
     assert.equal((await fetch(`${child.base}/readyz`)).status, 503);
   } finally {
     await child.close();
   }
 });
 
-test('Compose checks receiver delivery readiness', async () => {
+test('Compose lets Alertmanager start before the first successful delivery', async () => {
   const compose = await readFile('../docker-compose.yml', 'utf8');
   const service = compose.split('\n  alert-receiver:')[1]!.split('\n  alertmanager:')[0]!;
-  assert.match(service, /wget -qO- http:\/\/127.0.0.1:8080\/readyz/);
-  assert.doesNotMatch(service, /\/healthz/);
+  assert.match(service, /wget -qO- http:\/\/127.0.0.1:8080\/healthz/);
+  const alertmanager = compose.split('\n  alertmanager:')[1]!.split('\n  postgres-exporter:')[0]!;
+  assert.doesNotMatch(alertmanager, /alert-receiver:/);
 });
 
 test('summarizes synthetic alert and recovery events', () => {
@@ -302,7 +310,9 @@ test('receipt persistence recovers after a transient filesystem failure', { time
     await mkdir(child.receipt);
     assert.equal((await send()).status, 503, 'storage failures must remain retryable');
     await rm(child.receipt, { recursive: true });
-    assert.equal((await send()).status, 202);
+    const response = await send();
+    assert.equal(response.status, 503);
+    assert.equal((await response.json() as { archived: boolean }).archived, true);
     assert.match(await readFile(child.receipt, 'utf8'), /filesystem-recovery/);
   } finally { await child.close(); }
 });
@@ -318,7 +328,7 @@ test('deployed receiver bearer authentication survives the durability changes', 
     await assert.rejects(readFile(child.receipt), { code: 'ENOENT' });
     assert.equal((await fetch(`${child.base}/alerts`, {
       method: 'POST', headers: { authorization: 'Bearer owned-audit-test-token' }, body,
-    })).status, 202);
+    })).status, 503);
     assert.equal((await readFile(child.receipt, 'utf8')).trim().split('\n').length, 1);
   } finally { await child.close(); }
 });

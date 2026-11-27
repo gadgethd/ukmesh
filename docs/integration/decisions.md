@@ -51,3 +51,14 @@
 - Give operators separate API and intake health checks. Aggregate deployment readiness still verifies the database, MQTT delivery and owner ACL. Rolling out the split must hand off the existing client ID without running two consumers on it.
 - Apply restart policies to the full DEV dependency chain. Persist sample Redis queues on a named volume and let only the optional archive player pause at the disk reserve. A service or host restart should preserve work already admitted; one-shot jobs and deliberately stopped services keep their own lifecycle.
 - Let readers refresh WebSocket snapshots after startup. Idle refreshes of the 24-hour message history were spilling to disk even with no readers. Use the analytics pool for that history and bound concurrent snapshot builds to keep HTTP admission separate.
+
+## Sync with main
+
+- Merge main through `7bb40a7` into the DEV line based on `f8d0a96`. DEV owns the split MQTT/API runtime, local replay and resource protections, the companion integrations, and the retirement of the historical Stats page. Bring across compatible fixes through their current owners.
+- Port packet identity, radio status, owner grants, and observer notification metrics into the repositories and workload modules that own those features. Main still refers to the retired database and metrics facades. Its new migration numbers collide with changes already applied on DEV.
+- Keep on-demand chart compatibility separate from recurring background work. The existing stats summary and feed-region lookup do not need to restore the historical page, its refresh loop, or an alert that assumes periodic chart runs.
+- Keep DEV integrations on the local broker and test endpoints. Shared image, delivery, and dependency changes must preserve separate API and ingest readiness. Host-specific production settings stay outside DEV.
+- Run all 15 compressed-data cases in one dedicated TimescaleDB job on the repository's pinned Node version. The separate job runs independently of the other backend checks. Keep the full frontend dependency audit.
+- Use Vite 8.3.6 with Rolldown 1.2.16 for DEV builds. Vite 8.3.8 brings in a Rolldown binary that raises SIGILL on the 4-core DEV VM. Recheck native compiler imports on DEV before moving those pins.
+- Keep the existing per-request chart budget defaults on DEV. Operators can override them, and the multibyte backfill retains its separate budget. The longer production defaults were set for the retired scheduled chart job.
+- The owner pool explicitly searches the two supported schemas. Consolidated installs use `core.owner_sessions` and the standalone DEV database retains its existing `public.owner_sessions`.

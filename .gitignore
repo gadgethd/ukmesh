@@ -89,3 +89,7 @@ terrain-tiles/
 
 # worktree symlink
 backend/node_modules
+verification/
+
+# Generated Tropo tiles served read-only by the website container.
+/tropo-data/

@@ -1,6 +1,8 @@
 """Exercise the actual poll SQL without contacting the classification service."""
 
 from datetime import datetime, timedelta, timezone
+import io
+import json
 import os
 import time
 from unittest.mock import patch
@@ -11,11 +13,60 @@ import psycopg2
 from psycopg2 import sql
 
 from tagger_config import TaggerSettings
+import tagger_client
 import tagger_repository as repository
 import tagger_service
 import tagger_worker
 
 URL = os.environ.get("TEST_INGEST_DATABASE_URL")
+
+
+class ClassifierClientTests(unittest.TestCase):
+    def test_local_backend_normalizes_batch_response(self):
+        settings = TaggerSettings.from_env({
+            "DATABASE_URL": "unused",
+            "TAGGER_BACKEND": "local",
+            "TAGGER_URL": "http://127.0.0.1:8000/v1/tag/batch",
+            "TAGGER_API_KEY": "fixture-key",
+        })
+        response = {"results": [{
+            "kind": {"value": "chat", "p": 0.9},
+            "topic": {"value": "general", "p": 0.8},
+            "speaker": {"value": "human", "p": 0.7},
+            "flags": {"mentions_location": 0.2, "directed": 0.3, "safety": 0.1},
+        }]}
+        with patch("tagger_client.urllib.request.urlopen", return_value=io.BytesIO(
+            json.dumps(response).encode()
+        )) as send:
+            result, _ = tagger_client.classify("example node", "example message", settings)
+        request = send.call_args.args[0]
+        self.assertEqual(request.full_url, settings.api_url)
+        self.assertEqual(request.get_header("Authorization"), "Bearer fixture-key")
+        self.assertEqual(json.loads(request.data), {
+            "items": [{"sender": "example node", "message": "example message"}],
+        })
+        self.assertEqual(tagger_client.flatten(result["answers"]), (
+            {"kind": "chat", "topic": "general", "speaker": "human",
+             "mentions_location": 0.2, "directed": 0.3, "safety": 0.1},
+            {"kind": 0.9, "topic": 0.8, "speaker": 0.7},
+        ))
+
+    def test_jev_remains_default_with_existing_request_contract(self):
+        settings = TaggerSettings.from_env({
+            "DATABASE_URL": "unused",
+            "TYPESAFE_API_URL": "http://127.0.0.1:8000/tag",
+            "TYPESAFE_API_KEY": "fixture-key",
+        })
+        with patch("tagger_client.urllib.request.urlopen", return_value=io.BytesIO(
+            b'{"answers": {}}'
+        )) as send:
+            result, _ = tagger_client.classify(None, "x" * 4001, settings)
+        self.assertEqual(json.loads(send.call_args.args[0].data), {
+            "state": f"Message from node 'unknown': \"{'x' * 4000}\"",
+            "model": "jev-latest",
+            "questions": tagger_client.QUESTIONS,
+        })
+        self.assertEqual(result, {"answers": {}})
 
 
 @unittest.skipUnless(URL, "TEST_INGEST_DATABASE_URL is required")
@@ -104,7 +155,7 @@ class CandidatePagingTests(TaggerDatabaseFixture):
                 )
         self.assertEqual(self.candidates(), [])
 
-    def classify(self, _state):
+    def classify(self, _sender, _message):
         raise AssertionError("unexpected external classifier call")
 
     def settings(self):
@@ -186,7 +237,7 @@ class CandidatePagingTests(TaggerDatabaseFixture):
     def test_privacy_revocation_during_backoff_prevents_another_external_attempt(self):
         self.add("revoked-during-retry", self.cursor_time)
 
-        def revoke_and_fail(_state):
+        def revoke_and_fail(_sender, _message):
             with self.conn.cursor() as update:
                 update.execute(
                     "UPDATE mesh.packets SET is_private=true, visibility_ok=false"
@@ -310,7 +361,7 @@ class SchemaOwnershipTests(TaggerDatabaseFixture):
                 )
             result = tagger_service.tag_message(
                 cur, "owned-schema-message", ts, None, "ukmesh", settings,
-                lambda _: ({"answers": {"kind": {"choice": "chat"}}}, 1),
+                lambda _sender, _message: ({"answers": {"kind": {"choice": "chat"}}}, 1),
                 sleep=lambda _: None,
             )
             self.assertEqual(result[0], "tagged")

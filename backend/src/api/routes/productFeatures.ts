@@ -14,6 +14,7 @@ import {
 } from '../../repositories/productFeatures.js';
 import { notifyObserverRegistration } from '../../notifications/observerRegistration.js';
 import { publicJson } from '../../http/publicJson.js';
+import { observerRegistrationSubmissionsTotal } from '../../metrics/observerRegistration.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
 
@@ -127,6 +128,9 @@ export function registerProductFeatureRoutes(
     }
     try {
       const result = await submitObserverRegistration(query, input);
+      observerRegistrationSubmissionsTotal.inc({
+        outcome: result.accepted ? 'accepted' : 'duplicate',
+      });
       if (result.accepted) {
         notifyObserverRegistration({ requestId: result.requestId, ...input });
       }

@@ -1,6 +1,3 @@
-from worker_context import WorkerContext
-from dataclasses import replace
-
 """Focused unit test for BUG-006 side-effect marker + replay logic.
 
 Runs without GDAL by importing only the pure helper functions via a stub
@@ -14,6 +11,8 @@ import sys
 import types
 import unittest
 from unittest import mock
+from dataclasses import replace
+from worker_context import WorkerContext
 
 # ---- Stub the heavy third-party modules so we can import coverage_jobs as worker.py's helpers ----
 for mod_name in ("osgeo", "osgeo.gdal", "osgeo.ogr", "osgeo.osr"):
@@ -32,8 +31,8 @@ class FakeRedis:
         self.fail_publish_at = None
         self.fail_marker_set = False
 
-    def exists(self, key):
-        return 1 if key in self.data else 0
+    def get(self, key):
+        return self.data.get(key)
 
     def set(self, key, value, ex=None):
         if self.fail_marker_set and key.startswith("viewshed:side-effects:"):
@@ -62,6 +61,9 @@ class FakeCursor:
 
     def execute(self, sql, params=None):
         self.sql = sql
+
+    def fetchall(self):
+        return self._rows
 
     def fetchone(self):
         if self._idx < len(self._rows):
@@ -92,19 +94,21 @@ class SequenceDb:
 class SideEffectMarkerTest(unittest.TestCase):
     def setUp(self):
         self.context = WorkerContext()
+        self.context.settings = replace(self.context.settings, WORKER_MODE="all")
 
     def test_marker_round_trip(self):
         r = FakeRedis()
         node = "A" * 64
-        self.assertFalse(worker.side_effects_complete(r, node, context=self.context))
-        worker.mark_side_effects_complete(r, node, context=self.context)
-        self.assertTrue(worker.side_effects_complete(r, node, context=self.context))
+        self.assertFalse(worker.side_effects_complete(r, node, "1:100.0"))
+        worker.mark_side_effects_complete(r, node, "1:100.0")
+        self.assertTrue(worker.side_effects_complete(r, node, "1:100.0"))
+        self.assertFalse(worker.side_effects_complete(r, node, "1:200.0"))
 
     def test_marker_read_failure_treated_as_incomplete(self):
         r = FakeRedis()
-        r.exists = mock.Mock(side_effect=RuntimeError("redis down"))
+        r.get = mock.Mock(side_effect=RuntimeError("redis down"))
         self.assertFalse(
-            worker.side_effects_complete(r, "B" * 64, context=self.context)
+            worker.side_effects_complete(r, "B" * 64, "1:100.0")
         )
 
     def test_replay_publishes_notifications_and_marks_complete(self):
@@ -114,13 +118,14 @@ class SideEffectMarkerTest(unittest.TestCase):
         strength = {"s1": {"type": "Polygon", "coordinates": []}}
         db = FakeDb(
             [
-                (geom, strength, 5000.0, 12.0),  # coverage row
-                (54.0, -1.5),  # node position for link replay
+                (geom, strength, 5000.0, 12.0, 54.0, -1.5, "1:100.0"),
             ]
         )
         with mock.patch.object(
             worker, "enqueue_physical_link_jobs_for_node", return_value=2
         ) as enqueue:
+            worker.mark_side_effects_complete(r, node, "1:90.0")
+            worker.replay_coverage_side_effects(db, r, node, context=self.context)
             worker.replay_coverage_side_effects(db, r, node, context=self.context)
         channels = [ch for ch, _ in r.published]
         self.assertEqual(
@@ -130,25 +135,25 @@ class SideEffectMarkerTest(unittest.TestCase):
         types_ = [m["type"] for _, m in r.published]
         self.assertIn("coverage_update", types_)
         self.assertIn("node_upsert", types_)
-        self.assertTrue(worker.side_effects_complete(r, node, context=self.context))
+        self.assertTrue(worker.side_effects_complete(r, node, "1:100.0"))
         enqueue.assert_called_once()
 
-    def test_replay_without_position_skips_links_but_notifies(self):
+    def test_replay_without_position_remains_incomplete(self):
         r = FakeRedis()
         node = "D" * 64
         geom = {"type": "Polygon", "coordinates": []}
         db = FakeDb(
             [
-                (geom, None, None, 5.0),  # coverage row, NULL strength/radius
-                (None, None),  # node position missing
+                (geom, None, None, 5.0, None, None, "1:100.0"),
             ]
         )
         with mock.patch.object(
             worker, "enqueue_physical_link_jobs_for_node"
         ) as enqueue:
-            worker.replay_coverage_side_effects(db, r, node, context=self.context)
-        self.assertEqual(len(r.published), 2)
-        self.assertTrue(worker.side_effects_complete(r, node, context=self.context))
+            with self.assertRaisesRegex(RuntimeError, "without a position"):
+                worker.replay_coverage_side_effects(db, r, node, context=self.context)
+        self.assertEqual(r.published, [])
+        self.assertFalse(worker.side_effects_complete(r, node, "1:100.0"))
         enqueue.assert_not_called()
 
     def test_replay_missing_coverage_row_is_noop(self):
@@ -157,8 +162,22 @@ class SideEffectMarkerTest(unittest.TestCase):
         worker.replay_coverage_side_effects(db, r, "E" * 64, context=self.context)
         self.assertEqual(r.published, [])
         self.assertFalse(
-            worker.side_effects_complete(r, "E" * 64, context=self.context)
+            worker.side_effects_complete(r, "E" * 64, "1:100.0")
         )
+
+    def test_full_link_queue_leaves_generation_unconfirmed(self):
+        r = FakeRedis()
+        node = "A" * 64
+        geom = {"type": "Polygon", "coordinates": []}
+        db = SequenceDb([
+            [(geom, None, 5000.0, 5.0, 54.0, -1.5, "1:100.0")],
+            [("B" * 64, 54.0, -1.501, 5000.0)],
+        ])
+        with mock.patch("link_jobs.link_queue_v3.admit_physical", return_value=("full", None)):
+            with self.assertRaisesRegex(RuntimeError, "not admitted.*full"):
+                worker.replay_coverage_side_effects(db, r, node, context=self.context)
+        self.assertEqual(r.published, [])
+        self.assertFalse(worker.side_effects_complete(r, node, "1:100.0"))
 
     def test_post_commit_faults_replay_on_retry_at_every_boundary(self):
         """Coverage is already committed; any incomplete Redis effect must retry."""
@@ -182,11 +201,9 @@ class SideEffectMarkerTest(unittest.TestCase):
                 db = SequenceDb(
                     [
                         [(None, 2, None)],  # first delivery: node eligibility
-                        [(geom, strength, 5_000.0, 12.0)],  # replay: coverage row
-                        [(54.0, -1.5)],  # replay: node position
+                        [(geom, strength, 5_000.0, 12.0, 54.0, -1.5, "1:100.0")],
                         [(None, 2, None)],  # retry: node eligibility
-                        [(geom, strength, 5_000.0, 12.0)],  # replay: coverage row
-                        [(54.0, -1.5)],  # replay: node position
+                        [(geom, strength, 5_000.0, 12.0, 54.0, -1.5, "1:100.0")],
                     ]
                 )
                 enqueue_calls = 0
@@ -202,11 +219,6 @@ class SideEffectMarkerTest(unittest.TestCase):
                 with (
                     mock.patch.object(worker, "already_calculated", return_value=True),
                     mock.patch.object(
-                        self.context,
-                        "settings",
-                        replace(self.context.settings, WORKER_MODE="all"),
-                    ),
-                    mock.patch.object(
                         worker,
                         "enqueue_physical_link_jobs_for_node",
                         side_effect=enqueue,
@@ -215,7 +227,7 @@ class SideEffectMarkerTest(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         worker.process_job(db, r, job, context=self.context)
                     self.assertFalse(
-                        worker.side_effects_complete(r, node, context=self.context)
+                        worker.side_effects_complete(r, node, "1:100.0")
                     )
 
                     # The next delivery takes the already-calculated branch and
@@ -223,7 +235,7 @@ class SideEffectMarkerTest(unittest.TestCase):
                     worker.process_job(db, r, job, context=self.context)
 
                 self.assertTrue(
-                    worker.side_effects_complete(r, node, context=self.context)
+                    worker.side_effects_complete(r, node, "1:100.0")
                 )
                 expected_notifications = {
                     "node_notification": 3,

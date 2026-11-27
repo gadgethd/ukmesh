@@ -25,41 +25,44 @@
     "test:sw-cutover": "node scripts/check-service-worker-cutover.mjs"
   },
   "dependencies": {
-    "@deck.gl/aggregation-layers": "^9.4.0",
-    "@deck.gl/core": "^9.4.0",
-    "@deck.gl/layers": "^9.3.10",
-    "@deck.gl/mapbox": "^9.4.0",
+    "@deck.gl/aggregation-layers": "^9.4.2",
+    "@deck.gl/core": "^9.4.2",
+    "@deck.gl/layers": "^9.4.2",
+    "@deck.gl/mapbox": "^9.4.2",
     "fuse.js": "^7.5.0",
     "maplibre-gl": "6.11.2",
     "polygon-clipping": "^0.15.7",
-    "react": "19.3.0",
-    "react-aria-components": "^1.21.1",
-    "react-dom": "19.3.0",
-    "react-is": "^19.3.0",
-    "react-router": "8.4.0",
+    "react": "19.3.1",
+    "react-aria-components": "^1.22.1",
+    "react-dom": "19.3.1",
+    "react-is": "^19.3.1",
+    "react-router": "8.5.2",
     "recharts": "^3.10.1",
     "web-vitals": "6.2.3",
-    "zustand": "^5.0.15"
+    "zustand": "^5.1.0"
   },
   "devDependencies": {
-    "@axe-core/playwright": "^4.13.0",
-    "@playwright/test": "^1.63.0",
+    "@axe-core/playwright": "^4.14.0",
+    "@playwright/test": "^1.65.1",
     "@types/d3-force": "^3.0.10",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
-    "@vitejs/plugin-react": "^6.1.1",
+    "@vitejs/plugin-react": "^6.3.0",
     "lighthouse": "13.6.0",
     "picomatch": "file:vendor/picomatch-4.0.8-ukmesh.1.tgz",
-    "postcss": "8.5.28",
+    "postcss": "8.5.33",
     "puppeteer-core": "25.17.0",
-    "terser": "5.51.2",
+    "terser": "5.51.4",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
-    "vite": "8.3.5",
+    "vite": "8.3.6",
     "ws": "8.22.2"
   },
   "overrides": {
     "picomatch": "$picomatch",
-    "postcss": "8.5.28"
+    "postcss": "8.5.33",
+    "vite": {
+      "rolldown": "1.2.16"
+    }
   }
 }

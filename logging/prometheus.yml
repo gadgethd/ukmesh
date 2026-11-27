@@ -58,6 +58,10 @@ scrape_configs:
     static_configs:
       - targets: [alertmanager:9093]
 
+  - job_name: meshcore-alert-receiver
+    static_configs:
+      - targets: [alert-receiver:8080]
+
   - job_name: meshcore-readiness
     metrics_path: /probe
     params:

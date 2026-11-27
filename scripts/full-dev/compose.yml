@@ -90,6 +90,7 @@ services:
   tagger-worker:
     networks: [default, sample]
     environment:
+      TAGGER_BACKEND: jev
       TYPESAFE_API_URL: http://external-test:8080/tag
       TYPESAFE_API_KEY: local-fixture-key
   region-snapshot-worker:

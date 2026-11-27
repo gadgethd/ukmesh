@@ -33,27 +33,27 @@ SIDE_EFFECT_MARKER_KEY = "viewshed:side-effects:{node_id}"
 SIDE_EFFECT_MARKER_TTL_S = 90 * 24 * 60 * 60
 
 
-def side_effects_complete(r_client, node_id: str, *, context) -> bool:
+def side_effects_complete(r_client, node_id: str, generation: str) -> bool:
     try:
-        return bool(r_client.exists(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id)))
+        return r_client.get(SIDE_EFFECT_MARKER_KEY.format(node_id=node_id)) == generation
     except Exception:
-        # If Redis is down we cannot confirm completion; treat as incomplete so
-        # the caller replays (which will also fail and re-raise, NACKing the job).
+        # Read failure leaves the effects retryable.
         return False
 
 
-def mark_side_effects_complete(r_client, node_id: str, *, context) -> None:
+def mark_side_effects_complete(r_client, node_id: str, generation: str) -> None:
     r_client.set(
-        SIDE_EFFECT_MARKER_KEY.format(node_id=node_id), "1", ex=SIDE_EFFECT_MARKER_TTL_S
+        SIDE_EFFECT_MARKER_KEY.format(node_id=node_id), generation,
+        ex=SIDE_EFFECT_MARKER_TTL_S,
     )
 
 
 def replay_coverage_side_effects(db, r_client, node_id: str, *, context) -> None:
-    """Re-enqueue link jobs and re-publish notifications for a node whose
-    coverage row exists but whose post-commit side effects never completed."""
+    """Reconcile effects for the same committed row used to derive the marker."""
     with db.cursor() as cur:
         cur.execute(
-            """SELECT geom, strength_geoms, radius_m, elevation_m
+            """SELECT nc.geom, nc.strength_geoms, nc.radius_m, n.elevation_m, n.lat, n.lon,
+                      nc.model_version::text || ':' || EXTRACT(EPOCH FROM nc.calculated_at)::text
                FROM core.node_coverage nc
                LEFT JOIN core.nodes n ON n.node_id = nc.node_id
                WHERE nc.node_id = %s""",
@@ -61,34 +61,23 @@ def replay_coverage_side_effects(db, r_client, node_id: str, *, context) -> None
         )
         row = cur.fetchone()
     if row is None or row[0] is None:
-        log.warning(f"Cannot replay side effects for {node_id[:12]}…: no coverage row")
         return
-    geom, strength_geoms, radius_m, elevation_m = row
+    geom, strength_geoms, radius_m, elevation_m, lat, lon, generation = row
+    if not generation:
+        raise RuntimeError(f"Missing coverage generation for {node_id[:12]}…")
+    if side_effects_complete(r_client, node_id, generation):
+        return
     if context.settings.WORKER_MODE in ("all", "link"):
-        _replay_link_jobs(db, r_client, node_id, radius_m, context=context)
-    _publish_coverage_notifications(
-        r_client, node_id, geom, strength_geoms, elevation_m, context=context
-    )
-    mark_side_effects_complete(r_client, node_id, context=context)
-    log.info(f"Replayed missing side effects for {node_id[:12]}…")
-
-
-def _replay_link_jobs(
-    db, r_client, node_id: str, radius_m: Optional[float], *, context
-) -> None:
-    """Reload the node position and enqueue physical link jobs (idempotent)."""
-    with db.cursor() as cur:
-        cur.execute(
-            "SELECT lat, lon FROM core.nodes WHERE node_id = %s",
-            (node_id,),
+        if lat is None or lon is None:
+            raise RuntimeError(f"Cannot replay physical links for {node_id[:12]}… without a position")
+        enqueue_physical_link_jobs_for_node(
+            db, r_client, node_id, lat, lon, radius_m, context=context,
         )
-        row = cur.fetchone()
-    if row is None or row[0] is None or row[1] is None:
-        log.warning(f"Cannot replay link jobs for {node_id[:12]}…: no position")
-        return
-    enqueue_physical_link_jobs_for_node(
-        db, r_client, node_id, row[0], row[1], radius_m, context=context
+    _publish_coverage_notifications(
+        r_client, node_id, geom, strength_geoms, elevation_m, context=context,
     )
+    mark_side_effects_complete(r_client, node_id, generation)
+    log.info(f"Replayed missing side effects for {node_id[:12]}…")
 
 
 def _publish_coverage_notifications(
@@ -485,12 +474,7 @@ def process_job(
         if already_calculated(
             db, node_id, require_predicted_links=is_planned, context=context
         ):
-            if not is_planned and not side_effects_complete(
-                r_client, node_id, context=context
-            ):
-                # BUG-006: coverage exists but the post-commit side effects
-                # (link jobs + notifications) never completed — replay them
-                # instead of silently skipping.
+            if not is_planned:
                 replay_coverage_side_effects(db, r_client, node_id, context=context)
             log.info(f"Coverage already exists for {node_id[:12]}…, skipping")
             return
@@ -528,7 +512,7 @@ def process_job(
             )
         check_job_budget(deadline_monotonic, cancellation_check, context=context)
         db_write_started = time.monotonic()
-        store_coverage(
+        generation = store_coverage(
             db,
             node_id,
             geom,
@@ -580,10 +564,8 @@ def process_job(
             r_client, node_id, geom, strength_geoms, elevation_m, context=context
         )
         if not is_planned:
-            # BUG-006: only after EVERY side effect succeeds do we record the
-            # completion marker, so a crash/Redis failure here is detected on
-            # retry and the side effects replayed instead of skipped forever.
-            mark_side_effects_complete(r_client, node_id, context=context)
+            # Only certify the row committed by this calculation after its effects succeed.
+            mark_side_effects_complete(r_client, node_id, generation)
     except PermanentOutOfScope as exc:
         store_permanent_coverage(
             db, node_id, str(exc), is_planned=is_planned, context=context

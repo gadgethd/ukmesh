@@ -59,8 +59,15 @@ function getOwnerDatabaseUrl(): string {
   ) ?? withDatabaseName(getPrimaryDatabaseUrl(), OWNER_DB_NAME);
 }
 
+// Consolidated migrations use core.owner_sessions. The standalone DEV store
+// retains public.owner_sessions so existing sessions and privileges stay valid.
+const ownerDatabaseUrl = new URL(getOwnerDatabaseUrl());
+const ownerConnectionOptions = ownerDatabaseUrl.searchParams.get('options') ?? '';
+ownerDatabaseUrl.searchParams.set('options',
+  `${ownerConnectionOptions} -c search_path=pg_catalog,core,public,pg_temp`.trim());
+
 const ownerPool = new Pool({
-  connectionString: getOwnerDatabaseUrl(),
+  connectionString: ownerDatabaseUrl.toString(),
   application_name: ownerDatabaseApplicationName,
   max: boundedIntegerSetting(
     'OWNER_DATABASE_POOL_MAX',
@@ -589,8 +596,8 @@ export async function revokeOwnerGrant(
       const remaining = await client.query<{ active: boolean }>(
         `SELECT EXISTS (
            SELECT 1
-             FROM owner_account_nodes oan
-             JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
+             FROM core.owner_account_nodes oan
+             JOIN core.owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
             WHERE oan.mqtt_username = $1
               AND oa.is_active = TRUE
               AND ${effectiveOwnerGrant}

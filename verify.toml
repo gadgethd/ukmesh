@@ -1,0 +1,35 @@
+# verify.toml — evidence-backed completion for this repository.
+#
+# Only `test` is required, and that is a deliberate, documented decision:
+#
+#   * lint: this repository has no ruff configuration and 364 findings under
+#     ruff's defaults, so requiring it would fail on day one for reasons that
+#     have nothing to do with the change being verified. It runs as an advisory
+#     check (required = false) and is reported either way.
+#   * patterns (hcheck): not baselined here yet; also advisory.
+#   * test: the no-infrastructure subset (Mosquitto reloader + CI retry helper).
+#     The GDAL/Postgres/Redis suites need the compose environment and are named
+#     in scripts/test.sh rather than silently skipped.
+#
+# Tightening this file is the next step once lint/patterns are baselined.
+
+[verify]
+default_task = "quality-floor"
+required = ["test"]
+
+[[check]]
+name = "test"
+cmd = ["bash", "scripts/quality.sh", "--test-only"]
+timeout = 600
+
+[[check]]
+name = "lint"
+cmd = ["bash", "scripts/quality.sh", "--lint-only"]
+timeout = 180
+required = false
+
+[[check]]
+name = "patterns"
+cmd = ["bash", "scripts/quality.sh", "--patterns-only"]
+timeout = 300
+required = false

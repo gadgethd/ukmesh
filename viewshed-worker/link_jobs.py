@@ -165,7 +165,7 @@ def enqueue_physical_link_jobs_for_node(
         if status in ("accepted", "coalesced", "duplicate"):
             queued += 1
         else:
-            log.warning(
+            raise RuntimeError(
                 f"Physical link job not admitted for {a_id[:8]}…↔{b_id[:8]}…: {status}"
             )
     return queued

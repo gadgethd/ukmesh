@@ -543,3 +543,97 @@ test(
     assert.deepEqual(row.tag_confidence, { topic: 0.9 });
   },
 );
+
+/**
+ * Defect 4 — the pre-131 checkpoint migration skipped same-instant rows.
+ *
+ * The legacy cursor was (time, packet_hash, rx_node_id). Translating it by
+ * looking up the checkpoint row's own observation id resumes *after* every row
+ * at that instant whose observation id is lower, even though the old page key
+ * never visited them. This fixture inverts hash order against observation
+ * order: the checkpoint row holds the middle hash, a lower observation id holds
+ * the highest hash, and a later row sits in the same chunk.
+ *
+ * Revert to prove: `migrateLegacyCheckpoint` back to
+ * `WHERE time = $1 AND packet_hash = $2 AND COALESCE(rx_node_id,'') = $3
+ * ORDER BY observation_id LIMIT 1`. The run then selects 2 of 4 rows and leaves
+ * the two unresolved rows at the checkpoint instant NULL forever.
+ */
+test(
+  'a legacy checkpoint resumes before every row at its instant, regardless of hash order',
+  { skip, timeout: 180_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const rxNodeId = 'AA'.repeat(32);
+    const instant = '2026-11-02 12:00:00+00';
+    const later = '2026-11-02 12:00:01+00';
+
+    // Three wire contents, sorted by hash. Assign them in inverse order to the
+    // observation ids so the checkpoint row (middle hash) sits between rows the
+    // legacy (time, hash) cursor never read.
+    const byHash = [0xb1, 0xb2, 0xb3].map(wireFixture).sort((a, b) => a.hash.localeCompare(b.hash));
+    const lowestHash = byHash[0]!;
+    const middleHash = byHash[1]!;
+    const highestHash = byHash[2]!;
+    const obsLow = '11111111-1111-4111-8111-111111111111';
+    const obsMid = '22222222-2222-4222-8222-222222222222';
+    const obsHigh = '33333333-3333-4333-8333-333333333333';
+    const obsLater = '44444444-4444-4444-8444-444444444444';
+
+    await insertPacket(pool, {
+      time: instant, hash: highestHash.hash, observationId: obsLow,
+      rxNodeId, rawHex: highestHash.rawHex,
+    });
+    await insertPacket(pool, {
+      time: instant, hash: middleHash.hash, observationId: obsMid,
+      rxNodeId, rawHex: middleHash.rawHex,
+    });
+    await insertPacket(pool, {
+      time: instant, hash: lowestHash.hash, observationId: obsHigh,
+      rxNodeId, rawHex: lowestHash.rawHex,
+    });
+    await insertPacket(pool, {
+      time: later, hash: highestHash.hash, observationId: obsLater,
+      rxNodeId, rawHex: highestHash.rawHex,
+    });
+
+    // Pre-131 state: the old tool read the middle-hash row last and wrote only
+    // the legacy page key. No observation cursor exists yet.
+    await pool.query(`
+      UPDATE ops.packet_identity_backfill_state
+         SET status = 'packets_partial',
+             high_water = $1::timestamptz,
+             last_time = $1::timestamptz,
+             last_hash = $2,
+             last_rx_node_id = $3,
+             last_observation_id = NULL
+    `, [instant, middleHash.hash, rxNodeId]);
+
+    const run = await runBackfill(['--batch-size', '10']);
+    assert.equal(run.code, 0, run.stderr);
+    assert.deepEqual(counters(run.summary), {
+      dryRun: false,
+      selected: 4,
+      resolved: 4,
+      unresolved: 0,
+      mismatch: 0,
+    });
+
+    const rows = await pool.query<{ observation_id: string; packet_hash: string; uid: string | null }>(`
+      SELECT observation_id::text AS observation_id, packet_hash, UPPER(encode(packet_uid, 'hex')) AS uid
+        FROM mesh.packets
+       ORDER BY time, observation_id
+    `);
+    assert.equal(rows.rowCount, 4);
+    for (const row of rows.rows) {
+      assert.ok(row.uid, `observation ${row.observation_id} at the checkpoint instant must be resolved`);
+      assert.equal(row.uid, row.packet_hash, 'each row holds the UID recomputed from its own raw_hex');
+    }
+
+    const state = await pool.query<{ last_hash: string | null; last_rx_node_id: string | null }>(`
+      SELECT last_hash, last_rx_node_id FROM ops.packet_identity_backfill_state
+    `);
+    assert.equal(state.rows[0]!.last_hash, null, 'the legacy page key must be cleared once translated');
+    assert.equal(state.rows[0]!.last_rx_node_id, null);
+  },
+);

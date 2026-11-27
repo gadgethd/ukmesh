@@ -89,11 +89,15 @@ export async function autoLinkOwnerNodeIds(mqttUsername: string): Promise<string
 export const verifyMqttCredentials = createMqttCredentialVerifier(verifyMqttCredentialsViaBroker);
 
 // ---- Credential generation (BUG-010) ----
-// Owner sessions are stateless signed cookies with a 30-day TTL. To make
-// password revocation effective immediately, every session records the
-// credential generation that minted it. When the broker rejects a previously
-// valid password (the only signal the backend has that a password changed),
-// the generation is bumped in Redis and all older sessions stop validating.
+// An owner session is an encrypted cookie carrying a server-side session id
+// (`sid`), the credential generation that minted it (`gen`), and a seven-day
+// expiry. The `owner_sessions` row is the authority: the guard rejects a cookie
+// whose row is missing, revoked, or expired, and separately rejects one whose
+// `gen` no longer matches Redis. Bumping the generation is an explicit operator
+// action (`npm run owner-auth:revoke -- <user>`), which increments Redis and
+// revokes every server-side session for that username in the same command. It
+// is never inferred from a broker password rejection, and no broker credential
+// is cached in this process.
 const OWNER_CRED_GEN_KEY = (username: string) => `owner:credential-gen:${username}`;
 const OWNER_CRED_GEN_TTL_MS = 90 * 24 * 60 * 60 * 1000;
 

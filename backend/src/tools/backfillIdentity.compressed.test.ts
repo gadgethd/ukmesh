@@ -144,18 +144,18 @@ type BackfillRun = {
   summary: BackfillSummary | undefined;
 };
 
-function runBackfill(pool: Fixture, args: string[]): Promise<BackfillRun> {
-  return new Promise((resolve) => {
-    const child = spawn(process.execPath, ['--import', 'tsx', toolPath, ...args], {
-      cwd: backendRoot,
-      env: { ...process.env, BACKFILL_DATABASE_URL: pool.fixtureUrl },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stdout = '';
-    let stderr = '';
-    const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
-    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
-    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+function spawnBackfill(pool: Fixture, args: string[]): { child: ReturnType<typeof spawn>; done: Promise<BackfillRun> } {
+  const child = spawn(process.execPath, ['--import', 'tsx', toolPath, ...args], {
+    cwd: backendRoot,
+    env: { ...process.env, BACKFILL_DATABASE_URL: pool.fixtureUrl },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  const timer = setTimeout(() => child.kill('SIGKILL'), 120_000);
+  child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString(); });
+  child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
+  const done = new Promise<BackfillRun>((resolve) => {
     child.on('close', (code) => {
       clearTimeout(timer);
       const summary = stdout
@@ -170,6 +170,11 @@ function runBackfill(pool: Fixture, args: string[]): Promise<BackfillRun> {
       resolve({ code: code ?? -1, stdout, stderr, summary });
     });
   });
+  return { child, done };
+}
+
+function runBackfill(pool: Fixture, args: string[]): Promise<BackfillRun> {
+  return spawnBackfill(pool, args).done;
 }
 
 async function insertPacket(
@@ -815,5 +820,179 @@ test(
     assert.deepEqual(state.decompressed_chunks, keys, 'the marker must keep the unrecompressed chunk owned');
     const chunks = await chunkStates(pool);
     assert.equal(chunks[0]?.compressed, false, 'the injected failure must leave the chunk decompressed');
+  },
+);
+
+const RUN_LOCK_KEY = 'meshcore.packet_identity_backfill';
+
+/** True when another session holds the run lock; the probe always releases its own. */
+async function advisoryLockIsHeld(pool: Fixture): Promise<boolean> {
+  const client = await pool.connect();
+  try {
+    const result = await client.query<{ locked: boolean }>(
+      'SELECT pg_try_advisory_lock(hashtext($1)) AS locked',
+      [RUN_LOCK_KEY],
+    );
+    if (result.rows[0]!.locked) {
+      await client.query('SELECT pg_advisory_unlock(hashtext($1))', [RUN_LOCK_KEY]);
+      return false;
+    }
+    return true;
+  } finally {
+    client.release();
+  }
+}
+
+async function waitForLock(pool: Fixture, held: boolean, timeoutMs: number): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await advisoryLockIsHeld(pool) === held) return;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  throw new Error(`timed out waiting for the run lock to be ${held ? 'held' : 'released'}`);
+}
+
+/**
+ * Pause the first UPDATE of the state row once, after the advisory lock is
+ * held and before the first batch BEGIN. pg_sleep runs in the server backend,
+ * so the child process is genuinely parked at that point rather than racing a
+ * JavaScript hook.
+ */
+async function installPauseTrigger(pool: Fixture): Promise<void> {
+  await pool.query(`
+    CREATE TABLE ops.backfill_pause_once (done BOOLEAN NOT NULL DEFAULT FALSE);
+    INSERT INTO ops.backfill_pause_once (done) VALUES (FALSE);
+    CREATE FUNCTION ops.backfill_pause() RETURNS TRIGGER LANGUAGE plpgsql AS $fn$
+    DECLARE first_call BOOLEAN;
+    BEGIN
+      UPDATE ops.backfill_pause_once
+         SET done = TRUE
+       WHERE done = FALSE
+      RETURNING TRUE INTO first_call;
+      IF first_call THEN PERFORM pg_sleep(15); END IF;
+      RETURN NEW;
+    END $fn$;
+    CREATE TRIGGER backfill_pause
+      BEFORE UPDATE ON ops.packet_identity_backfill_state
+      FOR EACH ROW EXECUTE FUNCTION ops.backfill_pause();
+  `);
+}
+
+/**
+ * The dry run is a real read: it must resolve exactly the rows the real run
+ * resolves, while writing no packet_uid and no checkpoint state.
+ */
+test(
+  'a dry run resolves the same rows as the real run and writes no identity',
+  { skip, timeout: 240_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const first = wireFixture(0x121);
+    const second = wireFixture(0x122);
+    const third = wireFixture(0x123);
+    const unresolved = wireFixture(0x124);
+    const mismatch = wireFixture(0x125);
+
+    await insertPacket(pool, { time: '2028-01-01 00:00:01+00', hash: first.hash, rawHex: first.rawHex });
+    await insertPacket(pool, { time: '2028-01-01 00:00:02+00', hash: second.hash, rawHex: second.rawHex });
+    await insertPacket(pool, { time: '2028-01-01 00:00:03+00', hash: third.hash, rawHex: third.rawHex });
+    await insertPacket(pool, { time: '2028-01-01 00:00:04+00', hash: unresolved.hash, rawHex: null });
+    await insertPacket(pool, { time: '2028-01-01 00:00:05+00', hash: mismatch.hash, rawHex: first.rawHex });
+
+    const eligible = await countEligible(pool);
+    assert.equal(eligible, 5);
+
+    const dry = await runBackfill(pool, ['--dry-run', '--batch-size', '2']);
+    assert.equal(dry.code, 0, dry.stderr);
+    assert.ok(dry.summary, dry.stdout);
+    assert.equal(dry.summary.selected, eligible);
+    assert.equal(dry.summary.resolved, 3);
+    assert.equal(dry.summary.unresolved, 1);
+    assert.equal(dry.summary.mismatch, 1);
+
+    const afterDry = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM mesh.packets WHERE packet_uid IS NOT NULL',
+    );
+    assert.equal(afterDry.rows[0]!.n, '0', 'a dry run must not write packet_uid');
+    const dryState = await pool.query<{ status: string; batch_count: string; resolved: string; high_water: string | null }>(`
+      SELECT status, batch_count::text AS batch_count, resolved::text AS resolved, high_water::text AS high_water
+        FROM ops.packet_identity_backfill_state
+    `);
+    assert.deepEqual(dryState.rows[0], {
+      status: 'idle', batch_count: '0', resolved: '0', high_water: null,
+    }, 'a dry run must not advance the checkpoint');
+
+    const real = await runBackfill(pool, ['--batch-size', '2']);
+    assert.equal(real.code, 0, real.stderr);
+    assert.ok(real.summary, real.stdout);
+    assert.equal(real.summary.selected, dry.summary.selected);
+    assert.equal(real.summary.resolved, dry.summary.resolved, 'the dry-run resolved count must equal the real run');
+    assert.equal(real.summary.unresolved, dry.summary.unresolved);
+    assert.equal(real.summary.mismatch, dry.summary.mismatch);
+
+    const afterReal = await pool.query<{ n: string }>(
+      'SELECT count(*)::text AS n FROM mesh.packets WHERE packet_uid IS NOT NULL',
+    );
+    assert.equal(afterReal.rows[0]!.n, '3', 'the real run writes exactly the rows the dry run counted');
+  },
+);
+
+/**
+ * The session-level advisory lock is the only thing that stops two backfills
+ * from interleaving. It must be taken before any BEGIN, released on a normal
+ * exit, and released by PostgreSQL when the holder is SIGKILLed.
+ */
+test(
+  'the run lock rejects a second process and is released on exit and after SIGKILL',
+  { skip, timeout: 300_000 },
+  async (t) => {
+    const pool = await prepare(t);
+    const a = wireFixture(0x131);
+    const b = wireFixture(0x132);
+    await insertPacket(pool, { time: '2028-02-01 00:00:01+00', hash: a.hash, rawHex: a.rawHex });
+    await insertPacket(pool, { time: '2028-02-01 00:00:02+00', hash: b.hash, rawHex: b.rawHex });
+    await installPauseTrigger(pool);
+
+    const first = spawnBackfill(pool, ['--batch-size', '10']);
+    await waitForLock(pool, true, 30_000);
+
+    const second = await runBackfill(pool, ['--batch-size', '10']);
+    assert.equal(second.code, 1, 'a second process must exit non-zero');
+    assert.match(second.stderr, /packet identity backfill is already running/);
+    assert.equal(second.summary, undefined, 'a rejected run must not report a summary');
+    const during = await pool.query<{ batch_count: string }>(
+      'SELECT batch_count::text AS batch_count FROM ops.packet_identity_backfill_state',
+    );
+    assert.equal(during.rows[0]!.batch_count, '0', 'the rejected run must fail before its first BEGIN');
+
+    const firstRun = await first.done;
+    assert.equal(firstRun.code, 0, firstRun.stderr);
+    assert.equal(firstRun.summary?.status, 'packets_complete');
+
+    const afterNormalExit = await runBackfill(pool, ['--batch-size', '10']);
+    assert.equal(afterNormalExit.code, 0, 'a normal exit must release the lock');
+    assert.equal(afterNormalExit.summary?.selected, 0);
+
+    // Re-arm the pause and make the rows eligible again. The state reset runs
+    // while the trigger is still disarmed so it cannot sleep.
+    await pool.query(
+      'UPDATE mesh.packets SET packet_uid = NULL, identity_version = NULL, identity_provenance = NULL',
+    );
+    await pool.query(`
+      UPDATE ops.packet_identity_backfill_state
+         SET status = 'idle', high_water = NULL, last_time = NULL, last_observation_id = NULL,
+             last_hash = NULL, last_rx_node_id = NULL, batch_count = 0, resolved = 0
+    `);
+    await pool.query('UPDATE ops.backfill_pause_once SET done = FALSE');
+
+    const doomed = spawnBackfill(pool, ['--batch-size', '10']);
+    await waitForLock(pool, true, 30_000);
+    doomed.child.kill('SIGKILL');
+    await doomed.done;
+    await waitForLock(pool, false, 90_000);
+
+    const afterKill = await runBackfill(pool, ['--batch-size', '10']);
+    assert.equal(afterKill.code, 0, 'PostgreSQL must release a SIGKILLed session lock');
+    assert.equal(afterKill.summary?.resolved, 2);
   },
 );

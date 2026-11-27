@@ -1,0 +1,5 @@
+[hcheck]
+# Vendored trees and generated output are not source.
+exclude = ["node_modules", "backend/node_modules", "frontend/node_modules", "dist"]
+
+baseline = ".hcheck-baseline.json"

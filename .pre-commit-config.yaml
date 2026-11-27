@@ -1,0 +1,13 @@
+# Fleet pattern checks (hcheck). See docs/quality.md.
+#
+# Covers failure modes the repo's own lint/test CI does not: swallowed
+# exceptions, unbounded sleep polling, shell interpolation, os.system/pkill,
+# untracked TODOs, missing network timeouts, unsafe shell patterns.
+repos:
+  - repo: local
+    hooks:
+      - id: hcheck
+        name: hcheck fleet rules
+        entry: bash -c 'H="${HCHECK:-$HOME/harness/.venv/bin/hcheck}"; if [ ! -x "$H" ]; then echo "hcheck missing"; exit 1; fi; exec "$H" run'
+        language: system
+        pass_filenames: false

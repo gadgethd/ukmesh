@@ -177,12 +177,13 @@ export async function insertNodeStatusSample(sample: {
   airUtilTx?: number | null;
   stats?: Record<string, unknown> | null;
   status?: string | null;
+  radio?: string | null;
 }): Promise<void> {
   await ingestQuery(
     `WITH sample_insert AS (
        INSERT INTO core.node_status_samples
-       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status)
-       VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       (time, node_id, network, battery_mv, uptime_secs, tx_air_secs, rx_air_secs, channel_utilization, air_util_tx, stats, status, radio)
+       VALUES (COALESCE($11::timestamptz, NOW()), $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12)
        RETURNING time
      )
      UPDATE core.nodes
@@ -202,6 +203,7 @@ export async function insertNodeStatusSample(sample: {
       sample.stats ? JSON.stringify(sample.stats) : null,
       sample.status ?? null,
       sample.observedAt ?? null,
+      sample.radio ?? null,
     ],
   );
 }

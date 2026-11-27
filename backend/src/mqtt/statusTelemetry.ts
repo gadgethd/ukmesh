@@ -9,6 +9,9 @@ export type StatusTelemetrySample = {
   rxAirSecs?: number;
   channelUtilization?: number;
   airUtilTx?: number;
+  /** Radio settings exactly as the publisher spelled them (CoreScope canonical
+   * "MHz,kHz,SF,CR" for MCRS, vendor forms like "SX1262 869.618/62/8/8"). */
+  radio?: string;
   stats?: Record<string, unknown>;
 };
 
@@ -66,6 +69,19 @@ function wholeCounter(value: number | undefined, max = Number.MAX_SAFE_INTEGER):
   if (value == null || value < 0 || value > max) return undefined;
   const whole = Math.trunc(value);
   return Number.isSafeInteger(whole) ? whole : undefined;
+}
+
+/**
+ * Radio settings are a bounded, display-facing token, not free text: keep the
+ * publisher's spelling but refuse control characters so a malformed envelope
+ * cannot smuggle terminal/HTML payloads into every surface that renders it.
+ */
+function readRadio(obj: Record<string, unknown>): string | undefined {
+  const value = obj['radio'];
+  if (typeof value !== 'string') return undefined;
+  const radio = value.trim();
+  if (!radio || radio.length > 64 || /[\u0000-\u001f\u007f]/.test(radio)) return undefined;
+  return radio;
 }
 
 /**
@@ -130,6 +146,7 @@ export function extractStatusTelemetry(
   if (status?.toLowerCase() === 'offline') return null;
 
   const stats = toRecord(json['stats']);
+  const radio = readRadio(json);
   const hasRawStats = Boolean(stats && Object.keys(stats).length > 0);
   const hasOwnerStats = Boolean(
     stats && (
@@ -174,21 +191,9 @@ export function extractStatusTelemetry(
     && rxAirSecs == null
     && channelUtilization == null
     && airUtilTx == null
-  ) {
-    if ((options?.allowRawStatsOnly || hasOwnerStats) && hasRawStats) {
-      return {
-        status,
-        batteryMv,
-        uptimeSecs,
-        txAirSecs,
-        rxAirSecs,
-        channelUtilization,
-        airUtilTx,
-        stats,
-      };
-    }
-    return null;
-  }
+    && radio == null
+    && !(hasRawStats && (options?.allowRawStatsOnly || hasOwnerStats))
+  ) return null;
 
   return {
     status,
@@ -198,6 +203,7 @@ export function extractStatusTelemetry(
     rxAirSecs,
     channelUtilization,
     airUtilTx,
+    radio,
     stats,
   };
 }

@@ -80,7 +80,7 @@ for (const width of [390, 1280]) {
         time: new Date(Date.now() - index * 1000).toISOString(),
         network: 'ukmesh', packet_type: 5, hop_count: index % 8,
         observer_iatas: index % 3 === 0 ? Array.from({ length: 10 }, (_, i) => `REGION${i}`) : ['ABC'],
-        summary: `fixture ${index} ${'a wrapped message '.repeat(index % 3 === 0 ? 20 : 1)}`,
+        summary: `fixture ${index} ${'a wrapped message '.repeat(index % 3 === 0 ? 20 : 1)}${index === 0 ? '· MeshOS-signed' : ''}`,
       }));
       class FixtureWebSocket extends EventTarget {
         static CONNECTING = 0; static OPEN = 1; static CLOSING = 2; static CLOSED = 3;
@@ -119,6 +119,8 @@ for (const width of [390, 1280]) {
     // Initial code loading and runtime-config bootstrap can be cold in the
     // full matrix. Keep the geometry checks on their normal assertion budget.
     await expect(list.locator('article').first()).toBeVisible({ timeout: 15_000 });
+    await expect(list.locator('article').first().locator('.uk-feed-packet-row__summary'))
+      .toHaveText(/^fixture 0 .+ · MeshOS-signed$/);
     await assertContiguous(page);
     await scrollList(page, 1700);
     await expect.poll(() => list.evaluate(element => element.scrollHeight > element.clientHeight + 1
