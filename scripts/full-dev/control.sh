@@ -42,7 +42,7 @@ case "$action" in
   *) echo "Unknown full-stack action: $action" >&2; exit 2 ;;
 esac
 if [[ -n $service && $action != hot ]]; then
-  "${compose[@]}" config --services | rg -Fx -- "$service" > /dev/null || { echo "Unknown service: $service" >&2; exit 2; }
+  "${compose[@]}" config --services | grep -Fx -- "$service" > /dev/null || { echo "Unknown service: $service" >&2; exit 2; }
 fi
 case "$action" in
   status) "${compose[@]}" ps -a; exit ;;
@@ -149,7 +149,7 @@ done
 # and released the persistent broker identity. Already split services can start independently.
 legacy=$(legacy_backend_id)
 if [[ -n $legacy ]]; then "${compose[@]}" stop backend; fi
-mapfile -t resident_services < <("${compose[@]}" config --services | rg -v '^(db-migrate|mesh-health-check-data-init|alert-bootstrap|link-backfill-worker|cloudflared)$')
+mapfile -t resident_services < <("${compose[@]}" config --services | grep -Ev '^(db-migrate|mesh-health-check-data-init|alert-bootstrap|link-backfill-worker|cloudflared)$')
 "${compose[@]}" up -d --wait --wait-timeout 240 "${resident_services[@]}"
 "${compose[@]}" up -d --no-deps link-backfill-worker
 "${compose[@]}" wait link-backfill-worker
