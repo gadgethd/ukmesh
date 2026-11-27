@@ -53,3 +53,17 @@ export function validatedRegionSelection(
   if (selected === 'all' || optionsStatus !== 'ready') return selected;
   return options.includes(selected) ? selected : 'all';
 }
+
+export function parseFeedRegions(
+  value: unknown,
+  scope: { network?: string; observer?: string; privacyGeneration: number },
+): string[] | null {
+  if (value === null || typeof value !== 'object') return null;
+  const { network, observer, visibilityGeneration, regions } = value as Record<string, unknown>;
+  if (network !== (scope.network ?? 'ukmesh')
+    || observer !== (scope.observer?.toUpperCase() ?? null)
+    || visibilityGeneration !== scope.privacyGeneration
+    || !Array.isArray(regions)
+    || !regions.every(region => typeof region === 'string' && /^[A-Z0-9]{2,8}$/.test(region))) return null;
+  return regions;
+}

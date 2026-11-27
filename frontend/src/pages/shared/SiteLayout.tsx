@@ -13,7 +13,7 @@ const primary = [
 ] as const;
 const healthCheckLink = ['/health-check', 'Health Check'] as const;
 const groups = [
-  ['Tools', [['/stats', 'Stats'], ['/topology', 'Topology'], ['/companion', 'Companions'], ['/spam', 'Spam']]],
+  ['Tools', [['/topology', 'Topology'], ['/companion', 'Companions'], ['/spam', 'Spam']]],
   ['Help', [['/install', 'Install'], ['/docs', 'Docs'], ['/open-source', 'Open Source']]],
 ] as const;
 
@@ -207,8 +207,6 @@ export const SiteLayout: React.FC<SiteLayoutProps> = ({ brandName, footerName, a
         <a href="https://meshcore.gg/" target="_blank" rel="noopener noreferrer">Discord</a>
         <span className="site-footer__sep">·</span>
         <Link to="/contact">Contact</Link>
-        <span className="site-footer__sep">·</span>
-        <Link to="/stats">Stats</Link>
         <span className="site-footer__sep">·</span>
         <Link to="/open-source">Open Source</Link>
         <span className="site-footer__sep">·</span>

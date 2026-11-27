@@ -331,6 +331,7 @@ const PUBLIC_GET = [
   '/coverage/:nodeId',
   '/coverage/planned/:planId',
   '/feed/messages',
+  '/feed/regions',
   '/health',
   '/inferred-nodes',
   '/links/:id/history',
@@ -549,6 +550,27 @@ export const API_CONTRACTS: readonly ApiContract[] = [
   }
   if (contract.path === '/planned-nodes') {
     return { ...contract, summary: 'List explicitly published planned nodes', responseSchema: PLANNED_NODE_PAGE_SCHEMA };
+  }
+  if (contract.path === '/feed/regions') {
+    return {
+      ...contract,
+      summary: 'List public observer region codes seen in the past seven days',
+      queryParameters: [
+        { name: 'network', in: 'query', required: false, schema: { type: 'string', enum: ['ukmesh', 'test'], default: 'ukmesh' } },
+        { name: 'observer', in: 'query', required: false, schema: { type: 'string', pattern: '^[0-9A-Fa-f]{64}$' } },
+      ],
+      responseSchema: {
+        type: 'object',
+        required: ['network', 'observer', 'visibilityGeneration', 'regions'],
+        properties: {
+          network: { type: 'string', enum: ['ukmesh', 'test'] },
+          observer: { type: ['string', 'null'], pattern: '^[0-9A-F]{64}$' },
+          visibilityGeneration: { type: 'integer', minimum: 1 },
+          regions: { type: 'array', uniqueItems: true, items: { type: 'string', pattern: '^[A-Z0-9]{2,8}$' } },
+        },
+        additionalProperties: false,
+      },
+    };
   }
   if (contract.path === '/feed/messages') {
     return {

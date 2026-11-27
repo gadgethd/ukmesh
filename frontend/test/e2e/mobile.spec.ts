@@ -1,4 +1,3 @@
-import { chartStats } from './fixtures/chartStats.mjs';
 import { publicOrigin, dashboardOrigin, devOrigin } from './localServers.js';
 import { expect, test, type Page } from '@playwright/test';
 import { installMapRoutes, installTerrainRoutes } from './mapFixtures.js';
@@ -28,7 +27,7 @@ async function installApiFixtures(page: Page) {
   await page.route('**/api/**', async (route) => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/api/runtime-config') return route.fulfill({ json: { version: 1, packetArcs: false, heatmap: false, privacyGeneration: 1, refreshAfterSeconds: 300 } });
-    if (pathname === '/api/stats/charts') return route.fulfill({ json: chartStats });
+    if (pathname === '/api/feed/regions') return route.fulfill({ json: { network: 'ukmesh', observer: null, visibilityGeneration: 1, regions: ['LHR'] } });
     if (pathname === '/api/stats') {
       return route.fulfill({
         json: {
@@ -95,11 +94,11 @@ async function expectNoViewportOverflow(page: Page) {
 const routedViews = [
   ['UK home', `${publicOrigin}/`],
   ['UK feed', `${publicOrigin}/feed`],
+  ['UK packets', `${publicOrigin}/feed/packets`],
   ['UK repeaters', `${publicOrigin}/repeater`],
   ['UK companions', `${publicOrigin}/companion`],
   ['UK install', `${publicOrigin}/install`],
   ['UK open source', `${publicOrigin}/open-source`],
-  ['UK stats', `${publicOrigin}/stats`],
   ['UK login', `${publicOrigin}/login`],
   ['UK docs', `${publicOrigin}/docs`],
   ['test site home', `${devOrigin}/`],
@@ -321,21 +320,6 @@ test('repeater search results stay bounded and scroll inside the menu', async ({
   await expectNoViewportOverflow(page);
 });
 
-test('stats path modal fits the viewport and keeps its close action reachable', async ({ page }) => {
-  await page.setViewportSize(PHONE);
-  await installApiFixtures(page);
-  await page.goto(`${publicOrigin}/stats`, { waitUntil: 'networkidle' });
-
-  await page.getByRole('tab', { name: 'Paths' }).click();
-  await page.getByRole('button', { name: 'North -> South', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Decoded path map' });
-  await expect(dialog).toBeVisible();
-  const modalBox = await page.locator('.stats-page__path-modal').boundingBox();
-  expect(modalBox?.y ?? -1).toBeGreaterThanOrEqual(0);
-  expect((modalBox?.y ?? PHONE.height) + (modalBox?.height ?? 1)).toBeLessThanOrEqual(PHONE.height);
-  await expect(dialog.getByRole('button', { name: 'Close' })).toBeVisible();
-});
-
 test('repeater-tree modal remains centred and fully reachable at every target width', async ({ page }) => {
   await installApiFixtures(page);
   await page.goto(`${publicOrigin}/feed`, { waitUntil: 'networkidle' });
@@ -347,7 +331,7 @@ test('repeater-tree modal remains centred and fully reachable at every target wi
     const shell = document.createElement('div');
     shell.className = 'ui-dialog-modal';
     const dialog = document.createElement('section');
-    dialog.className = 'ui-dialog stats-page__path-modal uk-feed-path-modal';
+    dialog.className = 'ui-dialog uk-feed-path-modal';
     dialog.textContent = 'Predicted Repeater Tree';
     shell.append(dialog);
     overlay.append(shell);

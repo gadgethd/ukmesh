@@ -1,6 +1,19 @@
 import { defineCachePolicy } from '../cache/policy.js';
 
 export const API_CACHE_POLICIES = Object.freeze({
+  feedRegions: defineCachePolicy({
+    id: 'api_feed_regions',
+    source: 'src/api/routes/feedRegions.ts',
+    disposition: 'bounded-cache',
+    name: 'api_feed_regions',
+    maxEntries: 64,
+    maxWeight: 262_144,
+    ttlMs: 300_000,
+    scope: 'network + observer + ready visibility generation',
+    invalidation: 'generation fence and TTL',
+    negativeCaching: 'complete empty region lists',
+    singleFlight: 'one active lookup per process; matching requests share it',
+  }),
   nodeCountCache: defineCachePolicy({
     id: 'hopreach-node-count',
     source: 'src/api/hopreachCompatibility.ts',

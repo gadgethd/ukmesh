@@ -1,5 +1,3 @@
-import { chartStats } from '../test/e2e/fixtures/chartStats.mjs';
-
 // CI exercises populated views using invented data. The owned sample-stack
 // benchmark separately measures real origin work, transfer and provider behavior.
 const at = '2026-11-12T00:00:00.000Z';
@@ -28,8 +26,7 @@ export function publicFixture(path, query = new URLSearchParams()) {
     case '/api/owner/session': return { ok: false };
     case '/api/spam/messages/status': return { ongoing: false, activeIncidents: 0, totalIncidents: 0,
       messagesLast24h: 0, observersInvolved: 0, lastIncidentAt: null, updatedAt: at };
-    case '/api/stats/charts': return chartStats;
-    case '/api/stats/observers/live': return { generatedAt: at, windowMinutes: 15, regions: [] };
+    case '/api/feed/regions': return { network: 'ukmesh', observer: null, visibilityGeneration: 1, regions: ['LHR'] };
     case '/api/stats': return { totalNodes: 24, packetsDay: 120, longestHop: 4, internationalNodes: 0 };
     case '/api/regions/summary': return { generatedAt: at, windowDays: 92, regions: [{ name: 'synthetic-region',
       packetsTotal: 1000, memberCount: 24, repeaterMemberCount: 24, confidence: 'confirmed', firstSeen: at,

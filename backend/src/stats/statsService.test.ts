@@ -37,13 +37,14 @@ function emptyChartsData() {
   };
 }
 
-test('stats warmup is runtime-owned, starts once and stops before deferred work', async t => {
-  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval'] });
+test('runtime warmup schedules summaries only and stops on close', async t => {
+  t.mock.timers.enable({ apis: ['Date', 'setTimeout', 'setInterval'], now: NOW });
   let firstCalls = 0, secondCalls = 0;
+  let chartCalls = 0;
   const makeService = (read: () => void) => createStatsService({
     statsCache: new Map(), statsCacheTtlMs: 60_000,
     chartsCache: new Map(), chartsCacheTtlMs: 60_000, chartsInflight: new Map(),
-    repository: { fetchStatsSummary: async () => {
+    repository: { loadChartSnapshot: async () => { chartCalls++; return null; }, fetchStatsSummary: async () => {
       read();
       const empty = { rows: [] };
       return { mqttCount: empty, packetCount: empty, staleCount: empty, mapNodeCount: empty,
@@ -54,17 +55,22 @@ test('stats warmup is runtime-owned, starts once and stops before deferred work'
   const first = makeService(() => { firstCalls++; });
   const second = makeService(() => { secondCalls++; });
   t.after(first.close); t.after(second.close);
-  first.startChartsWarmup(); first.startChartsWarmup();
-  second.startChartsWarmup();
+  first.startSummaryWarmup(); first.startSummaryWarmup();
+  second.startSummaryWarmup();
   first.close();
   t.mock.timers.tick(5_000);
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(firstCalls, 0);
   assert.equal(secondCalls, 2);
-  second.close(); second.startChartsWarmup();
+  t.mock.timers.tick(31 * 60_000);
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.ok(secondCalls > 2);
+  assert.equal(chartCalls, 0);
+  const beforeClose = secondCalls;
+  second.close(); second.startSummaryWarmup();
   t.mock.timers.tick(120_000);
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(secondCalls, 2);
+  assert.equal(secondCalls, beforeClose);
 });
 
 test('completed canonical charts are reused while observer-scoped charts are never persisted', async () => {
@@ -418,7 +424,7 @@ test('startup chart work waits for the lightweight summary warmup', async () => 
   }) as typeof setTimeout;
   globalThis.setInterval = (() => ({ unref() {} } as unknown as NodeJS.Timeout)) as typeof setInterval;
   try {
-    service.startChartsWarmup();
+    service.startSummaryWarmup();
     const charts = service.getCharts('ukmesh', undefined);
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(chartCalls, 0);

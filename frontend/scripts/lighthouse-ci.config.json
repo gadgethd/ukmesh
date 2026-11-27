@@ -16,12 +16,6 @@
       "cls": 0.1,
       "tbtMs": 3000
     },
-    "/stats": {
-      "mobileLcpMs": 5500,
-      "desktopLcpMs": 2000,
-      "cls": 0.15,
-      "tbtMs": 4000
-    },
     "/feed": {
       "mobileLcpMs": 5500,
       "desktopLcpMs": 2000,

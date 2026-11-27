@@ -6,7 +6,6 @@ import type { LazyPathResult } from '../../features/packets/feedModel.js';
 import { FeedMapPanel, PacketPathTree } from './FeedPathViews.js';
 import type { FeedPacket } from '../../features/packets/feedModel.js';
 import type { PathTreeStatus } from '../../features/packets/feedState.js';
-import '../path-modal.css';
 
 const PacketDetailPanel = lazy(() => import('./PacketDetailPanel.js').then(module => ({ default: module.PacketDetailPanel })));
 
@@ -44,16 +43,16 @@ export const FeedDialogs: React.FC<{
         onOpenChange={(open) => { if (!open) onClosePathTree(); }}
         ariaLabel="Predicted repeater tree"
         overlayClassName="disclaimer-overlay"
-        className="stats-page__path-modal uk-feed-path-modal"
+        className="uk-feed-path-modal"
       >
         {(close) => (
           <>
-            <div className="stats-page__path-modal-header">
+            <div className="uk-feed-path-modal__header">
               <div>
-                <DialogTitle className="stats-page__path-modal-title">
+                <DialogTitle className="uk-feed-path-modal__title">
                   Predicted Repeater Tree
                 </DialogTitle>
-                <p className="stats-page__path-modal-sub">
+                <p className="uk-feed-path-modal__summary">
                   {packet.packet_hash}
                   {packet.hop_count != null
                     && ` · ${packet.hop_count} hop${packet.hop_count !== 1 ? 's' : ''}`}
@@ -61,14 +60,14 @@ export const FeedDialogs: React.FC<{
               </div>
               <button
                 type="button"
-                className="disclaimer-modal__close stats-page__path-modal-close"
+                className="disclaimer-modal__close uk-feed-path-modal__close"
                 onClick={close}
               >
                 Close
               </button>
             </div>
             <div className="uk-feed-path-modal__body">
-              <div className="stats-page__path-modal-map">
+              <div className="uk-feed-path-modal__map">
                 <FeedMapPanel
                   packet={packet}
                   nodeMap={nodeMap}

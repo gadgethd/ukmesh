@@ -9,7 +9,6 @@ export type PublicRouteComponent =
   | 'docs'
   | 'owner'
   | 'open-source'
-  | 'stats'
   | 'spam'
   | 'topology'
   | 'regions'
@@ -36,7 +35,7 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     path: '/',
     component: 'home',
     title: 'UK Mesh Network — MeshCore LoRa Coverage & Live Map',
-    description: 'Real-time analytics for the UK MeshCore LoRa mesh network. Live packet feed, repeater coverage maps, network statistics, and install guides.',
+    description: 'Real-time analytics for the UK MeshCore LoRa mesh network. Live packet feed, repeater coverage maps, and install guides.',
     sitemap: true,
   },
   {
@@ -51,13 +50,6 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     component: 'install',
     title: 'Install MeshCore — UK Mesh Network',
     description: 'Step-by-step guide to flash MeshCore firmware on a LoRa device and join the UK mesh network. No soldering, no special tools — just a browser and a USB cable.',
-    sitemap: true,
-  },
-  {
-    path: '/stats',
-    component: 'stats',
-    title: 'Network Statistics — UK Mesh Network',
-    description: 'Live statistics for the UK MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
     sitemap: true,
   },
   { ...packetFeed, path: '/feed', sitemap: true },
@@ -141,6 +133,7 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   },
   { path: '/about', redirectTo: '/', sitemap: false },
   { path: '/mqtt', redirectTo: '/install', sitemap: false },
+  { path: '/stats', redirectTo: '/feed/packets', sitemap: false },
 ] as const;
 
 export const PUBLIC_CONTENT_ROUTES = PUBLIC_ROUTES.filter(

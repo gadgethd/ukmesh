@@ -107,7 +107,7 @@ export const UKHomePage: React.FC = () => {
             {[
               { title: 'Set up a radio', text: 'Install the firmware, pair your phone, and select the UK public profile.', label: 'Install MeshCore', to: '/install' },
               { title: 'Become an observer', text: 'Report packets heard by your repeater or room server over MQTT.', label: 'Observer setup', to: '/install#mqtt-observer' },
-              { title: 'Check network activity', text: 'See packet counts, active nodes, and activity over time.', label: 'Network stats', to: '/stats' },
+              { title: 'Check network activity', text: 'See recent packets and which observers received them.', label: 'Live packets', to: '/feed/packets' },
             ].map(card => <div className="site-home__card" key={card.title}>
               <h3>{card.title}</h3><p>{card.text}</p>
               <Link to={card.to} className="site-btn site-btn--ghost">{card.label}</Link>

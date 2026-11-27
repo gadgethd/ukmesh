@@ -17,7 +17,7 @@ if (!['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)) throw new Erro
 const output = path.resolve(option('output', `../plans/measurements/website-${Date.now()}`));
 const runs = Number(option('runs', '3'));
 if (!Number.isSafeInteger(runs) || runs < 1 || runs > 10) throw new Error('--runs must be 1..10');
-const routes = ['/', '/docs', '/stats', '/feed', '/regions'];
+const routes = ['/', '/docs', '/feed', '/regions'];
 const selected = option('route', undefined);
 if (selected && ![...routes, '/topology', '/spam', '/login', '/owner'].includes(selected)) throw new Error('unknown website route');
 const selectedMode = option('mode', undefined);

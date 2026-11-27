@@ -14,17 +14,6 @@
       "cssGzipKiB": 9,
       "forbiddenChunks": []
     },
-    "/stats": {
-      "module": "src/pages/StatsPage.tsx",
-      "scriptGzipKiB": 230,
-      "cssGzipKiB": 9,
-      "forbiddenChunks": [
-        "maplibre",
-        "MapLibreMap",
-        "deck-",
-        "StatsDecodedPathDialog"
-      ]
-    },
     "/feed": {
       "module": "src/pages/ukmesh/UKFeedPage.tsx",
       "scriptGzipKiB": 500,

@@ -36,3 +36,5 @@
 
 - Give multibyte fact coverage checks and rebuilds their own budget. They share the analytics pool and statement limit with chart reads, and reuse the chart cutoff and cancellation. The chart budget was also limiting the eight-day rebuild when privacy authority changed.
 - Count identical GroupText summaries before classifying channels. DEV kept accepting MQTT while repeated channel counts exceeded the chart query budget. The scan still applies the network and observer predicates and the database privacy policy. Grouping the counts keeps the complete 24-hour total and the existing channel labels.
+- Let the Packets view load observer codes from a scoped feed lookup. Its region picker was requesting a complete chart calculation for one field. The lookup keeps the same seven-day observation window and checks the current visibility generation before delivery.
+- Remove the historical Stats page and its periodic chart refresh together. Keep the lightweight summary warmup and serve existing chart API clients on request. The historical widgets, route budgets and browser checks belong to the retired page.

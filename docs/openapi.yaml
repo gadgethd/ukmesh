@@ -762,6 +762,144 @@
         }
       }
     },
+    "/api/feed/regions": {
+      "get": {
+        "summary": "List public observer region codes seen in the past seven days",
+        "operationId": "get-feed-regions",
+        "tags": [
+          "public"
+        ],
+        "x-access": "public",
+        "parameters": [
+          {
+            "name": "network",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "ukmesh",
+                "test"
+              ],
+              "default": "ukmesh"
+            }
+          },
+          {
+            "name": "observer",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9A-Fa-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "network",
+                    "observer",
+                    "visibilityGeneration",
+                    "regions"
+                  ],
+                  "properties": {
+                    "network": {
+                      "type": "string",
+                      "enum": [
+                        "ukmesh",
+                        "test"
+                      ]
+                    },
+                    "observer": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "pattern": "^[0-9A-F]{64}$"
+                    },
+                    "visibilityGeneration": {
+                      "type": "integer",
+                      "minimum": 1
+                    },
+                    "regions": {
+                      "type": "array",
+                      "uniqueItems": true,
+                      "items": {
+                        "type": "string",
+                        "pattern": "^[A-Z0-9]{2,8}$"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or out-of-bounds request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "error"
+                  ],
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/health": {
       "get": {
         "summary": "Read health",
