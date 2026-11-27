@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createDecipheriv, createHash } from 'node:crypto';
 import { MQTT_CACHE_POLICIES } from './cachePolicies.js';
 import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 /**
@@ -12,7 +12,6 @@ import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
  * pipeline and offline tools (e.g. backfillDecrypt) share one implementation.
  */
 import { Buffer } from 'node:buffer';
-import { createDecipheriv } from 'node:crypto';
 import { ChannelCrypto, MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from './decodePacket.js';
@@ -290,17 +289,16 @@ function decryptGroupPlaintext(secret: Buffer, ciphertextHex: string): Buffer | 
 }
 
 /** True when the decrypted group text carries the MeshOS signed ending. */
-export function hasMeshosSignature(p: GroupTextPayload, entries: ChannelEntry[]): boolean {
-  const ciphertextHex = (p as unknown as { ciphertext?: unknown }).ciphertext;
-  const channelHash = (p as unknown as { channelHash?: unknown }).channelHash;
-  if (typeof ciphertextHex !== 'string' || typeof channelHash !== 'string') return false;
-  const expectedHash = channelHash.trim().toUpperCase();
+export function hasMeshosSignature(p: GroupTextPayload, entries: ChannelEntry[], channel?: string): boolean {
+  if (typeof p.ciphertext !== 'string' || typeof p.channelHash !== 'string' || !p.decrypted) return false;
+  const expectedHash = p.channelHash.trim().toUpperCase();
   if (expectedHash.length !== 2) return false;
 
   for (const entry of entries) {
+    if (channel !== undefined && entry.name !== channel) continue;
     if (ChannelCrypto.calculateChannelHash(entry.secret).toUpperCase() !== expectedHash) continue;
-    const plaintext = decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), ciphertextHex);
-    return plaintext ? isMeshosSignedPlaintext(plaintext) : false;
+    const plaintext = decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), p.ciphertext);
+    if (plaintext && isMeshosSignedPlaintext(plaintext)) return true;
   }
   return false;
 }
@@ -321,7 +319,7 @@ export function buildSummary(payloadType: number, decoded: unknown, rawHex?: str
         const sender  = p.decrypted.sender ?? '?';
         const channel = rawHex && entries ? identifyChannel(rawHex, entries) : undefined;
         const prefix  = channel ? `[${channel}] ` : '';
-        const signed  = entries ? hasMeshosSignature(p, entries) : false;
+        const signed  = entries ? hasMeshosSignature(p, entries, channel) : false;
         const suffix  = signed ? ` · ${MESHOS_SIGNED_MARKER}` : '';
         return `${prefix}${sender}: ${p.decrypted.message}${suffix}`;
       }

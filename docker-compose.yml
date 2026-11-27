@@ -511,8 +511,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      alert-receiver:
-        condition: service_started
 
   link-backfill-worker:
     <<: [*internal-hosts, *application-hardening]

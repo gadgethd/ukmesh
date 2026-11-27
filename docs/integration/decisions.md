@@ -62,3 +62,5 @@
 - Use Vite 8.3.6 with Rolldown 1.2.16 for DEV builds. Vite 8.3.8 brings in a Rolldown binary that raises SIGILL on the 4-core DEV VM. Recheck native compiler imports on DEV before moving those pins.
 - Keep the existing per-request chart budget defaults on DEV. Operators can override them, and the multibyte backfill retains its separate budget. The longer production defaults were set for the retired scheduled chart job.
 - The owner pool explicitly searches the two supported schemas. Consolidated installs use `core.owner_sessions` and the standalone DEV database retains its existing `public.owner_sessions`.
+- Start Prometheus, Alertmanager and the synthetic monitor independently of the alert receiver. Alertmanager and the synthetic monitor already retry deliveries. DEV still requires its one-shot receiver bootstrap before sending authenticated alerts.
+- Treat the MeshOS ending as an unverified format annotation and keep the summary text intact throughout the feed. The one-byte channel hash can collide, so inspection prefers the channel already identified by the decoder.

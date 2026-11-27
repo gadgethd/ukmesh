@@ -67,6 +67,18 @@ test('detects the MeshOS signed ending on authenticated group text', () => {
   assert.equal(buildSummary(5, decoded, rawHex, entries), `[public2] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
 });
 
+test('recognizes the signed ending when public channel hashes collide', () => {
+  const entries = buildChannelEntries('');
+  const crawley = entries.find(entry => entry.name === 'crawley');
+  assert.ok(crawley);
+  const rawHex = buildGroupTextPacket(crawley.secret, 'Pink Rabbit: hello mesh', { signed: true });
+  const decoded = decodePacketCompat(rawHex, crawley.keyStore).decoded?.payload?.decoded;
+  assert.ok(decoded?.decrypted);
+
+  assert.equal(hasMeshosSignature(decoded as never, entries), true);
+  assert.equal(buildSummary(5, decoded, rawHex, entries), `[crawley] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
+});
+
 test('plain group text gets no signature marker', () => {
   const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'M0CNQ: morning all');
   const decoded = decodedPayload(rawHex);
