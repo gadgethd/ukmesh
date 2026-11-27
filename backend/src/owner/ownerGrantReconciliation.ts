@@ -1,6 +1,4 @@
-// newuser writes the durable map and grant before replacing the backend. The
-// still-running container therefore needs enough time to observe a fresh row
-// without treating it as a removal from its older in-memory configuration.
+// Keep legacy config-backed grant transitions tolerant of a rolling update.
 export const OWNER_GRANT_REVOCATION_GRACE_MS = 120_000;
 
 export type ConfiguredOwnerGrant = {

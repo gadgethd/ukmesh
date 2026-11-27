@@ -123,6 +123,61 @@ test('owner schema DDL is idempotent', { skip }, async () => {
   await initOwnerAuthDb();
 });
 
+test('confirmed provisioning records exact audited grants once and preserves configured grants and tombstones', { skip }, async () => {
+  const { provisionConfirmedOwnerGrants, getOwnerNodeIdsForUsername, revokeOwnerGrant, upsertVerifiedOwnerGrant } = await ownerAuth();
+  const username = uniqueName('operator-provision');
+  const [first, configured, revoked, unapproved] = [nodeId(), nodeId(), nodeId(), nodeId()];
+  const approval = { nodeIds: [first], actor: 'newuser:fixture', configuredKeys: [] };
+  assert.deepEqual(await provisionConfirmedOwnerGrants({ username, mode: 'create', approval }), [first]);
+  assert.deepEqual(await provisionConfirmedOwnerGrants({ username, mode: 'watch', approval }), [first]);
+  await assert.rejects(provisionConfirmedOwnerGrants({ username, mode: 'watch', approval: {
+    ...approval, nodeIds: [first, unapproved],
+  } }), /OWNER_ACCOUNT_ALREADY_LINKED/);
+
+  await upsertVerifiedOwnerGrant(username, configured, {
+    verificationMethod: 'operator-config', actor: 'config-reconciler',
+  });
+  await provisionConfirmedOwnerGrants({ username, mode: 'link', approval: {
+    ...approval, nodeIds: [configured, revoked], configuredKeys: [configured],
+  } });
+  await revokeOwnerGrant(username, revoked, { actor: 'integration-test', reason: 'operator revoked' });
+  await assert.rejects(provisionConfirmedOwnerGrants({ username, mode: 'link', approval: {
+    ...approval, nodeIds: [unapproved, revoked],
+  } }), /OWNER_GRANT_REVIEW_REQUIRED/);
+  assert.deepEqual(await getOwnerNodeIdsForUsername(username), [first, configured].sort());
+
+  const audit = await withTestClient((client) => client.query(
+    `SELECT node_id, event_type, source, actor FROM core.owner_grant_audit
+      WHERE mqtt_username = $1 ORDER BY occurred_at`, [username],
+  ));
+  assert.deepEqual(audit.rows, [
+    { node_id: first, event_type: 'grant', source: 'operator-database', actor: approval.actor },
+    { node_id: configured, event_type: 'grant', source: 'operator-config', actor: 'config-reconciler' },
+    { node_id: revoked, event_type: 'grant', source: 'operator-database', actor: approval.actor },
+    { node_id: revoked, event_type: 'revoke', source: 'operator-database', actor: 'integration-test' },
+  ]);
+  await withTestClient((client) => client.query(
+    'UPDATE core.owner_accounts SET is_active = FALSE WHERE mqtt_username = $1', [username],
+  ));
+  await assert.rejects(provisionConfirmedOwnerGrants({ username, mode: 'link', approval }), /OWNER_ACCOUNT_INACTIVE/);
+  assert.deepEqual(await getOwnerNodeIdsForUsername(username), []);
+});
+
+test('concurrent first owner approvals cannot combine different confirmed key sets', { skip }, async () => {
+  const { ensureOwnerAccount, getOwnerNodeIdsForUsername, provisionConfirmedOwnerGrants } = await ownerAuth();
+  const username = uniqueName('concurrent-provision');
+  await ensureOwnerAccount(username);
+  const approved = await Promise.allSettled([nodeId(), nodeId()].map((key) => provisionConfirmedOwnerGrants({
+    username, mode: 'watch', approval: { nodeIds: [key], configuredKeys: [], actor: 'newuser:fixture' },
+  })));
+  const accepted = approved.filter((result) => result.status === 'fulfilled');
+  const rejected = approved.filter((result) => result.status === 'rejected');
+  assert.equal(accepted.length, 1);
+  assert.equal(rejected.length, 1);
+  assert.match(String(rejected[0]?.reason), /OWNER_ACCOUNT_ALREADY_LINKED/);
+  assert.deepEqual(await getOwnerNodeIdsForUsername(username), accepted[0]?.value);
+});
+
 test('owner sessions persist, revoke, reject mismatched users, and expire', { skip }, async () => {
   const {
     createOwnerSession,

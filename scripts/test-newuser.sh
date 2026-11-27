@@ -37,8 +37,6 @@ fi
 if [[ ${1:-} == compose ]]; then
   case "$*" in
     *'ps -q mosquitto') printf 'infra-mosquitto-id\n' ;;
-    *'ps -q timescaledb') printf 'infra-timescaledb-id\n' ;;
-    *' up -d --no-build --no-deps backend') printf 'COMPOSE_BACKEND\n' >>"$FAKE_DOCKER_LOG" ;;
     *) printf 'unexpected docker compose invocation: %s\n' "$*" >&2; exit 1 ;;
   esac
   exit 0
@@ -60,6 +58,7 @@ fi
 # Never put the generated broker password into test logs.
 if [[ $* == *'NEWUSER_MQTT_PASSWORD='* ]]; then
   printf 'VERIFY_BROKER_LOGIN\n' >>"$FAKE_DOCKER_LOG"
+  [[ ${FAKE_FAIL_STAGE:-} != login ]] || exit 1
   exit 0
 fi
 
@@ -96,42 +95,42 @@ if [[ $* == *'/mosquitto/config/acl'* ]]; then
   exit 1
 fi
 
-sql=''
-if [[ " $* " == *' -i '* ]]; then
-  sql="$(cat)"
-  printf 'SQL %s\n' "$sql" >>"$FAKE_DOCKER_LOG"
+if [[ ${4:-} == dist/tools/confirmOwnerGrants.js ]]; then
+  action=$5
+  mode=$6
+  username=$7
+  actor=$8
+  shift 8
+  case "$action" in
+    inspect)
+      active="$(awk -v name="$username" '$1 == name { print $2 }' "$FAKE_DB_STATE_FILE")"
+      if [[ $mode == link && -z $active || $mode == create && -n $active ]]; then
+        exit 1
+      fi
+      if [[ -n $active ]]; then printf '%s\n' "$active"; fi
+      ;;
+    record)
+      printf 'APPROVAL_ACTOR %s %s\n' "$username" "$actor" >>"$FAKE_DOCKER_LOG"
+      for key in "$@"; do
+        if ! grep -Fqx -- "$username $key" "$FAKE_DB_STATE_FILE"; then
+          printf '%s %s\n' "$username" "$key" >>"$FAKE_DB_STATE_FILE"
+          printf 'DB_WRITE %s %s\n' "$username" "$key" >>"$FAKE_DOCKER_LOG"
+        fi
+      done
+      [[ ${FAKE_FAIL_STAGE:-} != ambiguous-commit ]] || exit 1
+      ;;
+    verify)
+      printf 'VERIFY_APPLIED_GENERATION\n' >>"$FAKE_DOCKER_LOG"
+      [[ ${FAKE_FAIL_STAGE:-} != pending ]] || exit 75
+      for key in "$@"; do grep -Fqx -- "$username $key" "$FAKE_DB_STATE_FILE"; done
+      ;;
+  esac
+  exit 0
 fi
 
-mqtt_username=''
-for argument in "$@"; do
-  case $argument in
-    mqtt_username=*) mqtt_username=${argument#*=} ;;
-  esac
-done
-
 if [[ $* == *' psql '* ]]; then
-  if [[ $sql == *'SELECT COALESCE('* ]]; then
-    if [[ ",${FAKE_EXISTING_DB_USERS:-}," == *",${mqtt_username},"* ]]; then
-      printf 'active\n'
-    else
-      printf 'missing\n'
-    fi
-  elif [[ $sql == *'SELECT COUNT(*)'*'JOIN owner_accounts'* ]]; then
-    if [[ ${FAKE_FAIL_STAGE:-} == database-readback ]]; then printf '0\n'; else printf '1\n'; fi
-  elif [[ $sql == *'SELECT COUNT(*) FROM owner_account_nodes'* ]]; then
-    printf '0\n'
-  elif [[ $sql == *'INSERT INTO owner_account_nodes'* ]]; then
-    printf 'DB_WRITE %s\n' "$mqtt_username" >>"$FAKE_DOCKER_LOG"
-    [[ ${FAKE_FAIL_STAGE:-} != environment ]] || exit 1
-    : >"$FAKE_DB_STATE_FILE"
-    [[ ${FAKE_FAIL_STAGE:-} != db ]] || exit 1
-  elif [[ $sql == *'node_identity_nodes'* ]]; then
-    printf '0\n'
-  elif [[ $sql == *'DELETE FROM owner_accounts'* || $sql == *'DELETE FROM owner_account_nodes'* ]]; then
-    printf 'DB_ROLLBACK %s\n' "$mqtt_username" >>"$FAKE_DOCKER_LOG"
-    rm -f -- "$FAKE_DB_STATE_FILE"
-  fi
-  exit 0
+  printf 'newuser must access owner grants through the operator tool\n' >&2
+  exit 1
 fi
 
 # SIGHUP, health probes, and all other fake exec operations succeed.
@@ -150,6 +149,7 @@ init_sandbox() {
   export FAKE_DOCKER_LOG="$SANDBOX/docker.log"
   export FAKE_CREDENTIAL_FILE="$SANDBOX/credential-state"
   export FAKE_DB_STATE_FILE="$SANDBOX/db-state"
+  printf '%s\n' "$initial_map" | tr ',' '\n' | tr '=' ' ' >"$FAKE_DB_STATE_FILE"
 }
 
 run_newuser() {
@@ -164,6 +164,7 @@ run_newuser() {
   MESHCORE_INFRA_PROJECT_DIR="$sandbox/infra" \
   TMPDIR="$sandbox" \
   NEWUSER_DISCOVERY_POLL_SECONDS=0.05 \
+  NEWUSER_ACL_TIMEOUT_SECONDS=1 \
   FAKE_EXISTING_USERS="$existing_users" \
   FAKE_EXISTING_DB_USERS="$existing_db_users" \
   FAKE_FAIL_STAGE="$fail_stage" \
@@ -205,21 +206,23 @@ fi
 # Linking a node preserves the current map and existing broker password.
 init_sandbox link "alice=${NODE_A},bob=${NODE_C}"
 run_newuser "$SANDBOX" "$SANDBOX/output.log" 'alice' 'alice' '' --link --confirm-owner-grant "$NODE_B" alice "$NODE_B"
-expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},alice=${NODE_B}"
+expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C}"
 [[ $(<"$SANDBOX/repo/.env") == "$expected_map" ]] \
   || { printf 'unexpected owner map: %s\n' "$(<"$SANDBOX/repo/.env")" >&2; exit 1; }
 assert_file_contains "$SANDBOX/output.log" 'Password: unchanged (existing credential)'
 assert_file_contains "$SANDBOX/output.log" 'set mqtt.1.topic.root meshcore/{IATA}/{PUBLIC_KEY}/packets'
 assert_file_contains "$SANDBOX/output.log" 'The default root "meshcore" is denied'
-assert_file_contains "$SANDBOX/docker.log" 'INSERT INTO owner_account_nodes'
-assert_file_contains "$SANDBOX/docker.log" 'COMPOSE_BACKEND'
+assert_file_contains "$SANDBOX/docker.log" "DB_WRITE alice $NODE_B"
+assert_file_contains "$SANDBOX/docker.log" 'VERIFY_APPLIED_GENERATION'
+assert_file_contains "$SANDBOX/docker.log" 'ACL_READBACK'
+assert_file_contains "$SANDBOX/db-state" "alice $NODE_A"
 if grep -Fq 'CREDENTIAL_CREATE alice' "$SANDBOX/docker.log"; then
   printf 'link flow unexpectedly changed the existing credential\n' >&2
   exit 1
 fi
 
 # A second process adds a grant while discovery has released the lock. The
-# discovery run must merge into the map it rereads after reacquiring the lock.
+# discovery run must leave the other transaction and legacy configuration intact.
 init_sandbox concurrent "alice=${NODE_A}"
 PATH="$test_root/bin:$PATH" \
 NEWUSER_REPO_DIR="$SANDBOX/repo" \
@@ -235,7 +238,7 @@ FAKE_DISCOVERY_WAIT_MARKER="$SANDBOX/discovery-waiting" \
 FAKE_DISCOVERY_RELEASE="$SANDBOX/discovery-release" \
 FAKE_DISCOVERY_NODE="$NODE_B" \
 FAKE_DISCOVERY_USERNAME=charlie \
-  bash "$SCRIPT_DIR/newuser.sh" --watch --timeout 10 --confirm-owner-grant "$NODE_B" charlie >"$SANDBOX/watcher.log" 2>&1 &
+  bash "$SCRIPT_DIR/newuser.sh" --watch --timeout 10 charlie >"$SANDBOX/watcher.log" 2>&1 &
 watcher_pid=$!
 for _ in {1..100}; do
   [[ -e $SANDBOX/discovery-waiting ]] && break
@@ -246,35 +249,57 @@ done
 run_newuser "$SANDBOX" "$SANDBOX/second-run.log" 'alice,charlie' 'alice' '' --confirm-owner-grant "$NODE_C" bob "$NODE_C"
 : >"$SANDBOX/discovery-release"
 wait "$watcher_pid"
-expected_map="OWNER_MQTT_USERNAME_MAP=alice=${NODE_A},bob=${NODE_C},charlie=${NODE_B}"
-[[ $(<"$SANDBOX/repo/.env") == "$expected_map" ]] \
-  || { printf 'concurrent owner map lost a grant: %s\n' "$(<"$SANDBOX/repo/.env")" >&2; exit 1; }
+run_newuser "$SANDBOX" "$SANDBOX/charlie.log" 'alice,bob,charlie' 'alice,bob' '' --watch --confirm-owner-grant "$NODE_B" charlie
+[[ $(<"$SANDBOX/repo/.env") == "OWNER_MQTT_USERNAME_MAP=alice=${NODE_A}" ]]
+assert_file_contains "$SANDBOX/db-state" "alice $NODE_A"
+assert_file_contains "$SANDBOX/db-state" "bob $NODE_C"
+assert_file_contains "$SANDBOX/db-state" "charlie $NODE_B"
 
-# Inject failures after each mutation class and check that EXIT rollback is
-# idempotent and restores the mocked broker/config/database state.
-for stage in credential environment db acl; do
-  init_sandbox "rollback-${stage}" "alice=${NODE_A}"
+# Only confirmed keys are recorded and there is no mutation from a mismatch.
+init_sandbox confirmation "alice=${NODE_A}"
+if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice '' --link --confirm-owner-grant "$NODE_C" alice "$NODE_B"; then
+  printf 'mismatched explicit keys unexpectedly passed\n' >&2
+  exit 1
+fi
+assert_file_contains "$SANDBOX/output.log" 'mismatch'
+[[ $(<"$SANDBOX/db-state") == "alice $NODE_A" ]]
+
+init_sandbox confirmation-batch "alice=${NODE_A}"
+run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice '' \
+  --confirm-owner-grant "$NODE_C" --confirm-owner-grant "$NODE_B" dave "$NODE_B,$NODE_C"
+assert_file_contains "$SANDBOX/docker.log" "APPROVAL_ACTOR dave newuser:$(id -un)"
+[[ $(<"$SANDBOX/db-state") == "$(printf 'alice %s\ndave %s\ndave %s' "$NODE_A" "$NODE_B" "$NODE_C")" ]]
+
+# A credential failure happens before approval, so a partial credential rolls back.
+for stage in credential login; do
+  init_sandbox "rollback-$stage" "alice=${NODE_A}"
   if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice "$stage" --confirm-owner-grant "$NODE_B" dave "$NODE_B"; then
     printf 'expected injected %s failure\n' "$stage" >&2
     exit 1
   fi
-  [[ $(<"$SANDBOX/repo/.env") == "OWNER_MQTT_USERNAME_MAP=alice=${NODE_A}" ]] \
-    || { printf '%s failure did not restore the environment map\n' "$stage" >&2; exit 1; }
-  [[ ! -e $SANDBOX/credential-state ]] \
-    || { printf '%s failure left a broker credential behind\n' "$stage" >&2; exit 1; }
-  [[ ! -e $SANDBOX/db-state ]] \
-    || { printf '%s failure left owner database state behind\n' "$stage" >&2; exit 1; }
-  if [[ $stage == credential ]]; then
-    assert_file_contains "$SANDBOX/docker.log" 'CREDENTIAL_DELETE dave'
-  fi
-  if [[ $stage == db || $stage == acl ]]; then
-    assert_file_contains "$SANDBOX/docker.log" 'DB_ROLLBACK dave'
-  fi
-  if [[ $stage == acl ]]; then
-    compose_count="$(grep -c '^COMPOSE_BACKEND$' "$SANDBOX/docker.log")"
-    [[ $compose_count -ge 2 ]] \
-      || { printf 'ACL failure did not reapply restored backend config\n' >&2; exit 1; }
-  fi
+  [[ ! -e $SANDBOX/credential-state ]]
+  [[ $(<"$SANDBOX/db-state") == "alice $NODE_A" ]]
+  assert_file_contains "$SANDBOX/docker.log" 'CREDENTIAL_DELETE dave'
 done
 
-printf 'newuser explicit confirmation, passive discovery, concurrency and rollback regression tests passed\n'
+# After recording, a timeout, inconsistent broker readback or lost response
+# must retain the exact approval and credential. A replay can verify it.
+for stage in pending acl ambiguous-commit; do
+  init_sandbox "pending-$stage" "alice=${NODE_A}"
+  if run_newuser "$SANDBOX" "$SANDBOX/output.log" alice alice "$stage" --confirm-owner-grant "$NODE_B" dave "$NODE_B"; then
+    printf 'expected incomplete verification in %s\n' "$stage" >&2
+    exit 1
+  fi
+  [[ -e $SANDBOX/credential-state ]]
+  assert_file_contains "$SANDBOX/db-state" "dave $NODE_B"
+  assert_file_contains "$SANDBOX/output.log" 'credential remains available'
+  if grep -Fq 'Provisioned MQTT owner account' "$SANDBOX/output.log"; then
+    printf 'incomplete verification incorrectly reported provisioning success\n' >&2
+    exit 1
+  fi
+  run_newuser "$SANDBOX" "$SANDBOX/retry.log" 'alice,dave' 'alice,dave' '' --watch --confirm-owner-grant "$NODE_B" dave
+  assert_file_contains "$SANDBOX/retry.log" 'Provisioned MQTT owner account'
+  [[ $(grep -Fc "DB_WRITE dave $NODE_B" "$SANDBOX/docker.log") == 1 ]]
+done
+
+printf 'newuser explicit approval, passive discovery, applied ACL readback and durable retry tests passed\n'
