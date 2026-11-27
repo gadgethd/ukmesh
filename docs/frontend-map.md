@@ -129,9 +129,12 @@ no dashboard App chunk. Both targets enforce JS/CSS ceilings in CI and in their 
 The November reconciliation preserves main's MapLibre 6.11.2 and deck.gl 9.4
 upgrades. These differ from the deployed audit release (MapLibre 6.4.1). Its
 2,900/850-KiB total-JavaScript ceiling therefore does not describe this merged
-source tree. The reconciled ceiling is 3,200 KiB raw / 900 KiB gzip, including
+source tree. The reconciled ceiling is 3,200 KiB raw / 905 KiB gzip, including
 all worker/shared chunks; renderer (820/225), charts (400/110) and CSS (230/42)
-ceilings remain unchanged. Every production chunk receives Terser compression.
+ceilings remain unchanged. The gzip ceiling moved from 900 to 905 KiB with the
+MapLibre 6.19 upgrade: 6.19 costs ~17 KiB gzip over 6.11.2, the old ceiling had
+48 bytes of headroom, and the deployed website image measures 901.2 KiB. Every
+production chunk receives Terser compression.
 This is a documented dependency-baseline adjustment, not evidence that the
 old total ceiling passes on the newer dependencies. Requalify both targets
 and production browser journeys when changing this baseline.
