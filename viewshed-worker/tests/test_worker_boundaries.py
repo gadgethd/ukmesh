@@ -75,6 +75,8 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(set(public.snapshot.nodes), {"public"})
         self.assertEqual(set(rebuild.snapshot.nodes), {"rebuild"})
         self.assertNotIn(("x", "y"), old.physical_pairs)
+        self.assertTrue(rebuild.has_pair("x", "y"))
+        self.assertFalse(public.has_pair("x", "y"))
         with self.assertRaises(TypeError):
             public.snapshot.nodes["public"]["lat"] = 4.0
 
@@ -121,6 +123,7 @@ class LinkCommitTests(unittest.TestCase):
         db.rollback.assert_called_once()
         ack.assert_not_called()
         self.assertIs(self.context.topology.snapshot, previous)
+        self.assertFalse(self.context.topology.has_pair("a", "b"))
 
     def test_committed_redelivery_does_not_write_graph_again(self):
         db, cur, guard = self.fixture()
@@ -165,6 +168,43 @@ class LinkCommitTests(unittest.TestCase):
         self.assertEqual(process.call_args.args[2].scope, generation)
         self.assertIsNot(process.call_args.args[2], self.context.topology)
 
+    def test_rebuild_reuses_same_revision_and_refreshes_after_a_peer_commit(self):
+        db, cur, guard = self.fixture()
+        # Read the receipt and committed generation revision for each job.
+        cur.fetchone.side_effect = [None, (0,), None, (1,), None, (3,)]
+        cur.fetchall.side_effect = [[("a", "b")], [("d", "e")]]
+        generation = "link_rebuild_0123456789abcdef"
+        evidence = []
+
+        def process(db, _job, topology, **_kwargs):
+            nodes = topology.get_nodes(db, ("a",))
+            evidence.append((nodes["a"]["lat"], topology.has_pair("a", "b"),
+                             topology.has_pair("a", "c"), topology.has_pair("d", "e")))
+            topology.include_pair("a", "c")
+            return []
+
+        with (
+            mock.patch.object(link_jobs, "LeaseGuard", return_value=guard),
+            mock.patch.object(link_jobs, "process_link_job", side_effect=process),
+            mock.patch.object(link_jobs.link_queue_v3, "owns_lease", return_value=True),
+            mock.patch.object(link_jobs.link_queue_v3, "ack", return_value=True),
+            mock.patch.object(link_topology, "load_positioned_repeaters", side_effect=[
+                {"a": {"lat": 1.0}}, {"a": {"lat": 2.0}}, {"a": {"lat": 3.0}},
+            ]),
+        ):
+            for job_id in ("first", "second", "peer-advanced"):
+                link_jobs.process_claimed_link_job(
+                    db, object(), (job_id, "token", {"generation": generation}, 1),
+                    context=self.context,
+                )
+        self.assertEqual(evidence, [(1.0, True, False, False), (2.0, True, True, False),
+                                    (3.0, False, False, True)])
+        self.assertEqual(cur.fetchall.call_count, 2)
+        self.assertIsNotNone(self.context.rebuild_topology)
+        self.context.finish_rebuild_topology()
+        self.assertIsNone(self.context.rebuild_topology)
+        self.assertFalse(self.context.topology.has_pair("a", "c"))
+
     def test_live_updates_wait_for_the_lease_fence_commit_and_guard_exit(self):
         for job_type in ("observe", "physical_pair"):
             for failure in ("lease", "commit", "guard_exit", None):
@@ -202,7 +242,7 @@ class LinkCommitTests(unittest.TestCase):
                                 channel,
                                 payload,
                                 db.autocommit,
-                                self.context.topology.snapshot,
+                                self.context.topology.has_pair(a, b),
                             )
                         )
 
@@ -265,12 +305,12 @@ class LinkCommitTests(unittest.TestCase):
                             self.assertEqual(
                                 events, ["commit", "guard_exit", "publish", "ack"]
                             )
-                            channel, payload, autocommit, snapshot = published[0]
+                            channel, payload, autocommit, committed_pair = published[0]
                             self.assertEqual(
                                 channel, self.context.settings.LIVE_CHANNEL
                             )
                             self.assertTrue(autocommit)
-                            self.assertIsNot(snapshot, previous)
+                            self.assertTrue(committed_pair)
                             message = json.loads(payload)
                             self.assertEqual(message["type"], "link_update")
                             self.assertIsInstance(message["ts"], int)

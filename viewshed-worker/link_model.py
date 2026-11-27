@@ -19,7 +19,6 @@ from rf.terrain import (
     sample_elevation,
 )
 from link_repository import upsert_link_pair
-from link_topology import link_pair_key
 from worker_types import LinkUpdate
 from rf_context import get_support_tree
 from worker_math import (
@@ -58,7 +57,7 @@ def compute_planned_links(
     origin_radius_km = physical_candidate_radius_km(radius_m, context=context)
 
     peer_lookup_started = time.monotonic()
-    all_nodes, _physical_pairs = context.topology.get(db)
+    all_nodes = context.topology.get_nodes(db)
     support_tree = get_support_tree(context=context)
     support_node_ids: list[str] = context.rf.support.node_ids
     if support_tree is not None and support_node_ids:
@@ -323,7 +322,7 @@ def process_physical_link_job(
     if not node_a_id or not node_b_id or node_a_id == node_b_id:
         return []
 
-    nodes, physical_pairs = topology.get(db, (node_a_id, node_b_id))
+    nodes = topology.get_nodes(db, (node_a_id, node_b_id))
     a = nodes.get(node_a_id)
     b = nodes.get(node_b_id)
     if not a or not b:
@@ -334,8 +333,7 @@ def process_physical_link_job(
             db, node_a_id, a, node_b_id, b, topology, context=context
         )
     )
-    if itm_viable:
-        topology.include_pair(node_a_id, node_b_id)
+    topology.note_measured_pair(db, node_a_id, node_b_id, itm_viable)
     if topology.scope == "public":
         return [
             LinkUpdate(
@@ -373,10 +371,10 @@ def process_observation_link_job(
     if not rx_node_id or not path_hashes or path_hash_size_bytes <= 1:
         return []
 
-    all_nodes, physical_pairs = topology.get(db, (rx_node_id,))
+    all_nodes = topology.get_nodes(db, (rx_node_id,))
 
     def physical_link(a_id: str, b_id: str) -> bool:
-        return link_pair_key(a_id, b_id) in topology.snapshot.physical_pairs
+        return topology.has_pair(a_id, b_id)
 
     rx = all_nodes.get(rx_node_id)
     if not rx:
@@ -526,8 +524,7 @@ def process_observation_link_job(
             ) = ensure_physical_link_metrics(
                 db, a_id, a, b_id, b, topology, context=context
             )
-        if itm_viable:
-            topology.include_pair(a_id, b_id)
+        topology.note_measured_pair(db, a_id, b_id, itm_viable)
         if topology.scope == "public":
             updates.append(
                 LinkUpdate(

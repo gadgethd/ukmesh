@@ -47,6 +47,11 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
             db.autocommit = False
             try:
                 with db.cursor() as cur:
+                    # Each committed generation revision is read and changed
+                    # inside the same graph lock used by peer writers.
+                    cur.execute(
+                        "SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))"
+                    )
                     cur.execute(
                         "SELECT 1 FROM ops.link_job_commits WHERE job_id = %s",
                         (job_id,),
@@ -54,16 +59,24 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
                     already_committed = cur.fetchone() is not None
                     if not already_committed:
                         generation = str(job.get("generation") or "").strip()
-                        cur.execute(
-                            "SELECT pg_advisory_xact_lock(hashtext('meshcore-link-graph-write'))"
-                        )
-                        topology = (
-                            TopologyCache(generation, settings=context.settings)
-                            if generation
-                            else TopologyCache(settings=context.settings)
-                        )
-                        if not generation:
-                            topology.snapshot = context.topology.snapshot
+                        revision = None
+                        if generation:
+                            cur.execute(
+                                "SELECT topology_revision FROM ops.link_rebuild_runs WHERE generation = %s",
+                                (generation,),
+                            )
+                            row = cur.fetchone()
+                            revision = row[0] if row is not None else None
+                            cached = context.rebuild_topology
+                            if cached is not None and cached[0].scope == generation and cached[1] == revision:
+                                resident = cached[0]
+                            else:
+                                context.finish_rebuild_topology()
+                                resident = TopologyCache(generation, settings=context.settings)
+                        else:
+                            context.finish_rebuild_topology()
+                            resident = context.topology
+                        topology = resident.fork()
                         updates = process_link_job(db, job, topology, context=context)
                         renewer.assert_owned()
                         if not link_queue_v3.owns_lease(r_client, job_id, token):
@@ -76,8 +89,7 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
                         cur.execute(
                             """INSERT INTO ops.link_job_commits
                                  (job_id, job_type, generation, logical_job_id, payload_hash)
-                               VALUES (%s, %s, %s, %s, %s)
-                               ON CONFLICT (job_id) DO NOTHING""",
+                               VALUES (%s, %s, %s, %s, %s)""",
                             (
                                 job_id,
                                 str(job.get("type") or "observe"),
@@ -87,8 +99,12 @@ def process_claimed_link_job(db, r_client, claimed, *, context) -> None:
                             ),
                         )
                 db.commit()
-                if not already_committed and not generation:
-                    context.topology.snapshot = topology.snapshot
+                if not already_committed:
+                    resident.commit(topology)
+                    if generation and revision is not None:
+                        # The receipt's database trigger advanced the revision
+                        # in the same transaction as these graph changes.
+                        context.rebuild_topology = (resident, revision + 1)
             except Exception:
                 db.rollback()
                 raise
