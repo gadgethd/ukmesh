@@ -5,9 +5,8 @@
 Keep discovery advisory and require operator approval for new grants. A generic
 unattended grant service is not a small change: there is no enrollment request
 state, bootstrap owner session, approval API, or device proof-of-possession
-protocol here. Reusing log claims as grants would cross an explicit existing
-authorization boundary. This note defines the follow-up; no partial linker is
-enabled by the onboarding change.
+protocol here. Log claims supply candidate fingerprints for the operator.
+Granting a claimed key requires explicit confirmation of its full fingerprint.
 
 The task brief reports an external `simeon` watcher as the only scheduled
 auto-link coverage. That scheduler is not represented in this repository and
@@ -16,7 +15,8 @@ helpers; those do not establish generic unattended coverage:
 
 | Current hook | Actual behavior |
 | --- | --- |
-| `scripts/newuser.sh: main`, `discover_node_key`, `extract_node_key_from_logs` | Initial provisioning accepts explicit keys or waits for fresh user-correlated broker logs. `--watch` resumes a credential-only account; `--link` adds a device to an existing mapped owner, optionally discovering its key. All are bounded, operator-invoked runs. |
+| `scripts/newuser.sh: main`, `discover_node_key`, `extract_node_key_from_logs` | Initial provisioning accepts explicit keys or waits for fresh user-correlated broker logs. `--watch` resumes a credential-only account or retries verification with the same confirmed keys. `--link` adds a device to an existing owner, with an option to discover its key. All are bounded, operator-invoked runs. |
+| `backend/src/tools/confirmOwnerGrants.ts` | Records exact `operator-database` grants with an audit entry and verifies the running reconciler's applied generation. It leaves the deployment running and keeps prior `operator-config` grants intact. |
 | `backend/src/mqtt/brokerLog.ts: parseMosquittoConnection`, `parseOwnerNodeTopic` | Parse authenticated username/client association and claimed exact topic keys. Client IDs and topics are publisher-controlled. |
 | `backend/src/mqtt/connectionMonitor.ts: observeBrokerLogLine`, `scanRange` | A continuous, bounded, audit-only monitor; exact-key denials go to `recordUntrustedMqttNodeObservation`, not owner grants. Bare default-root denials have no full key. |
 | `backend/src/owner/ownerAuth.ts: recordUntrustedMqttNodeObservation` | Retains bounded claims in `mqtt_node_logins`. It cannot turn them into ownership. |
@@ -26,11 +26,13 @@ helpers; those do not establish generic unattended coverage:
 | `backend/src/owner/ownerAclReconciler.ts: reconcileOwnerAuthorization` | Synchronizes configured grants, renders exact per-key ACLs, validates and applies them, reloads the broker, and records readback state. |
 
 For today's operator workflow, take the full public key directly from the user
-and supply it explicitly to the helper. A username-correlated discovered topic
-is useful evidence for an operator to review, not independent proof that the
-user controls that key. Do not schedule `newuser --link` over every username as
-a replacement for an approval flow: it trusts claims, edits operator config,
-and recreates the backend as part of each successful run.
+and supply it to the helper with one `--confirm-owner-grant` per key. A
+username-correlated discovered topic helps the operator identify a candidate.
+Only an explicit approval grants access. If ACL verification is pending,
+re-run the approval with the same keys. Use `--watch` for the initial grant
+and `--link` for additional keys. Retries preserve the credential and audit
+record. The command reports success after the running reconciler records the
+applied ACL generation and the broker ACL contains the approved grants.
 
 ## Concrete follow-up: generic enrollment with operator approval
 
@@ -58,17 +60,14 @@ and recreates the backend as part of each successful run.
    authorization inventory tooling. It must review full-key evidence, check
    existing owners/conflicts, and reject inactive accounts and tombstoned grants
    unless the operator explicitly authorizes reactivation/reauthorization.
-   `upsertVerifiedOwnerGrant` currently reactivates accounts, so calling it
-   blindly would bypass this review. Approval records the actor/reason and uses
-   `verificationMethod: 'operator-database'`; it must be idempotent and durable
-   across retries. Request approval and grant publication need a transaction or
-   an outbox/recovery step, not an untracked two-write sequence.
-5. Reuse `upsertVerifiedOwnerGrant` and `owner_grant_audit` in
-   `backend/src/owner/ownerAuth.ts`, followed by `reconcileOwnerAuthorization`.
-   Report **grant recorded, ACL pending** until the reconciler's applied and
-   readback generations match the desired artifact. Failure must retain the
-   request and last verified ACL for retry. Never report success just because
-   a DB insert or MQTT login succeeded.
+   Reuse `provisionConfirmedOwnerGrants` in `backend/src/owner/ownerAuth.ts`
+   for ordinary approvals. It validates account and grant state, records the
+   approval in `owner_grant_audit`, and makes repeated approvals idempotent.
+   Request approval and grant publication need a transaction or a recoverable
+   queue.
+5. Report **grant recorded, ACL pending** until the running reconciler's
+   applied and readback generations match the desired artifact. Retain the
+   request and last verified ACL for retry.
 6. Invalidate `invalidateOwnerNodeIdCache(username)` and the service dashboard
    cache when publishing a grant. `createOwnerService().clearOwnerSession(username)`
    already clears that user's dashboard and cached node data and invalidates

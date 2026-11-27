@@ -33,6 +33,18 @@ function runRefresh(args: string[], env: NodeJS.ProcessEnv) {
   });
 }
 
+function activationArguments(): string[] {
+  const container = process.env['OWNER_BASELINE_CONTAINER'] ?? 'meshcore-analytics-backend-1';
+  const inspection = spawnSync('docker', ['inspect', '--format', '{{json .Config.Env}}', container], {
+    encoding: 'utf8', timeout: 10_000,
+  });
+  if (inspection.error || inspection.status !== 0) throw new Error('could not inspect the active owner baseline path');
+  const env: unknown = JSON.parse(inspection.stdout);
+  if (!Array.isArray(env)) throw new Error('could not inspect the active owner baseline path');
+  return env.includes('OWNER_AUTH_INVENTORY_BASELINE_PATH=/owner-auth-inventory/current.json')
+    ? ['--activate-live'] : ['--apply', '--recreate'];
+}
+
 async function main(): Promise<void> {
   if (invalidArgs || process.argv.slice(2).length > 1) {
     throw new Error('usage: autoRebaseline.js [--check]');
@@ -77,12 +89,13 @@ async function main(): Promise<void> {
       throw new Error('refresh script did not validate the candidate baseline as ok:true; apply aborted');
     }
 
-    process.stdout.write('[owner-baseline-auto] candidate validated ok:true; applying and recreating backend\n');
-    const applied = runRefresh(['--apply', '--recreate'], process.env);
+    const args = activationArguments();
+    process.stdout.write('[owner-baseline-auto] candidate validated ok:true; applying the approved baseline\n');
+    const applied = runRefresh(args, process.env);
     if (applied.error || applied.status !== 0) {
-      throw new Error('refresh script apply/recreate failed; inspect the refresh script on the VPS');
+      throw new Error('baseline activation failed; inspect the refresh script on the deployment host');
     }
-    process.stdout.write('[owner-baseline-auto] baseline applied and backend recreate completed\n');
+    process.stdout.write('[owner-baseline-auto] baseline activation completed\n');
   } finally {
     rmSync(validationDirectory, { recursive: true, force: true });
   }

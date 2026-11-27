@@ -44,10 +44,6 @@ services:
     networks: [default, sample]
     environment:
       MQTT_USERNAME: !reset null
-      MQTT_PASSWORD: !reset null
-      # Keep local delivery controls outside the companions' business namespace.
-      MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ukmesh-local-control
-      MQTT_BROKER_BACKLOG_MONITOR: "true"
       REDIS_PASSWORD: ""
       ALLOWED_ORIGINS: http://127.0.0.1:5173,http://localhost:5173,http://127.0.0.1:3003,http://localhost:3003,http://127.0.0.1:3005,http://localhost:3005,http://127.0.0.1:8923,http://localhost:8923,http://127.0.0.1:8924,http://localhost:8924${FULL_DEV_LAN_APP_ORIGINS:-}
       OWNER_ACL_MODE: shadow
@@ -56,7 +52,7 @@ services:
       DATA_LIFECYCLE_RETENTION_ENABLED: "false"
       DATA_LIFECYCLE_COMPRESSION_ENABLED: "false"
       MQTT_RAM_PUBLIC_READ_TOKEN: local-full-public-stream-token-0123456789abcdef
-    ports: !override ["127.0.0.1:3100:3000", "127.0.0.1:9091:9091"]
+    ports: !override ["127.0.0.1:3100:3000", "127.0.0.1:9094:9091"]
     volumes: !override
       - ./scripts/local-sample/mosquitto-acl:/mosquitto/config/acl:ro
       - mosquitto_log:/mosquitto/log:ro
@@ -64,6 +60,17 @@ services:
       - redis_data:/health-volumes/redis:ro
       - srtm_data:/health-volumes/terrain:ro
       - loki_data:/health-volumes/logs:ro
+  mqtt-ingest:
+    networks: [default, sample]
+    environment:
+      MQTT_USERNAME: !reset null
+      MQTT_PASSWORD: !reset null
+      # Keep local delivery controls outside the companions' business namespace.
+      MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ukmesh-local-control
+      MQTT_BROKER_BACKLOG_MONITOR: "true"
+      REDIS_PASSWORD: ""
+      OWNER_ACL_MODE: shadow
+    ports: ["127.0.0.1:9091:9091"]
   path-learning-worker:
     networks: [default, sample]
     environment:

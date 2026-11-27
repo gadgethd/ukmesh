@@ -15,6 +15,7 @@ data
 npm-debug.log*
 terrain-tiles
 mosquitto
+deploy/mqtt-credentials
 *.log
 # Optional development submodules do not belong in UKMesh image build contexts.
 third_party/corescope

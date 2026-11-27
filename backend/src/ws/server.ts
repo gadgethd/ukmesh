@@ -3,9 +3,8 @@ import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import { WebSocketServer, WebSocket } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import type { Server } from 'node:http';
-import { Redis } from 'ioredis';
 import type { WSMessage, LivePacket } from '../types/index.js';
-import { getNodes, getNodePrivacyRows } from '../repositories/nodeReads.js';
+import { getNodes } from '../repositories/nodeReads.js';
 import { getRecentPackets, getRecentMessages } from '../repositories/packetReads.js';
 import { getViableLinks } from '../repositories/topologyReads.js';
 import {
@@ -14,15 +13,14 @@ import {
   resolvePublicNetworkScope,
 } from '../http/requestScope.js';
 import { networkMatchesScope } from '../networks.js';
-import { getRedisPublisherOptions, getRedisUrl } from '../platform/config/redis.js';
-import { RedisPublicationGate, RedisPublicationUnavailableError } from '../queue/publicationGate.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 import {
   BoundedAsyncGate,
   BoundedTaskQueueFullError,
   websocketAdmissionDecision,
 } from './limits.js';
-import { authorizePublicWsMessage, PublicWsPrivacyIndex } from './privacy.js';
+import { authorizePublicWsMessage } from './privacy.js';
+import { subscribeLive } from './liveBus.js';
 import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import { query } from '../db/runtime.js';
 import { createPublicBatch } from '../privacy/publicBatch.js';
@@ -38,7 +36,6 @@ import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, encodeIni
 
 const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
 
-const REDIS_CHANNEL = 'meshcore:live';
 const LOG_WS_PACKETS = process.env['LOG_WS_PACKETS'] === '1';
 const WS_INITIAL_STATE_ENABLED = process.env['WS_INITIAL_STATE_ENABLED'] === '1';
 
@@ -165,20 +162,6 @@ function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
   }, WS_INITIAL_STATE_MAX_BYTES) > WS_INITIAL_STATE_MAX_BYTES;
 }
 
-let pub: Redis;
-let sub: Redis;
-const publicationGate = new RedisPublicationGate();
-
-function publishLiveMessage(message: WSMessage): void {
-  const payload = JSON.stringify(message);
-  void publicationGate.run(pub, Buffer.byteLength(payload), () => pub.publish(REDIS_CHANNEL, payload))
-    .catch((error: unknown) => {
-      // Live updates are best effort; a fresh snapshot supplies persisted state.
-      // Never retain stale public messages through a privacy-generation change.
-      publicLiveOutcomesTotal.inc({ outcome: error instanceof RedisPublicationUnavailableError
-        ? `redis_${error.reason}` : 'redis_publish_failed' });
-    });
-}
 // Viable links change slowly (based on historical packet accumulation).
 // Keep the scoped link snapshot off the connect path for five minutes per
 // network/observer combination.
@@ -208,25 +191,6 @@ const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>(
   WS_CACHE_POLICIES.initialStateCache, { weightOf: preparedSnapshotWeight },
 );
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
-const publicPrivacy = new PublicWsPrivacyIndex();
-let privacyRefreshInFlight: Promise<void> | null = null;
-
-function refreshPrivacyIndex(): Promise<void> {
-  if (privacyRefreshInFlight) return privacyRefreshInFlight;
-  const tracked = Promise.all([getNodePrivacyRows('ukmesh'), getNodePrivacyRows('test')])
-    .then(([productionNodes, testNodes]) => {
-      publicPrivacy.replace([...productionNodes, ...testNodes]);
-    })
-    .catch((error: unknown) => {
-      console.error('[ws] privacy index refresh failed:', (error as Error).message);
-    })
-    .finally(() => {
-      if (privacyRefreshInFlight === tracked) privacyRefreshInFlight = null;
-    });
-  privacyRefreshInFlight = tracked;
-  return tracked;
-}
-
 async function fetchInitialState(network: string | undefined, observer: string | undefined, region?: string): Promise<InitialStateEntry> {
   const policy = await loadCurrentPublicPrivacyPolicy();
   if (!policy) throw new Error('WS_PUBLIC_AUTHORITY_UNAVAILABLE');
@@ -271,8 +235,8 @@ async function fetchInitialState(network: string | undefined, observer: string |
       const regionNodeIds = new Set(nodes.map((node) => String(node['node_id']).toUpperCase()));
       const viableLinks = selectInitialViableLinks(
         rawViableLinks.filter((link) => (
-          !publicPrivacy.hasNode(link.node_a_id)
-          && !publicPrivacy.hasNode(link.node_b_id)
+          ['ukmesh', 'test'].every((scope) => policy.classify({ network: scope,
+            rxNodeId: link.node_a_id, srcNodeId: link.node_b_id, pathHashes: null, pathHashSizeBytes: null }).visibilityOk)
           && (!region || (regionNodeIds.has(link.node_a_id.toUpperCase())
             && regionNodeIds.has(link.node_b_id.toUpperCase())))
         )),
@@ -412,27 +376,10 @@ export function trackScopedNodes(msg: WSMessage, scope: ClientScope): void {
   }
 }
 
-export function initWebSocketServer(httpServer: Server): WebSocketServer {
-  void refreshPrivacyIndex();
-  const privacyRefreshTimer = setInterval(() => void refreshPrivacyIndex(), 5 * 60_000);
-  privacyRefreshTimer.unref();
-  // Two separate clients: one for pub, one for sub
-  // Do NOT use lazyConnect — let ioredis manage the connect lifecycle
-  pub = new Redis(getRedisUrl(), getRedisPublisherOptions());
-  sub = new Redis(getRedisUrl(), { ...getRedisPublisherOptions(), autoResubscribe: false });
-
-  pub.on('error', (e: Error) => console.error('[redis/pub] error', e.message));
-  sub.on('error', (e: Error) => console.error('[redis/sub] error', e.message));
-
-  // Subscribe only after the connection is ready to avoid
-  // the INFO ready-check conflicting with subscriber mode
-  sub.on('ready', () => {
-    sub.subscribe(REDIS_CHANNEL, (err) => {
-      if (err) console.error('[redis/sub] subscribe error', err.message);
-      else console.log('[redis/sub] subscribed to', REDIS_CHANNEL);
-    });
-  });
-
+export function initWebSocketServer(
+  httpServer: Server,
+  pathOptions: Omit<Parameters<typeof subscribeLive>[0], 'onLive'> = {},
+): WebSocketServer {
   const ALLOWED_ORIGINS = (process.env['ALLOWED_ORIGINS'] ?? '')
     .split(',')
     .map(s => s.trim())
@@ -671,7 +618,6 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   heartbeatTimer.unref();
   wss.on('close', () => {
     clearInterval(heartbeatTimer);
-    clearInterval(privacyRefreshTimer);
   });
 
   const publicMessages = createPublicBatch<WSMessage>({
@@ -711,15 +657,19 @@ export function initWebSocketServer(httpServer: Server): WebSocketServer {
   });
   wss.once('close', () => { void publicMessages.close(); });
 
-  sub.on('message', (_channel: string, messageStr: string) => {
-    if (wss.clients.size === 0) return;
-    let message: WSMessage;
-    try { message = JSON.parse(messageStr) as WSMessage; } catch { return; }
-    if (LOG_WS_PACKETS && message.type === 'packet') {
-      console.log('[ws-sub] received packet:', (message.data as LivePacket)?.packetHash);
-    }
-    publicMessages.enqueue(message, Buffer.byteLength(messageStr));
+  const unsubscribe = subscribeLive({
+    ...pathOptions,
+    onLive(messageStr) {
+      if (wss.clients.size === 0) return;
+      let message: WSMessage;
+      try { message = JSON.parse(messageStr) as WSMessage; } catch { return; }
+      if (LOG_WS_PACKETS && message.type === 'packet') {
+        console.log('[ws-sub] received packet:', (message.data as LivePacket)?.packetHash);
+      }
+      publicMessages.enqueue(message, Buffer.byteLength(messageStr));
+    },
   });
+  wss.once('close', unsubscribe);
 
   return wss;
 }
@@ -734,45 +684,5 @@ export async function closeWebSocketServer(wss: WebSocketServer): Promise<void> 
   await new Promise<void>((resolve) => {
     wss.close(() => resolve());
   });
-  await Promise.all([
-    pub?.quit().catch(() => undefined),
-    sub?.quit().catch(() => undefined),
-  ]);
   websocketClients.set(0);
-}
-
-export function broadcastPacket(packet: LivePacket): void {
-  if (publicPrivacy.packetHasPrivateParticipant(packet)) return;
-  const msg: WSMessage = { type: 'packet', data: packet, ts: Date.now() };
-  publishLiveMessage(msg);
-}
-
-export function broadcastNodeUpdate(nodeId: string, meta?: { network?: string; observerId?: string }): void {
-  if (!publicPrivacy.isReady || publicPrivacy.hasNode(nodeId)) return;
-  // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
-  const msg: WSMessage = {
-    type: 'node_update',
-    data: {
-      nodeId:     nodeId.toLowerCase(),
-      network:    meta?.network,
-      observerId: meta?.observerId?.toLowerCase(),
-      ts:         Date.now(),
-    },
-    ts: Date.now(),
-  };
-  publishLiveMessage(msg);
-}
-
-export function broadcastNodeUpsert(node: Record<string, unknown>): void {
-  const candidate = { type: 'node_upsert', data: node, ts: Date.now() } as WSMessage;
-  if (!publicPrivacy.filterMessage(candidate)) return;
-  // Normalise IDs to lowercase once here so shouldSendMessage() never needs to allocate
-  const normalised: Record<string, unknown> = {
-    ...node,
-    node_id:     typeof node['node_id']     === 'string' ? node['node_id'].toLowerCase()     : node['node_id'],
-    observer_id: typeof node['observer_id'] === 'string' ? node['observer_id'].toLowerCase() : node['observer_id'],
-    public_key:  typeof node['public_key']  === 'string' ? node['public_key'].toLowerCase()  : node['public_key'],
-  };
-  const msg: WSMessage = { type: 'node_upsert', data: normalised, ts: Date.now() };
-  publishLiveMessage(msg);
 }

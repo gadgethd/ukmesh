@@ -185,8 +185,9 @@ Preserve the fresh authority/publication fences while diagnosing invalidations.
 
 ## Health endpoints
 
-- `GET /healthz` is a process liveness check. It deliberately remains healthy during an MQTT outage so Docker does not restart an otherwise functioning API in a loop.
-- `GET /readyz` checks database access and MQTT connectivity. It returns `503` with per-dependency state when the real-time platform is not ready.
+- `GET /healthz` checks whether that process is serving HTTP.
+- `GET /api-readyz` checks the API's database connection. Docker uses this for the `backend` container.
+- `GET /readyz` on the API checks database access, MQTT intake and owner authorization. It returns `503` when a dependency is degraded. The `mqtt-ingest` container checks its own database connection and broker transport at its private `GET /readyz` endpoint.
 - `GET /api/health` returns worker history and a top-level `status` (`healthy`, `degraded`, or `critical`) plus machine-readable `problems`.
 
 Current problem codes cover stale public ingest, worker queue backlog, disk pressure, and frontend error spikes. External monitoring should alert on `readyz` failures and critical `/api/health` problems, while allowing a short deploy/reconnect grace period.
@@ -329,6 +330,74 @@ addresses and private node identities.
 - [SRTM cache, alert delivery, observer review, and planned publication](runbook-srtm-alerts-observers.md)
 - [Database compression and retention gates](db-lifecycle.md)
 
+### Restart MQTT ingest or the API independently
+
+In DEV, use `scripts/dev-all.sh restart mqtt-ingest` for the broker-facing
+process, or `scripts/dev-all.sh restart backend` for HTTP and WebSockets. A
+restart uses the current built image. Verify `docker compose ps`, the relevant
+readiness check and recovery of the MQTT delivery probe after reconnect.
+
+For the first rollout from the combined runtime, recreate `backend` with the
+split-capable image first. Once the old process has exited, start `mqtt-ingest`
+with the same broker endpoint, username, client ID and persistent broker data
+store. For a rollback that returns to a combined image, stop `mqtt-ingest`
+before starting the combined backend. The DEV launcher checks this handoff.
+
+During an API restart, MQTT keeps committing observations. During an ingest
+restart, the broker queues eligible QoS 1 deliveries for the existing session.
+The offline guarantee requires the broker to retain that session and enough
+backlog capacity for the outage. Check queue depth, queued bytes and the drop
+counter. QoS 0 can lose messages in flight. Clients reconnecting to WebSockets
+receive the existing bounded initial snapshot and can use the HTTP packet
+history for earlier committed observations.
+
+### MqttIngestDown
+
+The dedicated ingest readiness check is failing. Check `docker compose ps
+mqtt-ingest`, its broker connection and its database access. Keep the broker
+session and volume intact. If a targeted restart is needed, restart
+`mqtt-ingest` and verify that commit and acknowledgement counters advance.
+
+### Rotate the ingest password on the current broker
+
+Mount a private directory as `MQTT_INGEST_PASSWORD_HOST_DIR` for MQTT ingest.
+The default is `deploy/mqtt-credentials`, which is excluded from Git and Docker
+builds. Keep the `password` file readable by the ingest user and writable only
+by the operator. A missing file leaves the environment credential in use. The
+file contains one UTF-8 password. It can end in a single newline.
+
+Apply the broker's password change and reload Mosquitto. Put the candidate
+password in a separate file in the mounted directory and rename it over
+`password`. The ingest process tests the candidate on a separate clean session with a
+QoS 1 round trip. On success it reconnects the existing persistent client and
+checks session resumption and delivery before reporting completion. Public HTTP
+and the packet processor continue running through the reconnect. A rejected
+candidate leaves the previous credential selected. A broker reload can close
+the previous connection. In that case, recovery with the old password also
+requires restoring it on the broker. Retain a protected copy of both files
+until the new session is verified.
+
+The file controls only the password. A different broker or MQTT principal
+requires a separate ACL and backlog handoff. The WebSocket and database privacy
+checks remain independent of the transport credentials.
+
+### Add a verified MQTT owner
+
+Use `scripts/newuser.sh` from the managed deployment. Give it the exact node
+public key with `--confirm-owner-grant`. The script can create the broker
+credential and verify login before recording the owner grant. Broker log
+discovery alone supplies a fingerprint for review. Confirm every key being
+granted.
+
+The recorded grant is audited and stays pending until the running reconciler
+applies the ACL. The command verifies the active grant, generation and broker
+file. If it reports pending readback, retry the same explicit approval with
+`--watch` for the existing credential, or `--link` for an existing owner.
+Previously revoked grants require a separate reauthorization review. Normal
+provisioning completes through its own readback without a backend restart.
+Deployment readiness still compares any configured inventory baseline against
+the current policy. Promote approved evidence using the procedure below.
+
 ### Owner authorization baseline refresh
 
 `/readyz` validates owner accounts, grants, configured grants and ACL evidence
@@ -336,6 +405,13 @@ against `OWNER_AUTH_INVENTORY_BASELINE_PATH`. Unexplained inventory or permissio
 drift fails closed. A verified transition limited to public-feed read permissions
 can converge without replacing the baseline; see [the exact certificate rules](privacy-convergence.md#owner-acl-readiness-convergence).
 Review approved grant changes before generating a replacement baseline.
+
+The static website and map have their own health checks. MQTT or owner ACL
+problems can degrade `/readyz` while the site continues serving its HTML and
+assets. Owner login and protected owner routes return a retryable error if the
+initial ACL pass has not completed. The backend retries that pass separately
+from live ingest and public HTTP. `/readyz` remains the aggregate deployment
+and restore check.
 
 1. Identify the change from the audit trail and confirm it was approved:
 
@@ -353,18 +429,32 @@ Review approved grant changes before generating a replacement baseline.
    scripts/refresh-owner-baseline.sh
    ```
 
-3. Activate it after reviewing the printed counts/generations:
+3. Activate it after reviewing the printed counts and generations. Use a stable
+   `OWNER_AUTH_INVENTORY_BASELINE_PATH=/owner-auth-inventory/current.json` for
+   live activation. To adopt it, first seed `current.json` in the mounted host
+   directory with the currently validated baseline, preserving its permissions.
+   Apply that path to the backend once, using its existing image. Later updates
+   can replace the file while the backend is running.
+
+   ```bash
+   scripts/refresh-owner-baseline.sh --activate-live
+   ```
+
+   With a legacy versioned baseline path, use the existing activation flow.
 
    ```bash
    scripts/refresh-owner-baseline.sh --apply --recreate
    curl -fsS http://127.0.0.1:3000/readyz
    ```
 
-The script refuses to overwrite an existing baseline, backs up `.env` before
-editing, keeps the previous baseline for rollback, and validates the new file
-against the live inventory before activation. To roll back, point
-`OWNER_AUTH_INVENTORY_BASELINE_PATH` at the previous file and recreate the
-backend.
+The script validates the new file against the live inventory. Live activation
+preserves the active file's permissions and retains the prior bytes under a
+timestamped filename. The existing automatic baseline job uses live activation
+when `current.json` is configured and its narrow authorization checks pass.
+Roll back by restoring the corresponding approved owner
+policy and atomically replacing `current.json` with its reviewed baseline. The
+legacy activation instead backs up `.env` and repoints the path before recreating
+only the backend.
 
 Use the `/operations`, `/observer-registrations`, and operator audit pages for
 normal mutations. They enforce authorization, CSRF, typed confirmation,
@@ -380,8 +470,9 @@ Prometheus `runbook_url` annotations.
 ### BackendDown
 
 Check `docker compose ps backend`, then backend logs and the container OOM/exit
-state. If the process is stopped, restart only `backend`; if it repeatedly
-fails, keep ingest stopped and roll back to the prior signed digest.
+state. Restart only `backend`, or roll it back to a compatible signed API image
+if it repeatedly fails. Coordinate a session handoff before using a combined
+image from before the split.
 
 ### BackendNotReady
 
@@ -389,8 +480,8 @@ Read `/readyz` and act on the named dependency. Check PostgreSQL, Redis, and
 Mosquitto before restarting the API. Liveness remaining green is expected
 during a dependency outage.
 
-`checks.mqttConnectionMonitor` reports broker-log read and audit-write failures
-when MQTT ingest is enabled. `init:EACCES` or `poll:EACCES` means the backend
+Inspect backend logs and `meshcore_mqtt_connection_monitor_healthy` for broker-log
+read and audit-write failures. `init:EACCES` or `poll:EACCES` means the backend
 cannot read `MOSQUITTO_LOG_PATH`; inspect that mount's ownership and permissions.
 `audit:<code>` means an observation could not be persisted. Idle log polls do
 not clear that failure; a later successful audit write does. Logs remain
@@ -797,7 +888,7 @@ count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
 
 Every reconnect explicitly subscribes again and waits for actual SUBACKs before
 starting the probe. MQTT.js automatic resubscription is disabled so its cached
-empty subscription result cannot be mistaken for an ACL denial. The backend's
+empty subscription result cannot be mistaken for an ACL denial. The ingest service's
 40-second container stop grace allows its 30-second durable drain to finish;
 keep `BACKEND_STOP_GRACE_PERIOD` longer than any custom shutdown deadline.
 

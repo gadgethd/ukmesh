@@ -9,7 +9,6 @@ import { insertPacket } from '../db/packetPersistence.js';
 import { insertOrUpdateSpamSuspect } from '../spam/suspectRepository.js';
 import { query, ingestQuery } from '../db/runtime.js';
 import { evaluateAdvert } from '../mqtt/spamDetector.js';
-import { invalidateResolveCache } from '../path-beta/resolveCache.js';
 import type { LivePacket } from '../types/index.js';
 import { decodePacketCompat, verifyAdvertSignature } from '../mqtt/decodePacket.js';
 import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from '../mqtt/channelRegistry.js';
@@ -741,7 +740,6 @@ export function createPacketProcessor(deps: { clientId: string; events: IngestEv
         publicPackets.enqueue({ packet: livePacket, publish: publishLive },
           Buffer.byteLength(JSON.stringify([livePacket, upstreamEnvelope])));
       } else publishLive();
-      invalidateResolveCache(finalHash);
       mqttIngestOutcomesTotal.inc({
         outcome: MQTT_INGEST_MODE === 'ram' ? 'packet_admitted' : 'packet_persisted',
       });

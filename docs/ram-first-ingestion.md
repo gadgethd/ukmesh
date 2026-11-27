@@ -109,14 +109,14 @@ by `npm run test:ram-operational`; the test owns its container and credentials.
 
 ## Drain and return to durable mode
 
-Plan a maintenance window. Stop the **backend** container first so no further
+Plan a maintenance window. Stop the **mqtt-ingest** container first so no further
 MQTT deliveries can enter the RAM stream; the broker will retain unacknowledged
 QoS 1 deliveries for reconnect. Keep PostgreSQL and Redis running. Use the
-same image and environment as the backend to run the standalone drain:
+same image and environment as the ingest service to run the standalone drain:
 
 ```sh
-docker compose stop backend
-docker compose run --rm --no-deps backend node dist/ram/drain.js
+docker compose stop mqtt-ingest
+docker compose run --rm --no-deps mqtt-ingest node dist/ram/drain.js
 ```
 
 The command starts one writer, waits for the stream to become empty after the
@@ -141,7 +141,8 @@ stable-ID deduplication. History already removed by retention cannot be
 recovered by either source.
 
 Once the drain has succeeded, set `MQTT_INGEST_MODE=durable`, check
-`docker compose config`, and start the backend with the approved image. Check
+`docker compose config`, and recreate `mqtt-ingest` with the approved image.
+Recreate `backend` separately so its read mode matches. Check
 `/readyz` and the broker session backlog. Never change the mode while the RAM
 stream still contains uncommitted observations: durable mode does not run the
 RAM writer. Keep the old Redis data and logs until integrity counts are

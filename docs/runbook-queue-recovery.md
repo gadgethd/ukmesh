@@ -16,8 +16,10 @@ CSRF protected, idempotent, and audited.
 
 ```bash
 docker compose logs --since=30m link-worker
-docker compose exec -T backend wget -qO- http://127.0.0.1:9091/metrics \
-  | grep -E '^meshcore_link_queue_|^meshcore_worker_heartbeat'
+for service in backend mqtt-ingest; do
+  docker compose exec -T "$service" wget -qO- http://127.0.0.1:9091/metrics \
+    | grep -E '^meshcore_link_queue_|^meshcore_worker_heartbeat'
+done
 ```
 
 Correct a missing dependency, unavailable terrain source, bad database

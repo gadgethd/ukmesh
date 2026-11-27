@@ -74,6 +74,11 @@ The replacement script verifies signatures and revision labels, runs migrations,
 starts the prior backend against the post-migration schema, replaces only the selected service with `--no-deps`,
 checks health, readiness and metrics, and writes a release status receipt.
 
+For the first adoption of the split, follow the coordinated
+[handoff procedure](operations.md#restart-mqtt-ingest-or-the-api-independently).
+The single-service replacement command requires matching runtime layouts.
+Once adopted, `backend` and `mqtt-ingest` each support targeted replacement.
+
 An existing mutable local deployment may enter this regime once by supplying
 the exact prompt printed by the script:
 
@@ -132,6 +137,11 @@ docker compose up -d --no-build --no-deps backend
 curl --fail http://127.0.0.1:3000/readyz
 ```
 
+Use the commands above for a prior split API image. To roll back across the
+first split, stop `mqtt-ingest` and restore the matching prior Compose file
+before starting the combined backend. Apply the same safeguard in rehearsal.
+Both runtimes would otherwise try to own the same persistent broker client ID.
+
 Additive schema changes do not establish prior-image or data compatibility.
 Use only the prior image set that passed the isolated compatibility rehearsal
 against this exact migrated candidate. Never attempt a destructive down-migration.
@@ -148,7 +158,9 @@ curl --fail http://127.0.0.1:3000/readyz | jq .
 curl --fail 'http://127.0.0.1:3000/api/stats?network=ukmesh' | jq .
 docker compose exec -T backend wget -qO- http://127.0.0.1:9091/metrics \
   | grep '^meshcore_process_'
-docker compose logs --since=10m backend
+docker compose exec -T mqtt-ingest wget -qO- http://127.0.0.1:9091/metrics \
+  | grep '^meshcore_mqtt_'
+docker compose logs --since=10m backend mqtt-ingest
 ```
 
 Confirm the public app, a WebSocket initial state, the owner login page, the

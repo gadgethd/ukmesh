@@ -75,6 +75,7 @@ fi
 
 declare -A image_variables=(
   [backend]=BACKEND_IMAGE
+  [mqtt-ingest]=BACKEND_IMAGE
   [db-migrate]=BACKEND_IMAGE
   [path-learning-worker]=BACKEND_IMAGE
   [health-worker]=BACKEND_IMAGE
@@ -216,6 +217,19 @@ test -n "$current_service_id" && test -n "$current_backend_id" || {
 }
 prior_image="$(docker inspect "$current_service_id" --format '{{.Config.Image}}')"
 prior_backend_image="$(docker inspect "$current_backend_id" --format '{{.Config.Image}}')"
+runtime_layout() {
+  docker image inspect "$1" --format '{{index .Config.Labels "org.ukmesh.runtime-layout"}}'
+}
+case "$service" in
+  backend|mqtt-ingest)
+    current_layout=$(runtime_layout "$prior_image")
+    desired_layout=$(runtime_layout "$desired_image")
+    if [[ $current_layout != "$desired_layout" || ( $service == mqtt-ingest && $desired_layout != split-v1 ) ]]; then
+      echo 'Changing the MQTT runtime layout requires the coordinated ingest cutover in docs/operations.md.' >&2
+      exit 65
+    fi
+    ;;
+esac
 prior_is_signed="false"
 if [[ "$prior_image" =~ $digest_pattern ]] \
   && verify_cosign_signature "$prior_image" >/dev/null 2>&1; then
@@ -295,6 +309,8 @@ compat_cleanup() {
 trap compat_cleanup EXIT
 docker inspect "$current_backend_id" --format '{{range .Config.Env}}{{println .}}{{end}}' \
   >"$compat_env"
+compat_readiness=/readyz
+if grep -Fxq 'UKMESH_RUNTIME_ROLE=api' "$compat_env"; then compat_readiness=/api-readyz; fi
 network_name="$(
   docker inspect "$current_backend_id" \
     --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' \
@@ -334,7 +350,7 @@ docker run -d \
   "$prior_backend_image" >/dev/null
 compat_ready="false"
 for _ in $(seq 1 "$compatibility_timeout"); do
-  if docker exec "$compat_name" wget -qO- http://127.0.0.1:3000/readyz \
+  if docker exec "$compat_name" wget -qO- "http://127.0.0.1:3000$compat_readiness" \
     2>/dev/null | jq -e '.status == "ready"' >/dev/null 2>&1 \
     && docker exec "$compat_name" wget -qO- \
       'http://127.0.0.1:3000/api/stats?network=ukmesh' \
@@ -353,7 +369,9 @@ docker rm -f "$compat_name" >/dev/null
 
 smoke_service() {
   local target_service="$1"
-  local container_id
+  local container_id metrics
+  local metrics_service=backend
+  if [[ $target_service == mqtt-ingest ]]; then metrics_service=mqtt-ingest; fi
   container_id="$(docker compose --project-name "$project_name" ps -q "$target_service")"
   test -n "$container_id"
   test "$(docker inspect "$container_id" --format '{{.State.Running}}')" = "true"
@@ -363,9 +381,9 @@ smoke_service() {
   docker compose --project-name "$project_name" exec -T backend \
     wget -qO- http://127.0.0.1:3000/readyz \
     | jq -e '.status == "ready"' >/dev/null
-  metrics="$(docker compose --project-name "$project_name" exec -T backend \
-    wget -qO- http://127.0.0.1:9091/metrics)"
-  grep -q '^meshcore_process_' <<<"$metrics"
+  metrics="$(docker compose --project-name "$project_name" exec -T "$metrics_service" \
+    wget -qO- http://127.0.0.1:9091/metrics)" || return 1
+  grep -q '^meshcore_process_' <<<"$metrics" || return 1
   case "$target_service" in
     backend)
       curl --fail --silent http://127.0.0.1:3000/readyz \

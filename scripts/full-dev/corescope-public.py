@@ -212,12 +212,12 @@ def qualify_ram(run: Path) -> dict:
     fixture = active_fixture()
     if fixture["kind"] != "sample":
         raise ValueError("RAM privacy faults require the small owned sample fixture")
-    inspected = json.loads(docker(["inspect", "ukmesh-sample-redis", "ukmesh-full-backend-1"]).stdout)
+    inspected = json.loads(docker(["inspect", "ukmesh-sample-redis", "ukmesh-full-mqtt-ingest-1"]).stdout)
     if inspected[0]["Config"]["Labels"].get("com.docker.compose.project") != "ukmesh-sample":
         raise ValueError("Redis container ownership differs")
     before_env = dict(setting.split("=", 1) for setting in inspected[1]["Config"]["Env"])
     if before_env.get("MQTT_INGEST_MODE") != "durable":
-        raise ValueError("RAM qualification must start from the normal durable backend")
+        raise ValueError("RAM qualification must start from the normal durable intake process")
     previous = redis("CONFIG", "GET", "appendonly", "appendfsync", "maxmemory", "maxmemory-policy")
     attempt = Path(tempfile.mkdtemp(prefix="corescope-public-ram-", dir=run))
     write_json(attempt / "redis-before.json", previous)

@@ -16,6 +16,10 @@ scrape_configs:
     static_configs:
       - targets: [backend:9091]
 
+  - job_name: meshcore-mqtt-ingest
+    static_configs:
+      - targets: [mqtt-ingest:9091]
+
   - job_name: meshcore-workers
     static_configs:
       - targets: [region-snapshot-worker:9091]
@@ -61,13 +65,29 @@ scrape_configs:
     static_configs:
       - targets:
           - http://backend:3000/readyz
-    relabel_configs:
+    relabel_configs: &blackbox-labels
       - source_labels: [__address__]
         target_label: __param_target
       - source_labels: [__param_target]
         target_label: instance
       - target_label: __address__
         replacement: blackbox-exporter:9115
+
+  - job_name: meshcore-api-readiness
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: [http://backend:3000/api-readyz]
+    relabel_configs: *blackbox-labels
+
+  - job_name: meshcore-ingest-readiness
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets: [http://mqtt-ingest:3000/readyz]
+    relabel_configs: *blackbox-labels
 
   - job_name: mosquitto-broker
     metrics_path: /probe
@@ -76,13 +96,7 @@ scrape_configs:
     static_configs:
       - targets:
           - mosquitto:9001
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+    relabel_configs: *blackbox-labels
 
   - job_name: meshcore-synthetic
     metrics_path: /probe
@@ -93,10 +107,4 @@ scrape_configs:
           - http://app-ukmesh:8080/
           - http://website-ukmesh:8080/
           - http://mesh-health-check:3090/api/bootstrap
-    relabel_configs:
-      - source_labels: [__address__]
-        target_label: __param_target
-      - source_labels: [__param_target]
-        target_label: instance
-      - target_label: __address__
-        replacement: blackbox-exporter:9115
+    relabel_configs: *blackbox-labels

@@ -5,7 +5,6 @@ IFS=$'\n\t'
 
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly REPO_DIR="${NEWUSER_REPO_DIR:-/home/ben/ukmesh/meshcore-analytics}"
-readonly ENV_FILE="${REPO_DIR}/.env"
 if [ -n "${MESHCORE_INFRA_COMPOSE_FILE:-}" ]; then
   infra_compose_file="$MESHCORE_INFRA_COMPOSE_FILE"
   infra_project_dir="${MESHCORE_INFRA_PROJECT_DIR:-${MESHCORE_INFRA_DIR:-$(dirname -- "$infra_compose_file")}}"
@@ -17,13 +16,11 @@ export MESHCORE_INFRA_PROJECT_DIR="$infra_project_dir"
 export MESHCORE_INFRA_COMPOSE_FILE="$infra_compose_file"
 source "$SCRIPT_DIR/lib/infra-compose.sh"
 readonly MOSQUITTO_CONTAINER="$(resolve_infra_container mosquitto)"
-readonly BACKEND_CONTAINER='meshcore-analytics-backend-1'
-readonly TIMESCALEDB_CONTAINER="$(resolve_infra_container timescaledb)"
-readonly OWNER_DATABASE='meshcore_owner_auth'
-readonly POSTGRES_USER='meshcore'
+readonly BACKEND_CONTAINER="${NEWUSER_BACKEND_CONTAINER:-meshcore-analytics-backend-1}"
 readonly BROKER_URL='wss://mqtt.ukmesh.com:443'
 readonly DEFAULT_DISCOVERY_TIMEOUT_SECONDS=900
 readonly DISCOVERY_POLL_SECONDS="${NEWUSER_DISCOVERY_POLL_SECONDS:-5}"
+readonly ACL_TIMEOUT_SECONDS="${NEWUSER_ACL_TIMEOUT_SECONDS:-90}"
 
 usage() {
   cat <<'EOF'
@@ -45,9 +42,9 @@ When link keys are omitted, the next node observed for that user is added.
 Owner-portal authority is never created automatically. Without an explicit
 --confirm-owner-grant <NODE_ID>, newuser prints the detected fingerprint (the
 64-character public key), writes no owner grant and exits 0. Pass the flag — once
-per node — with the key(s) being granted to write the config map and verified
-owner grant. The flag also supplies the key for --watch/--link, so a
-credential-only user can be granted without replaying log discovery.
+per node — with the key(s) being granted. Approved grants are recorded and
+wait for verified ACL readback from the running service. The confirmed key
+also allows --watch to resume provisioning without waiting for discovery.
 EOF
 }
 
@@ -272,89 +269,29 @@ denied by this broker even when login succeeds. Apply and read back the settings
 EOF
 }
 
-replace_owner_map() {
-  local value=$1
-  local temporary
-  temporary="$(mktemp "${ENV_FILE}.newuser.XXXXXX")"
-  if ! awk -v replacement="OWNER_MQTT_USERNAME_MAP=${value}" '
-      BEGIN { matches = 0 }
-      /^OWNER_MQTT_USERNAME_MAP=/ {
-        print replacement
-        matches++
-        next
-      }
-      { print }
-      END { if (matches != 1) exit 42 }
-    ' "$ENV_FILE" >"$temporary"; then
-    rm -f -- "$temporary"
-    return 1
-  fi
-  chmod --reference="$ENV_FILE" "$temporary"
-  mv -f -- "$temporary" "$ENV_FILE"
+run_owner_grants() {
+  local action=$1
+  shift
+  docker exec "$BACKEND_CONTAINER" node dist/tools/confirmOwnerGrants.js \
+    "$action" "$provisioning_mode" "$username" "$actor" "$@"
 }
 
-delete_owner_account() {
-  local mqtt_username=$1
-  docker exec -i "$TIMESCALEDB_CONTAINER" \
-    psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-      -v "mqtt_username=${mqtt_username}" >/dev/null <<'SQL'
-BEGIN;
-DELETE FROM owner_grant_audit WHERE mqtt_username = :'mqtt_username';
-DELETE FROM mqtt_node_logins WHERE mqtt_username = :'mqtt_username';
-DELETE FROM owner_accounts WHERE mqtt_username = :'mqtt_username';
-COMMIT;
-SQL
-}
-
-restore_keyless_owner_account() {
-  local mqtt_username=$1
-  local node_ids=$2
-  local restore_active=$3
-  docker exec -i "$TIMESCALEDB_CONTAINER" \
-    psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-      -v "mqtt_username=${mqtt_username}" \
-      -v "node_ids=${node_ids}" \
-      -v "restore_active=${restore_active}" >/dev/null <<'SQL'
-BEGIN;
-DELETE FROM mqtt_node_logins
-WHERE mqtt_username = :'mqtt_username'
-  AND node_id = ANY(string_to_array(:'node_ids', ','));
-DELETE FROM owner_account_nodes
-WHERE mqtt_username = :'mqtt_username'
-  AND node_id = ANY(string_to_array(:'node_ids', ','));
-UPDATE owner_accounts
-SET is_active = :'restore_active'::boolean, updated_at = NOW()
-WHERE mqtt_username = :'mqtt_username';
-COMMIT;
-SQL
-}
-
-apply_backend_config() {
-  (
-    cd "$REPO_DIR"
-    docker compose \
-      -f docker-compose.yml \
-      -f docker-compose.live.yml \
-      up -d --no-deps backend
-  ) >&2
-}
-
-wait_for_backend() {
-  local state=''
-  local attempt
-  # Startup refreshes the canonical node-identity view before the healthcheck
-  # turns green. On the production dataset that can legitimately take well over
-  # one minute, so allow five minutes without weakening the readback checks.
-  for attempt in {1..150}; do
-    state="$(docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' \
-      "$BACKEND_CONTAINER" 2>/dev/null || true)"
-    case "$state" in
-      healthy|running) return 0 ;;
-      exited|dead) return 1 ;;
-    esac
-    sleep 2
+wait_for_owner_grants() {
+  local end=$((SECONDS + ACL_TIMEOUT_SECONDS))
+  local result node ready
+  while (( SECONDS < end )); do
+    if run_owner_grants verify "${keys[@]}"; then
+      ready=1
+      for node in "${keys[@]}"; do
+        if ! acl_has_grant "$username" "$node"; then ready=0; break; fi
+      done
+      if (( ready )); then return 0; fi
+    else
+      result=$?
+      if (( result != 75 )); then return "$result"; fi
+    fi
+    sleep 1
   done
-  printf 'newuser: backend did not become healthy (last state: %s)\n' "${state:-missing}" >&2
   return 1
 }
 
@@ -407,6 +344,15 @@ verify_broker_login() {
       client.once("error", () => finish(1));
       client.once("close", () => finish(1));
     ' >/dev/null
+}
+
+wait_for_broker_login() {
+  local attempt
+  for attempt in 1 2 3; do
+    if verify_broker_login "$1" "$2"; then return 0; fi
+    if (( attempt < 3 )); then sleep 1; fi
+  done
+  return 1
 }
 
 main() {
@@ -509,7 +455,7 @@ if (( ${#keys[@]} == 0 && ${#confirm_owner_grants[@]} > 0 )); then
   for key in "${keys[@]}"; do seen_keys[$key]=1; done
 fi
 discovery_mode=0
-if (( watch_mode )) || (( ${#keys[@]} == 0 )); then
+if (( ${#keys[@]} == 0 )); then
   discovery_mode=1
 fi
 existing_credential_mode=0
@@ -517,43 +463,29 @@ if (( watch_mode || link_mode )); then
   existing_credential_mode=1
 fi
 
-for command_name in docker openssl awk flock mktemp chmod mv date sleep; do
+[[ $ACL_TIMEOUT_SECONDS =~ ^[1-9][0-9]{0,2}$ ]] && (( ACL_TIMEOUT_SECONDS <= 300 )) \
+  || die 'NEWUSER_ACL_TIMEOUT_SECONDS must be in 1-300'
+
+for command_name in docker openssl awk flock id date sleep; do
   command -v "$command_name" >/dev/null || die "required command not found: ${command_name}"
 done
-[[ -d $REPO_DIR && -f $ENV_FILE ]] || die "canonical stack not found at ${REPO_DIR}"
-[[ -O $ENV_FILE && -w $ENV_FILE ]] || die "${ENV_FILE} must be owned and writable by the current user"
+[[ -d $REPO_DIR ]] || die "canonical stack not found at ${REPO_DIR}"
 
-for container in "$MOSQUITTO_CONTAINER" "$BACKEND_CONTAINER" "$TIMESCALEDB_CONTAINER"; do
+for container in "$MOSQUITTO_CONTAINER" "$BACKEND_CONTAINER"; do
   [[ $(docker inspect -f '{{.State.Running}}' "$container" 2>/dev/null || true) == true ]] \
     || die "required container is not running: ${container}"
 done
 
-# Serialize operators using this script. The lock lives outside the repository,
-# so OWNER_MQTT_USERNAME_MAP remains the only repository configuration touched.
-exec 9>"${TMPDIR:-/tmp}/meshcore-analytics-newuser.lock"
+provisioning_mode=create
+if (( watch_mode )); then provisioning_mode=watch; fi
+if (( link_mode )); then provisioning_mode=link; fi
+actor="newuser:$(id -un)"
+
+# Serialize broker credential mutations. The transaction also coordinates with
+# grant writers outside this provisioning command.
+exec 9>>"${TMPDIR:-/tmp}/meshcore-analytics-newuser.lock"
 flock -x 9
-
-mapfile -t owner_map_lines < <(awk '/^OWNER_MQTT_USERNAME_MAP=/{ print }' "$ENV_FILE")
-(( ${#owner_map_lines[@]} == 1 )) \
-  || die "expected exactly one OWNER_MQTT_USERNAME_MAP line in ${ENV_FILE}"
-old_owner_map=${owner_map_lines[0]#OWNER_MQTT_USERNAME_MAP=}
-
-IFS=',' read -r -a existing_entries <<<"$old_owner_map"
-owner_map_has_username=0
-for existing_entry in "${existing_entries[@]}"; do
-  existing_entry="$(trim "$existing_entry")"
-  [[ -z $existing_entry ]] && continue
-  [[ $existing_entry == *=* ]] || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
-  existing_username="$(trim "${existing_entry%%=*}")"
-  if [[ $existing_username == "$username" ]]; then
-    owner_map_has_username=1
-    (( link_mode )) \
-      || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
-  fi
-done
-if (( link_mode && ! owner_map_has_username )); then
-  die "username does not exist in OWNER_MQTT_USERNAME_MAP: ${username}"
-fi
+run_owner_grants inspect >/dev/null
 
 passwd_exists=0
 if docker exec "$MOSQUITTO_CONTAINER" sh -c '
@@ -588,47 +520,9 @@ if (( ! existing_credential_mode )); then
   fi
 fi
 
-owner_db_state="$(
-  docker exec -i "$TIMESCALEDB_CONTAINER" \
-    psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-      -v "mqtt_username=${username}" -At <<'SQL'
-SELECT COALESCE(
-  (SELECT CASE WHEN is_active THEN 'active' ELSE 'inactive' END
-   FROM owner_accounts WHERE mqtt_username = :'mqtt_username'),
-  'missing'
-);
-SQL
-)"
-owner_db_preexisting=0
-owner_db_restore_active=false
-if (( watch_mode )); then
-  if [[ $owner_db_state != missing ]]; then
-    owner_db_preexisting=1
-    [[ $owner_db_state == active ]] && owner_db_restore_active=true
-    existing_owner_node_count="$(
-      docker exec -i "$TIMESCALEDB_CONTAINER" \
-        psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-          -v "mqtt_username=${username}" -At <<'SQL'
-SELECT COUNT(*) FROM owner_account_nodes WHERE mqtt_username = :'mqtt_username';
-SQL
-    )"
-    [[ $existing_owner_node_count == 0 ]] \
-      || die "owner database already has node grants for username: ${username}"
-  fi
-elif (( link_mode )); then
-  [[ $owner_db_state != missing ]] \
-    || die "username does not exist in owner database: ${username}"
-  owner_db_preexisting=1
-  [[ $owner_db_state == active ]] && owner_db_restore_active=true
-else
-  [[ $owner_db_state == missing ]] \
-    || die "username already exists in owner database: ${username}"
-fi
-
 credential_created=0
-env_changed=0
-db_changed=0
-preserve_credential=0
+grant_recording_started=0
+grant_recorded=0
 rollback_done=0
 rollback() {
   local status=${1:-1}
@@ -636,38 +530,26 @@ rollback() {
   rollback_done=1
   trap - ERR INT TERM EXIT
   set +e
-  if (( preserve_credential || env_changed || db_changed || credential_created )); then
-    if (( preserve_credential )); then
-      printf 'newuser: provisioning failed; rolling back owner grant for %s (broker credential remains)\n' "$username" >&2
+  if (( grant_recording_started )); then
+    if (( grant_recorded )); then
+      log 'Owner grant recorded; verification is pending. Retry the same approval after checking the broker ACL.'
     else
-      printf 'newuser: provisioning failed; rolling back %s\n' "$username" >&2
-    fi
-    if (( env_changed )); then
-      replace_owner_map "$old_owner_map" \
-        || printf 'newuser: WARNING: failed to restore OWNER_MQTT_USERNAME_MAP\n' >&2
-    fi
-    if (( db_changed )); then
-      if (( owner_db_preexisting )); then
-        restore_keyless_owner_account "$username" "$key_csv" "$owner_db_restore_active" \
-          || printf 'newuser: WARNING: failed to restore key-less owner database row\n' >&2
-      else
-        delete_owner_account "$username" \
-          || printf 'newuser: WARNING: failed to remove owner database rows\n' >&2
-      fi
+      log 'Owner grant record could not be confirmed. Check the database before retrying the same approval.'
     fi
     if (( credential_created )); then
-      docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
-        mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
-        || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
-      docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd >/dev/null 2>&1 \
-        || true
-      docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
-        || true
+      print_mctomqtt_settings "$username" "$password"
     fi
-    if (( env_changed )); then
-      apply_backend_config \
-        || printf 'newuser: WARNING: failed to re-apply backend config after rollback\n' >&2
+    log 'The broker credential remains available for a retry.'
+    if (( ! existing_credential_mode )); then
+      printf 'Retry for this existing credential using newuser --watch with the same --confirm-owner-grant flags.\n' >&2
     fi
+  elif (( credential_created )); then
+    printf 'newuser: provisioning failed; rolling back credential for %s\n' "$username" >&2
+    docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
+      mosquitto_passwd -D /mosquitto/config/passwd "$username" >/dev/null 2>&1 \
+      || printf 'newuser: WARNING: failed to remove Mosquitto credential\n' >&2
+    docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd >/dev/null 2>&1 || true
+    docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 || true
   fi
   exit "$status"
 }
@@ -679,9 +561,8 @@ trap 'rollback 143' TERM
 trap 'rollback 1' EXIT
 
 # Grant gate 1 — a brand-new user with explicit keys. Nothing has been mutated
-# yet, so an unconfirmed run stops here: no Mosquitto credential, no config-map
-# entry and no verified owner grant are created. (--watch/--link reuse an
-# existing credential, so they are gated after link filtering instead.)
+# yet, so an unconfirmed run creates no credential or owner grant.
+# The existing-credential modes check approvals after link filtering.
 if (( ! discovery_mode && ! existing_credential_mode )); then
   if (( ${#confirm_owner_grants[@]} == 0 )); then
     print_owner_grant_fingerprint "${keys[@]}"
@@ -696,7 +577,6 @@ fi
 password=''
 discovery_since=''
 if (( existing_credential_mode )); then
-  preserve_credential=1
   if (( discovery_mode )); then
     discovery_since="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
     if (( link_mode )); then
@@ -718,15 +598,13 @@ else
   docker exec --user 1883:1883 "$MOSQUITTO_CONTAINER" \
     mosquitto_passwd -b /mosquitto/config/passwd "$username" "$password"
   docker exec "$MOSQUITTO_CONTAINER" chmod 640 /mosquitto/config/passwd
-  # mosquitto only re-reads password_file on SIGHUP; the reconciler reloads
-  # every ~60s but a device may connect before then, so reload immediately.
+  # Mosquitto reads password_file during SIGHUP. Reload before probe/discovery.
   docker exec "$MOSQUITTO_CONTAINER" sh -c 'kill -HUP 1' >/dev/null 2>&1 \
-    || log 'WARNING: could not reload mosquitto; credential activates on the next reload cycle'
+    || die 'could not reload the broker credential file'
 
   if (( discovery_mode )); then
     # Once shown to the operator, this credential must survive timeout or an
     # interrupted/failed finalization so --watch can resume without a reset.
-    preserve_credential=1
     credential_created=0
     print_mctomqtt_settings "$username" "$password"
   fi
@@ -758,49 +636,23 @@ fi
 
 flock -x 9  # re-acquire for the mutation phase
 
-# BUG-011 fix: the map was last read before the long unlocked discovery window.
-# Another provisioning run may have added grants while we were unlocked — re-read
-# the CURRENT map under the lock, re-validate, and merge into it so we never
-# overwrite a concurrent grant with a stale snapshot.
-mapfile -t owner_map_lines < <(awk '/^OWNER_MQTT_USERNAME_MAP=/{ print }' "$ENV_FILE")
-(( ${#owner_map_lines[@]} == 1 )) \
-  || die "expected exactly one OWNER_MQTT_USERNAME_MAP line in ${ENV_FILE}"
-old_owner_map=${owner_map_lines[0]#OWNER_MQTT_USERNAME_MAP=}
-IFS=',' read -r -a existing_entries <<<"$old_owner_map"
-declare -A configured_keys=()
-owner_map_has_username=0
-for existing_entry in "${existing_entries[@]}"; do
-  existing_entry="$(trim "$existing_entry")"
-  [[ -z $existing_entry ]] && continue
-  [[ $existing_entry == *=* ]] || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
-  existing_username="$(trim "${existing_entry%%=*}" )"
-  if [[ $existing_username == "$username" ]]; then
-    owner_map_has_username=1
-    (( link_mode )) \
-      || die "username already exists in OWNER_MQTT_USERNAME_MAP: ${username}"
-    existing_key_list="$(trim "${existing_entry#*=}")"
-    IFS='|' read -r -a existing_keys <<<"$existing_key_list"
-    for existing_key in "${existing_keys[@]}"; do
-      existing_key="$(trim "$existing_key")"
-      existing_key=${existing_key^^}
-      [[ $existing_key =~ ^[0-9A-F]{64}$ ]] \
-        || die 'existing OWNER_MQTT_USERNAME_MAP is malformed'
-      configured_keys[$existing_key]=1
-    done
-  fi
-done
+# Discovery released the shell lock. Use the latest active grants before
+# selecting the keys for explicit approval. Confirmed existing keys are
+# retained so a retry can verify an already recorded grant.
+current_keys="$(run_owner_grants inspect)"
 if (( link_mode )); then
-  (( owner_map_has_username )) \
-    || die "username does not exist in OWNER_MQTT_USERNAME_MAP: ${username}"
-  declare -a unconfigured_keys=()
+  declare -A owned_keys=()
+  while IFS= read -r key; do
+    if [[ $key =~ ^[0-9A-F]{64}$ ]]; then owned_keys[$key]=1; fi
+  done <<<"$current_keys"
+  declare -a approved_keys=()
   for key in "${keys[@]}"; do
-    if [[ -z ${configured_keys[$key]+set} ]]; then
-      unconfigured_keys+=("$key")
+    if [[ -z ${owned_keys[$key]+set} || -n ${confirmed_keys[$key]+set} ]]; then
+      approved_keys+=("$key")
     fi
   done
-  (( ${#unconfigured_keys[@]} > 0 )) \
-    || die "all requested nodes are already linked to username: ${username}"
-  keys=("${unconfigured_keys[@]}")
+  (( ${#approved_keys[@]} > 0 )) || die "all requested nodes are already linked to username: ${username}"
+  keys=("${approved_keys[@]}")
 fi
 
 # Grant gate 2 — final key set (discovery, --watch and --link). A fingerprint
@@ -822,128 +674,22 @@ if (( ${#confirm_owner_grants[@]} == 0 )); then
 fi
 assert_owner_grants_confirmed "${keys[@]}"
 
-key_pipe="$(IFS='|'; printf '%s' "${keys[*]}")"
-key_csv="$(IFS=','; printf '%s' "${keys[*]}")"
-new_entry="${username}=${key_pipe}"
-
-# Hard invariant: the config map and the verified owner grant are written only
-# for nodes the operator named with --confirm-owner-grant. Reaching this point
-# without one is a bug, not implicit consent.
-(( ${#confirm_owner_grants[@]} > 0 )) \
-  || die 'refusing to write an owner grant without --confirm-owner-grant'
-assert_owner_grants_confirmed "${keys[@]}"
-
-if [[ -n $old_owner_map ]]; then
-  new_owner_map="${old_owner_map},${new_entry}"
-else
-  new_owner_map=$new_entry
-fi
-log 'writing confirmed owner grant to OWNER_MQTT_USERNAME_MAP'
-env_changed=1
-replace_owner_map "$new_owner_map"
-
-log 'inserting verified owner account and node grant rows'
-db_changed=1
-docker exec -i "$TIMESCALEDB_CONTAINER" \
-  psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-    -v "mqtt_username=${username}" -v "node_ids=${key_csv}" >/dev/null <<'SQL'
-BEGIN;
-INSERT INTO owner_accounts (mqtt_username, is_active, updated_at)
-VALUES (:'mqtt_username', TRUE, NOW())
-ON CONFLICT (mqtt_username) DO UPDATE
-SET is_active = TRUE, updated_at = NOW();
-
-INSERT INTO owner_account_nodes (
-  mqtt_username,
-  node_id,
-  verification_method,
-  verified_at,
-  grant_id,
-  revoked_at,
-  revocation_reason,
-  grant_generation,
-  updated_at
-)
-SELECT
-  :'mqtt_username',
-  node_id,
-  'operator-config',
-  NOW(),
-  md5(random()::text || clock_timestamp()::text || node_id),
-  NULL,
-  NULL,
-  NULL,
-  NOW()
-FROM unnest(string_to_array(:'node_ids', ',')) AS configured(node_id)
-ON CONFLICT (mqtt_username, node_id) DO UPDATE
-SET verification_method = 'operator-config',
-    verified_at = NOW(),
-    grant_id = EXCLUDED.grant_id,
-    revoked_at = NULL,
-    revocation_reason = NULL,
-    updated_at = NOW();
-COMMIT;
-SQL
-
-log 'recreating only the backend to reconcile owner grants and reload the ACL'
-apply_backend_config
-wait_for_backend
-
-verified_grant_count="$(
-  docker exec -i "$TIMESCALEDB_CONTAINER" \
-    psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$OWNER_DATABASE" \
-      -v "mqtt_username=${username}" -v "node_ids=${key_csv}" -At <<'SQL'
-SELECT COUNT(*)
-FROM owner_account_nodes oan
-JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
-WHERE oa.mqtt_username = :'mqtt_username'
-  AND oa.is_active = TRUE
-  AND oan.node_id = ANY(string_to_array(:'node_ids', ','))
-  AND oan.node_id ~ '^[0-9A-F]{64}$'
-  AND oan.verified_at IS NOT NULL
-  AND oan.verification_method IN ('operator-config', 'operator-database')
-  AND oan.revoked_at IS NULL;
-SQL
-)"
-[[ $verified_grant_count == "${#keys[@]}" ]] \
-  || die "owner database verification returned ${verified_grant_count}/${#keys[@]} grants"
-
-for key in "${keys[@]}"; do
-  acl_has_grant "$username" "$key" \
-    || die "ACL readback is incomplete for ${username}=${key}"
-done
-
-if (( existing_credential_mode )); then
-  log 'existing broker password is unchanged; ACL and database readbacks verified'
-else
-  # ownerAccess.verifyMqttCredentials() performs a clean MQTT CONNECT over this
-  # same internal WebSocket endpoint. Reproduce that check without publishing.
-  verify_broker_login "$username" "$password" \
+if (( ! existing_credential_mode )); then
+  wait_for_broker_login "$username" "$password" \
     || die 'broker rejected the new credentials'
 fi
 
-dashboard_node_count="$(
-  docker exec -i "$TIMESCALEDB_CONTAINER" \
-    psql -X -q -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d meshcore \
-      -v "node_ids=${key_csv}" -At <<'SQL'
-SELECT COUNT(DISTINCT n.node_id)
-FROM node_identity_nodes n
-WHERE n.node_id IN (
-  SELECT meshcore_canonical_node_id(source_node_id)
-  FROM unnest(string_to_array(:'node_ids', ',')) AS source(source_node_id)
-);
-SQL
-)"
-if [[ $dashboard_node_count == 0 ]]; then
-  log 'grant is active; the dashboard will show the node after its first valid status/packet publish'
-else
-  log "dashboard source contains ${dashboard_node_count} matching node(s)"
-fi
+log 'recording confirmed owner grants for the running ACL reconciler'
+grant_recording_started=1
+run_owner_grants record "${keys[@]}"
+grant_recorded=1
+flock -u 9
+wait_for_owner_grants || die 'could not verify that the running broker applied the confirmed grants'
+log 'Verified the confirmed owner rows and broker ACL readback.'
+log 'A new node appears on the dashboard after its first valid status or packet publish.'
 
 trap - ERR INT TERM EXIT
 credential_created=0
-env_changed=0
-db_changed=0
 
 printf '\nProvisioned MQTT owner account\n'
 printf 'Broker: %s\n' "$BROKER_URL"

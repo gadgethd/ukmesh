@@ -13,7 +13,7 @@ import {
 
 export type { AlertReceipt } from './alertDeliveryQueue.js';
 
-const PORT = boundedInteger(process.env['ALERT_RECEIVER_PORT'], 8080, 1, 65_535);
+const PORT = boundedInteger(process.env['ALERT_RECEIVER_PORT'], 8080, 0, 65_535);
 const MAX_BODY_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_BODY_BYTES'], 262_144, 1_024, 1_048_576);
 const MAX_LOG_BYTES = boundedInteger(process.env['ALERT_RECEIVER_MAX_LOG_BYTES'], 1_048_576, 65_536, 100 * 1_048_576);
 const RECEIPT_PATH = process.env['ALERT_RECEIVER_PATH'] ?? '/var/lib/meshcore-alerts/alerts.jsonl';
@@ -394,7 +394,9 @@ if (isMain) {
       deliveryQueue.start();
     }
     server.listen(PORT, '0.0.0.0', () => {
-      console.log(`[alert-receiver] listening on internal port ${PORT}; forwardConfigured=${Boolean(FORWARD_URL)}`);
+      const address = server.address();
+      const port = typeof address === 'object' && address !== null ? address.port : PORT;
+      console.log(`[alert-receiver] listening on internal port ${port}; forwardConfigured=${Boolean(FORWARD_URL)}`);
     });
   };
   void start().catch((error: unknown) => {

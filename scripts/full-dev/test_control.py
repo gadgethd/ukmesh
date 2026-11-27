@@ -48,11 +48,14 @@ if args[:1]==['compose']:
             print('fixture broker image build failed',file=sys.stderr);sys.exit(43)
     elif sample and 'up' in args: called('INFRA_UP')
     elif not sample and 'up' in args: called('MAIN_UP:'+args[-1])
-if 'config' in args and '--services' in args: print('backend\\nlink-backfill-worker\\ndb-migrate')
-if 'ps' in args: print('owned-'+args[-1]+'-container')
+    elif not sample and 'stop' in args: called('MAIN_STOP:'+args[-1])
+if 'config' in args and '--services' in args: print('backend\\nlink-backfill-worker\\ndb-migrate\\nmqtt-ingest')
+if 'ps' in args and ('--status' not in args or (Path.cwd()/'running-backend-layout').exists()):
+    print('owned-'+args[-1]+'-container')
 if 'logs' in args: print(args[-1]+' retained output')
+if args[:2]==['image','inspect'] and '--format' in args: print('split-v1')
 if args and args[0]=='inspect':
-    name='migration-result' if args[-1]=='owned-db-migrate-container' else 'backfill-result'
+    name={'owned-db-migrate-container':'migration-result','owned-backend-container':'running-backend-layout'}.get(args[-1],'backfill-result')
     print((Path.cwd()/name).read_text())
 ''')
             docker.chmod(0o755)
@@ -79,6 +82,28 @@ if args and args[0]=='inspect':
                         self.assertNotIn('UKMesh http://', result.stdout)
                     self.assertEqual((root / 'access-called').exists(), stage!='migration' or state=='exited:0')
                     self.assertIn('db-migrate retained output', (root / 'plans/lean-runtime/runtime/migrate.log').read_text())
+
+            layout = root / 'running-backend-layout'
+            layout.write_text('legacy')
+            (root / 'calls').write_text('')
+            result = subprocess.run(['bash', str(tools / 'control.sh'), 'restart', 'mqtt-ingest'], cwd=root,
+                                    env=environment, capture_output=True, text=True, timeout=20)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('Recreate backend before mqtt-ingest', result.stderr)
+            self.assertEqual((root / 'calls').read_text(), '')
+
+            result = subprocess.run(['bash', str(tools / 'control.sh'), 'start'], cwd=root,
+                                    env=environment, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            calls = (root / 'calls').read_text().splitlines()
+            self.assertLess(calls.index('MAIN_STOP:backend'), calls.index('MAIN_UP:mqtt-ingest'))
+
+            layout.write_text('split-v1 api')
+            (root / 'calls').write_text('')
+            result = subprocess.run(['bash', str(tools / 'control.sh'), 'restart', 'mqtt-ingest'], cwd=root,
+                                    env=environment, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'calls').read_text().splitlines(), ['MAIN_UP:mqtt-ingest'])
 
             # Broker failure precedes infrastructure, migration, process retirement and apps.
             state = root / 'plans/dev-stack'

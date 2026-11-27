@@ -47,18 +47,83 @@ x-application-hardening: &application-hardening
   tmpfs:
     - /tmp:rw,noexec,nosuid,size=64m,mode=1777
 
+# Static origins can serve their own files even if an upstream fails its probe.
+x-static-origin-health: &static-origin-health
+  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/index.html"]
+  interval: 30s
+  timeout: 10s
+  retries: 6
+  start_period: 15s
+
+x-backend-image: &backend-image
+  image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
+  build:
+    context: .
+    dockerfile: Dockerfile.backend
+    args:
+      SOURCE_REVISION: ${SOURCE_REVISION:-local}
+
+# Both workloads use the same policy, persisted data and link queue limits.
+x-backend-environment: &backend-environment
+  MQTT_INGEST_ENABLED: ${MQTT_INGEST_ENABLED:-true}
+  DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
+  MESHCORE_HTTP_DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-}
+  MESHCORE_INGEST_DATABASE_URL: ${MESHCORE_INGEST_DATABASE_URL:-}
+  MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
+  DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
+  OWNER_DATABASE_POOL_MAX: ${OWNER_DATABASE_POOL_MAX:-2}
+  MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
+  MQTT_USERNAME: ${MQTT_USERNAME:-backend}
+  REDIS_URL: ${REDIS_URL:-redis://redis:6379}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
+  METRICS_PORT: ${METRICS_PORT:-9091}
+  PACKET_IDENTITY_READ_AUTHORITY: ${PACKET_IDENTITY_READ_AUTHORITY:-uid}
+  MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
+  OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
+  OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
+  PUBLIC_DECRYPT_CHANNELS: ${PUBLIC_DECRYPT_CHANNELS:-}
+  OWNER_AUTHORIZATION_MODE: ${OWNER_AUTHORIZATION_MODE:-enforce}
+  OWNER_ACL_MODE: ${OWNER_ACL_MODE:-apply}
+  MQTT_AUDIT_MAX_NODES_PER_USER: ${MQTT_AUDIT_MAX_NODES_PER_USER:-256}
+  MQTT_AUDIT_RETENTION_DAYS: ${MQTT_AUDIT_RETENTION_DAYS:-30}
+  OWNER_PACKET_SHARE_ENCRYPTION_KEY: ${OWNER_PACKET_SHARE_ENCRYPTION_KEY:-}
+  # The public feed is the authentication-locked UKmesh Mosquitto endpoint.
+  # The URL is display/configuration metadata; packets already flow through
+  # this broker, and opted-in owners receive a read-only ACL grant.
+  PUBLIC_FEED_PUBLISH_ENABLED: ${PUBLIC_FEED_PUBLISH_ENABLED:-false}
+  PUBLIC_FEED_BROKER_URL: ${PUBLIC_FEED_BROKER_URL:-}
+  DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
+  DATABASE_SKIP_SCHEMA_INIT: "true"
+  MQTT_INGEST_MODE: ${MQTT_INGEST_MODE:-durable}
+  MQTT_RAM_STREAM_KEY: ${MQTT_RAM_STREAM_KEY:-meshcore:ingest:pending}
+  PATH_BETA_PRERESOLVE_ENABLED: ${PATH_BETA_PRERESOLVE_ENABLED:-0}
+  PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS: ${PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS:-10000}
+  PATH_RESOLVE_WORKERS: ${PATH_RESOLVE_WORKERS:-1}
+  PATH_RESOLVE_BACKGROUND_QUEUE_MAX: ${PATH_RESOLVE_BACKGROUND_QUEUE_MAX:-128}
+  PATH_RESOLVE_INTERACTIVE_QUEUE_MAX: ${PATH_RESOLVE_INTERACTIVE_QUEUE_MAX:-32}
+  PATH_RESOLVE_END_TO_END_TIMEOUT_MS: ${PATH_RESOLVE_END_TO_END_TIMEOUT_MS:-15000}
+  PATH_RESOLVE_UNIQUE_INFLIGHT_MAX: ${PATH_RESOLVE_UNIQUE_INFLIGHT_MAX:-34}
+  PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX: ${PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX:-4}
+  PATH_SINGLE_HISTORY_HOURS: ${PATH_SINGLE_HISTORY_HOURS:-168}
+  PATH_SINGLE_MAX_OBSERVERS: ${PATH_SINGLE_MAX_OBSERVERS:-128}
+  PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
+  PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
+  PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
+  LINK_QUEUE_V3_PRODUCER_ENABLED: ${LINK_QUEUE_V3_PRODUCER_ENABLED:-1}
+  LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
+  LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
+  LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
+  LINK_QUEUE_V3_DEAD_MAX_JOBS: ${LINK_QUEUE_V3_DEAD_MAX_JOBS:-1000}
+  LINK_QUEUE_V3_DEAD_MAX_BYTES: ${LINK_QUEUE_V3_DEAD_MAX_BYTES:-33554432}
+  LINK_QUEUE_V3_DEAD_RETENTION_MS: ${LINK_QUEUE_V3_DEAD_RETENTION_MS:-2592000000}
+  NODE_ENV: production
+
 services:
   # Apply additive, versioned migrations once before the application starts.
   # Base schema creation remains in the database init hook for fresh volumes;
   # this service keeps existing volumes current while backend startup stays fast.
   db-migrate:
-    <<: [*internal-hosts, *application-hardening]
-    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
+    <<: [*internal-hosts, *backend-image, *application-hardening]
     restart: "no"
     logging: *service-journal
     mem_limit: &db-migrate-memory "${MIGRATE_MEMORY_LIMIT:-256m}"
@@ -74,50 +139,23 @@ services:
       timescaledb:
         condition: service_healthy
   backend:
-    <<: *internal-hosts
-    # The backend has a 30-second deadline to drain durable ingest on shutdown.
+    <<: [*internal-hosts, *backend-image, *application-hardening]
     stop_grace_period: ${BACKEND_STOP_GRACE_PERIOD:-40s}
-    image: ${BACKEND_IMAGE:-meshcore-analytics-backend:local}
-    build:
-      context: .
-      dockerfile: Dockerfile.backend
-      args:
-        SOURCE_REVISION: ${SOURCE_REVISION:-local}
     restart: always
     logging: *service-journal
-    mem_limit: &backend-memory "${BACKEND_MEMORY_LIMIT:-1g}"
+    mem_limit: &backend-memory "${BACKEND_MEMORY_LIMIT:-512m}"
     memswap_limit: *backend-memory
     environment:
-      <<: *analytics-db-env
-      DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${POSTGRES_DB:-meshcore}}
-      MESHCORE_HTTP_DATABASE_URL: ${MESHCORE_HTTP_DATABASE_URL:-}
-      MESHCORE_INGEST_DATABASE_URL: ${MESHCORE_INGEST_DATABASE_URL:-}
-      MESHCORE_WORKER_DATABASE_URL: ${MESHCORE_WORKER_DATABASE_URL:-}
-      DATABASE_ROLE_ENFORCEMENT: ${DATABASE_ROLE_ENFORCEMENT:-false}
-      OWNER_DATABASE_POOL_MAX: ${OWNER_DATABASE_POOL_MAX:-2}
+      <<: [*backend-environment, *analytics-db-env]
+      UKMESH_RUNTIME_ROLE: api
+      MQTT_INGEST_HEALTH_URL: http://mqtt-ingest:3000/readyz
       DATABASE_APPLICATION_NAME: meshcore-backend
       OWNER_DATABASE_APPLICATION_NAME: meshcore-backend-owner-auth
       OWNER_DATABASE_ADMIN_APPLICATION_NAME: meshcore-backend-owner-auth-admin
-      MQTT_BROKER_URL: ${MQTT_BROKER_URL:-ws://mosquitto:9001}
-      MQTT_USERNAME: ${MQTT_USERNAME:-backend}
-      MQTT_PASSWORD: ${MQTT_PASSWORD}
-      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
-      MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ${MQTT_DELIVERY_PROBE_TOPIC_PREFIX:-}
       MESHCORE_SITE_ID: ${MESHCORE_SITE_ID:-ukmesh}
-      REDIS_URL: ${REDIS_URL:-redis://redis:6379}
-      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       PORT: ${PORT:-3000}
       OBSERVER_REGISTRATION_WEBHOOK_URL: ${OBSERVER_REGISTRATION_WEBHOOK_URL:-}
-      METRICS_PORT: ${METRICS_PORT:-9091}
-      PACKET_IDENTITY_READ_AUTHORITY: ${PACKET_IDENTITY_READ_AUTHORITY:-uid}
-      MESHCORE_CHANNEL_SECRETS: ${MESHCORE_CHANNEL_SECRETS:-}
-      MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-eng-ne,Europe,Global}
-      OWNER_DATABASE_URL: ${OWNER_DATABASE_URL:-postgresql://${POSTGRES_USER:-meshcore}:${POSTGRES_PASSWORD}@timescaledb:5432/${OWNER_POSTGRES_DB:-meshcore_owner_auth}}
-      OWNER_MQTT_USERNAME_MAP: ${OWNER_MQTT_USERNAME_MAP:-}
-      PUBLIC_DECRYPT_CHANNELS: ${PUBLIC_DECRYPT_CHANNELS:-}
-      OWNER_AUTHORIZATION_MODE: ${OWNER_AUTHORIZATION_MODE:-enforce}
-      OWNER_ACL_MODE: ${OWNER_ACL_MODE:-apply}
       OWNER_ACL_UNMANAGED_USERS: ${OWNER_ACL_UNMANAGED_USERS:-backend,test,test2}
       OWNER_ACL_ALLOW_EMPTY_USERS: ${OWNER_ACL_ALLOW_EMPTY_USERS:-}
       OWNER_ACL_PUBLIC_FEED_READ_USERS: ${OWNER_ACL_PUBLIC_FEED_READ_USERS:-}
@@ -127,18 +165,11 @@ services:
       MOSQUITTO_ACL_PATH: /mosquitto/config/acl
       OWNER_ACL_RELOAD_URL: http://mosquitto-reloader:8080/reload
       OWNER_ACL_RELOAD_TOKEN: ${JWT_SECRET:?JWT_SECRET required}
+      MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: ${MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN:-4096}
       OWNER_COOKIE_SECRET: ${OWNER_COOKIE_SECRET:-}
-      OWNER_PACKET_SHARE_ENCRYPTION_KEY: ${OWNER_PACKET_SHARE_ENCRYPTION_KEY:-}
-      OWNER_PACKET_SHARE_POLL_INTERVAL_MS: ${OWNER_PACKET_SHARE_POLL_INTERVAL_MS:-5000}
-      OWNER_PACKET_SHARE_BATCH_SIZE: ${OWNER_PACKET_SHARE_BATCH_SIZE:-25}
       OWNER_LAST_HOP_PREWARM_INTERVAL_MS: ${OWNER_LAST_HOP_PREWARM_INTERVAL_MS:-900000}
       OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS: ${OWNER_LAST_HOP_PREWARM_NODE_DELAY_MS:-150}
       OWNER_LAST_HOP_PREWARM_CONCURRENCY: ${OWNER_LAST_HOP_PREWARM_CONCURRENCY:-1}
-      # The public feed is the authentication-locked UKmesh Mosquitto endpoint.
-      # The URL is display/configuration metadata; packets already flow through
-      # this broker, and opted-in owners receive a read-only ACL grant.
-      PUBLIC_FEED_PUBLISH_ENABLED: ${PUBLIC_FEED_PUBLISH_ENABLED:-false}
-      PUBLIC_FEED_BROKER_URL: ${PUBLIC_FEED_BROKER_URL:-}
       OPERATOR_SITE_TOKEN: ${OPERATOR_SITE_TOKEN:?OPERATOR_SITE_TOKEN required}
       TRUSTED_PROXY_PEERS: ${TRUSTED_PROXY_PEERS:-172.30.0.10,172.30.0.11,172.30.0.12}
       ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3003,http://localhost:3004,https://ukmesh.com,https://www.ukmesh.com,https://app.ukmesh.com,https://test.ukmesh.com}
@@ -149,9 +180,6 @@ services:
       PUBLIC_FEATURE_HEATMAP_ENABLED: ${PUBLIC_FEATURE_HEATMAP_ENABLED:-false}
       PUBLIC_FEATURE_REGION_SCOPING_ENABLED: ${PUBLIC_FEATURE_REGION_SCOPING_ENABLED:-false}
       PUBLIC_FEATURE_CONFIG_TTL_SECONDS: ${PUBLIC_FEATURE_CONFIG_TTL_SECONDS:-30}
-      # API and ingest use the OLTP deadline; identity/chart analyses use the
-      # separate analytics pool and retain its longer query budget.
-      DATABASE_STATEMENT_TIMEOUT_MS: ${DATABASE_STATEMENT_TIMEOUT_MS:-30000}
       DATABASE_POOL_MAX: ${DATABASE_POOL_MAX:-8}
       STATS_DB_QUERY_CONCURRENCY: ${STATS_DB_QUERY_CONCURRENCY:-1}
       STATS_BACKFILL_DURATION_BUDGET_MS: ${STATS_BACKFILL_DURATION_BUDGET_MS:-}
@@ -159,38 +187,10 @@ services:
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
       WARMUP_NETWORKS: ${WARMUP_NETWORKS:-ukmesh}
-      DATABASE_SKIP_SCHEMA_INIT: "true"
       WS_INITIAL_STATE_ENABLED: "1"
       WS_INITIAL_STATE_DB_TIMEOUT_MS: ${WS_INITIAL_STATE_DB_TIMEOUT_MS:-30000}
       WS_INITIAL_STATE_MAX_BYTES: ${WS_INITIAL_STATE_MAX_BYTES:-16777216}
-      MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
-      MQTT_INGEST_CONNECTIONS: ${MQTT_INGEST_CONNECTIONS:-1}
-      MQTT_INGEST_SHARE_GROUP: ${MQTT_INGEST_SHARE_GROUP:-meshcore-ingest}
-      MQTT_INGEST_FLUSH_MS: ${MQTT_INGEST_FLUSH_MS:-0}
-      MQTT_BROKER_BACKLOG_MONITOR: ${MQTT_BROKER_BACKLOG_MONITOR:-false}
-      # The 30s lifecycle deadline reserves 25s for MQTT disconnect and queue drain.
-      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
-      MQTT_INGEST_MODE: ${MQTT_INGEST_MODE:-durable}
-      MQTT_RAM_BATCH_SIZE: ${MQTT_RAM_BATCH_SIZE:-100}
-      MQTT_RAM_MAX_AGE_MS: ${MQTT_RAM_MAX_AGE_MS:-120000}
-      MQTT_RAM_QUEUE_MAX_PACKETS: ${MQTT_RAM_QUEUE_MAX_PACKETS:-5000}
-      MQTT_RAM_QUEUE_MAX_BYTES: ${MQTT_RAM_QUEUE_MAX_BYTES:-33554432}
-      MQTT_RAM_STREAM_KEY: ${MQTT_RAM_STREAM_KEY:-meshcore:ingest:pending}
-      MQTT_RAM_CONSUMER_GROUP: ${MQTT_RAM_CONSUMER_GROUP:-ingest-writers}
-      MQTT_RAM_CONSUMER_NAME: ${MQTT_RAM_CONSUMER_NAME:-backend}
-      MQTT_RAM_DRAIN_DEADLINE_MS: ${MQTT_RAM_DRAIN_DEADLINE_MS:-600000}
       MQTT_RAM_PUBLIC_READ_TOKEN: ${MQTT_RAM_PUBLIC_READ_TOKEN:-}
-      PATH_RESOLVE_WORKERS: ${PATH_RESOLVE_WORKERS:-1}
-      PATH_RESOLVE_BACKGROUND_QUEUE_MAX: ${PATH_RESOLVE_BACKGROUND_QUEUE_MAX:-128}
-      PATH_RESOLVE_INTERACTIVE_QUEUE_MAX: ${PATH_RESOLVE_INTERACTIVE_QUEUE_MAX:-32}
-      PATH_RESOLVE_END_TO_END_TIMEOUT_MS: ${PATH_RESOLVE_END_TO_END_TIMEOUT_MS:-15000}
-      PATH_RESOLVE_UNIQUE_INFLIGHT_MAX: ${PATH_RESOLVE_UNIQUE_INFLIGHT_MAX:-34}
-      PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX: ${PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX:-4}
-      PATH_SINGLE_HISTORY_HOURS: ${PATH_SINGLE_HISTORY_HOURS:-168}
-      PATH_SINGLE_MAX_OBSERVERS: ${PATH_SINGLE_MAX_OBSERVERS:-128}
-      PATH_MULTI_HISTORY_WINDOW_HOURS: ${PATH_MULTI_HISTORY_WINDOW_HOURS:-168}
-      PATH_MULTI_MAX_SCAN_ROWS: ${PATH_MULTI_MAX_SCAN_ROWS:-2048}
-      PATH_MULTI_MAX_OBSERVERS: ${PATH_MULTI_MAX_OBSERVERS:-128}
       LAZY_PATH_HISTORY_WINDOW_HOURS: ${LAZY_PATH_HISTORY_WINDOW_HOURS:-168}
       LAZY_PATH_MAX_OBSERVATIONS: ${LAZY_PATH_MAX_OBSERVATIONS:-2048}
       LAZY_PATH_MAX_OBSERVERS: ${LAZY_PATH_MAX_OBSERVERS:-128}
@@ -206,16 +206,6 @@ services:
       SPAM_MESSAGE_ANALYSIS_BUDGET_MS: ${SPAM_MESSAGE_ANALYSIS_BUDGET_MS:-5000}
       SPAM_MESSAGE_DB_TIMEOUT_MS: ${SPAM_MESSAGE_DB_TIMEOUT_MS:-15000}
       STATS_UNIQUE_INFLIGHT_MAX: ${STATS_UNIQUE_INFLIGHT_MAX:-32}
-      LINK_QUEUE_V3_PRODUCER_ENABLED: ${LINK_QUEUE_V3_PRODUCER_ENABLED:-1}
-      LINK_QUEUE_V3_MAX_JOBS: ${LINK_QUEUE_V3_MAX_JOBS:-5000}
-      LINK_QUEUE_V3_MAX_BYTES: ${LINK_QUEUE_V3_MAX_BYTES:-67108864}
-      LINK_QUEUE_V3_MAX_PAYLOAD_BYTES: ${LINK_QUEUE_V3_MAX_PAYLOAD_BYTES:-32768}
-      LINK_QUEUE_V3_DEAD_MAX_JOBS: ${LINK_QUEUE_V3_DEAD_MAX_JOBS:-1000}
-      LINK_QUEUE_V3_DEAD_MAX_BYTES: ${LINK_QUEUE_V3_DEAD_MAX_BYTES:-33554432}
-      LINK_QUEUE_V3_DEAD_RETENTION_MS: ${LINK_QUEUE_V3_DEAD_RETENTION_MS:-2592000000}
-      MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN: ${MQTT_AUDIT_MAX_OBSERVATIONS_PER_SCAN:-4096}
-      MQTT_AUDIT_MAX_NODES_PER_USER: ${MQTT_AUDIT_MAX_NODES_PER_USER:-256}
-      MQTT_AUDIT_RETENTION_DAYS: ${MQTT_AUDIT_RETENTION_DAYS:-30}
       LINK_REBUILD_LEASE_MS: ${LINK_REBUILD_LEASE_MS:-120000}
       WS_MAX_PAYLOAD_BYTES: ${WS_MAX_PAYLOAD_BYTES:-65536}
       WS_MAX_QUEUE_BYTES: ${WS_MAX_QUEUE_BYTES:-8388608}
@@ -236,15 +226,14 @@ services:
       DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256: ${DATA_LIFECYCLE_RECEIPT_VERIFY_KEY_SHA256:-}
       DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS: ${DATA_LIFECYCLE_RECEIPT_MAX_AGE_DAYS:-7}
       SYNTHETIC_SUCCESS_TTL_MS: ${SYNTHETIC_SUCCESS_TTL_MS:-960000}
-      NODE_ENV: production
     depends_on:
       db-migrate:
         condition: service_completed_successfully
     ports:
       - "127.0.0.1:3000:3000"
     volumes:
-      - mosquitto_log:/mosquitto/log:ro
       - ./mosquitto:/mosquitto/config
+      - mosquitto_log:/mosquitto/log:ro
       - timescaledb_data:/health-volumes/database:ro
       - redis_data:/health-volumes/redis:ro
       - srtm_data:/health-volumes/terrain:ro
@@ -254,13 +243,61 @@ services:
       - ${OWNER_AUTH_INVENTORY_HOST_DIR:-./backup-receipts}:/owner-auth-inventory:ro
     group_add:
       - "1883"
-    read_only: true
-    tmpfs:
-      - /tmp:rw,noexec,nosuid,size=64m
-    cap_drop:
-      - ALL
-    security_opt:
-      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api-readyz >/dev/null"]
+      interval: 30s
+      timeout: 10s
+      retries: 6
+      start_period: 30s
+
+  mqtt-ingest:
+    <<: [*internal-hosts, *backend-image, *application-hardening]
+    # The lifecycle deadline reserves time for MQTT disconnect and queue drain.
+    stop_grace_period: ${MQTT_INGEST_STOP_GRACE_PERIOD:-${BACKEND_STOP_GRACE_PERIOD:-40s}}
+    restart: always
+    logging: *service-journal
+    mem_limit: &mqtt-ingest-memory "${MQTT_INGEST_MEMORY_LIMIT:-512m}"
+    memswap_limit: *mqtt-ingest-memory
+    environment:
+      <<: *backend-environment
+      UKMESH_RUNTIME_ROLE: ingest
+      PORT: "3000"
+      DATABASE_APPLICATION_NAME: meshcore-mqtt-intake
+      OWNER_DATABASE_APPLICATION_NAME: meshcore-mqtt-intake-owner-auth
+      DATABASE_POOL_MAX: ${MQTT_INGEST_RUNTIME_POOL_MAX:-2}
+      MQTT_PASSWORD: ${MQTT_PASSWORD}
+      MQTT_INGEST_PASSWORD_FILE: /run/ukmesh-mqtt/password
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-meshcore-analytics-ingest}
+      MQTT_DELIVERY_PROBE_TOPIC_PREFIX: ${MQTT_DELIVERY_PROBE_TOPIC_PREFIX:-}
+      MESHCORE_REGION_NAMES: ${MESHCORE_REGION_NAMES:-eng-ne,Europe,Global}
+      OWNER_PACKET_SHARE_POLL_INTERVAL_MS: ${OWNER_PACKET_SHARE_POLL_INTERVAL_MS:-5000}
+      OWNER_PACKET_SHARE_BATCH_SIZE: ${OWNER_PACKET_SHARE_BATCH_SIZE:-25}
+      MQTT_MAX_PAYLOAD_BYTES: ${MQTT_MAX_PAYLOAD_BYTES:-65536}
+      MQTT_INGEST_CONNECTIONS: ${MQTT_INGEST_CONNECTIONS:-1}
+      MQTT_INGEST_SHARE_GROUP: ${MQTT_INGEST_SHARE_GROUP:-meshcore-ingest}
+      MQTT_INGEST_FLUSH_MS: ${MQTT_INGEST_FLUSH_MS:-0}
+      MQTT_BROKER_BACKLOG_MONITOR: ${MQTT_BROKER_BACKLOG_MONITOR:-false}
+      # The 30s lifecycle deadline reserves 25s for MQTT disconnect and queue drain.
+      MQTT_INGEST_QUEUE_MAX: ${MQTT_INGEST_QUEUE_MAX:-1000}
+      MQTT_RAM_BATCH_SIZE: ${MQTT_RAM_BATCH_SIZE:-100}
+      MQTT_RAM_MAX_AGE_MS: ${MQTT_RAM_MAX_AGE_MS:-120000}
+      MQTT_RAM_QUEUE_MAX_PACKETS: ${MQTT_RAM_QUEUE_MAX_PACKETS:-5000}
+      MQTT_RAM_QUEUE_MAX_BYTES: ${MQTT_RAM_QUEUE_MAX_BYTES:-33554432}
+      MQTT_RAM_CONSUMER_GROUP: ${MQTT_RAM_CONSUMER_GROUP:-ingest-writers}
+      MQTT_RAM_CONSUMER_NAME: ${MQTT_RAM_CONSUMER_NAME:-backend}
+      MQTT_RAM_DRAIN_DEADLINE_MS: ${MQTT_RAM_DRAIN_DEADLINE_MS:-600000}
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    volumes:
+      - type: bind
+        source: ${MQTT_INGEST_PASSWORD_HOST_DIR:-./deploy/mqtt-credentials}
+        target: /run/ukmesh-mqtt
+        read_only: true
+        bind:
+          create_host_path: false
+    group_add:
+      - "1883"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/readyz >/dev/null"]
       interval: 30s
@@ -466,8 +503,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      backend:
-        condition: service_healthy
       alert-receiver:
         condition: service_started
 
@@ -495,8 +530,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      backend:
-        condition: service_healthy
       link-worker:
         condition: service_healthy
 
@@ -573,7 +606,7 @@ services:
       - ./rf-coverage/boundaries/uk-operational-v1.geojson:/config/uk-operational-v1.geojson:ro
     depends_on:
       backend:
-        condition: service_healthy
+        condition: service_started
 
   app-ukmesh:
     <<: [*internal-hosts, *application-hardening]
@@ -592,9 +625,6 @@ services:
     logging: *service-journal
     mem_limit: &app-ukmesh-memory "${APP_MEMORY_LIMIT:-48m}"
     memswap_limit: *app-ukmesh-memory
-    depends_on:
-      backend:
-        condition: service_healthy
     ports:
       - "127.0.0.1:3003:8080"
     networks:
@@ -607,12 +637,7 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null && wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   website-ukmesh:
     <<: [*internal-hosts, *application-hardening]
@@ -634,21 +659,13 @@ services:
     networks:
       default:
         ipv4_address: 172.30.0.11
-    depends_on:
-      backend:
-        condition: service_healthy
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null && wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   mesh-health-check-data-init:
     <<: *application-hardening
@@ -766,21 +783,13 @@ services:
     networks:
       default:
         ipv4_address: 172.30.0.12
-    depends_on:
-      backend:
-        condition: service_healthy
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   # ── Anubis bot protection ─────────────────────────────────────────────────────
   # One sidecar per public HTTP service. Cloudflare Tunnel routes to these
@@ -882,8 +891,6 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      backend:
-        condition: service_healthy
       anubis-website-ukmesh:
         condition: service_started
       anubis-app-ukmesh:
@@ -1001,8 +1008,6 @@ services:
       retries: 5
       start_period: 20s
     depends_on:
-      backend:
-        condition: service_healthy
       alertmanager:
         condition: service_healthy
       postgres-exporter:

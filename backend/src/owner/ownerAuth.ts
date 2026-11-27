@@ -202,6 +202,11 @@ export async function revokeAllOwnerSessions(): Promise<void> {
   );
 }
 
+const effectiveOwnerGrant = `oan.verified_at IS NOT NULL
+  AND oan.verification_method IN ('operator-config', 'operator-database')
+  AND oan.revoked_at IS NULL
+  AND oan.node_id ~ '^[0-9A-F]{64}$'`;
+
 export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<string[]> {
   const normalized = mqttUsername.trim();
   if (!normalized) return [];
@@ -211,10 +216,7 @@ export async function getOwnerNodeIdsForUsername(mqttUsername: string): Promise<
      JOIN core.owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
      WHERE oa.is_active = true
        AND oan.mqtt_username = $1
-       AND oan.node_id ~ '^[0-9A-F]{64}$'
-       AND oan.verified_at IS NOT NULL
-       AND oan.verification_method IN ('operator-config', 'operator-database')
-       AND oan.revoked_at IS NULL
+       AND ${effectiveOwnerGrant}
      ORDER BY oan.node_id ASC`,
     [normalized],
   );
@@ -236,12 +238,7 @@ export async function getOwnerAuthorizationSnapshot(): Promise<OwnerAuthorizatio
     `SELECT oa.mqtt_username,
             oa.is_active,
             COALESCE(
-              ARRAY_AGG(oan.node_id ORDER BY oan.node_id) FILTER (
-                WHERE oan.verified_at IS NOT NULL
-                  AND oan.verification_method IN ('operator-config', 'operator-database')
-                  AND oan.revoked_at IS NULL
-                  AND oan.node_id ~ '^[0-9A-F]{64}$'
-              ),
+              ARRAY_AGG(oan.node_id ORDER BY oan.node_id) FILTER (WHERE ${effectiveOwnerGrant}),
               ARRAY[]::text[]
             ) AS node_ids
        FROM core.owner_accounts oa
@@ -328,6 +325,14 @@ export async function ensureOwnerAccount(mqttUsername: string): Promise<void> {
 
 export type OwnerGrantVerificationMethod = 'operator-config' | 'operator-database';
 
+type VerifiedOwnerGrantOptions = {
+  verificationMethod: OwnerGrantVerificationMethod;
+  actor: string;
+  reason?: string;
+  generation?: string;
+  reauthorize?: boolean;
+};
+
 type GrantAuditInput = {
   mqttUsername: string;
   nodeId: string;
@@ -369,16 +374,41 @@ function normalizeGrant(mqttUsername: string, nodeId: string): { mqttUsername: s
   return { mqttUsername: normalizedUsername, nodeId: normalizedNodeId };
 }
 
+async function writeVerifiedOwnerGrant(
+  client: pg.PoolClient,
+  grant: { mqttUsername: string; nodeId: string },
+  options: VerifiedOwnerGrantOptions,
+  wasRevoked: boolean,
+): Promise<void> {
+  await client.query(
+    `INSERT INTO core.owner_account_nodes (
+       mqtt_username, node_id, verification_method, verified_at, grant_id,
+       revoked_at, revocation_reason, grant_generation, updated_at
+     ) VALUES ($1, $2, $3, NOW(), $4, NULL, NULL, $5, NOW())
+     ON CONFLICT (mqtt_username, node_id) DO UPDATE SET
+       verification_method = EXCLUDED.verification_method,
+       verified_at = NOW(),
+       grant_id = EXCLUDED.grant_id,
+       revoked_at = NULL,
+       revocation_reason = NULL,
+       grant_generation = EXCLUDED.grant_generation,
+       updated_at = NOW()`,
+    [grant.mqttUsername, grant.nodeId, options.verificationMethod, randomUUID(), options.generation ?? null],
+  );
+  await insertGrantAudit(client, {
+    ...grant,
+    eventType: wasRevoked ? 'reauthorize' : 'grant',
+    source: options.verificationMethod,
+    actor: options.actor,
+    reason: options.reason,
+    generation: options.generation,
+  });
+}
+
 export async function upsertVerifiedOwnerGrant(
   mqttUsername: string,
   nodeId: string,
-  options: {
-    verificationMethod: OwnerGrantVerificationMethod;
-    actor: string;
-    reason?: string;
-    generation?: string;
-    reauthorize?: boolean;
-  },
+  options: VerifiedOwnerGrantOptions,
 ): Promise<void> {
   const grant = normalizeGrant(mqttUsername, nodeId);
   const client = await ownerPool.connect();
@@ -399,30 +429,81 @@ export async function upsertVerifiedOwnerGrant(
     const wasRevoked = Boolean(existing.rows[0]?.revoked_at);
     if (wasRevoked && !options.reauthorize) throw new Error('OWNER_GRANT_REAUTHORIZATION_REQUIRED');
 
-    await client.query(
-      `INSERT INTO core.owner_account_nodes (
-         mqtt_username, node_id, verification_method, verified_at, grant_id,
-         revoked_at, revocation_reason, grant_generation, updated_at
-       ) VALUES ($1, $2, $3, NOW(), $4, NULL, NULL, $5, NOW())
-       ON CONFLICT (mqtt_username, node_id) DO UPDATE SET
-         verification_method = EXCLUDED.verification_method,
-         verified_at = NOW(),
-         grant_id = EXCLUDED.grant_id,
-         revoked_at = NULL,
-         revocation_reason = NULL,
-         grant_generation = EXCLUDED.grant_generation,
-         updated_at = NOW()`,
-      [grant.mqttUsername, grant.nodeId, options.verificationMethod, randomUUID(), options.generation ?? null],
-    );
-    await insertGrantAudit(client, {
-      ...grant,
-      eventType: wasRevoked ? 'reauthorize' : 'grant',
-      source: options.verificationMethod,
-      actor: options.actor,
-      reason: options.reason,
-      generation: options.generation,
-    });
+    await writeVerifiedOwnerGrant(client, grant, options, wasRevoked);
     await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+export type OwnerProvisioningMode = 'create' | 'watch' | 'link';
+
+async function ownerProvisioningState(
+  client: pg.PoolClient,
+  username: string,
+  mode: OwnerProvisioningMode,
+): Promise<{ exists: boolean; activeKeys: string[]; unavailableKeys: Set<string> }> {
+  const account = await client.query<{ is_active: boolean }>(
+    'SELECT is_active FROM core.owner_accounts WHERE mqtt_username = $1 FOR UPDATE',
+    [username],
+  );
+  const entry = account.rows[0];
+  if (mode === 'create' && entry) throw new Error('OWNER_ACCOUNT_ALREADY_EXISTS');
+  if (mode === 'link' && !entry) throw new Error('OWNER_ACCOUNT_NOT_FOUND');
+  if (entry && !entry.is_active) throw new Error('OWNER_ACCOUNT_INACTIVE');
+  const grants = entry ? await client.query<{ node_id: string; verified: boolean }>(
+    `SELECT oan.node_id, COALESCE(${effectiveOwnerGrant}, false) AS verified
+     FROM core.owner_account_nodes oan WHERE oan.mqtt_username = $1 ORDER BY oan.node_id FOR UPDATE`,
+    [username],
+  ) : { rows: [] };
+  const activeKeys = grants.rows.filter((row) => row.verified).map((row) => row.node_id);
+  if (mode === 'link' && !activeKeys.length) throw new Error('OWNER_ACCOUNT_REQUIRES_FIRST_GRANT');
+  return { exists: Boolean(entry), activeKeys, unavailableKeys: new Set(grants.rows.filter((row) => !row.verified).map((row) => row.node_id)) };
+}
+
+/** Existing owner and grant rows coordinate with the running reconciler. A
+ * confirmed batch is all or nothing, and retried approvals keep their audit. */
+export async function provisionConfirmedOwnerGrants(input: {
+  username: string;
+  mode: OwnerProvisioningMode;
+  approval?: { nodeIds: string[]; actor: string; configuredKeys: string[] };
+}): Promise<string[]> {
+  if (!/^[A-Za-z0-9_.@-]{1,128}$/.test(input.username)) throw new Error('INVALID_OWNER_GRANT');
+  const client = await ownerPool.connect();
+  try {
+    await client.query('BEGIN');
+    const state = await ownerProvisioningState(client, input.username, input.mode);
+    const activeKeys = new Set(state.activeKeys);
+    const approval = input.approval;
+    if (approval) {
+      const granted = [...new Set(approval.nodeIds.map((id) => normalizeGrant(input.username, id).nodeId))];
+      if (!granted.length || !approval.actor.trim()) throw new Error('OWNER_PROVISIONING_APPROVAL_REQUIRED');
+      const newKeys = granted.filter((id) => !activeKeys.has(id));
+      if (newKeys.some((id) => state.unavailableKeys.has(id) || approval.configuredKeys.includes(id))) {
+        throw new Error('OWNER_GRANT_REVIEW_REQUIRED');
+      }
+      if (input.mode === 'watch' && activeKeys.size > 0
+        && (newKeys.length > 0 || granted.length !== activeKeys.size)) {
+        throw new Error('OWNER_ACCOUNT_ALREADY_LINKED');
+      }
+      if (!state.exists) {
+        // A concurrent writer creating the same account must be reviewed in a
+        // fresh transaction, rather than reactivating or overwriting its rows.
+        await client.query('INSERT INTO core.owner_accounts (mqtt_username) VALUES ($1)', [input.username]);
+      }
+      for (const nodeId of newKeys) {
+        await writeVerifiedOwnerGrant(client, { mqttUsername: input.username, nodeId }, {
+          verificationMethod: 'operator-database', actor: approval.actor,
+          reason: 'confirmed node key in operator provisioning',
+        }, false);
+        activeKeys.add(nodeId);
+      }
+    }
+    await client.query('COMMIT');
+    return [...activeKeys];
   } catch (error) {
     await client.query('ROLLBACK');
     throw error;
@@ -512,10 +593,7 @@ export async function revokeOwnerGrant(
              JOIN owner_accounts oa ON oa.mqtt_username = oan.mqtt_username
             WHERE oan.mqtt_username = $1
               AND oa.is_active = TRUE
-              AND oan.revoked_at IS NULL
-              AND oan.verified_at IS NOT NULL
-              AND oan.verification_method IN ('operator-config', 'operator-database')
-              AND oan.node_id ~ '^[0-9A-F]{64}$'
+              AND ${effectiveOwnerGrant}
          ) AS active`,
         [grant.mqttUsername],
       );

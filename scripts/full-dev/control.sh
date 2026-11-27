@@ -24,12 +24,25 @@ mkdir -p "$state"
 chmod 700 "$repo/plans/lean-runtime" "$state"
 action=${1:-start}
 service=${2:-}
+
+backend_image_supports_split() {
+  [[ $(docker image inspect --format '{{index .Config.Labels "org.ukmesh.runtime-layout"}}' "$BACKEND_IMAGE") == split-v1 ]]
+}
+
+legacy_backend_id() {
+  local id roles
+  id=$("${compose[@]}" ps --status running -q backend) || return
+  [[ -n $id ]] || return 0
+  roles=$(docker inspect --format '{{index .Config.Labels "org.ukmesh.runtime-layout"}}{{range .Config.Env}}{{if eq . "UKMESH_RUNTIME_ROLE=api"}} api{{end}}{{end}}' "$id") || return
+  if [[ $roles != 'split-v1 api' ]]; then printf '%s\n' "$id"; fi
+}
+
 case "$action" in
   start|build|status|stop|logs|restart|hot|config) ;;
   *) echo "Unknown full-stack action: $action" >&2; exit 2 ;;
 esac
 if [[ -n $service && $action != hot ]]; then
-  "${compose[@]}" config --services | rg -Fx -- "$service" > /dev/null || { echo "Unknown service: $service" >&2; exit 2; }
+  "${compose[@]}" config --services | grep -Fx -- "$service" > /dev/null || { echo "Unknown service: $service" >&2; exit 2; }
 fi
 case "$action" in
   status) "${compose[@]}" ps -a; exit ;;
@@ -42,6 +55,21 @@ case "$action" in
   restart)
     [[ -n $service ]] || { echo 'restart requires a service name' >&2; exit 2; }
     python3 "$repo/scripts/full-dev/qualification/target_entry.py" guard main restart "$service"
+    if [[ $service == backend || $service == mqtt-ingest ]]; then
+      backend_image_supports_split || { echo 'Build the split backend image with scripts/dev-all.sh build first.' >&2; exit 1; }
+    fi
+    if [[ $service == mqtt-ingest ]]; then
+      legacy=$(legacy_backend_id)
+      if [[ -n $legacy ]]; then
+        echo 'Recreate backend before mqtt-ingest so the old combined process releases its MQTT session.' >&2
+        exit 1
+      fi
+      if [[ -f $repo/plans/dev-stack/backend.pid ]] && owned_process_matches \
+        "$(cat "$repo/plans/dev-stack/backend.pid")" "$repo/backend/dist/index.js"; then
+        echo 'Use scripts/dev-all.sh start to retire the standalone backend before starting mqtt-ingest.' >&2
+        exit 1
+      fi
+    fi
     python3 "$repo/scripts/full-dev/wiring.py"
     refresh_wiring_revisions
     "${compose[@]}" up -d --no-deps --force-recreate "$service"; exit ;;
@@ -88,6 +116,8 @@ for image in "$BACKEND_IMAGE" "$APP_IMAGE" "$WEBSITE_IMAGE" "$WEBSITE_DEV_IMAGE"
   docker image inspect "$image" >/dev/null 2>&1 || images_ready=false
 done
 if [[ $images_ready != true ]]; then build_images; fi
+if ! backend_image_supports_split; then "${compose_build[@]}" build backend; fi
+backend_image_supports_split
 
 python3 "$repo/scripts/full-dev/qualification/target_entry.py" guard main
 
@@ -115,7 +145,11 @@ for service in frontend region-snapshot backend; do
   esac
   owned_stop_process "$repo/plans/dev-stack/$service.pid" "$entry" 100 0.1 "$service"
 done
-mapfile -t resident_services < <("${compose[@]}" config --services | rg -v '^(db-migrate|mesh-health-check-data-init|alert-bootstrap|link-backfill-worker|cloudflared)$')
+# Bootstrap the new ingest service only after the combined backend has drained
+# and released the persistent broker identity. Already split services can start independently.
+legacy=$(legacy_backend_id)
+if [[ -n $legacy ]]; then "${compose[@]}" stop backend; fi
+mapfile -t resident_services < <("${compose[@]}" config --services | grep -Ev '^(db-migrate|mesh-health-check-data-init|alert-bootstrap|link-backfill-worker|cloudflared)$')
 "${compose[@]}" up -d --wait --wait-timeout 240 "${resident_services[@]}"
 "${compose[@]}" up -d --no-deps link-backfill-worker
 "${compose[@]}" wait link-backfill-worker

@@ -5,6 +5,54 @@ rule_files:
 evaluation_interval: 15s
 
 tests:
+  - name: ingest outage pages while the API readiness remains healthy
+    interval: 15s
+    input_series:
+      - series: 'probe_success{job="meshcore-api-readiness"}'
+        values: 1x12
+      - series: 'probe_success{job="meshcore-ingest-readiness",instance="http://mqtt-ingest:3000/readyz"}'
+        values: 0x12
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: MqttIngestDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: MqttIngestDown
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-ingest-readiness
+              instance: http://mqtt-ingest:3000/readyz
+              severity: critical
+            exp_annotations:
+              summary: The dedicated MQTT ingest readiness probe is failing
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestdown
+
+  - name: aggregate owner readiness can fail while API and ingest are ready
+    interval: 15s
+    input_series:
+      - series: 'probe_success{job="meshcore-api-readiness"}'
+        values: 1x12
+      - series: 'probe_success{job="meshcore-ingest-readiness"}'
+        values: 1x12
+      - series: 'probe_success{job="meshcore-readiness",instance="http://backend:3000/readyz"}'
+        values: 0x12
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: MqttIngestDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: BackendNotReady
+        exp_alerts:
+          - exp_labels:
+              job: meshcore-readiness
+              instance: http://backend:3000/readyz
+              severity: critical
+            exp_annotations:
+              summary: MeshCore dependency readiness probe is failing
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backendnotready
+
   - name: sustained public p95 warns with adequate traffic
     interval: 1m
     input_series:

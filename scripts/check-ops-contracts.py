@@ -56,7 +56,7 @@ def link_queue_defaults(contract, compose, example):
     limits = contract['limits']
     for spec in limits.values():
         name, expected = spec['env'], spec['default']
-        for service in ('backend', 'link-worker'):
+        for service in ('backend', 'mqtt-ingest', 'link-worker'):
             environment = compose['services'][service].get('environment', {})
             if isinstance(environment, list):
                 environment = dict(entry.split('=', 1) if '=' in entry else (entry, None)
@@ -93,7 +93,7 @@ def main():
             load(args.root / 'docker-compose.yml'),
             (args.root / '.env.example').read_text(),
         )
-        print(f'Link queue defaults verified ({len(names)} limits across backend, link-worker and .env.example).')
+        print(f'Link queue defaults verified ({len(names)} limits across backend, mqtt-ingest, link-worker and .env.example).')
     if not args.release and not args.monitoring and not args.queue_defaults:
         parser.error('select --release, --monitoring or --queue-defaults')
 

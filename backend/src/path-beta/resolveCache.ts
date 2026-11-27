@@ -82,6 +82,11 @@ export function invalidateResolveCache(packetHash: string): void {
   );
 }
 
+/** The Redis subscription had a gap, so any result could have missed an invalidation. */
+export function clearResolvedPaths(): void {
+  cache.clear();
+}
+
 export function resolveCacheMetrics() {
   return {
     results: cache.metrics(),

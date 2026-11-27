@@ -68,29 +68,47 @@ class MainRuntimeContract(unittest.TestCase):
                         "MESHCORE_WORKER_DATABASE_URL", "MESHCORE_INGEST_DATABASE_URL"):
                 self.assertEqual(env[key], worker_url, (name, key))
             self.assertEqual(env["DATABASE_ROLE_ENFORCEMENT"], "true", name)
-        backend = services["backend"]["environment"]
-        self.assertEqual(backend["DATABASE_URL"], urls["MESHCORE_HTTP_DATABASE_URL"])
-        for key in ("MESHCORE_HTTP_DATABASE_URL", "MESHCORE_INGEST_DATABASE_URL",
-                    "MESHCORE_WORKER_DATABASE_URL", "OWNER_DATABASE_URL"):
-            self.assertEqual(backend[key], urls[key])
+        for name in ("backend", "mqtt-ingest"):
+            env = services[name]["environment"]
+            self.assertEqual(env["DATABASE_URL"], urls["MESHCORE_HTTP_DATABASE_URL"])
+            for key in ("MESHCORE_HTTP_DATABASE_URL", "MESHCORE_INGEST_DATABASE_URL",
+                        "MESHCORE_WORKER_DATABASE_URL", "OWNER_DATABASE_URL"):
+                self.assertEqual(env[key], urls[key], (name, key))
         migrate = services["db-migrate"]["environment"]
         self.assertEqual(migrate["DATABASE_URL"], urls["MESHCORE_MIGRATE_DATABASE_URL"])
         self.assertEqual(migrate["MESHCORE_MIGRATE_DATABASE_URL"], urls["MESHCORE_MIGRATE_DATABASE_URL"])
         self.assertEqual(services["postgres-exporter"]["environment"]["DATA_SOURCE_NAME"],
                          urls["POSTGRES_EXPORTER_DATABASE_URL"])
-        for name in ("backend", *WORKERS, "postgres-exporter"):
+        for name in ("backend", "mqtt-ingest", *WORKERS, "postgres-exporter"):
             self.assertNotIn(urls["MESHCORE_MIGRATE_DATABASE_URL"],
                              services[name]["environment"].values(), name)
 
     def test_memory_overrides_move_both_ceiling_constraints(self):
-        services = resolved(BACKEND_MEMORY_LIMIT="2g", HOPREACH_MEMORY_LIMIT="1536m",
+        services = resolved(BACKEND_MEMORY_LIMIT="2g", MQTT_INGEST_MEMORY_LIMIT="768m", HOPREACH_MEMORY_LIMIT="1536m",
                             DATABASE_POOL_MAX="12", WORKER_DATABASE_POOL_MAX="3")
-        for name, count in (("backend", 2 * 1024**3), ("hopreach", 1536 * 1024**2)):
+        for name, count in (("backend", 2 * 1024**3), ("mqtt-ingest", 768 * 1024**2), ("hopreach", 1536 * 1024**2)):
             self.assertEqual(int(services[name]["mem_limit"]), count)
             self.assertEqual(int(services[name]["memswap_limit"]), count)
         self.assertEqual(services["backend"]["environment"]["DATABASE_POOL_MAX"], "12")
         for name in WORKERS:
             self.assertEqual(services[name]["environment"]["DATABASE_POOL_MAX"], "3", name)
+
+    def test_api_and_mqtt_ingest_have_independent_lifecycles(self):
+        api, intake = (self.services[name] for name in ("backend", "mqtt-ingest"))
+        self.assertEqual(api["image"], intake["image"])
+        self.assertEqual(int(api["mem_limit"]) + int(intake["mem_limit"]), 1024**3)
+        self.assertEqual(api["environment"]["UKMESH_RUNTIME_ROLE"], "api")
+        self.assertEqual(intake["environment"]["UKMESH_RUNTIME_ROLE"], "ingest")
+        self.assertEqual(intake["environment"]["DATABASE_POOL_MAX"], "2")
+        self.assertEqual(set(api["depends_on"]), {"db-migrate"})
+        self.assertEqual(set(intake["depends_on"]), {"db-migrate"})
+        self.assertIn("/api-readyz", api["healthcheck"]["test"][1])
+        self.assertIn("/readyz", intake["healthcheck"]["test"][1])
+        self.assertFalse(intake.get("ports"))
+        self.assertNotIn("MQTT_PASSWORD", api["environment"])
+        self.assertTrue(intake["environment"]["MQTT_INGEST_PASSWORD_FILE"].startswith("/run/ukmesh-mqtt/"))
+        self.assertNotIn("/run/ukmesh-mqtt", {m["target"] for m in api["volumes"]})
+        self.assertIn("/run/ukmesh-mqtt", {m["target"] for m in intake["volumes"]})
 
     def test_default_service_ceilings_and_external_sink_are_explicit(self):
         # Infrastructure is supplied by the existing CI overlay; its settings

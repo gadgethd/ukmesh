@@ -30,7 +30,7 @@ class Clock:
 def snapshot():
     name=r.APPS['ukmesh'];record={'refs':{'ukmesh':'old'},'container_id':'u','image_id':'i','pid':10,'started_at':'2026-11-15T10:00:00Z','running':True}
     return {'consumers':{name:record},'broker':{'container_id':'b','running':True,'started_at':'2026-11-15T10:00:01Z'},
-        'containers':{name:{'Id':'u','Image':'i','Config':{'Labels':{'com.docker.compose.project':'ukmesh-full','com.docker.compose.service':'backend'}},'State':{'Running':True,'Pid':10,'StartedAt':record['started_at']}}}}
+        'containers':{name:{'Id':'u','Image':'i','Config':{'Labels':{'com.docker.compose.project':'ukmesh-full','com.docker.compose.service':'mqtt-ingest'}},'State':{'Running':True,'Pid':10,'StartedAt':record['started_at']}}}}
 
 
 class BoundedPreparation(unittest.TestCase):

@@ -117,15 +117,17 @@ def core_projection(run: Path) -> dict:
                 ram_receipt = receipt
         except Exception as error:
             checks.append({"name": filename, "passed": False, "error": safe_error(error)})
-    inspected = json.loads(docker(["inspect", "ukmesh-full-backend-1", "ukmesh-companions-corescope-ingestor-1"]).stdout)
-    env = dict(value.split("=", 1) for value in inspected[0]["Config"]["Env"])
+    api, intake, corescope = json.loads(docker(["inspect", "ukmesh-full-backend-1", "ukmesh-full-mqtt-ingest-1",
+                                              "ukmesh-companions-corescope-ingestor-1"]).stdout)
+    durable = all(dict(value.split("=", 1) for value in service["Config"]["Env"]).get("MQTT_INGEST_MODE", "durable")
+                  == "durable" for service in (api, intake))
     mode = read_json(STATE / "runtime/corescope-mode.json")
-    config_file = next((Path(mount["Source"]) for mount in inspected[1]["Mounts"]
+    config_file = next((Path(mount["Source"]) for mount in corescope["Mounts"]
                         if mount["Type"] == "bind" and mount["Destination"] == "/config/config.json"), None)
     configuration = read_json(config_file) if config_file else {}
     base = read_json(REPO / "scripts/companion-dev/corescope.json")
     checks.append({"name": "default MQTT and durable ownership restored", "passed":
-                   mode.get("mode") == "mqtt" and env.get("MQTT_INGEST_MODE", "durable") == "durable"
+                   mode.get("mode") == "mqtt" and durable
                    and not configuration.get("publicProjection") and configuration.get("mqttSources") == base.get("mqttSources")
                    and not configuration.get("postgresSources") and not configuration.get("redisSources")})
     if ram_receipt:
@@ -135,6 +137,6 @@ def core_projection(run: Path) -> dict:
         checks.append({"name": "normal Redis settings actually restored", "passed": actual == previous})
     result = {"at": utc_now(), "passed": all(check["passed"] for check in checks), "checks": checks,
               "receipts": receipts, "application": application, "context": phase_context(run),
-              "source_scope": "CoreScope source/binaries, backend image, installed reader policy and exact Core proof sources"}
+              "source_scope": "CoreScope source/binaries, API and ingest images, installed reader policy and exact Core proof sources"}
     write_json(run / "core-projection.json", result)
     return result

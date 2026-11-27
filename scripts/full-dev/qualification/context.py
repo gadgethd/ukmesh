@@ -23,7 +23,8 @@ def repository_contents(directory: Path) -> str:
 
 def corescope_application_context(policy_fixture_token: str | None = None) -> dict:
     """Scope Core adapter evidence to its actual app code, binaries and policy."""
-    names = ["ukmesh-companions-corescope-1", "ukmesh-companions-corescope-ingestor-1", "ukmesh-full-backend-1"]
+    names = ["ukmesh-companions-corescope-1", "ukmesh-companions-corescope-ingestor-1",
+             "ukmesh-full-backend-1", "ukmesh-full-mqtt-ingest-1"]
     inspected = {item["Name"].lstrip("/"): item for item in json.loads(docker(["inspect", *names]).stdout)}
     binaries = {}
     for name in names[:2]:
@@ -66,6 +67,7 @@ def corescope_application_context(policy_fixture_token: str | None = None) -> di
         "corescope_source_sha256": repository_contents(REPO / "third_party/corescope"),
         "corescope_binaries": binaries,
         "backend_image_id": inspected["ukmesh-full-backend-1"]["Image"],
+        "mqtt_ingest_image_id": inspected["ukmesh-full-mqtt-ingest-1"]["Image"],
         "reader_policy_source_sha256": digest(REPO / "scripts/full-dev/corescope-reader.sql"),
         "reader_policy_installed_sha256": hashlib.sha256(definitions.encode()).hexdigest(),
         "base_configuration_sha256": digest(REPO / "scripts/companion-dev/corescope.json"),

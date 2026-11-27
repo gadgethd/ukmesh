@@ -3,8 +3,11 @@ from pathlib import Path
 from urllib.parse import parse_qs,unquote,urlsplit
 
 CORE={'ukmesh-companions-corescope-1','ukmesh-companions-corescope-ingestor-1'}
+BACKEND_SERVICES={'ukmesh-full-backend-1','ukmesh-full-mqtt-ingest-1'}
+BACKEND_ROLES={'MESHCORE_INGEST_DATABASE_URL':'meshcore_ingest','MESHCORE_WORKER_DATABASE_URL':'meshcore_worker'}
 REQUIRED={
-    'ukmesh-full-backend-1':{'DATABASE_URL','MESHCORE_HTTP_DATABASE_URL','MESHCORE_INGEST_DATABASE_URL','MESHCORE_WORKER_DATABASE_URL','OWNER_DATABASE_URL'},
+    **{name:{'DATABASE_URL','MESHCORE_HTTP_DATABASE_URL','MESHCORE_INGEST_DATABASE_URL','MESHCORE_WORKER_DATABASE_URL','OWNER_DATABASE_URL'}
+       for name in BACKEND_SERVICES},
     'ukmesh-full-db-migrate-1':{'DATABASE_URL','MESHCORE_MIGRATE_DATABASE_URL'},
     'ukmesh-full-postgres-exporter-1':{'DATA_SOURCE_NAME'},
     'ukmesh-companions-beacon-1':{'POSTGRES_DSN','BEACON_MAINTENANCE_DSN'},
@@ -36,7 +39,7 @@ def describe_consumer(name,item,*,identity=False,finite=False):
         elif family=='owner':role='meshcore_owner'
         elif name=='ukmesh-full-db-migrate-1':role='meshcore'
         elif name=='ukmesh-full-postgres-exporter-1':role='meshcore_monitor'
-        elif name=='ukmesh-full-backend-1':role={'MESHCORE_INGEST_DATABASE_URL':'meshcore_ingest','MESHCORE_WORKER_DATABASE_URL':'meshcore_worker'}.get(key,'meshcore_api')
+        elif name in BACKEND_SERVICES:role=BACKEND_ROLES.get(key,'meshcore_api')
         else:role='meshcore_worker'
         database=unquote(parsed.path).removeprefix('/')
         if parsed.scheme not in ('postgres','postgresql') or parsed.hostname not in hosts or parsed.port!=5432 \

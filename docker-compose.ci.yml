@@ -185,6 +185,11 @@ services:
       OWNER_AUTHORIZATION_MODE: shadow
       OWNER_ACL_MODE: shadow
 
+  mqtt-ingest:
+    environment:
+      OWNER_AUTHORIZATION_MODE: shadow
+      OWNER_ACL_MODE: shadow
+
   db-migrate:
     # A fresh volume is seeded from `schema/base.sql` by the init hook, so the
     # runner legitimately starts against a non-empty database with no ledger.

@@ -29,10 +29,18 @@
       "work": [
         {
           "kind": "http",
-          "url": "http://127.0.0.1:3100/readyz",
+          "url": "http://127.0.0.1:3100/api-readyz",
           "json_path": "status",
           "equals": "ready"
-        },
+        }
+      ]
+    },
+    {
+      "name": "mqtt-ingest",
+      "container": "ukmesh-full-mqtt-ingest-1",
+      "kind": "container",
+      "required": true,
+      "work": [
         {
           "kind": "metric",
           "url": "http://127.0.0.1:9091/metrics",
@@ -641,7 +649,7 @@
       "work": [
         {
           "kind": "metric",
-          "url": "http://127.0.0.1:9091/metrics",
+          "url": "http://127.0.0.1:9094/metrics",
           "pattern": "^meshcore_mqtt_connection_monitor_healthy (\\d+)"
         }
       ]

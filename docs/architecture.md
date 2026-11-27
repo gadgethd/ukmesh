@@ -18,6 +18,59 @@ CoreScope, Beacon Server and Beacon Web are independent Git submodules under
 separate storage and ports while sharing the local fixture MQTT broker with
 UKMesh. They are outside UKMesh's production Compose and release builds.
 
+## Runtime failure boundaries
+
+The websites and app serve static files independently of the backend. Their
+proxy locations resolve upstream names at request time, so API and WebSocket
+traffic can recover when the backend returns. Monitoring starts independently
+of backend readiness. `/readyz` remains the aggregate release check for the
+database, MQTT intake and owner ACL. The owner ACL runtime retries its own
+startup while public HTTP and ingest start. Protected owner endpoints wait for
+the first successful reconciliation.
+
+The `backend` container serves HTTP and WebSockets. The `mqtt-ingest`
+container owns the broker session, packet commits and forwarding. They use the
+same image and start independently after database migration. The API's local
+readiness check is `/api-readyz`. Its aggregate `/readyz` also reads the ingest
+container's private readiness endpoint.
+
+In durable mode the intake process acknowledges QoS 1 only after the existing
+PostgreSQL commit boundary. It publishes bounded live events to Redis after
+persistence. The ingest publisher and WebSocket server both apply privacy
+checks. WebSocket clients reconnect to a fresh database snapshot after an API
+restart. Compact post-commit notices also let the API invalidate and warm its
+own resolver cache, independently of the ingest database work.
+With channel-scoped Redis ACLs, allow the existing `meshcore:live` channel and
+the private `meshcore:path-observation` channel for both processes.
+
+Owner-dependent forwarding also waits for that pass. MQTT intake can commit
+while the forwarding outbox holds pending deliveries. Monitor disk capacity
+and outbox recovery during a sustained owner outage.
+
+Treat account provisioning, inventory evidence and transport configuration as
+separate operations. Broker credentials reload in Mosquitto. An approved
+inventory can be promoted in its mounted directory using the
+[live activation procedure](operations.md#owner-authorization-baseline-refresh).
+Confirmed grants use the audited `operator-database` authority with explicit
+node confirmation. Existing environment-backed grants remain valid. The
+provisioner verifies the applied generation and broker file before reporting
+success. A recorded grant can wait for the running ACL reconciler and be
+verified again without rewriting its approval or restarting a service.
+
+Ingest password rotation owns the MQTT transport. It verifies the new password
+on the same broker via an independent session and then reconnects the durable
+client. The existing client ID and commit-before-acknowledgement rules apply
+throughout. Reconnect verifies subscription acknowledgements, session
+resumption and a delivery probe. A broker move also needs a handoff for the
+source broker's retained session and unacknowledged messages.
+
+Independent process restarts for MQTT and HTTP still require moving the live
+event publisher out of the WebSocket server. Reuse the private Redis live
+channel and repair gaps from committed PostgreSQL data. Preserve the publisher
+and consumer privacy checks, post-commit link handling and public feed publish
+authority. Qualify exact observations and live recovery for both restart
+directions before making a separate intake process the default.
+
 ## HopReach boundary
 
 The complete HopReach v0.1.32 source is vendored at

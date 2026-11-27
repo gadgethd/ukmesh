@@ -4,6 +4,7 @@ import {
   getAppliedOwnerAclArtifact,
   getOwnerAclReadiness,
   getOwnerAuthorizationSnapshot,
+  initOwnerAuthDb,
   saveOwnerAclArtifact,
   syncOperatorConfiguredOwnerGrants,
   updateOwnerAclState,
@@ -16,6 +17,7 @@ import {
 } from '../mqtt/aclManager.js';
 import { ownerGrantConfigGeneration, parseOwnerGrantConfig } from './ownerGrantConfig.js';
 import { convergeOwnerAcl, createOwnerAclReadinessRecovery, createOwnerAclReconciliation } from './ownerAclConvergence.js';
+import { createOwnerAclRuntime } from './ownerAclRuntime.js';
 import { getPublicFeedConfig } from './publicFeedConfig.js';
 import {
   getActivePublicFeedReaderUsernames,
@@ -58,7 +60,15 @@ function systemReadwriteAclTopics(): string[] {
 }
 
 const reconciliation = createOwnerAclReconciliation(reconcileOwnerAuthorizationPass);
-let reconcileTimer: NodeJS.Timeout | null = null;
+const runtime = createOwnerAclRuntime({
+  initialize: initOwnerAuthDb,
+  reconcile: reconcileOwnerAuthorization,
+  refreshIntervalMs: () => {
+    const interval = Number(process.env['OWNER_ACL_RECONCILE_INTERVAL_MS'] ?? 60_000);
+    return Number.isFinite(interval) ? Math.max(10_000, Math.min(interval, 2_147_483_647)) : 60_000;
+  },
+  reportError: (error) => console.error('[owner-acl] reconciliation failed:', error instanceof Error ? error.message : String(error)),
+});
 
 const recoverReadiness = createOwnerAclReadinessRecovery({
   readState: getOwnerAclReadiness,
@@ -143,25 +153,15 @@ function reconcileOwnerAuthorizationPass(): Promise<void> {
   });
 }
 
-export async function startOwnerAuthorizationReconciler(): Promise<void> {
-  const intervalMs = Number(process.env['OWNER_ACL_RECONCILE_INTERVAL_MS'] ?? 60_000);
-  const execute = () => {
-    void reconcileOwnerAuthorization().catch((error: Error) => {
-      console.error('[owner-acl] reconciliation failed:', error.message);
-    });
-  };
-  // The persisted ACL may reflect an older deployment. Reconcile it before
-  // the HTTP listener can serve owner-protected data; subsequent refreshes may
-  // retry in the background because the startup invariant is already current.
-  await reconcileOwnerAuthorization();
-  reconcileTimer = setInterval(execute, Math.max(10_000, intervalMs));
-  reconcileTimer.unref();
+export function startOwnerAuthorizationReconciler(): void {
+  runtime.start();
+}
+
+export function ownerAuthorizationAvailable(): boolean {
+  return runtime.isAvailable();
 }
 
 export async function stopOwnerAuthorizationReconciler(): Promise<void> {
-  if (reconcileTimer) {
-    clearInterval(reconcileTimer);
-    reconcileTimer = null;
-  }
+  await runtime.stop();
   await reconciliation.waitForIdle();
 }
