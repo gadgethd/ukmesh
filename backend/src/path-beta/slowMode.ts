@@ -21,23 +21,14 @@
  * fresh resolve once the window has passed).
  */
 import { pathingConfig } from '../platform/config/pathing.js';
-import {
-  invalidateResolveCache,
-  setResolveCache,
-  mergeStickyNodes,
-  getStickyNodeMap,
-  getHeldPath,
-  setHeldPath,
-  resolveCacheKey,
-} from './resolveCache.js';
-
-type SlowModePool = { runBackground<T>(job: unknown): Promise<T | null> };
+type SlowResult = { observers?: unknown; canonicalPath?: unknown };
+type FinalizeSlow = (packetHash: string, network: string) => Promise<SlowResult | null>;
 type SlowRecorder = (
   packetHash: string,
   network: string,
-  result: { observers?: unknown; canonicalPath?: unknown },
+  result: SlowResult,
 ) => Promise<void>;
-export function createSlowResolutionScheduler(deps: { pool: SlowModePool; record: SlowRecorder }) {
+export function createSlowResolutionScheduler(deps: { finalize: FinalizeSlow; record: SlowRecorder }) {
   let closed = false;
   const active = new Set<Promise<void>>();
   type PendingEntry = {
@@ -122,40 +113,8 @@ export function createSlowResolutionScheduler(deps: { pool: SlowModePool; record
 
   async function finalizeSlowResolution(packetHash: string, network: string): Promise<void> {
     try {
-      // Force the next API read to re-resolve with the complete observer set.
-      invalidateResolveCache(packetHash);
-      const stickyEntry = getStickyNodeMap(packetHash, network);
-      const stickyMap = stickyEntry
-        ? Object.fromEntries(stickyEntry.hashToNodeId)
-        : undefined;
-      const stickyAgeFraction = stickyEntry?.ageFraction;
-      const heldPath = getHeldPath(packetHash, network);
-      const result = await deps.pool.runBackground<{
-        stickyUpdates?: Record<string, string>;
-        observers?: unknown;
-        canonicalPath?: unknown;
-      }>({
-        type: 'resolveMulti',
-        packetHash,
-        network,
-        ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}),
-        ...(heldPath ? { heldPath } : {}),
-      });
+      const result = await deps.finalize(packetHash, network);
       if (!result || closed) return;
-      const { stickyUpdates, ...cacheableResult } = result;
-      setResolveCache(resolveCacheKey('multi', packetHash, network), cacheableResult);
-      if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
-        mergeStickyNodes(packetHash, network, stickyUpdates);
-      }
-      const canonicalPath = Array.isArray(result.canonicalPath) ? result.canonicalPath : [];
-      const heldNodes = canonicalPath
-        .map((hop) => hop && typeof hop === 'object' && 'nodeId' in hop
-          ? String((hop as { nodeId?: unknown }).nodeId ?? '')
-          : '')
-        .filter(Boolean);
-      if (heldNodes.length > 0 && heldNodes.length === canonicalPath.length) {
-        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-      }
       await deps.record(packetHash, network, result).catch(() => {
         /* observability is best-effort */
       });

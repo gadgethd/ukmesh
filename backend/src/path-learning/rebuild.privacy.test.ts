@@ -72,7 +72,6 @@ test('publication drops every prior whose prefix resolves onto a private node', 
 test('public path reads exclude prefixes and prev prefixes that resolve onto a private node', async () => {
   const statements: string[] = [];
   const repository = createPathingRepository({
-    getPublicVisibilityGeneration: async () => 1,
     query: async <T extends QueryResultRow>(text: string) => {
       statements.push(text);
       return { rows: [] as T[] };

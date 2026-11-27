@@ -35,6 +35,8 @@ pg_port=$(docker port "$pg_name" 5432/tcp)
 docker run --rm --network host --entrypoint python \
   -e TEST_REDIS_URL="redis://$redis_port" -e TEST_REDIS_PASSWORD="$password" \
   -e TEST_LINK_DATABASE_URL="postgresql://postgres:$password@$pg_port/postgres" \
+  -e TEST_LINK_TOPOLOGY_MIGRATION=/fixture-migrations/160_link_topology_revision.sql \
+  --mount "type=bind,src=$repo/backend/src/db/migrations,dst=/fixture-migrations,readonly" \
   "$worker_image" -m unittest discover -s /app/tests -v
 docker run --rm --network none --entrypoint python \
   "$worker_image" /app/tests/benchmark_rf.py --rays 12 --steps 1000

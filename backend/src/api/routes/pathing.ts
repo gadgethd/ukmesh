@@ -5,27 +5,14 @@ import { createPathingService } from '../../pathing/pathingService.js';
 import type { SlowResolutionScheduler } from '../../path-beta/slowMode.js';
 import { normalizeObserverQuery } from '../utils/observer.js';
 import { parseBoundedInteger, parseHexIdentifier } from '../utils/input.js';
-import type { HeldPathEntry } from '../../path-beta/resolveCache.js';
+import type { createResolveCoordinator } from '../../path-beta/resolveCoordinator.js';
 import { parseRegionFilter } from '../../regions/filter.js';
-
-type ResolvePoolFn = {
-  run<T>(job:
-    | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
-    | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry }
-    | { type: 'resolveLazy'; packetHash: string; network: string }
-  ): Promise<T | null>;
-};
 
 type PathingRouteDeps = {
   pathBetaLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
   pathLearningLimiter: ReturnType<typeof import('express-rate-limit').rateLimit>;
-  getResolveCache: (key: string) => unknown;
-  setResolveCache: (key: string, value: unknown) => void;
-  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
-  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
-  resolvePool: ResolvePoolFn;
+  resolve: ReturnType<typeof createResolveCoordinator>['resolve'];
   slowMode: Pick<SlowResolutionScheduler, 'slowModeRemainingMs' | 'slowModeStatus' | 'slowModeWindowMs'>;
-  getPublicVisibilityGeneration: () => Promise<number>;
   getMultibytePathSegments: (network?: string, observer?: string, region?: string) => Promise<{
     maxCount: number;
     segments: Array<{
@@ -41,17 +28,10 @@ type PathingRouteDeps = {
 
 export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): void {
   const { slowModeRemainingMs, slowModeStatus, slowModeWindowMs } = deps.slowMode;
-  const repository = createPathingRepository({
-    getPublicVisibilityGeneration: deps.getPublicVisibilityGeneration,
-    query: deps.query,
-  });
+  const repository = createPathingRepository({ query: deps.query });
 
   const service = createPathingService({
-    getResolveCache: deps.getResolveCache,
-    setResolveCache: deps.setResolveCache,
-    getHeldPath: deps.getHeldPath,
-    setHeldPath: deps.setHeldPath,
-    resolvePool: deps.resolvePool,
+    resolve: deps.resolve,
     repository,
   });
 
@@ -74,7 +54,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
         return;
       }
-      if (message === 'PATH_RESOLVE_OVERLOADED' || message === 'PATH_RESOLVE_TIMEOUT') {
+      if (['PATH_RESOLVE_OVERLOADED', 'PATH_RESOLVE_TIMEOUT', 'PATH_RESOLVE_STALE'].includes(message)) {
         res.status(503).json({ error: 'Path resolver is busy', retryable: true });
         return;
       }
@@ -112,7 +92,7 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
         res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
         return;
       }
-      if (message === 'PATH_RESOLVE_OVERLOADED' || message === 'PATH_RESOLVE_TIMEOUT') {
+      if (['PATH_RESOLVE_OVERLOADED', 'PATH_RESOLVE_TIMEOUT', 'PATH_RESOLVE_STALE'].includes(message)) {
         res.status(503).json({ error: 'Path resolver is busy', retryable: true });
         return;
       }
@@ -152,22 +132,18 @@ export function registerPathingRoutes(router: Router, deps: PathingRouteDeps): v
     });
     try {
       const network = resolvePublicNetworkScope(req.query['network'], req.headers);
-      const result = await deps.resolvePool.run({
-        type: 'resolveLazy',
-        packetHash,
-        network,
-      });
+      const result = await deps.resolve({ kind: 'lazy', packetHash, network });
       if (!result) {
         res.status(404).json({ error: 'No path data found for this packet' });
         return;
       }
-      res.json(result);
+      res.json(result.payload);
     } catch (err) {
       if ((err as Error).message === 'PATH_HISTORY_LIMIT') {
         res.status(422).json({ error: 'HISTORY_LIMIT', retryable: false });
         return;
       }
-      if ((err as Error).message === 'PATH_RESOLVE_OVERLOADED' || (err as Error).message === 'PATH_RESOLVE_TIMEOUT') {
+      if (['PATH_RESOLVE_OVERLOADED', 'PATH_RESOLVE_TIMEOUT', 'PATH_RESOLVE_STALE'].includes((err as Error).message)) {
         res.status(503).json({ error: 'Path resolver is busy', retryable: true });
         return;
       }

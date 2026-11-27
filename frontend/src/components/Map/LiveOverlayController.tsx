@@ -2,8 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { DeckGLOverlay } from './DeckGLOverlay.js';
 import { AnimatedPathOverlay, type AerialPath } from './AnimatedPathOverlay.js';
-import { useArcs, useNodeMetadata } from '../../hooks/useNodes.js';
-import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
+import { useArcs, useNodeGeometry, useNodeMetadata } from '../../hooks/useNodes.js';
 import { usePacketPathOverlay } from '../../hooks/usePacketPathOverlay.js';
 import { packetObserverIds } from '../../features/pathing/model.js';
 import type { ResolvedPathRoute } from '../../features/pathing/model.js';
@@ -67,35 +66,17 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const customLosSegments = useOverlayStore((state) => state.customLosSegments);
   const customLosStart = useOverlayStore((state) => state.customLosStart);
   const clashPathLines = useOverlayStore((state) => state.clashPathLines);
-  const losProfilesKey = useMemo(() => Object.entries(losProfilesByNodeId)
-    .map(([nodeId, profiles]) => `${nodeId}:${profiles.length}:${profiles.map((profile) => `${profile.peer_id}:${profile.profile.length}:${profile.itm_viable ? 1 : 0}`).join(',')}`)
-    .sort()
-    .join('|'), [losProfilesByNodeId]);
   const losProfiles = useMemo(
     () => Object.values(losProfilesByNodeId).flat(),
-    // The key avoids flattening again when Zustand produces an equivalent
-    // record while unrelated overlay state changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [losProfilesKey],
+    [losProfilesByNodeId],
   );
   const nodes = useNodeMetadata();
+  const geometry = useNodeGeometry();
   const arcs = useArcs();
-  const nodeCoordinateKey = useMemo(() => Array.from(nodes.values())
-    .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.name?.includes(PROHIBITED_NODE_MARKER) ? 1 : 0}`)
-    .sort()
-    .join('|'), [nodes]);
-  const nodeElevationKey = useMemo(() => Array.from(nodes.values())
-    .map((node) => `${node.node_id}:${node.lat ?? ''}:${node.lon ?? ''}:${node.elevation_m ?? 0}`)
-    .sort()
-    .join('|'), [nodes]);
-  const hiddenCoordMask = useMemo(
-    () => buildHiddenCoordMask(nodes.values()),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [nodeCoordinateKey],
-  );
+  const hiddenCoordMask = useMemo(() => buildHiddenCoordMask(geometry.values()), [geometry]);
   const positionElevations = useMemo(() => {
     const elevations = new Map<string, number>();
-    for (const node of nodes.values()) {
+    for (const node of geometry.values()) {
       if (!hasCoords(node)) continue;
       const elevation = node.elevation_m ?? 0;
       elevations.set(positionKey(node.lat, node.lon), elevation);
@@ -103,8 +84,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       elevations.set(positionKey(maskedLat, maskedLon), elevation);
     }
     return elevations;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hiddenCoordMask, nodeElevationKey]);
+  }, [geometry, hiddenCoordMask]);
   const setPathNodeIds = useOverlayStore((state) => state.setPathNodeIds);
   const setBetaMetrics = useOverlayStore((state) => state.setBetaMetrics);
   const pathExplanation = useOverlayStore((state) => state.pathExplanation);
@@ -176,7 +156,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
   const pathPointIndex = useMemo(() => {
     const index = new Map<string, Set<string>>();
     const pointKey = (lat: number, lon: number) => `${lat.toFixed(5)},${lon.toFixed(5)}`;
-    for (const node of nodes.values()) {
+    for (const node of geometry.values()) {
       if (!hasCoords(node)) continue;
       const key = pointKey(node.lat, node.lon);
       const existing = index.get(key);
@@ -184,8 +164,7 @@ export const LiveOverlayController: React.FC<LiveOverlayControllerProps> = ({
       else index.set(key, new Set([node.node_id.toLowerCase()]));
     }
     return index;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodeCoordinateKey]);
+  }, [geometry]);
 
   const pathNodeIdsPrevRef = React.useRef<Set<string> | null>(null);
   const pathNodeIds = useMemo<Set<string> | null>(() => {

@@ -171,7 +171,10 @@ test('failed stub deliveries remain unready and reach bounded retries', { timeou
     const dead = (await readdir(`${child.receipt}.queue`)).find((name) => name.endsWith('.dead.json'))!;
     assert.equal(JSON.parse(await readFile(path.join(`${child.receipt}.queue`, dead), 'utf8')).attempts, 2);
     assert.equal(calls, 2);
-    const metrics = await (await fetch(`${child.base}/metrics`)).text();
+    const metrics = await waitFor(
+      async () => (await fetch(`${child.base}/metrics`)).text(),
+      (body) => /^meshcore_alert_receiver_dead_lettered_total 1$/m.test(body),
+    );
     assert.match(metrics, /^meshcore_alert_receiver_failed_total 2$/m);
     assert.match(metrics, /^meshcore_alert_receiver_dead_lettered_total 1$/m);
     assert.match(metrics, /^meshcore_alert_receiver_unresolved_dead_letter_count 1$/m);

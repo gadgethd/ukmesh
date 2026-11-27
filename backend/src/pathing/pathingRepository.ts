@@ -20,7 +20,6 @@ export function privatePrefixPathFilterSql(columnExpr: string, alias = 'private_
 }
 
 type PathingRepositoryDeps = {
-  getPublicVisibilityGeneration: () => Promise<number>;
   query: QueryFn;
 };
 
@@ -59,11 +58,7 @@ export function compareEdgePriors(a: EdgePriorOrder, b: EdgePriorOrder): number 
 }
 
 export function createPathingRepository(deps: PathingRepositoryDeps) {
-  const { getPublicVisibilityGeneration, query } = deps;
-
-  async function fetchVisibilityGeneration(): Promise<number> {
-    return getPublicVisibilityGeneration();
-  }
+  const { query } = deps;
 
   async function fetchPathLearning(network: string, limit: number) {
     const [prefixRows, transitionRows, edgeRows, motifRows, calibrationRows] = await Promise.all([
@@ -185,7 +180,6 @@ export function createPathingRepository(deps: PathingRepositoryDeps) {
   }
 
   return {
-    fetchVisibilityGeneration,
     fetchPathLearning,
   };
 }

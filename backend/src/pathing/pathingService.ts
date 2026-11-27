@@ -1,5 +1,5 @@
 import type { PathingRepository } from './pathingRepository.js';
-import { noteVisibilityGeneration, resolveCacheKey, type HeldPathEntry } from '../path-beta/resolveCache.js';
+import type { createResolveCoordinator } from '../path-beta/resolveCoordinator.js';
 import { pathingConfig } from '../platform/config/pathing.js';
 import {
   toPublicBetaResultDto,
@@ -8,31 +8,10 @@ import {
   type PublicMultiObserverDto,
 } from './pathingPublicDto.js';
 
-type ResolvePoolFn = {
-  run<T>(
-    job:
-      | { type: 'resolve'; packetHash: string; network: string; observer?: string | null; heldPath?: HeldPathEntry }
-      | { type: 'resolveMulti'; packetHash: string; network: string; heldPath?: HeldPathEntry },
-  ): Promise<T | null>;
-};
-
 type PathingServiceDeps = {
-  getResolveCache: (key: string) => unknown;
-  setResolveCache: (key: string, value: unknown) => void;
-  getHeldPath: (packetHash: string, network: string) => HeldPathEntry | undefined;
-  setHeldPath: (packetHash: string, network: string, value: HeldPathEntry) => void;
-  resolvePool: ResolvePoolFn;
+  resolve: ReturnType<typeof createResolveCoordinator>['resolve'];
   repository: PathingRepository;
 };
-
-const RESOLVE_UNIQUE_INFLIGHT_MAX = Math.min(
-  256,
-  Math.max(1, Number(process.env['PATH_RESOLVE_UNIQUE_INFLIGHT_MAX'] ?? 34) || 34),
-);
-const OBSERVER_VARIANTS_PER_PACKET_MAX = Math.min(
-  16,
-  Math.max(1, Number(process.env['PATH_RESOLVE_OBSERVER_VARIANTS_PER_PACKET_MAX'] ?? 4) || 4),
-);
 
 type ResolvePayload = {
   mode?: 'resolved' | 'fallback' | 'none';
@@ -92,116 +71,18 @@ export function addPathExplanation(value: unknown): unknown {
 }
 
 export function createPathingService(deps: PathingServiceDeps) {
-const resolveInflightSingle = new Map<string, Promise<PublicBetaResultDto>>();
-const resolveInflightMulti = new Map<string, Promise<PublicMultiObserverDto>>();
-const observerVariantsByPacket = new Map<string, Set<string>>();
-function reserveResolve(packetHash: string, network: string, observer?: string | null): () => void {
-  if (resolveInflightSingle.size + resolveInflightMulti.size >= RESOLVE_UNIQUE_INFLIGHT_MAX) {
-    throw new Error('PATH_RESOLVE_OVERLOADED');
-  }
-  if (!observer) return () => undefined;
-  const packetKey = `${packetHash}|${network}`;
-  const variants = observerVariantsByPacket.get(packetKey) ?? new Set<string>();
-  if (!variants.has(observer) && variants.size >= OBSERVER_VARIANTS_PER_PACKET_MAX) {
-    throw new Error('PATH_RESOLVE_OVERLOADED');
-  }
-  variants.add(observer);
-  observerVariantsByPacket.set(packetKey, variants);
-  return () => {
-    variants.delete(observer);
-    if (variants.size === 0) observerVariantsByPacket.delete(packetKey);
-  };
-}
-
-
-  const {
-    getResolveCache,
-    setResolveCache,
-    getHeldPath,
-    setHeldPath,
-    resolvePool,
-    repository,
-  } = deps;
+  const { resolve, repository } = deps;
 
   async function resolvePacket(packetHash: string, network: string, observer?: string | null): Promise<PublicBetaResultDto> {
-    const visibilityGeneration = await repository.fetchVisibilityGeneration();
-    noteVisibilityGeneration(visibilityGeneration);
-    const cacheKey = resolveCacheKey('single', packetHash, network, visibilityGeneration, observer);
-    const cached = getResolveCache(cacheKey);
-    if (cached) return toPublicBetaResultDto(cached);
-    const inflight = resolveInflightSingle.get(cacheKey);
-    if (inflight) return inflight;
-    const release = reserveResolve(packetHash, network, observer);
-
-    const promise = (async () => {
-      const resolved = await resolvePool.run<unknown>({
-        type: 'resolve',
-        packetHash,
-        network,
-        observer,
-        heldPath: getHeldPath(packetHash, network),
-      });
-      if (!resolved) {
-        throw new Error('PACKET_NOT_FOUND');
-      }
-
-      const projected = toPublicBetaResultDto(addPathExplanation(resolved));
-      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
-      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
-        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-      }
-      setResolveCache(cacheKey, projected);
-      return projected;
-    })();
-    resolveInflightSingle.set(cacheKey, promise);
-    try {
-      return await promise;
-    } finally {
-      release();
-      if (resolveInflightSingle.get(cacheKey) === promise) {
-        resolveInflightSingle.delete(cacheKey);
-      }
-    }
+    const result = await resolve({ kind: 'single', packetHash, network, observer });
+    if (!result) throw new Error('PACKET_NOT_FOUND');
+    return toPublicBetaResultDto(result.explain ? addPathExplanation(result.payload) : result.payload);
   }
 
   async function resolvePacketMulti(packetHash: string, network: string): Promise<PublicMultiObserverDto> {
-    const visibilityGeneration = await repository.fetchVisibilityGeneration();
-    noteVisibilityGeneration(visibilityGeneration);
-    const cacheKey = resolveCacheKey('multi', packetHash, network, visibilityGeneration);
-    const cached = getResolveCache(cacheKey);
-    if (cached) return toPublicMultiObserverDto(cached);
-    const inflight = resolveInflightMulti.get(cacheKey);
-    if (inflight) return inflight;
-    const release = reserveResolve(packetHash, network);
-
-    const promise = (async () => {
-      const resolved = await resolvePool.run<unknown>({
-        type: 'resolveMulti',
-        packetHash,
-        network,
-        heldPath: getHeldPath(packetHash, network),
-      });
-      if (!resolved) {
-        throw new Error('PACKET_NOT_FOUND');
-      }
-
-      const projected = toPublicMultiObserverDto(addPathExplanation(resolved));
-      const heldNodes = projected.canonicalPath.map((hop) => hop.nodeId ?? '').filter(Boolean);
-      if (heldNodes.length === projected.canonicalPath.length && heldNodes.length > 0) {
-        setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-      }
-      setResolveCache(cacheKey, projected);
-      return projected;
-    })();
-    resolveInflightMulti.set(cacheKey, promise);
-    try {
-      return await promise;
-    } finally {
-      release();
-      if (resolveInflightMulti.get(cacheKey) === promise) {
-        resolveInflightMulti.delete(cacheKey);
-      }
-    }
+    const result = await resolve({ kind: 'multi', packetHash, network });
+    if (!result) throw new Error('PACKET_NOT_FOUND');
+    return toPublicMultiObserverDto(result.explain ? addPathExplanation(result.payload) : result.payload);
   }
 
   async function getPathLearning(network: string, limit: number): Promise<unknown> {

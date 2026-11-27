@@ -149,3 +149,13 @@ checks actual logging delivery separately from a resolved Compose policy.
 
 The [qualification handoff](lean-runtime-handoff.md) records the verified DEV
 results, open failures and the procedure for the next full-stack run.
+
+For an owned synthetic ACK seed under the private qualification directory, run
+`python3 scripts/full-dev/qualification/fixture_session.py TOKEN EVIDENCE_DIR seed --seed-source SOURCE_DIR`
+before starting a timed run. The seed takes the existing exclusive target lease and
+verifies broker and consumer queues before publication. Each window reconciles
+the UKMesh packet and ingest ledger rows, CoreScope transmissions and
+observations, and Beacon packets and observations. The checkpoint advances
+only after exact persistence. Run the same command to resume identities absent
+from every store. Keep the checkpoint and diagnose inconsistent or duplicate
+observations through the original fixture ownership checks.

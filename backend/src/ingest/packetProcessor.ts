@@ -10,8 +10,8 @@ import { insertOrUpdateSpamSuspect } from '../spam/suspectRepository.js';
 import { query, ingestQuery } from '../db/runtime.js';
 import { evaluateAdvert } from '../mqtt/spamDetector.js';
 import type { LivePacket } from '../types/index.js';
-import { decodePacketCompat, verifyAdvertSignature } from '../mqtt/decodePacket.js';
-import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from '../mqtt/channelRegistry.js';
+import { verifyAdvertSignature } from '../mqtt/decodePacket.js';
+import { buildChannelEntries, createChannelDecoder } from '../mqtt/channelRegistry.js';
 import { shouldDiscardUnverifiedTxAdvert, statusEnvelopeTargetsObserver } from '../mqtt/identityBinding.js';
 import { extractNeighborNodes } from '../mqtt/neighborPayload.js';
 import { parseMqttTopic } from '../mqtt/topic.js';
@@ -185,8 +185,7 @@ export function createPacketProcessor(deps: { clientId: string; events: IngestEv
    */
   const channelEntries = buildChannelEntries(process.env['MESHCORE_CHANNEL_SECRETS']);
 
-  // Combined keyStore used for decryption (all secrets, single decode call per packet)
-  const keyStore = buildCombinedKeyStore(channelEntries);
+  const channelDecoder = createChannelDecoder(channelEntries);
 
   const MQTT_MAX_PAYLOAD_BYTES = boundedEnvInteger('MQTT_MAX_PAYLOAD_BYTES', 64 * 1024, 1_024, 1_048_576);
   let activeMqttIngests = 0;
@@ -401,7 +400,7 @@ export function createPacketProcessor(deps: { clientId: string; events: IngestEv
 
     if (rawHex) {
       try {
-        const compat = decodePacketCompat(rawHex, keyStore);
+        const compat = channelDecoder.decode(rawHex);
         const {
           decoded,
           pathHashes,
@@ -453,7 +452,7 @@ export function createPacketProcessor(deps: { clientId: string; events: IngestEv
           }
 
           const decodedInner = decoded.payload?.decoded;
-          summary = buildSummary(decoded.payloadType, decodedInner, rawHex, channelEntries);
+          summary = compat.summary;
 
           if (decoded.payloadType === 4) {
             const inner     = decodedInner as unknown as Record<string, unknown> | undefined;
@@ -828,6 +827,7 @@ export function createPacketProcessor(deps: { clientId: string; events: IngestEv
       if (dedupSweepTimer) clearInterval(dedupSweepTimer);
       dedupSweepTimer = undefined;
       seenPackets.clear(); mqttDedupEntries.set(0);
+      channelDecoder.close();
       await publicPackets.close();
     },
   };

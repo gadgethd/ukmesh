@@ -161,6 +161,7 @@ def worker_loop(settings=None, *, context=None):
                     process_claimed_link_job(db, r_client, claimed, context=context)
                 # Compatible cutover: drain legacy jobs only after v3.
                 if not r_client.exists(link_queue_v3.REBUILD):
+                    context.finish_rebuild_topology()
                     while True:
                         raw = r_client.rpop(context.settings.LINK_JOB_QUEUE)
                         if raw is None:

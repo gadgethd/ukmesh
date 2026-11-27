@@ -2,20 +2,35 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import type { MeshNode } from '../../types/domain.js';
 import { PROHIBITED_NODE_MARKER } from '../../utils/pathing.js';
-import { createNodeMetadataSnapshot } from './nodeMetadataSnapshot.js';
+import { createNodeGeometrySnapshot, createNodeMetadataSnapshot } from './nodeMetadataSnapshot.js';
 
 const node: MeshNode = { node_id: 'fixture', name: 'Invented relay', lat: 54, lon: -2,
   last_seen: '2026-11-12T00:00:00Z', is_online: true };
 
-function fixture() {
+function fixture(createSnapshot = createNodeMetadataSnapshot) {
   let state = { epoch: 1, nodes: new Map([[node.node_id, node]]),
     nodeChanges: { full: true, ids: [] as readonly string[], previous: null as Map<string, MeshNode> | null } };
-  const read = createNodeMetadataSnapshot(() => state);
+  const read = createSnapshot(() => state);
   const update = (nodes: Map<string, MeshNode>, ids = [...nodes.keys()], full = false, epoch = state.epoch) => {
     state = { epoch, nodes, nodeChanges: { full, ids, previous: state.nodes } };
   };
   return { read, update, state: () => state };
 }
+
+test('overlay snapshots reuse geometry until coordinates, elevation, or privacy changes', () => {
+  const f = fixture(createNodeGeometrySnapshot);
+  const geometry = f.read();
+  const renamed = { ...node, name: 'Renamed relay', last_seen: '2026-11-12T00:00:01Z', role: 2 };
+  f.update(new Map([[node.node_id, renamed]]));
+  assert.equal(f.read(), geometry);
+
+  for (const change of [{ lat: 55 }, { lon: -3 }, { elevation_m: 100 }, { name: PROHIBITED_NODE_MARKER }]) {
+    const current = f.state().nodes.get(node.node_id)!;
+    const next = new Map([[node.node_id, { ...current, ...change }]]);
+    f.update(next);
+    assert.equal(f.read(), next);
+  }
+});
 
 test('metadata consumers stay stable through consecutive presence updates without mutating live data', () => {
   const f = fixture();

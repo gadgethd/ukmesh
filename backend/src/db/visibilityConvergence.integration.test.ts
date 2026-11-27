@@ -414,6 +414,54 @@ test('local TimescaleDB visibility-fence reproduction, regression and convergenc
     assert.deepEqual(await pair(), { generation: '4', materialized_generation: '4' });
   });
 
+  await t.test('scoped rematerialization repairs only stale flags in compressed and legacy packet rows', async () => {
+    await reset(); await addNode(); await addPrefix(); await repair();
+    await pool.query(`INSERT INTO packets(time,packet_hash,topic,network,src_node_id,path_hashes,path_hash_size_bytes)
+      VALUES
+        (TIMESTAMPTZ '2025-01-01 UTC', 'shared', 'fixture/stale', 'ukmesh', $1, ARRAY['aa'], 1),
+        (TIMESTAMPTZ '2025-01-01 UTC', 'shared', 'fixture/correct', 'ukmesh', $1, ARRAY['aa'], 1),
+        (TIMESTAMPTZ '2025-01-01 UTC', 'shared', 'fixture/unrelated', 'ukmesh', NULL, ARRAY['FF'], 1),
+        (TIMESTAMPTZ '2025-01-01 UTC', 'malformed', 'fixture/legacy', 'ukmesh', NULL, ARRAY['AA', 'GGGG'], 2)`, [nodeId]);
+    const selectFlags = () => pool.query(`SELECT topic, is_private, visibility_ok FROM packets ORDER BY topic`);
+    const expected = (await selectFlags()).rows;
+    assert.deepEqual(expected.map(({ topic, is_private, visibility_ok }) => [topic, is_private, visibility_ok]), [
+      ['fixture/correct', true, false], ['fixture/legacy', false, false],
+      ['fixture/stale', true, false], ['fixture/unrelated', false, true],
+    ]);
+    await pool.query(`UPDATE packets SET is_private = FALSE, visibility_ok = TRUE
+      WHERE topic IN ('fixture/stale', 'fixture/legacy')`);
+    await pool.query(`SELECT compress_chunk(chunk) FROM show_chunks('mesh.packets') chunk`);
+    assert.equal((await pool.query(`SELECT bool_and(is_compressed) AS compressed
+      FROM timescaledb_information.chunks WHERE hypertable_name = 'packets'`)).rows[0].compressed, true);
+
+    const run = async () => {
+      await pool.query(`INSERT INTO ops.privacy_rematerialization_queue(node_id,network,target,status)
+        VALUES($1,'ukmesh','packets','pending') ON CONFLICT (target,node_id) DO UPDATE SET
+          status = 'pending', attempts = 0, requested_at = NOW()`, [nodeId]);
+      const counts: number[] = [];
+      const adapter = {
+        query: (sql: string, params?: unknown[]) => pool.query(sql, params),
+        async connect() {
+          const client = await pool.connect();
+          return {
+            async query(sql: string, params?: unknown[]) {
+              const result = await client.query(sql, params);
+              if (sql.includes('UPDATE mesh.packets')) counts.push(result.rowCount ?? -1);
+              return result;
+            },
+            release: () => client.release(),
+          };
+        },
+      };
+      assert.equal(await processNextPrivacyRematerialization(adapter as never, { chunkPauseMs: 0 }), true);
+      assert.equal((await pool.query("SELECT status FROM ops.privacy_rematerialization_queue WHERE target='packets'")).rows[0].status, 'done');
+      return counts;
+    };
+    assert.deepEqual(await run(), [2]);
+    assert.deepEqual((await selectFlags()).rows, expected);
+    assert.deepEqual(await run(), [0]);
+  });
+
   const seedStaleRows = async () => {
     await reset(); await addNode();
     for (const target of ['packets', 'packet_paths'] as const) {

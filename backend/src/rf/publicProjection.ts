@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
-import { constants } from 'node:fs';
-import { open, realpath } from 'node:fs/promises';
+import { constants, type BigIntStats } from 'node:fs';
+import { open, realpath, type FileHandle } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { Router, type Response } from 'express';
 import { publicRfGeneration, type RfPosition, type RfVisibility } from './visibility.js';
@@ -76,20 +76,28 @@ function samePosition(actual: RfPosition | undefined, expected: RfPosition | nul
   return expected !== null && actual?.lat === expected.lat && actual.lon === expected.lon;
 }
 
-async function readFileWithin(root: string, path: string, limit: number): Promise<Buffer> {
+async function openArtifact(root: string, path: string): Promise<FileHandle> {
   const target = join(root, path);
   if (await realpath(target) !== target) throw new Error('RF_ARTIFACT_PATH_UNAVAILABLE');
-  const file = await open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  return open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+}
+
+async function readArtifact(file: FileHandle, size: number): Promise<Buffer> {
+  const result = Buffer.alloc(size);
+  for (let offset = 0; offset < result.length;) {
+    const { bytesRead } = await file.read(result, offset, result.length - offset, offset);
+    if (bytesRead === 0) throw new Error('RF_ARTIFACT_CHANGED');
+    offset += bytesRead;
+  }
+  return result;
+}
+
+async function readFileWithin(root: string, path: string, limit: number): Promise<Buffer> {
+  const file = await openArtifact(root, path);
   try {
     const stat = await file.stat();
     if (!stat.isFile() || stat.size < 1 || stat.size > limit) throw new Error('RF_ARTIFACT_SIZE_UNAVAILABLE');
-    const result = Buffer.alloc(stat.size);
-    for (let offset = 0; offset < result.length;) {
-      const { bytesRead } = await file.read(result, offset, result.length - offset, offset);
-      if (bytesRead === 0) throw new Error('RF_ARTIFACT_CHANGED');
-      offset += bytesRead;
-    }
-    return result;
+    return await readArtifact(file, stat.size);
   } finally {
     await file.close();
   }
@@ -143,10 +151,6 @@ function projectProduct(data: Document, tiles: Tile[]) {
   };
 }
 
-function networkTiles(meta: Document, tier: Tier, generation: number): Tile[] {
-  return tilesFor(document(document(meta['coverage'])[tier]), `tiles/${tier}/`, generation);
-}
-
 function archiveEntries(meta: Document, generation: number): Archive[] {
   const entries = Object.entries(document(meta['node_coverage']));
   if (entries.length > maxArchives) throw new Error('RF_ARCHIVE_LIMIT');
@@ -166,19 +170,96 @@ function archiveEntries(meta: Document, generation: number): Archive[] {
   return result;
 }
 
-function projectManifest(meta: Document, visibility: RfVisibility, archives: Archive[]) {
+function indexTiles(tiles: Tile[]) {
+  return { tiles, byImage: new Map(tiles.map((tile) => [tile.image, tile])) };
+}
+
+function indexManifest(meta: Document, generation: number) {
+  const network = new Map<Tier, ReturnType<typeof indexTiles>>();
+  const archiveTiles = new Map<Archive, ReturnType<typeof indexTiles>>();
+  let archives: ReturnType<typeof indexArchives> | undefined;
+
+  function indexArchives() {
+    const entries = archiveEntries(meta, generation);
+    const byId = new Map<string, Archive | null>();
+    for (const archive of entries) byId.set(archive.id, byId.has(archive.id) ? null : archive);
+    return { entries, byId };
+  }
+
+  return {
+    meta,
+    generation,
+    network(tier: Tier) {
+      let tiles = network.get(tier);
+      if (!tiles) {
+        tiles = indexTiles(tilesFor(document(document(meta['coverage'])[tier]), `tiles/${tier}/`, generation));
+        network.set(tier, tiles);
+      }
+      return tiles;
+    },
+    archives: () => archives ??= indexArchives(),
+    archiveTiles(archive: Archive) {
+      let tiles = archiveTiles.get(archive);
+      if (!tiles) {
+        const { id, product, generation } = archive;
+        tiles = indexTiles(tilesFor(product, `tiles/nodes/${id}/`, generation));
+        archiveTiles.set(archive, tiles);
+      }
+      return tiles;
+    },
+  };
+}
+
+function manifestRevision(stat: BigIntStats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}`;
+}
+
+function createManifestReader() {
+  let cached: { revision: string; parsed: Promise<Document>; index?: ReturnType<typeof indexManifest> } | undefined;
+  return async (root: string, generation: number) => {
+    const file = await openArtifact(root, 'meta.json');
+    try {
+      const stat = await file.stat({ bigint: true });
+      if (!stat.isFile() || stat.size < 1n || stat.size > manifestLimit) throw new Error('RF_ARTIFACT_SIZE_UNAVAILABLE');
+      const revision = manifestRevision(stat);
+      // Keep one bounded file revision. Each caller still verifies the path and
+      // descriptor; only the bytes from the same revision may share an index.
+      const entry = cached?.revision === revision ? cached : (cached = {
+        revision,
+        parsed: (async () => {
+          const bytes = await readArtifact(file, Number(stat.size));
+          if (manifestRevision(await file.stat({ bigint: true })) !== revision) throw new Error('RF_ARTIFACT_CHANGED');
+          return document(JSON.parse(bytes.toString('utf8')));
+        })(),
+      });
+      try {
+        const meta = await entry.parsed;
+        if (entry.index?.generation !== generation) entry.index = indexManifest(meta, generation);
+        return entry.index;
+      } catch (error) {
+        if (cached === entry) cached = undefined;
+        throw error;
+      }
+    } finally {
+      await file.close();
+    }
+  };
+}
+
+function projectManifest(index: ReturnType<typeof indexManifest>, visibility: RfVisibility) {
+  const { meta } = index;
   const coverage: Document = {};
   for (const tier of tiers) {
-    const product = projectProduct(document(document(meta['coverage'])[tier]), networkTiles(meta, tier, visibility.generation));
+    const product = projectProduct(document(document(meta['coverage'])[tier]), index.network(tier).tiles);
     if (product) coverage[tier] = product;
   }
 
   const nodeCoverage: Document = {};
   let archiveTimestamp: string | undefined;
-  for (const archive of archives) {
+  for (const archive of index.archives().entries) {
     if (!samePosition(visibility.positions.get(archive.key), archive.position)) continue;
     const { id } = archive;
-    const standard = projectProduct(archive.product, tilesFor(archive.product, `tiles/nodes/${id}/`, archive.generation));
+    const standard = projectProduct(archive.product, index.archiveTiles(archive).tiles);
     if (!standard) continue;
     if (standard.generated_at && (!archiveTimestamp || standard.generated_at > archiveTimestamp)) {
       archiveTimestamp = standard.generated_at;
@@ -261,6 +342,7 @@ export function createPublicRfProjectionRoutes(options: {
 }): Router {
   const router = Router();
   const readVisibility = options.readVisibility;
+  const readManifest = createManifestReader();
   const output = resolve(options.outputDirectory);
   let activeRequests = 0;
   const serve = (handler: (root: string, initial: RfVisibility) => Promise<Buffer | object | null>) =>
@@ -298,9 +380,8 @@ export function createPublicRfProjectionRoutes(options: {
     return verified;
   }
   router.get('/meta.json', serve(async (root, initial) => {
-    const meta = await readDocument(root, 'meta.json', manifestLimit);
-    const archives = archiveEntries(meta, initial.generation);
-    return projectManifest(meta, await current(initial, archives.map((entry) => entry.key)), archives);
+    const index = await readManifest(root, initial.generation);
+    return projectManifest(index, await current(initial, index.archives().entries.map((entry) => entry.key)));
   }));
   router.get('/progress.json', serve(async (root, initial) => {
     const raw = await readDocument(root, 'progress.json', progressLimit);
@@ -309,22 +390,10 @@ export function createPublicRfProjectionRoutes(options: {
 
   function sendTile(image: string, tier: Tier | null, archiveId: string | null) {
     return serve(async (root, initial) => {
-      const meta = await readDocument(root, 'meta.json', manifestLimit);
-      let archive: Archive | undefined;
-      let tile: Tile | undefined;
-      if (tier !== null) {
-        tile = networkTiles(meta, tier, initial.generation).find((item) => item.image === image);
-      } else {
-        const matches = archiveEntries(meta, initial.generation)
-          .filter((entry) => entry.id === archiveId);
-        if (matches.length === 1) {
-          archive = matches[0];
-          if (archive) {
-            tile = tilesFor(archive.product, `tiles/nodes/${archiveId}/`, archive.generation)
-              .find((item) => item.image === image);
-          }
-        }
-      }
+      const index = await readManifest(root, initial.generation);
+      const archive = archiveId !== null ? index.archives().byId.get(archiveId) : undefined;
+      const tile = tier !== null ? index.network(tier).byImage.get(image)
+        : archive ? index.archiveTiles(archive).byImage.get(image) : undefined;
       if (!tile) return null;
       if (archive && !samePosition((await current(initial, [archive.key])).positions.get(archive.key), archive.position)) {
         return null;

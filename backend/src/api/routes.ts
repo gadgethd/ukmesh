@@ -24,7 +24,6 @@ import {
   verifyMqttCredentials,
 } from '../owner/ownerAccess.js';
 import { encryptOwnerSession, getOwnerSession, isSecureRequest } from '../owner/ownerSession.js';
-import { getResolveCache, setResolveCache, getHeldPath, setHeldPath } from '../path-beta/resolveCache.js';
 import type { createPathResolutionRuntime } from '../path-beta/liveResolution.js';
 import type { ReadIngestHealth } from '../ingest/health.js';
 import { maskDecodedPathNodes } from '../stats/maskDecodedPathNodes.js';
@@ -83,7 +82,7 @@ import { createOwnerSessionGuard } from './ownerSessionGuard.js';
 import { withHeavyWorkAdmission } from '../analysis/heavyWorkAdmission.js';
 
 export function createApiRuntime(healthRuntime: HealthRuntime, pathResolution: ReturnType<typeof createPathResolutionRuntime>, readIngestHealth: ReadIngestHealth) {
-  const { resolvePool, slowMode } = pathResolution;
+  const { resolve, slowMode } = pathResolution;
   const router = Router();
   const caches = createApiCaches();
   const { statsCache, inferredNodesCache, inferredNodesInflight, nodeLinksCache, nodeLinksInflight, chartsCache, chartsInflight, ownerLiveCache } = caches;
@@ -211,13 +210,8 @@ export function createApiRuntime(healthRuntime: HealthRuntime, pathResolution: R
   registerPathingRoutes(router, {
     pathBetaLimiter: PATH_BETA_LIMITER,
     pathLearningLimiter: PATH_LEARNING_LIMITER,
-    getResolveCache,
-    setResolveCache,
-    getHeldPath,
-    setHeldPath,
-    resolvePool,
+    resolve,
     slowMode,
-    getPublicVisibilityGeneration,
     getMultibytePathSegments,
     query,
   });

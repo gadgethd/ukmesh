@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { Buffer } from 'node:buffer';
 import { createCipheriv, createHash, createHmac } from 'node:crypto';
-import test from 'node:test';
-import { MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
+import test, { after } from 'node:test';
 import {
   buildChannelEntries,
-  buildSummary,
-  hasMeshosSignature,
+  buildCombinedKeyStore,
+  createChannelDecoder,
   isMeshosSignedPlaintext,
   MESHOS_SIGNED_MARKER,
 } from './channelRegistry.js';
@@ -52,49 +51,43 @@ function buildGroupTextPacket(
   return Buffer.concat([Buffer.from([0x15, 0x00]), payload]).toString('hex').toUpperCase();
 }
 
-function decodedPayload(rawHex: string) {
-  return decodePacketCompat(rawHex, MeshCoreDecoder.createKeyStore({ channelSecrets: [PUBLIC2_SECRET] }))
-    .decoded?.payload?.decoded;
+const entries = buildChannelEntries('');
+const decoder = createChannelDecoder(entries);
+after(() => decoder.close());
+
+function checkPayloadParity(rawHex: string) {
+  const { summary, ...actual } = decoder.decode(rawHex);
+  assert.deepEqual(actual, decodePacketCompat(rawHex, buildCombinedKeyStore(entries)));
+  return summary;
 }
 
 test('detects the MeshOS signed ending on authenticated group text', () => {
-  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Pink Rabbit: hello mesh', { signed: true });
-  const decoded = decodedPayload(rawHex);
-  assert.ok(decoded?.decrypted, 'signed packets still authenticate as standard MeshCore');
-
-  const entries = buildChannelEntries('');
-  assert.equal(hasMeshosSignature(decoded as never, entries), true);
-  assert.equal(buildSummary(5, decoded, rawHex, entries), `[public2] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
+  const wire = buildGroupTextPacket(PUBLIC2_SECRET, 'Pink Rabbit: hello mesh', { signed: true });
+  assert.equal(checkPayloadParity(wire), `[public2] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
 });
 
-test('recognizes the signed ending when public channel hashes collide', () => {
-  const entries = buildChannelEntries('');
+test('attributes colliding keys to the authenticated channel', () => {
   const crawley = entries.find(entry => entry.name === 'crawley');
   assert.ok(crawley);
-  const rawHex = buildGroupTextPacket(crawley.secret, 'Pink Rabbit: hello mesh', { signed: true });
-  const decoded = decodePacketCompat(rawHex, crawley.keyStore).decoded?.payload?.decoded;
-  assert.ok(decoded?.decrypted);
-
-  assert.equal(hasMeshosSignature(decoded as never, entries), true);
-  assert.equal(buildSummary(5, decoded, rawHex, entries), `[crawley] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
+  const wire = buildGroupTextPacket(crawley.secret, 'Pink Rabbit: hello mesh', { signed: true });
+  assert.equal(checkPayloadParity(wire), `[crawley] Pink Rabbit: hello mesh · ${MESHOS_SIGNED_MARKER}`);
 });
 
-test('plain group text gets no signature marker', () => {
-  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'M0CNQ: morning all');
-  const decoded = decodedPayload(rawHex);
-  const entries = buildChannelEntries('');
-
-  assert.equal(hasMeshosSignature(decoded as never, entries), false);
-  assert.equal(buildSummary(5, decoded, rawHex, entries), '[public2] M0CNQ: morning all');
+test('plain group text and an independent registry retain their own labels on relayed packets', (t) => {
+  const wire = buildGroupTextPacket(PUBLIC2_SECRET, 'M0CNQ: morning all');
+  assert.equal(checkPayloadParity(wire), '[public2] M0CNQ: morning all');
+  const relay = '1501FF' + wire.slice(4);
+  assert.equal(checkPayloadParity(relay), '[public2] M0CNQ: morning all');
+  const renamed = createChannelDecoder([{ name: 'other', classification: 'confidential', secret: PUBLIC2_SECRET }]);
+  const empty = createChannelDecoder([]);
+  t.after(() => { renamed.close(); empty.close(); });
+  assert.equal(renamed.decode(relay).summary, '[other] M0CNQ: morning all');
+  assert.equal(empty.decode(relay).summary, '[encrypted]');
 });
 
 test('a MAC-failing packet stays encrypted and is never labelled MeshOS', () => {
-  const rawHex = buildGroupTextPacket(PUBLIC2_SECRET, 'Lee G3LJL: hello', { signed: true });
-  const tampered = `${rawHex.slice(0, -4)}0000`;
-  const decoded = decodedPayload(tampered);
-
-  assert.equal(decoded?.decrypted, undefined);
-  assert.equal(buildSummary(5, decoded, tampered, buildChannelEntries('')), '[encrypted]');
+  const wire = buildGroupTextPacket(PUBLIC2_SECRET, 'Lee G3LJL: hello', { signed: true });
+  assert.equal(checkPayloadParity(`${wire.slice(0, -4)}0000`), '[encrypted]');
 });
 
 test('detector requires the exact tail shape', () => {

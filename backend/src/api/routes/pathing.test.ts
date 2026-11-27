@@ -1,4 +1,5 @@
 import { createSlowResolutionScheduler } from '../../path-beta/slowMode.js';
+import { createResolveCoordinator } from '../../path-beta/resolveCoordinator.js';
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
@@ -9,20 +10,19 @@ import { registerPathingRoutes } from './pathing.js';
 const passThroughLimiter: RequestHandler = (_req, _res, next) => next();
 
 async function withPathingServer(
-  run: Parameters<typeof registerPathingRoutes>[1]['resolvePool']['run'],
+  run: (job: object) => Promise<unknown>,
   callback: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
   const router = Router();
+  const resolution = createResolveCoordinator({
+    run: async <T>(job: object) => await run(job) as T,
+    runBackground: async () => null,
+  }, async () => 1);
   registerPathingRoutes(router, {
-    slowMode: createSlowResolutionScheduler({ pool: { runBackground: async () => null }, record: async () => {} }),
+    slowMode: createSlowResolutionScheduler({ finalize: async () => null, record: async () => {} }),
     pathBetaLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathBetaLimiter'],
     pathLearningLimiter: passThroughLimiter as Parameters<typeof registerPathingRoutes>[1]['pathLearningLimiter'],
-    getResolveCache: () => undefined,
-    setResolveCache: () => undefined,
-    getHeldPath: () => undefined,
-    setHeldPath: () => undefined,
-    resolvePool: { run },
-    getPublicVisibilityGeneration: async () => 1,
+    resolve: resolution.resolve,
     getMultibytePathSegments: async () => ({ maxCount: 0, segments: [] }),
     query: async () => ({ rows: [] }),
   });
@@ -34,6 +34,7 @@ async function withPathingServer(
     const { port } = server.address() as AddressInfo;
     await callback(`http://127.0.0.1:${port}`);
   } finally {
+    resolution.close();
     server.close();
   }
 }
@@ -52,7 +53,7 @@ test('lazy path requests execute in the bounded resolver worker pool', async () 
       paths: [],
     });
   });
-  assert.deepEqual(jobs, [{ type: 'resolveLazy', packetHash: 'ABCD', network: 'ukmesh' }]);
+  assert.deepEqual(jobs, [{ type: 'resolveLazy', packetHash: 'ABCD', network: 'ukmesh', requiredVisibilityGeneration: 1 }]);
 });
 
 test('lazy path saturation is exposed as a retryable response', async () => {

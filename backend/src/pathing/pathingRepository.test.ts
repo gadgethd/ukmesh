@@ -76,7 +76,7 @@ function repositoryWith(edgeOrder: EdgeRow[][], observedSql: string[]): ReturnTy
     }
     throw new Error(`unexpected query: ${text}`);
   };
-  return createPathingRepository({ getPublicVisibilityGeneration: async () => 1, query });
+  return createPathingRepository({ query });
 }
 
 test('identical path-learning reads return identical edgePriors', async () => {

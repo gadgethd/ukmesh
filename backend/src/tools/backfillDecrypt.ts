@@ -15,8 +15,7 @@
  * Usage (inside the backend image):
  *   node dist/tools/backfillDecrypt.js [--days=90] [--batch=500]
  */
-import { buildChannelEntries, buildCombinedKeyStore, buildSummary } from '../mqtt/channelRegistry.js';
-import { decodePacketCompat } from '../mqtt/decodePacket.js';
+import { buildChannelEntries, createChannelDecoder } from '../mqtt/channelRegistry.js';
 import { pool } from '../db/runtime.js';
 
 function log(msg: string): void {
@@ -30,7 +29,7 @@ const DAYS = daysArg ? Number(daysArg.split('=')[1]) : 90;
 const BATCH = batchArg ? Number(batchArg.split('=')[1]) : 500;
 
 const channelEntries = buildChannelEntries(process.env['MESHCORE_CHANNEL_SECRETS']);
-const keyStore = buildCombinedKeyStore(channelEntries);
+const channelDecoder = createChannelDecoder(channelEntries);
 log(`channels=${channelEntries.length} days=${DAYS} batch=${BATCH}`);
 
 process.on('unhandledRejection', (err) => {
@@ -93,11 +92,10 @@ async function main(): Promise<void> {
     for (const row of rows) {
       processed += 1;
       try {
-        const { decoded, metadataValid } = decodePacketCompat(row.raw_hex, keyStore);
+        const { decoded, metadataValid, summary } = channelDecoder.decode(row.raw_hex);
         if (!metadataValid || !decoded?.payload?.decoded) { failed += 1; continue; }
         const inner = decoded.payload.decoded as { decrypted?: { sender?: string; message?: string } } | undefined;
         if (!inner?.decrypted) { failed += 1; continue; }
-        const summary = buildSummary(decoded.payloadType, inner, row.raw_hex, channelEntries);
         updates.push({ packet_hash: row.packet_hash, decrypted: inner.decrypted, summary: summary ?? '[decrypted]' });
         decrypted += 1;
       } catch {
@@ -121,7 +119,7 @@ async function main(): Promise<void> {
   await pool.end();
 }
 
-main().catch((err) => {
+main().finally(() => channelDecoder.close()).catch((err) => {
   log(`FATAL: ${err instanceof Error ? err.stack : String(err)}`);
   process.exit(1);
 });

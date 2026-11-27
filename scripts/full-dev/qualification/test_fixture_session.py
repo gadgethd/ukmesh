@@ -238,6 +238,7 @@ with target_lease(path=Path(sys.argv[1])):
                     return 0
 
                 with patch.multiple(fixture_session, STATE=root), \
+                     patch.object(fixture_session.shutil, 'disk_usage', return_value=type('Disk', (), {'free': 12 * 2**30})()), \
                      patch.object(fixture_session, 'read_intent', side_effect=lambda: state['intent']), \
                      patch.object(fixture_session, 'selection_files', side_effect=lambda: {'selection': state['selection']}), \
                      patch.object(fixture_session, 'selection_values', side_effect=lambda: state['selection']), \

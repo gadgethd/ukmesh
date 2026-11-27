@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { Worker } from 'node:worker_threads';
+import { setImmediate } from 'node:timers/promises';
 import {
   WorkerPool,
   WorkerPoolAbortedError,
@@ -65,6 +67,30 @@ test('worker pool removes queued work and terminates active work on abort', asyn
     await assert.rejects(active, WorkerPoolAbortedError);
     assert.equal(await pool.run<string>({ value: 'recovered', delayMs: 1 }), 'recovered');
   } finally {
+    await pool.close();
+  }
+});
+
+test('a replacement slot waits for the previous thread to release its resources', async t => {
+  const terminate = Worker.prototype.terminate;
+  const { promise, resolve: allowExit } = Promise.withResolvers<void>();
+  t.mock.method(Worker.prototype, 'terminate', async function (this: Worker) {
+    await promise;
+    return terminate.call(this);
+  });
+  const pool = new WorkerPool(fixtureUrl, 1, 1, 1, 2_000);
+  try {
+    const controller = new AbortController();
+    const cancelled = assert.rejects(pool.run({ value: 'old', delayMs: 1_500 }, controller.signal), WorkerPoolAbortedError);
+    controller.abort();
+    await cancelled;
+    const next = pool.run<string>({ value: 'new' });
+    await setImmediate();
+    assert.deepEqual(pool.snapshot(), { active: 0, interactiveQueued: 1, backgroundQueued: 0 });
+    allowExit();
+    assert.equal(await next, 'new');
+  } finally {
+    allowExit();
     await pool.close();
   }
 });

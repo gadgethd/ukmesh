@@ -1,9 +1,9 @@
 import type { LivePacket, WSMessage } from '../types/index.js';
 import { isPrivateNode } from '../privacy/privateNode.js';
-import type { PrivatePrefixCache } from '../privacy/privatePrefixCache.js';
+import type { PublicPrivacyPolicy } from '../privacy/privatePrefixCache.js';
 
 /** Current authority for all public message types; frozen flags are metadata. */
-export function authorizePublicWsMessage(message: WSMessage, policy: PrivatePrefixCache): WSMessage | null {
+export function authorizePublicWsMessage(message: WSMessage, policy: PublicPrivacyPolicy): WSMessage | null {
   if (!message.data || typeof message.data !== 'object') return null;
   const data = message.data as Record<string, unknown>;
   const network = String(data['network'] ?? '');

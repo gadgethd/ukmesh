@@ -33,6 +33,8 @@ test('real bootstrap formats retain rows, byte limits and cached privacy authori
   delete process.env['REDIS_PASSWORD'];
   process.env['WS_INITIAL_STATE_ENABLED'] = '1';
   process.env['WS_INITIAL_STATE_MAX_BYTES'] = '16384';
+  process.env['WS_INITIAL_STATE_CONCURRENCY'] = '1';
+  process.env['WS_INITIAL_STATE_QUEUE_MAX'] = '0';
   process.env['MQTT_INGEST_MODE'] = 'durable';
   process.env['WARMUP_NETWORKS'] = '';
   const { initWebSocketServer, closeWebSocketServer } = await import('./server.js');
@@ -59,9 +61,10 @@ test('real bootstrap formats retain rows, byte limits and cached privacy authori
     const text = raw.toString(); client.close();
     return { text, value: JSON.parse(text) };
   };
-  await t.test('legacy, unknown request version and compact delivery have identical under-cap data', async () => {
-    const legacy = await state(), unknown = await state('future');
-    const columns = await state(INITIAL_STATE_COLUMNS_FORMAT);
+  await t.test('concurrent formats share the one cold snapshot slot without queuing additional builds', async () => {
+    const [legacy, unknown, columns] = await Promise.all([
+      state(), state('future'), state(INITIAL_STATE_COLUMNS_FORMAT),
+    ]);
     assert.equal(legacy.value.format, undefined);
     assert.deepEqual(unknown.value.data, legacy.value.data);
     assert.deepEqual(decodeInitialStateColumns(columns.value).data, legacy.value.data);

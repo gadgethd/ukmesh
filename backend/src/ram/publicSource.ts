@@ -4,7 +4,7 @@ import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import { query } from '../db/runtime.js';
 import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import { encodePendingEntry, getRamIngestMode } from './protocol.js';
-import type { PrivatePrefixCache } from '../privacy/privatePrefixCache.js';
+import type { PublicPrivacyPolicy } from '../privacy/privatePrefixCache.js';
 
 function compareIds(left: string, right: string): number {
   const [lm, ls] = left.split('-').map(BigInt), [rm, rs] = right.split('-').map(BigInt);
@@ -15,7 +15,7 @@ function compareIds(left: string, right: string): number {
 export function createPublicRamSource(deps: {
   token?: () => string | undefined;
   read?: () => Promise<PendingStreamEntry[]>;
-  loadPolicy?: () => Promise<PrivatePrefixCache | null>;
+  loadPolicy?: () => Promise<PublicPrivacyPolicy | null>;
 } = {}): Router {
   const router = Router();
   const token = deps.token ?? (() => process.env['MQTT_RAM_PUBLIC_READ_TOKEN']);

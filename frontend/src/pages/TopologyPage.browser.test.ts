@@ -2,6 +2,7 @@ import { browserLane, browserLaunchOptions } from '../../test/browserLane.js';
 import { mapHandle } from '../../test/browserMapHandle.js';
 import assert from 'node:assert/strict';
 import { chromium, expect } from '@playwright/test';
+import type { GeoJSONSource } from 'maplibre-gl';
 
 const { browserTest, origin: base } = browserLane('AUDITWAVE_BROWSER_TESTS', 'AUDITWAVE_BROWSER_BASE_URL', 'http://127.0.0.1:3004');
 const topology = {
@@ -97,8 +98,16 @@ browserTest('topology preserves native layers, selection and controls across rep
       page.goto(`${base}/topology`, { waitUntil: 'domcontentloaded' }),
     ]);
     const canvas = page.locator('.topology-page__workspace canvas');
-    await expect(canvas).toBeVisible();
+    await expect(canvas).toBeVisible({ timeout: 14_000 });
     const map = await mapHandle(page);
+    // The canvas mounts before the lazy map installs its layers and the
+    // MapLibre worker has processed the topology fixture.
+    await expect.poll(() => map.evaluate(async map => {
+      const nodes = map.getSource<GeoJSONSource>('topology-nodes');
+      if (!nodes || !map.getLayer('topology-node') || !map.isSourceLoaded('topology-nodes')) return 0;
+      const data = await nodes.getData();
+      return data.type === 'FeatureCollection' ? data.features.length : 0;
+    }), { timeout: 14_000, message: 'Load the topology fixture before moving the map' }).toBe(2);
     await map.evaluate(map => { map.jumpTo({ center: [-1.05, 52.05], zoom: 8 }); });
     await expect.poll(() => map.evaluate(map => Boolean(map.getLayer('topology-node')) && map.queryRenderedFeatures({ layers: ['topology-node'] }).length)).toBe(2);
     await page.getByRole('checkbox', { name: 'Multibyte evidence only' }).check();

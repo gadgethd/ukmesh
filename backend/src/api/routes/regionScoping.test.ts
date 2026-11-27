@@ -46,12 +46,11 @@ test('region API validates before reads, scopes each node/packet path and preser
     packetDetailLimiter: limiter as Parameters<typeof registerMiscRoutes>[1]['packetDetailLimiter'],
   });
   registerPathingRoutes(router, {
-    slowMode: createSlowResolutionScheduler({ pool: { runBackground: async () => null }, record: async () => {} }),
+    slowMode: createSlowResolutionScheduler({ finalize: async () => null, record: async () => {} }),
     pathBetaLimiter: limiter as Parameters<typeof registerPathingRoutes>[1]['pathBetaLimiter'],
     pathLearningLimiter: limiter as Parameters<typeof registerPathingRoutes>[1]['pathLearningLimiter'],
-    getResolveCache: () => undefined, setResolveCache: () => {},
-    getHeldPath: () => undefined, setHeldPath: () => {}, resolvePool: { run: async () => null },
-    getPublicVisibilityGeneration: async () => 1, query: async () => ({ rows: [] }),
+    resolve: async () => null,
+    query: async () => ({ rows: [] }),
     getMultibytePathSegments: async (...args) => {
       calls.push({ path: 'history', args });
       return { maxCount: 0, segments: [] };

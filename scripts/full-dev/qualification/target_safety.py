@@ -236,9 +236,9 @@ def mark_complete(values,*,snapshot=inspect_snapshot,path=INTENT):
 
 
 @contextmanager
-def publication_lease(*,path=INTENT,lock_path=None):
+def publication_lease(*,path=INTENT,lock_path=None,exclusive=False):
     kwargs={} if lock_path is None else {'path':lock_path}
-    with target_lease(**kwargs):
+    with target_lease(exclusive=exclusive,**kwargs):
         intent=read_intent(path)
         if intent and intent['status']=='pending':raise ValueError('finish the pending canonical target start before publishing')
         yield

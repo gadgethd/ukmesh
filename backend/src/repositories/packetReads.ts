@@ -5,7 +5,7 @@ import { channelHashesForName } from '../mqtt/channelRegistry.js';
 import { isPublicChannelName } from '../mqtt/channelRegistry.js';
 import { sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { getRamIngestMode } from '../ram/protocol.js';
-import { packetDecryptionJoinSql, packetIdentityKeySql, packetIdentityReadAuthority } from '../db/packetIdentityRead.js';
+import { packetDecryptionJoinSql, packetIdentityKeySql, packetIdentityReadAuthority, packetSiblingDecryptionSql } from '../db/packetIdentityRead.js';
 import { buildScopePlaceholders } from '../db/readScope.js';
 import { buildPacketScopeClause } from '../db/readScope.js';
 import { buildPublicPacketPrivacyClause } from '../db/readScope.js';
@@ -303,18 +303,14 @@ export async function getChannelMessageHistory(
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
   const historyWindow = `NOW() - INTERVAL '90 days'`;
-  const channelDecryption = (placeholders: typeof scope) => {
-    const decryption = packetDecryptionJoinSql('p.packet_uid', `AND sib.time > ${historyWindow}
-      ${buildPacketScopeClause(placeholders, 'sib', network)}
-      ${buildPublicPacketPrivacyClause('sib')}`);
-    // The durable decryption can live on an older observation while the
-    // selected packet still carries the generic ingest-time encrypted marker.
-    return {
-      ...decryption,
-      summary: `COALESCE(NULLIF(BTRIM(${decryption.summary}), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`,
-    };
-  };
-  const selection = channelDecryption(scope);
+  const authority = packetIdentityReadAuthority();
+  const siblingScope = (placeholders: typeof scope) => `AND sib.time > ${historyWindow}
+    ${buildPacketScopeClause(placeholders, 'sib', network)}
+    ${buildPublicPacketPrivacyClause('sib')}`;
+  // The durable decryption can live on an older observation while the
+  // selected packet still carries the generic ingest-time encrypted marker.
+  const summarySql = (summary: string) => `COALESCE(NULLIF(BTRIM(${summary}), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
+  const selection = packetDecryptionJoinSql('p.packet_uid', siblingScope(scope), authority);
   const historyBatchLimit = 100;
   const selectionLimit = Math.min(100, Math.max(limit, Math.ceil(limit * 1.5)));
   const selected = new Set<string>();
@@ -339,7 +335,7 @@ export async function getChannelMessageHistory(
          AND p.visibility_ok IS TRUE
          AND p.is_private IS NOT TRUE
          AND (
-           LOWER(${selection.summary}) LIKE ('[' || $4 || ']%')
+           LOWER(${summarySql(selection.summary)}) LIKE ('[' || $4 || ']%')
            OR LOWER(COALESCE(
              p.payload->>'channelHash',
              p.payload->'decrypted'->>'channelHash',
@@ -369,32 +365,47 @@ export async function getChannelMessageHistory(
   if (selectedHashes.length === 0) return [];
 
   const detailScope = buildScopePlaceholders(2, network, observer);
-  const detail = channelDecryption(detailScope);
+  const detailPredicate = `p.packet_hash = ANY($1::text[])
+        AND p.packet_type = 5
+        AND p.time > ${historyWindow}
+        ${buildPacketScopeClause(detailScope, 'p', network)}
+        AND p.visibility_ok IS TRUE
+        AND p.is_private IS NOT TRUE`;
+  // Select sibling decryptions once for each distinct identity on the detail
+  // page. Historical rows without a UID still use their exact hash.
+  const siblings = authority === 'uid' ? `channel_rows AS MATERIALIZED (
+      SELECT p.time, p.packet_hash, p.packet_uid, p.rx_node_id, p.src_node_id,
+             p.topic, p.iata, p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
+             p.advert_count, p.path_hashes, p.path_hash_size_bytes,
+             p.network, p.visibility_ok, p.is_private
+      FROM mesh.packets p WHERE ${detailPredicate}
+    ), sibling_decryptions AS MATERIALIZED (
+      SELECT identity.packet_uid, decrypted.summary
+      FROM (SELECT DISTINCT packet_uid FROM channel_rows WHERE packet_uid IS NOT NULL) identity
+      LEFT JOIN LATERAL (${packetSiblingDecryptionSql('identity.packet_uid', siblingScope(detailScope))}) decrypted ON TRUE
+    ), ` : '';
+  const detailSummary = summarySql(siblings ? 'COALESCE(identity_dec.summary, exact_dec.summary)' : 'exact_dec.summary');
   const res = await readQuery(
-    `WITH channel_candidates AS MATERIALIZED (
+    `WITH ${siblings}channel_candidates AS MATERIALIZED (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
              COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))) AS rx_node_id,
              COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             ${detail.summary} AS summary,
+             ${detailSummary} AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
-      FROM mesh.packets p
-      ${detail.joins}
+      FROM ${siblings ? 'channel_rows' : 'mesh.packets'} p
+      ${siblings ? 'LEFT JOIN sibling_decryptions identity_dec USING (packet_uid)' : ''}
+      LEFT JOIN mesh.packet_decryptions exact_dec ON exact_dec.packet_hash = p.packet_hash
       LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases src_alias
         ON src_alias.source_node_id = UPPER(BTRIM(p.src_node_id))
-      WHERE p.packet_hash = ANY($1::text[])
-        AND p.packet_type = 5
-        AND p.time > ${historyWindow}
-        ${buildPacketScopeClause(detailScope, 'p', network)}
-        AND p.visibility_ok IS TRUE
-        AND p.is_private IS NOT TRUE
+      ${siblings ? '' : `WHERE ${detailPredicate}`}
       ORDER BY p.packet_hash,
-               CASE WHEN ${detail.summary} IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN ${detailSummary} IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.payload ? 'decrypted' THEN 1 ELSE 0 END DESC,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -150,4 +150,32 @@ test('artifact replacement, symlink, and policy races fail closed before RF byte
   assert.equal(raced.status, 503);
   assert.notEqual(raced.headers.get('content-type'), 'image/png');
   assert.equal(state.calls, 2);
+});
+
+test('concurrent tile requests, manifest replacement and rewrites see the current proofs', async (t) => {
+  const { root, get } = await fixture(t);
+  const manifest = join(root, 'meta.json');
+  const parallel = await Promise.all([STANDARD, STANDARD, PRECISION, NODE_TILE].map(async image => {
+    const response = await get(image);
+    assert.equal(response.status, 200);
+    return Buffer.from(await response.arrayBuffer());
+  }));
+  assert.deepEqual(parallel, [png, png, png, png]);
+
+  const changed = { visibility_generation: 9, coverage: { standard: { tiles: [tile(STALE, 9)] } } };
+  const staging = join(root, 'meta.next.json');
+  await writeFile(staging, JSON.stringify(changed));
+  await rename(staging, manifest);
+  assert.equal((await get(STANDARD)).status, 404);
+  assert.equal((await get(STALE)).status, 200);
+
+  changed.coverage.standard.tiles = [tile(STANDARD, 9)];
+  await writeFile(manifest, JSON.stringify(changed));
+  assert.equal((await get(STALE)).status, 404);
+  assert.equal((await get(STANDARD)).status, 200);
+
+  await writeFile(manifest, 'invalid manifest');
+  assert.equal((await get(STANDARD)).status, 503);
+  await writeFile(manifest, JSON.stringify(changed));
+  assert.equal((await get(STANDARD)).status, 200);
 });

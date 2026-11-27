@@ -17,7 +17,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, epilog=
         "all refreshes service inventory and validates the complete collected run; "
         "explicit stages own traffic, fixture preparation and timed measurements.")
-    parser.add_argument("action", choices=("inventory", "backup", "smoke", "access", "reads", "operations", "parity", "core-projection", "traffic", "soak", "recovery", "sample", "report", "all"))
+    parser.add_argument("action", choices=("inventory", "backup", "smoke", "access", "reads", "operations", "parity", "core-projection", "traffic", "seed", "soak", "recovery", "sample", "report", "all"))
     parser.add_argument("--run", help="existing evidence directory under plans/lean-runtime/qualification")
     parser.add_argument("--seconds", type=int, default=2400)
     parser.add_argument("--interval", type=float, default=5)
@@ -26,6 +26,7 @@ def main() -> int:
     parser.add_argument("--reader-schema", default="corescope_public")
     parser.add_argument("--label", choices=("baseline", "candidate"), default="candidate")
     parser.add_argument("--source-root", type=Path)
+    parser.add_argument("--seed-source", type=Path, help="owned synthetic ACK source for fixture preparation")
     parser.add_argument("--paired", action="store_true", help="run the fixed matched reads or synchronized operations")
     parser.add_argument("--count", type=int, default=72000)
     parser.add_argument("--cycles", type=int, default=1)
@@ -40,6 +41,8 @@ def main() -> int:
         parser.error("--native-only requires reads --paired")
     if args.reuse_prepared and args.action != "soak":
         parser.error("--reuse-prepared requires soak")
+    if (args.action == "seed") != (args.seed_source is not None):
+        parser.error("seed requires --seed-source, which belongs only to seed")
     run = owned_run(args.run, create=args.action == "backup" and not args.run)
     try:
         if args.action == "backup":
@@ -78,6 +81,9 @@ def main() -> int:
         elif args.action == "traffic":
             from traffic import traffic
             result = traffic(run, cycles=args.cycles, interval_ms=args.traffic_interval_ms, health_code=args.health_code)
+        elif args.action == "seed":
+            from fixture_seed import seed
+            result = seed(run, args.seed_source)
         elif args.action == "soak":
             from soak import soak
             result = soak(run, count=args.count, health_code=args.health_code, reuse_prepared=args.reuse_prepared,

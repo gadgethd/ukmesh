@@ -1,6 +1,7 @@
 """A rebuild job must commit to staging without changing the published graph."""
 
 import os
+from pathlib import Path
 import unittest
 from unittest import mock
 from urllib.parse import urlsplit
@@ -46,7 +47,12 @@ class LinkScopeIntegrationTests(unittest.TestCase):
                     count_a_to_b int,count_b_to_a int,multibyte_observed_count int,itm_computed_at timestamptz,
                     itm_path_loss_db float,itm_viable boolean,force_viable boolean DEFAULT false,terrain_profile_json jsonb,
                     PRIMARY KEY(node_a_id,node_b_id));
-                  CREATE TABLE ops.link_job_commits(job_id text PRIMARY KEY,job_type text,generation text,logical_job_id text,payload_hash text);""")
+                  CREATE TABLE ops.link_job_commits(job_id text PRIMARY KEY,job_type text,generation text,logical_job_id text,payload_hash text);
+                  CREATE TABLE ops.link_rebuild_runs(generation text PRIMARY KEY);""")
+                source_migration = Path(__file__).resolve().parents[2] / "backend/src/db/migrations/160_link_topology_revision.sql"
+                migration = Path(os.environ.get("TEST_LINK_TOPOLOGY_MIGRATION", source_migration))
+                cur.execute(migration.read_text(encoding="utf-8"))
+                cur.execute("INSERT INTO ops.link_rebuild_runs(generation) VALUES (%s)", (generation,))
                 a, b = "aa" * 32, "bb" * 32
                 cur.execute(
                     "INSERT INTO core.nodes VALUES (%s,51.5,-1.2,100,'A',2),(%s,51.6,-1.3,110,'B',2)",
@@ -163,6 +169,8 @@ class LinkScopeIntegrationTests(unittest.TestCase):
                     (a, c),
                 )
                 self.assertEqual(cur.fetchone(), (90.0, True))
+                cur.execute("SELECT topology_revision FROM ops.link_rebuild_runs WHERE generation=%s", (generation,))
+                self.assertEqual(cur.fetchone(), (2,))
             self.assertEqual(
                 queue.hget(link_queue_v3.STATES, "physical-scope"), "complete"
             )

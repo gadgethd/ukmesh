@@ -2,33 +2,42 @@ import { query } from '../db/runtime.js';
 import { boundedEnvInteger } from '../platform/config/boundedNumber.js';
 import { mqttPreResolveHistoryEntries, mqttPreResolveInflight } from '../metrics/ingest.js';
 import { createSlowResolutionRecorder } from '../pathing/slowResolutionRepository.js';
+import { readReadyVisibilityGeneration } from '../privacy/authority.js';
 import { createResolvePool } from './resolvePool.js';
+import { createResolveCoordinator, StalePathResolutionError } from './resolveCoordinator.js';
 import { createSlowResolutionScheduler } from './slowMode.js';
-import {
-  clearResolvedPaths,
-  getHeldPath,
-  getStickyNodeMap,
-  invalidateResolveCache,
-  mergeStickyNodes,
-  resolveCacheKey,
-  setHeldPath,
-  setResolveCache,
-} from './resolveCache.js';
+import { clearResolvedPaths, invalidateResolveCache } from './resolveCache.js';
 import type { PathObservation } from './observation.js';
 import type { WorkerPool } from './workerPool.js';
 
 type ResolvePool = Pick<WorkerPool, 'run' | 'runBackground' | 'close'>;
 
-export function createPathResolutionRuntime(resolvePool: ResolvePool = createResolvePool()) {
+export function createPathResolutionRuntime(
+  resolvePool: ResolvePool = createResolvePool(),
+  readVisibilityGeneration = readReadyVisibilityGeneration,
+) {
+  const resolution = createResolveCoordinator(resolvePool, readVisibilityGeneration);
   const record = createSlowResolutionRecorder(query, () => slowMode.slowModeWindowMs());
-  const slowMode = createSlowResolutionScheduler({ pool: resolvePool, record });
+  const slowMode = createSlowResolutionScheduler({
+    async finalize(packetHash, network) {
+      // The propagation deadline requires a final solve even if no observer
+      // arrived after the last interactive or warm result was cached.
+      invalidateResolveCache(packetHash);
+      try {
+        return (await resolution.resolve({ kind: 'multi', packetHash, network }, 'background'))?.payload ?? null;
+      } catch (error) {
+        if (error instanceof StalePathResolutionError) return null;
+        throw error;
+      }
+    },
+    record,
+  });
   const preResolveTasks = new Set<Promise<void>>();
   const preResolveInFlight = new Set<string>();
   const preResolveLastStarted = new Map<string, number>();
   const enabled = process.env['PATH_BETA_PRERESOLVE_ENABLED'] === '1';
   const intervalMs = boundedEnvInteger('PATH_BETA_PRERESOLVE_MIN_INTERVAL_MS', 10_000, 1_000, 24 * 60 * 60_000);
   const historyMax = 50_000;
-  let streamGeneration = 0;
   let sweepTimer: NodeJS.Timeout | undefined;
   let closed = false;
 
@@ -53,31 +62,8 @@ export function createPathResolutionRuntime(resolvePool: ResolvePool = createRes
     }
     preResolveLastStarted.set(preResolveKey, Date.now());
     mqttPreResolveHistoryEntries.set(preResolveLastStarted.size);
-    const stickyEntry = getStickyNodeMap(packetHash, network);
-    const stickyMap = stickyEntry ? Object.fromEntries(stickyEntry.hashToNodeId) : undefined;
-    const stickyAgeFraction = stickyEntry?.ageFraction;
-    const heldPath = getHeldPath(packetHash, network);
-    const cacheKey = resolveCacheKey('multi', packetHash, network);
-    const generation = streamGeneration;
-    const pending = resolvePool.runBackground<{
-      stickyUpdates?: Record<string, string>;
-      canonicalPath?: Array<{ nodeId?: string | null }>;
-    }>({ type: 'resolveMulti', packetHash, network,
-      ...(stickyMap ? { stickyMap, stickyAgeFraction } : {}), ...(heldPath ? { heldPath } : {}) })
-      .then((result) => {
-        if (result && !closed && generation === streamGeneration) {
-          const { stickyUpdates, ...cacheableResult } = result;
-          setResolveCache(cacheKey, cacheableResult);
-          if (stickyUpdates && Object.keys(stickyUpdates).length > 0) {
-            mergeStickyNodes(packetHash, network, stickyUpdates);
-          }
-          const heldNodes = result.canonicalPath?.map((hop) => hop.nodeId ?? '').filter(Boolean) ?? [];
-          if (heldNodes.length > 0 && heldNodes.length === result.canonicalPath?.length) {
-            setHeldPath(packetHash, network, { path: heldNodes, resolvedAt: Date.now(), physical: true });
-          }
-        }
-      })
-      .catch(() => { /* best-effort */ })
+    const pending = resolution.resolve({ kind: 'multi', packetHash, network }, 'background')
+      .then(() => undefined, () => { /* best-effort */ })
       .finally(() => {
         preResolveTasks.delete(pending);
         preResolveInFlight.delete(preResolveKey);
@@ -87,13 +73,10 @@ export function createPathResolutionRuntime(resolvePool: ResolvePool = createRes
   }
 
   return {
-    resolvePool,
+    resolve: resolution.resolve,
     slowMode,
     acceptObservation,
-    clearResolvedPaths() {
-      streamGeneration++;
-      clearResolvedPaths();
-    },
+    clearResolvedPaths,
     start() {
       if (closed || sweepTimer || !enabled) return;
       sweepTimer = setInterval(() => {
@@ -107,6 +90,7 @@ export function createPathResolutionRuntime(resolvePool: ResolvePool = createRes
     async close() {
       if (closed) return;
       closed = true;
+      resolution.close();
       if (sweepTimer) clearInterval(sweepTimer);
       await Promise.allSettled([slowMode.close(), ...preResolveTasks]);
       preResolveLastStarted.clear();
