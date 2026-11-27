@@ -80,6 +80,24 @@ test('owner session guard rejects a username-mismatched server row', async () =>
   assert.equal(state.statusCode, 401);
 });
 
+test('owner session guard rejects a session minted under an older credential generation', async () => {
+  let activeChecked = false;
+  const guard = makeGuard({
+    getOwnerCredentialGeneration: async () => 8,
+    isOwnerSessionActive: async () => {
+      activeChecked = true;
+      return true;
+    },
+  });
+  const { response, state } = responseRecorder();
+
+  assert.equal(await guard({} as never, response), null);
+  assert.equal(state.statusCode, 401);
+  assert.deepEqual(state.body, { error: 'Credentials have been rotated — please log in again' });
+  assert.deepEqual(state.cleared, ['meshcore_owner_session']);
+  assert.equal(activeChecked, false, 'a stale generation must be rejected before the session row is consulted');
+});
+
 test('owner session guard fails closed when the session store is unavailable', async () => {
   const guard = makeGuard({
     isOwnerSessionActive: async () => { throw new Error('db offline'); },

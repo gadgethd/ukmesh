@@ -10,14 +10,31 @@ Owner cookies include the Redis credential generation that was current at login.
 The owner session route and protected owner routes compare that generation on
 each request. Cookies expire after seven days.
 
-After changing a Mosquitto password, revoke existing owner sessions immediately
-by running the backend tool with the affected MQTT username:
+## Rotating a broker password
 
-```sh
-docker exec meshcore-analytics-backend-1 \
-  node dist/tools/revokeOwnerSessions.js <mqtt-username>
-```
+Perform these steps in order. Do not skip step 2: changing the broker password
+alone does not invalidate owner cookies.
 
-The command fails if Redis cannot record the new generation. Confirm success
-before treating password rotation as complete. Do not pass the password to this
-command or record it in logs.
+1. Change the password in the Mosquitto password file or secret store, then
+   reload the broker so the old password stops authenticating.
+2. From `backend/`, revoke every owner session for the affected MQTT username:
+
+   ```sh
+   npm run owner-auth:revoke -- <mqtt-username>
+   ```
+
+   The command increments the username's credential generation and revokes its
+   `owner_sessions` rows. It fails if Redis cannot record the new generation;
+   confirm it exited successfully before treating rotation as complete. Do not
+   pass the password to this command or record it in logs.
+
+   In a container deployment, the same tool can be run directly:
+
+   ```sh
+   docker exec meshcore-analytics-backend-1 \
+     node dist/tools/revokeOwnerSessions.js <mqtt-username>
+   ```
+
+3. Verify the rotation: a request carrying a pre-rotation owner cookie must
+   return `401` with `Credentials have been rotated — please log in again`.
+   Log in again to mint a cookie under the new generation.
