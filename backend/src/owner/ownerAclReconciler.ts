@@ -153,8 +153,8 @@ function reconcileOwnerAuthorizationPass(): Promise<void> {
   });
 }
 
-export function startOwnerAuthorizationReconciler(onReady: () => void): void {
-  runtime.start(onReady);
+export function startOwnerAuthorizationReconciler(): void {
+  runtime.start();
 }
 
 export function ownerAuthorizationAvailable(): boolean {

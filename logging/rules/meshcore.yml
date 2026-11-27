@@ -55,6 +55,16 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backendnotready
 
+      - alert: MqttIngestDown
+        expr: probe_success{job="meshcore-ingest-readiness"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: The dedicated MQTT ingest readiness probe is failing
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#mqttingestdown
+
       - alert: SyntheticProbeFailed
         expr: probe_success{job="meshcore-synthetic"} == 0
         for: 3m

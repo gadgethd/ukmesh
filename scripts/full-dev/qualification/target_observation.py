@@ -13,7 +13,7 @@ from loopback_http import http_get
 sys.path.insert(0,str(REPO/'scripts/companion-dev'))
 from ingest_state import read_core,read_beacon,metric
 
-APPS={'ukmesh':'ukmesh-full-backend-1','corescope':'ukmesh-companions-corescope-ingestor-1','beacon':'ukmesh-companions-beacon-1'}
+APPS={'ukmesh':'ukmesh-full-mqtt-ingest-1','corescope':'ukmesh-companions-corescope-ingestor-1','beacon':'ukmesh-companions-beacon-1'}
 QUEUES=('meshcore_mqtt_ingest_active','meshcore_mqtt_ingest_queue_depth',
         'meshcore_packet_batch_queue_depth','meshcore_mqtt_post_persist_inflight')
 SECONDS=45
@@ -21,6 +21,19 @@ SECONDS=45
 
 class IntakeNotQuiescentError(ValueError):
     """A live owner still reports pending intake work."""
+
+
+def intake_owners(snapshot):
+    legacy='ukmesh-full-backend-1'
+    if not snapshot['consumers'].get(legacy,{}).get('running'):
+        return APPS
+    backend=snapshot['containers'][legacy]
+    if backend['Config'].get('Labels',{}).get('org.ukmesh.runtime-layout')=='split-v1' \
+            and 'UKMESH_RUNTIME_ROLE=api' in backend['Config'].get('Env',[]):
+        return APPS
+    if snapshot['consumers'].get(APPS['ukmesh'],{}).get('running'):
+        raise ValueError('combined backend and dedicated intake must not run together')
+    return {**APPS,'ukmesh':legacy}
 
 
 def stable_identities(snapshot):
@@ -65,7 +78,7 @@ def read_apps(snapshot,deadline,*,clock=time.monotonic,wall=time.time):
         return min(2,value)
     def execute(args,**options):return docker(args,timeout=min(options.get('timeout',2),remaining()))
     result={}
-    for app,name in APPS.items():
+    for app,name in intake_owners(snapshot).items():
         record=snapshot['consumers'].get(name)
         if record is None:raise ValueError('intake owner absent; resume previous retained store')
         if not record['running']:continue  # Explicit same-ref resume is validated by the intent owner.
@@ -126,7 +139,7 @@ def observe(snapshot_reader,*,apps=read_apps,broker=broker_observation,clock=tim
     source_hashes=lambda:{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources}
     source_before=source_hashes()
     initial=snapshot_reader(deadline);identities=stable_identities(initial)
-    required={app for app,name in APPS.items() if initial['consumers'].get(name,{}).get('running') is True}
+    required={app for app,name in intake_owners(initial).items() if initial['consumers'].get(name,{}).get('running') is True}
     tracker=IntakeProof(started_wall,required)
     # Fail missing/unsupported app state before creating even a clean observer client.
     tracker.add(apps(initial,deadline),allow_initial_pending=True)

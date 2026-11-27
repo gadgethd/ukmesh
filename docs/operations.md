@@ -185,8 +185,9 @@ Preserve the fresh authority/publication fences while diagnosing invalidations.
 
 ## Health endpoints
 
-- `GET /healthz` is a process liveness check. It deliberately remains healthy during an MQTT outage so Docker does not restart an otherwise functioning API in a loop.
-- `GET /readyz` checks database access and MQTT connectivity. It returns `503` with per-dependency state when the real-time platform is not ready.
+- `GET /healthz` checks whether that process is serving HTTP.
+- `GET /api-readyz` checks the API's database connection. Docker uses this for the `backend` container.
+- `GET /readyz` on the API checks database access, MQTT intake and owner authorization. It returns `503` when a dependency is degraded. The `mqtt-ingest` container checks its own database connection and broker transport at its private `GET /readyz` endpoint.
 - `GET /api/health` returns worker history and a top-level `status` (`healthy`, `degraded`, or `critical`) plus machine-readable `problems`.
 
 Current problem codes cover stale public ingest, worker queue backlog, disk pressure, and frontend error spikes. External monitoring should alert on `readyz` failures and critical `/api/health` problems, while allowing a short deploy/reconnect grace period.
@@ -329,17 +330,45 @@ addresses and private node identities.
 - [SRTM cache, alert delivery, observer review, and planned publication](runbook-srtm-alerts-observers.md)
 - [Database compression and retention gates](db-lifecycle.md)
 
+### Restart MQTT ingest or the API independently
+
+In DEV, use `scripts/dev-all.sh restart mqtt-ingest` for the broker-facing
+process, or `scripts/dev-all.sh restart backend` for HTTP and WebSockets. A
+restart uses the current built image. Verify `docker compose ps`, the relevant
+readiness check and recovery of the MQTT delivery probe after reconnect.
+
+For the first rollout from the combined runtime, recreate `backend` with the
+split-capable image first. Once the old process has exited, start `mqtt-ingest`
+with the same broker endpoint, username, client ID and persistent broker data
+store. For a rollback that returns to a combined image, stop `mqtt-ingest`
+before starting the combined backend. The DEV launcher checks this handoff.
+
+During an API restart, MQTT keeps committing observations. During an ingest
+restart, the broker queues eligible QoS 1 deliveries for the existing session.
+The offline guarantee requires the broker to retain that session and enough
+backlog capacity for the outage. Check queue depth, queued bytes and the drop
+counter. QoS 0 can lose messages in flight. Clients reconnecting to WebSockets
+receive the existing bounded initial snapshot and can use the HTTP packet
+history for earlier committed observations.
+
+### MqttIngestDown
+
+The dedicated ingest readiness check is failing. Check `docker compose ps
+mqtt-ingest`, its broker connection and its database access. Keep the broker
+session and volume intact. If a targeted restart is needed, restart
+`mqtt-ingest` and verify that commit and acknowledgement counters advance.
+
 ### Rotate the ingest password on the current broker
 
-Mount a private directory as `MQTT_INGEST_PASSWORD_HOST_DIR` for the backend.
+Mount a private directory as `MQTT_INGEST_PASSWORD_HOST_DIR` for MQTT ingest.
 The default is `deploy/mqtt-credentials`, which is excluded from Git and Docker
-builds. Keep the `password` file readable by the backend user and writable only
+builds. Keep the `password` file readable by the ingest user and writable only
 by the operator. A missing file leaves the environment credential in use. The
 file contains one UTF-8 password. It can end in a single newline.
 
 Apply the broker's password change and reload Mosquitto. Put the candidate
 password in a separate file in the mounted directory and rename it over
-`password`. The backend tests the candidate on a separate clean session with a
+`password`. The ingest process tests the candidate on a separate clean session with a
 QoS 1 round trip. On success it reconnects the existing persistent client and
 checks session resumption and delivery before reporting completion. Public HTTP
 and the packet processor continue running through the reconnect. A rejected
@@ -441,8 +470,9 @@ Prometheus `runbook_url` annotations.
 ### BackendDown
 
 Check `docker compose ps backend`, then backend logs and the container OOM/exit
-state. If the process is stopped, restart only `backend`; if it repeatedly
-fails, keep ingest stopped and roll back to the prior signed digest.
+state. Restart only `backend`, or roll it back to a compatible signed API image
+if it repeatedly fails. Coordinate a session handoff before using a combined
+image from before the split.
 
 ### BackendNotReady
 
@@ -450,8 +480,8 @@ Read `/readyz` and act on the named dependency. Check PostgreSQL, Redis, and
 Mosquitto before restarting the API. Liveness remaining green is expected
 during a dependency outage.
 
-`checks.mqttConnectionMonitor` reports broker-log read and audit-write failures
-when MQTT ingest is enabled. `init:EACCES` or `poll:EACCES` means the backend
+Inspect backend logs and `meshcore_mqtt_connection_monitor_healthy` for broker-log
+read and audit-write failures. `init:EACCES` or `poll:EACCES` means the backend
 cannot read `MOSQUITTO_LOG_PATH`; inspect that mount's ownership and permissions.
 `audit:<code>` means an observation could not be persisted. Idle log polls do
 not clear that failure; a later successful audit write does. Logs remain
@@ -858,7 +888,7 @@ count, and `meshcore_mqtt_wire_ack_duration_seconds_count`.
 
 Every reconnect explicitly subscribes again and waits for actual SUBACKs before
 starting the probe. MQTT.js automatic resubscription is disabled so its cached
-empty subscription result cannot be mistaken for an ACL denial. The backend's
+empty subscription result cannot be mistaken for an ACL denial. The ingest service's
 40-second container stop grace allows its 30-second durable drain to finish;
 keep `BACKEND_STOP_GRACE_PERIOD` longer than any custom shutdown deadline.
 

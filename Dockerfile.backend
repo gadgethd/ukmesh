@@ -11,7 +11,8 @@ ARG SOURCE_REVISION=unknown
 ARG UKMESH_VERSION=2.0.0
 LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
+      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh" \
+      org.ukmesh.runtime-layout="split-v1"
 WORKDIR /app
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --omit=dev --audit \

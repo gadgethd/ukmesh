@@ -409,8 +409,9 @@ jobs:
             docker compose -f docker-compose.yml -f docker-compose.ci.yml config --format json \
             | jq -e '
               .services.backend.environment.MQTT_INGEST_MODE == "ram"
-              and .services.backend.environment.MQTT_RAM_BATCH_SIZE == "37"
-              and .services.backend.environment.MQTT_RAM_QUEUE_MAX_BYTES == "33554432"' >/dev/null
+              and .services["mqtt-ingest"].environment.MQTT_INGEST_MODE == "ram"
+              and .services["mqtt-ingest"].environment.MQTT_RAM_BATCH_SIZE == "37"
+              and .services["mqtt-ingest"].environment.MQTT_RAM_QUEUE_MAX_BYTES == "33554432"' >/dev/null
       - name: Validate tracked build and Compose inventory
         run: |
           scripts/check-release-components.sh
@@ -424,7 +425,7 @@ jobs:
           done < <(sed -n 's/^[[:space:]]*file: //p' .github/workflows/release.yml)
           compose_services="$(docker compose -f docker-compose.yml -f docker-compose.ci.yml --profile dev config --services)"
           for service in \
-            db-migrate backend privacy-remat-worker region-snapshot-worker app-ukmesh website-ukmesh website-dev mesh-health-check \
+            db-migrate backend mqtt-ingest privacy-remat-worker region-snapshot-worker app-ukmesh website-ukmesh website-dev mesh-health-check \
             mosquitto-reloader link-worker link-backfill-worker hopreach \
             timescaledb mosquitto; do
             grep -Fxq "$service" <<<"$compose_services"
@@ -439,7 +440,7 @@ jobs:
             status=$?
             if [ "$status" -ne 0 ]; then
               docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" ps --all || true
-              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend mosquitto alert-receiver alert-forward-sink alert-receiver-bootstrap || true
+              docker compose -f docker-compose.yml -f docker-compose.ci.yml --project-name "$project" logs --tail 100 backend mqtt-ingest mosquitto alert-receiver alert-forward-sink alert-receiver-bootstrap || true
             fi
           }
           trap cleanup EXIT
@@ -461,7 +462,7 @@ jobs:
           cat mosquitto/.passwd-publisher >>mosquitto/passwd
           unlink mosquitto/.passwd-backend
           unlink mosquitto/.passwd-publisher
-          printf 'user %s\ntopic read meshcore/#\ntopic read ukmesh/#\ntopic read meshcore-test/#\n' \
+          printf 'user %s\ntopic read meshcore/#\ntopic read ukmesh/#\ntopic read meshcore-test/#\ntopic write meshcore/_system/ingest/meshcore-analytics-ingest\n' \
             "$MQTT_USERNAME" >mosquitto/acl
           printf '\nuser %s\ntopic write meshcore-test/CI/%s/packets\ntopic write meshcore-test/CI/%s/status\n' \
             "$publisher_user" "$observer" "$observer" >>mosquitto/acl
@@ -479,6 +480,13 @@ jobs:
               mosquitto-reloader link-worker hopreach tagger-worker
           scripts/test-link-queue-contract.sh
           scripts/test-ci-db-readiness.sh
+          # The broker may create a fresh log with mode 0600. The separate
+          # API's audit scanner needs group read on the owned smoke stack's file.
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --project-name "$project" up -d --no-build --wait --wait-timeout 90 mosquitto
+          docker compose -f docker-compose.yml -f docker-compose.ci.yml \
+            --project-name "$project" exec -T --user 0:0 mosquitto sh -ec \
+            'chown 1883:1883 /mosquitto/log /mosquitto/log/mosquitto.log; chmod 0750 /mosquitto/log; chmod 0640 /mosquitto/log/mosquitto.log'
           if ! docker compose -f docker-compose.yml -f docker-compose.ci.yml \
             --project-name "$project" \
             --profile dev \

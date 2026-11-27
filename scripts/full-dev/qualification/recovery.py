@@ -285,7 +285,8 @@ def recovery(run: Path) -> dict:
             preserved=typed_counts(plan,fixture)
             timings=[]
             for name in ('ukmesh-sample-db','ukmesh-companions-beacon-db-1','ukmesh-sample-redis','ukmesh-sample-mqtt',
-                         'ukmesh-full-backend-1','ukmesh-full-tagger-worker-1','ukmesh-companions-corescope-ingestor-1','ukmesh-companions-beacon-1'):
+                         'ukmesh-full-backend-1','ukmesh-full-mqtt-ingest-1','ukmesh-full-tagger-worker-1',
+                         'ukmesh-companions-corescope-ingestor-1','ukmesh-companions-beacon-1'):
                 start=time.monotonic()
                 docker(['restart',name],timeout=60)
                 def healthy():

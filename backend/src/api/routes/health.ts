@@ -3,15 +3,15 @@ import { HEALTH_CACHE_TTL_MS } from '../bootstrap/caches.js';
 import { HealthSnapshotCache } from '../../health/snapshot.js';
 import { toPublicHealthOverview } from '../../health/projections.js';
 import type { HealthRuntime } from '../../health/runtime.js';
-import type { MqttRuntime } from '../../mqtt/client.js';
+import type { ReadIngestHealth } from '../../ingest/health.js';
 import { withMqttDeliveryHealth } from '../../health/mqttDelivery.js';
 
-export function createHealthRoutes(healthRuntime: HealthRuntime, getMqttRuntimeStatus: MqttRuntime['getMqttRuntimeStatus']) {
+export function createHealthRoutes(healthRuntime: HealthRuntime, readIngestHealth: ReadIngestHealth) {
     const router = Router();
     const healthSnapshot = new HealthSnapshotCache(healthRuntime.getWorkerHealthOverview, Math.max(HEALTH_CACHE_TTL_MS * 5, 5 * 60_000));
     let timer: ReturnType<typeof setInterval> | undefined;
     let closed = false;
-  router.get('/health', (_req, res) => {
+  router.get('/health', async (_req, res) => {
     const current = healthSnapshot.read();
     if (!current.ready) {
       res.setHeader('Cache-Control', 'public, max-age=5');
@@ -25,7 +25,8 @@ export function createHealthRoutes(healthRuntime: HealthRuntime, getMqttRuntimeS
       return;
     }
     res.setHeader('Cache-Control', 'public, max-age=30, stale-while-revalidate=60');
-    res.json(withMqttDeliveryHealth(toPublicHealthOverview(current.data), getMqttRuntimeStatus().delivery));
+    const { deliveryStalled } = await readIngestHealth();
+    res.json(withMqttDeliveryHealth(toPublicHealthOverview(current.data), deliveryStalled ? { state: 'stalled' } : undefined));
   });
 
 

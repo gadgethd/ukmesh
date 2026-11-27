@@ -13,9 +13,9 @@ case "$mode" in
     export MQTT_INGEST_MODE=ram
     export MQTT_RAM_STREAM_KEY="meshcore:ingest:lean:$token:corescope:$attempt"
     export MQTT_RAM_CONSUMER_GROUP="lean-corescope-$token-$attempt"
-    export MQTT_RAM_CONSUMER_NAME=owned-full-backend
+    export MQTT_RAM_CONSUMER_NAME=owned-full-mqtt-ingest
     ;;
   durable) export MQTT_INGEST_MODE=durable ;;
   *) echo 'Unknown owned RAM lifecycle action' >&2; exit 2 ;;
 esac
-"${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 180 backend
+"${compose[@]}" up -d --no-deps --force-recreate --wait --wait-timeout 180 backend mqtt-ingest

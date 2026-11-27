@@ -25,6 +25,8 @@ def application_sessions(stores: dict) -> list[dict]:
     for row in sessions:
         application=row['application']
         role={'meshcore-backend':'meshcore_api','meshcore-backend-ingest':'meshcore_ingest',
+              'meshcore-mqtt-intake':'meshcore_api','meshcore-mqtt-intake-ingest':'meshcore_ingest',
+              'meshcore-mqtt-intake-owner-auth':'meshcore_owner',
               'meshcore-backend-owner-auth':'meshcore_owner','meshcore-owner-auth':'meshcore_owner'}.get(application,'meshcore_worker')
         database=owner['database'] if role=='meshcore_owner' else main['database']
         checks.append({'description':'actual application session '+application,'role':row['role'],

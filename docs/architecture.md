@@ -28,6 +28,21 @@ database, MQTT intake and owner ACL. The owner ACL runtime retries its own
 startup while public HTTP and ingest start. Protected owner endpoints wait for
 the first successful reconciliation.
 
+The `backend` container serves HTTP and WebSockets. The `mqtt-ingest`
+container owns the broker session, packet commits and forwarding. They use the
+same image and start independently after database migration. The API's local
+readiness check is `/api-readyz`. Its aggregate `/readyz` also reads the ingest
+container's private readiness endpoint.
+
+In durable mode the intake process acknowledges QoS 1 only after the existing
+PostgreSQL commit boundary. It publishes bounded live events to Redis after
+persistence. The ingest publisher and WebSocket server both apply privacy
+checks. WebSocket clients reconnect to a fresh database snapshot after an API
+restart. Compact post-commit notices also let the API invalidate and warm its
+own resolver cache, independently of the ingest database work.
+With channel-scoped Redis ACLs, allow the existing `meshcore:live` channel and
+the private `meshcore:path-observation` channel for both processes.
+
 Owner-dependent forwarding also waits for that pass. MQTT intake can commit
 while the forwarding outbox holds pending deliveries. Monitor disk capacity
 and outbox recovery during a sustained owner outage.

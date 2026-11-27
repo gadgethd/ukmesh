@@ -1,5 +1,5 @@
 /**
- * Application-owned worker pool shared by HTTP and committed ingest work.
+ * API-owned worker pool shared by HTTP and background path resolution.
  * One worker keeps computation off the main event loop while avoiding a
  * duplicate worker-owned path context. Larger hosts can raise PATH_RESOLVE_WORKERS.
  */

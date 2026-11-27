@@ -15,7 +15,7 @@ import uuid
 from common import REPO,STATE,clean_environment,write_json,utc_now
 from target_lease import child_context
 from owned_process import cancellation_scope, spawn_session, settle_session as _settle
-from target_observation import APPS,stable_identities
+from target_observation import APPS,intake_owners,stable_identities
 sys.path.insert(0,str(REPO/'scripts/companion-dev'))
 from ingest_state import read_core_connection,read_beacon,timestamp
 
@@ -192,10 +192,10 @@ def probe(app,item,snapshot,deadline):
 
 def _identities(snapshot):
     owners={}
-    for app,name in {**APPS,'healthcheck':HEALTH}.items():
+    for app,name in {**intake_owners(snapshot),'healthcheck':HEALTH}.items():
         item=snapshot['containers'].get(name)
         if item and item['State']['Running']:
-            expected={'ukmesh':('ukmesh-full','backend'),'corescope':('ukmesh-companions','corescope-ingestor'),
+            expected={'ukmesh':('ukmesh-full',name.removeprefix('ukmesh-full-').removesuffix('-1')),'corescope':('ukmesh-companions','corescope-ingestor'),
                       'beacon':('ukmesh-companions','beacon'),'healthcheck':('ukmesh-full','mesh-health-check')}[app]
             labels=item['Config'].get('Labels',{})
             if (labels.get('com.docker.compose.project'),labels.get('com.docker.compose.service'))!=expected:

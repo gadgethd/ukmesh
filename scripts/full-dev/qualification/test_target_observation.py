@@ -2,7 +2,7 @@
 from copy import deepcopy
 import time
 import unittest
-from target_observation import APPS,IntakeProof,observe,valid_broker,broker_observation
+from target_observation import APPS,IntakeProof,observe,valid_broker,broker_observation,intake_owners
 from unittest.mock import patch
 from types import SimpleNamespace
 import json
@@ -29,6 +29,19 @@ def apps(clock,*,probe=True):
 
 
 class ProtectionObservation(unittest.TestCase):
+    def test_handoff_records_only_the_process_that_owns_mqtt(self):
+        state=snapshot()
+        legacy='ukmesh-full-backend-1'
+        state['consumers'][legacy]={'running':True}
+        state['containers']={legacy:{'Config':{'Env':['UKMESH_RUNTIME_ROLE=api']}}}
+        with self.assertRaisesRegex(ValueError,'must not run together'):
+            intake_owners(state)
+        state['consumers'][APPS['ukmesh']]['running']=False
+        self.assertEqual(intake_owners(state)['ukmesh'],legacy)
+        state['containers'][legacy]['Config']['Labels']={'org.ukmesh.runtime-layout':'split-v1'}
+        state['consumers'][APPS['ukmesh']]['running']=True
+        self.assertEqual(intake_owners(state)['ukmesh'],APPS['ukmesh'])
+
     def run_observation(self,*,reader=None,broker=None,snap=None):
         clock=Clock();calls=[]
         def read(value,deadline):

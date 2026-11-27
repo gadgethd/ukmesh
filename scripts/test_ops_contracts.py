@@ -49,7 +49,7 @@ class OpsContractTests(unittest.TestCase):
         expected = {spec['env'] for spec in contract['limits'].values()}
         self.assertEqual(checks.link_queue_defaults(contract, compose, example), expected)
         # Compose's list form and quoted decimal documentation mean the same thing.
-        for service in ('backend', 'link-worker'):
+        for service in ('backend', 'mqtt-ingest', 'link-worker'):
             compose['services'][service]['environment'] = [f'{key}={value}' for key, value in compose['services'][service]['environment'].items()]
         for spec in contract['limits'].values():
             example = example.replace(f"{spec['env']}={spec['default']}\n", f"export {spec['env']}='{spec['default']}' # documented default\n")
@@ -61,7 +61,7 @@ class OpsContractTests(unittest.TestCase):
         example = (ROOT / '.env.example').read_text()
         spec = contract['limits']['maxJobs']
         name, default = spec['env'], spec['default']
-        for service in ('backend', 'link-worker'):
+        for service in ('backend', 'mqtt-ingest', 'link-worker'):
             for value in (f'${{{name}:-{default + 1}}}', f'${{WRONG_QUEUE_SETTING:-{default}}}', None):
                 with self.subTest(service=service, value=value):
                     changed = copy.deepcopy(baseline)

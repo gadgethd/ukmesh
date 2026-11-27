@@ -73,7 +73,7 @@ case "$command_name" in
           ;;
         config)
           if [ "${2:-}" = "--services" ]; then
-            printf '%s\n' backend db-migrate timescaledb app-ukmesh tagger-worker hopreach
+            printf '%s\n' backend mqtt-ingest db-migrate timescaledb app-ukmesh tagger-worker hopreach
             if [ "${MOCK_ADOPTION_MODE:-valid}" = long_service_list ]; then
               # More than a pipe buffer: an early grep -q exit must not turn
               # Compose's SIGPIPE into an incorrect unknown-service rejection.
@@ -147,7 +147,11 @@ case "$command_name" in
     ;;
   image)
     test "${1:-}" = "inspect"
-    printf '%s\n' "$MOCK_SOURCE_REVISION"
+    if [[ "$*" == *org.ukmesh.runtime-layout* ]]; then
+      if [[ $MOCK_RELEASE_SERVICE == mqtt-ingest ]]; then printf 'split-v1\n'; fi
+    else
+      printf '%s\n' "$MOCK_SOURCE_REVISION"
+    fi
     ;;
   inspect)
     case "$*" in
@@ -180,6 +184,7 @@ case "$command_name" in
         printf '%s\n' \
           'DATABASE_URL=postgresql://meshcore:fixture@timescaledb:5432/meshcore' \
           'REDIS_URL=redis://redis:6379'
+        if [[ $MOCK_RELEASE_SERVICE == mqtt-ingest ]]; then printf 'UKMESH_RUNTIME_ROLE=api\n'; fi
         ;;
       *'.Config.User'*)
         printf '{"user":"1000:1000","groups":["1883","2000"]}\n'
@@ -216,7 +221,7 @@ case "$command_name" in
     if [ "${MOCK_COMPAT_READY:-true}" != "true" ]; then
       exit 1
     fi
-    if [[ "$*" == *"/readyz"* ]]; then
+    if [[ "$*" == *"/readyz"* || "$*" == *"/api-readyz"* ]]; then
       printf '{"status":"ready"}\n'
     elif [[ "$*" == *"/api/stats"* ]]; then
       printf '{"totalNodes":1}\n'
@@ -308,6 +313,7 @@ run_case() {
     MOCK_PRIOR_IMAGE="$prior_image" \
     MOCK_COMPAT_READY="$compat_ready" \
     MOCK_FAIL_DESIRED_DEPLOY="$fail_desired_deploy" \
+    MOCK_RELEASE_SERVICE="$service" \
     MOCK_DOCKER_LOG="${test_root}/docker.log" \
     MOCK_COSIGN_LOG="${test_root}/cosign.log" \
     COSIGN_PUBLIC_KEY="$cosign_public_key" \
@@ -376,6 +382,11 @@ run_case() {
   if [ "$up_count" -gt 0 ]; then
     test "$(grep -Ec '^compose --project-name meshcore-analytics up .*--no-deps' "${test_root}/docker.log")" -eq "$up_count"
   fi
+  if [[ $service == mqtt-ingest ]]; then
+    grep -Eq '^exec .* /?.*127\.0\.0\.1:3000/api-readyz$' "${test_root}/docker.log"
+    grep -Eq '^compose .* exec -T mqtt-ingest .*9091/metrics$' "${test_root}/docker.log"
+    ! grep -Eq '^compose .* up .* backend$' "${test_root}/docker.log"
+  fi
   grep -Eq -- \
     '^run .* --volumes-from current-backend:ro( |$)' \
     "${test_root}/docker.log"
@@ -407,6 +418,7 @@ run_case \
   rolled_back \
   2 \
   public-key
+run_case failed_ingest_deploy_rolls_back_independently true true rolled_back 2 public-key valid mqtt-ingest
 run_case \
   incompatible_schema_stops_before_deploy \
   false \
@@ -428,5 +440,5 @@ for service in tagger-worker hopreach; do
   run_case "${service}_supports_signed_release_preflight" false false stopped 0 keyless valid "$service"
 done
 
-printf 'replace-container rollback, compatibility and Compose adoption drills passed (18/18)\n'
+printf 'replace-container rollback, compatibility and Compose adoption drills passed (19/19)\n'
 bash "${script_dir}/test-check-compose-adoption.sh"
