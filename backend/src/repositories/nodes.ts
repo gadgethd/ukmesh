@@ -258,7 +258,7 @@ export function createNodeRepository(query: DatabaseQueryFn): NodeRepository {
         [...filters.params, snapshot, cursor, limit + 1, ...(search ? [search] : []), ...(narrowSearch ? [literalPattern] : [])],
         undefined,
         // Broad reads need a plan based on the bound scope, cursor and limit.
-        candidateIds ? BOUNDED_READ_PREPARATION : undefined,
+        narrowSearch || scopedCandidates ? BOUNDED_READ_PREPARATION : undefined,
       );
       return result.rows;
     },

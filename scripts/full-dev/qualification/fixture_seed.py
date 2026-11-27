@@ -4,7 +4,8 @@ from __future__ import annotations
 import csv
 import gzip
 import hashlib
-from itertools import batched, zip_longest
+from contextlib import closing
+from itertools import islice, zip_longest
 import json
 from pathlib import Path
 import shutil
@@ -96,7 +97,7 @@ def persisted(fixture: dict, identities: dict[str, str]) -> dict[str, dict[str, 
           ) AS matches
         """, timeout=25))
     path = Path(fixture['corescope_data_dir']) / 'analyzer.db'
-    with sqlite3.connect('file:' + quote(str(path)) + '?mode=ro', uri=True, timeout=15) as reader:
+    with closing(sqlite3.connect('file:' + quote(str(path)) + '?mode=ro', uri=True, timeout=15)) as reader:
         reader.execute('BEGIN')
         short = list(identities.values())
         placeholders = ','.join('?' for _ in short)
@@ -159,7 +160,8 @@ def replay_seed(run: Path, path: Path, fixture: dict) -> dict:
     if checkpoint.exists() and read_json(checkpoint).get('identity') != identity:
         raise ValueError('seed checkpoint belongs to another fixture or source')
     progress = {'identity': identity, 'count': manifest['count'], 'verified': 0, 'passed': False }
-    for window in batched(seed_rows(source, manifest), WINDOW):
+    rows = seed_rows(source, manifest)
+    while window := list(islice(rows, WINDOW)):
         identities = {value: radio for value, radio, _ in window}
         if len(set(identities.values())) != len(identities):
             raise ValueError('companion seed identities collide in this window')
