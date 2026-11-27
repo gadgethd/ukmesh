@@ -14,7 +14,7 @@ export const PATH_CACHE_POLICIES = Object.freeze({
     scope: 'packet + network + observer + visibility generation',
     invalidation: 'packet generation token',
     negativeCaching: 'none',
-    singleFlight: 'pathingService resolve maps',
+    singleFlight: 'resolveCoordinator by purpose, scope and observation version',
   }),
   invalidationVersions: defineCachePolicy({
     id: 'path_invalidation',
@@ -26,7 +26,7 @@ export const PATH_CACHE_POLICIES = Object.freeze({
     ttlMs: 3_600_000,
     scope: 'packet',
     invalidation: 'TTL after cache result expiry',
-    negativeCaching: 'zero generation is implicit',
+    negativeCaching: 'none',
     singleFlight: 'not applicable',
   }),
   stickyNodeCache: defineCachePolicy({
@@ -53,7 +53,7 @@ export const PATH_CACHE_POLICIES = Object.freeze({
     scope: 'packet + network; public projection remains visibility-fenced',
     invalidation: 'TTL only; packet observations do not clear held paths',
     negativeCaching: 'none',
-    singleFlight: 'pathingService resolve maps + worker pool',
+    singleFlight: 'resolveCoordinator + worker pool',
   }),
   contextCache: defineCachePolicy({
     id: 'path_context',

@@ -16,22 +16,18 @@ const slowModeRemainingMs: SlowResolutionScheduler['slowModeRemainingMs'] = (...
 const slowModePendingCount = () => scheduler.slowModePendingCount();
 const slowModeStatus = () => scheduler.slowModeStatus();
 
-type FakePool = {
-  calls: Array<{ type: string; packetHash: string; network: string }>;
-  runBackground<T>(job: unknown): Promise<T | null>;
-};
-function makeFakePool(): FakePool {
-  const pool: FakePool = {
-    calls: [],
-    async runBackground<T>(job: unknown): Promise<T | null> {
-      this.calls.push(job as { type: string; packetHash: string; network: string });
-      return { observers: ['obs-a', 'obs-b'], canonicalPath: [] } as T;
+function makeFinalizer() {
+  const calls: Array<{ packetHash: string; network: string }> = [];
+  return {
+    calls,
+    finalize: async (packetHash: string, network: string) => {
+      calls.push({ packetHash, network });
+      return { observers: ['obs-a', 'obs-b'], canonicalPath: [] };
     },
   };
-  return pool;
 }
 
-let fakePool: FakePool;
+let finalizer: ReturnType<typeof makeFinalizer>;
 const recorder = {
   calls: [] as Array<{ packetHash: string; network: string }>,
   async fn(packetHash: string, network: string): Promise<void> {
@@ -44,8 +40,8 @@ beforeEach((t) => {
   process.env['PATH_SLOW_MODE_ENABLED'] = 'true';
   process.env['PATH_SLOW_MODE_WINDOW_MS'] = '40';
   delete process.env['PATH_SLOW_MODE_PENDING_MAX'];
-  fakePool = makeFakePool();
-  scheduler = createSlowResolutionScheduler({ pool: fakePool, record: recorder.fn.bind(recorder) });
+  finalizer = makeFinalizer();
+  scheduler = createSlowResolutionScheduler({ finalize: finalizer.finalize, record: recorder.fn.bind(recorder) });
   t.after(scheduler.close);
   recorder.calls.length = 0;
 });
@@ -62,8 +58,8 @@ test('schedule is idempotent per (hash, network) and runs ONE final resolve', as
 
   assert.equal(slowModePendingCount(), 0);
   assert.equal(slowModeRemainingMs('AA11', 'ukmesh'), 0);
-  assert.equal(fakePool.calls.length, 2);
-  assert.deepEqual(fakePool.calls[0], { type: 'resolveMulti', packetHash: 'AA11', network: 'ukmesh' });
+  assert.equal(finalizer.calls.length, 2);
+  assert.deepEqual(finalizer.calls[0], { packetHash: 'AA11', network: 'ukmesh' });
   // observability recorded for both finals
   assert.equal(recorder.calls.length, 2);
 });
@@ -100,23 +96,23 @@ test('remaining ms tracks the window and reaches 0 after close', async (t) => {
 });
 
 test('closing one scheduler cancels only its own pending work', async t => {
-  const firstPool = makeFakePool(), secondPool = makeFakePool();
-  const first = createSlowResolutionScheduler({ pool: firstPool, record: async () => {} });
-  const second = createSlowResolutionScheduler({ pool: secondPool, record: async () => {} });
+  const firstWork = makeFinalizer(), secondWork = makeFinalizer();
+  const first = createSlowResolutionScheduler({ finalize: firstWork.finalize, record: async () => {} });
+  const second = createSlowResolutionScheduler({ finalize: secondWork.finalize, record: async () => {} });
   t.after(first.close); t.after(second.close);
   first.scheduleSlowResolution('owned-first', 'ukmesh');
   second.scheduleSlowResolution('owned-second', 'ukmesh');
   await first.close();
   t.mock.timers.tick(120); await nextTurn();
-  assert.equal(firstPool.calls.length, 0);
-  assert.equal(secondPool.calls.length, 1);
+  assert.equal(firstWork.calls.length, 0);
+  assert.equal(secondWork.calls.length, 1);
 });
 
 test('scheduler close joins active work and withholds late publication', async t => {
   let finish!: (value: unknown) => void, recorded = 0;
   const gate = new Promise<unknown>(resolve => { finish = resolve; });
   const runtime = createSlowResolutionScheduler({
-    pool: { runBackground: async () => await gate as never },
+    finalize: async () => await gate as never,
     record: async () => { recorded++; },
   });
   t.after(async () => { finish(null); await runtime.close(); });

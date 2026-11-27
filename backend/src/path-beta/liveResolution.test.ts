@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { setImmediate } from 'node:timers/promises';
 import { createPathResolutionRuntime } from './liveResolution.js';
-import { getResolveCache, resolveCacheKey, setResolveCache } from './resolveCache.js';
+import { captureResolveVersion, getResolveCache, resolveCacheKey, setResolveCache } from './resolveCache.js';
 
 test('committed observations invalidate paths and coalesce optional warmups', async (t) => {
   t.mock.method(Date, 'now', () => 100_000);
@@ -13,7 +13,7 @@ test('committed observations invalidate paths and coalesce optional warmups', as
     else process.env['PATH_BETA_PRERESOLVE_ENABLED'] = enabled;
   });
   const observation = { packetHash: 'a'.repeat(64), network: 'ukmesh', slow: false, warm: true };
-  const key = resolveCacheKey('multi', observation.packetHash, observation.network);
+  const key = resolveCacheKey('multi', observation.packetHash, observation.network, 1);
   const result = { canonicalPath: [] };
   let finish!: () => void;
   const gate = new Promise<void>(resolve => { finish = resolve; });
@@ -22,12 +22,13 @@ test('committed observations invalidate paths and coalesce optional warmups', as
     run: async () => null,
     runBackground: async <T>() => { calls++; await gate; return result as unknown as T; },
     close: async () => undefined,
-  });
+  }, async () => 1);
   t.after(async () => { finish(); await service.close(); });
-  setResolveCache(key, result);
+  setResolveCache(key, result, captureResolveVersion(observation.packetHash));
   service.acceptObservation(observation);
   service.acceptObservation(observation);
   assert.equal(getResolveCache(key), undefined);
+  await setImmediate();
   assert.equal(calls, 1);
   let closed = false;
   const closing = service.close().then(() => { closed = true; });
@@ -45,10 +46,11 @@ test('losing the observation subscription clears the path cache', async (t) => {
     run: async () => null,
     runBackground: async () => null,
     close: async () => undefined,
-  });
+  }, async () => 1);
   t.after(() => service.close());
-  const key = resolveCacheKey('multi', 'c'.repeat(64), 'ukmesh');
-  setResolveCache(key, { canonicalPath: [] });
+  const hash = 'c'.repeat(64);
+  const key = resolveCacheKey('multi', hash, 'ukmesh', 1);
+  setResolveCache(key, { canonicalPath: [] }, captureResolveVersion(hash));
   // A subscriber cannot recover invalidations sent while it was offline.
   service.clearResolvedPaths();
   assert.equal(getResolveCache(key), undefined);

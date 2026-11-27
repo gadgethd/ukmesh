@@ -1,8 +1,12 @@
 import { Worker } from 'worker_threads';
+import { pathResolutionStageDuration } from '../metrics/pathResolution.js';
 
 type JobCallback = {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
+  priority: 'interactive' | 'background';
+  queuedAt: number;
+  startedAt?: number;
   timeout?: NodeJS.Timeout;
   signal?: AbortSignal;
   abortListener?: () => void;
@@ -42,6 +46,7 @@ type QueuedJob = {
 export class WorkerPool {
   private idleWorkers: Worker[] = [];
   private activeWorkers = new Set<Worker>();
+  private readonly retiringWorkers = new Set<Promise<void>>();
   private workerJobs = new Map<Worker, number>();
   private pendingJobs = new Map<number, JobCallback>();
   private interactiveQueue: QueuedJob[] = [];
@@ -49,11 +54,14 @@ export class WorkerPool {
   private jobId = 0;
   private closed = false;
 
-  private cleanupCallback(cb: JobCallback): void {
+  private cleanupCallback(cb: JobCallback, outcome: 'success' | 'failure' | 'abort' | 'timeout' | 'closed'): void {
     if (cb.timeout) clearTimeout(cb.timeout);
     if (cb.signal && cb.abortListener) {
       cb.signal.removeEventListener('abort', cb.abortListener);
     }
+    pathResolutionStageDuration.observe({
+      priority: cb.priority, stage: cb.startedAt === undefined ? 'queue' : 'execution', outcome,
+    }, (performance.now() - (cb.startedAt ?? cb.queuedAt)) / 1000);
   }
 
   constructor(
@@ -80,7 +88,7 @@ export class WorkerPool {
       const cb = this.pendingJobs.get(msg.id);
       this.pendingJobs.delete(msg.id);
       if (cb) {
-        this.cleanupCallback(cb);
+        this.cleanupCallback(cb, msg.ok ? 'success' : 'failure');
         if (msg.ok) cb.resolve(msg.result ?? null);
         else cb.reject(new Error(msg.error ?? 'Worker error'));
       }
@@ -97,13 +105,13 @@ export class WorkerPool {
       if (!this.activeWorkers.has(worker)) return;
       const error = new Error(`Worker exited with code ${code}`);
       if (code !== 0) console.error('[worker-pool]', error.message);
-      this.retireWorker(worker, error);
+      this.retireWorker(worker, error, true);
     });
 
     this.dispatchNext(worker);
   }
 
-  private retireWorker(worker: Worker, error: Error): void {
+  private retireWorker(worker: Worker, error: Error, exited = false): void {
     if (!this.activeWorkers.delete(worker)) return;
     this.idleWorkers = this.idleWorkers.filter((idleWorker) => idleWorker !== worker);
 
@@ -112,11 +120,24 @@ export class WorkerPool {
     if (jobId != null) {
       const cb = this.pendingJobs.get(jobId);
       this.pendingJobs.delete(jobId);
-      if (cb) this.cleanupCallback(cb);
+      if (cb) this.cleanupCallback(cb, this.closed ? 'closed'
+        : error instanceof WorkerPoolAbortedError ? 'abort'
+          : error instanceof WorkerPoolTimeoutError ? 'timeout' : 'failure');
       cb?.reject(error);
     }
 
-    if (!this.closed) this.spawnWorker();
+    if (exited) {
+      if (!this.closed) this.spawnWorker();
+      return;
+    }
+
+    // The old thread may still hold a database pool and the complete graph.
+    // Replenish this slot only after its thread has exited.
+    const retiring = worker.terminate().then(
+      () => { if (!this.closed) this.spawnWorker(); },
+    ).catch((error: unknown) => console.error('[worker-pool] worker termination failed:', error))
+      .finally(() => { this.retiringWorkers.delete(retiring); });
+    this.retiringWorkers.add(retiring);
   }
 
   private dispatchNext(worker: Worker): void {
@@ -130,6 +151,9 @@ export class WorkerPool {
   }
 
   private startJob(worker: Worker, job: QueuedJob): void {
+    job.cb.startedAt = performance.now();
+    pathResolutionStageDuration.observe({ priority: job.cb.priority, stage: 'queue', outcome: 'dispatched' },
+      (job.cb.startedAt - job.cb.queuedAt) / 1000);
     this.workerJobs.set(worker, job.id);
     this.pendingJobs.set(job.id, job.cb);
     try {
@@ -137,7 +161,7 @@ export class WorkerPool {
     } catch (err) {
       this.workerJobs.delete(worker);
       this.pendingJobs.delete(job.id);
-      this.cleanupCallback(job.cb);
+      this.cleanupCallback(job.cb, 'failure');
       job.cb.reject(err instanceof Error ? err : new Error(String(err)));
       this.dispatchNext(worker);
     }
@@ -161,20 +185,22 @@ export class WorkerPool {
       const job: QueuedJob = {
         id,
         msg: { ...msg, id },
-        cb: { resolve: resolve as (result: unknown) => void, reject, signal },
+        cb: {
+          resolve: resolve as (result: unknown) => void, reject, signal,
+          priority: background ? 'background' : 'interactive', queuedAt: performance.now(),
+        },
       };
       job.cb.abortListener = () => {
         const activeWorker = [...this.workerJobs].find(([, jobId]) => jobId === job.id)?.[0];
         if (activeWorker) {
           this.retireWorker(activeWorker, new WorkerPoolAbortedError());
-          void activeWorker.terminate();
           return;
         }
         const before = this.interactiveQueue.length + this.backgroundQueue.length;
         this.interactiveQueue = this.interactiveQueue.filter((queued) => queued.id !== job.id);
         this.backgroundQueue = this.backgroundQueue.filter((queued) => queued.id !== job.id);
         if (this.interactiveQueue.length + this.backgroundQueue.length < before) {
-          this.cleanupCallback(job.cb);
+          this.cleanupCallback(job.cb, 'abort');
           reject(new WorkerPoolAbortedError());
         }
       };
@@ -183,14 +209,13 @@ export class WorkerPool {
         const activeWorker = [...this.workerJobs].find(([, jobId]) => jobId === job.id)?.[0];
         if (activeWorker) {
           this.retireWorker(activeWorker, new WorkerPoolTimeoutError());
-          void activeWorker.terminate();
           return;
         }
         const before = this.interactiveQueue.length + this.backgroundQueue.length;
         this.interactiveQueue = this.interactiveQueue.filter((queued) => queued.id !== job.id);
         this.backgroundQueue = this.backgroundQueue.filter((queued) => queued.id !== job.id);
         if (this.interactiveQueue.length + this.backgroundQueue.length < before) {
-          this.cleanupCallback(job.cb);
+          this.cleanupCallback(job.cb, 'timeout');
           reject(new WorkerPoolTimeoutError());
         }
       }, this.endToEndTimeoutMs);
@@ -231,13 +256,13 @@ export class WorkerPool {
     this.closed = true;
     const closeError = new Error('WORKER_POOL_CLOSED');
     for (const job of [...this.interactiveQueue, ...this.backgroundQueue]) {
-      this.cleanupCallback(job.cb);
+      this.cleanupCallback(job.cb, 'closed');
       job.cb.reject(closeError);
     }
     this.interactiveQueue = [];
     this.backgroundQueue = [];
     const workers = [...this.activeWorkers];
     for (const worker of workers) this.retireWorker(worker, closeError);
-    await Promise.allSettled(workers.map((worker) => worker.terminate()));
+    await Promise.allSettled(this.retiringWorkers);
   }
 }

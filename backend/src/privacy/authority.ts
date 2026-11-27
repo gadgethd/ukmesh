@@ -1,8 +1,8 @@
 import { query } from '../db/runtime.js';
 import { readPublicResponseGeneration } from './responseGeneration.js';
 
-export async function readReadyVisibilityGeneration(): Promise<number> {
-  return readPublicResponseGeneration(query);
+export async function readReadyVisibilityGeneration(signal?: AbortSignal): Promise<number> {
+  return readPublicResponseGeneration(sql => query(sql, undefined, signal));
 }
 
 export async function readCurrentVisibilityGeneration(signal?: AbortSignal): Promise<number> {

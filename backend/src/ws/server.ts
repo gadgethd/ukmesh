@@ -32,7 +32,8 @@ import { readRecentWithPending } from '../ram/liveRead.js';
 import { parseRegionFilter } from '../regions/filter.js';
 import { ApiInputError } from '../platform/apiInputError.js';
 import { measureSnapshotWeight } from './cacheWeight.js';
-import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, encodeInitialStateColumns } from '../contracts/initialStateColumns.generated.js';
+import { INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER, type InitialState } from '../contracts/initialStateColumns.generated.js';
+import { prepareInitialStateFrame, renderInitialStateFrame, type InitialStateFrame } from './initialStateFrames.js';
 
 const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
 
@@ -149,19 +150,6 @@ function estimatedJsonBytes(value: unknown, stopAfter: number): number {
   return bytes;
 }
 
-function initialStateEstimateExceedsLimit(entry: InitialStateEntry): boolean {
-  return estimatedJsonBytes({
-    type: 'initial_state',
-    data: {
-      nodes: entry.nodes,
-      packets: entry.packets,
-      messages: entry.messages,
-      viable_links: entry.viableLinks,
-    },
-    ts: Date.now(),
-  }, WS_INITIAL_STATE_MAX_BYTES) > WS_INITIAL_STATE_MAX_BYTES;
-}
-
 // Viable links change slowly (based on historical packet accumulation).
 // Keep the scoped link snapshot off the connect path for five minutes per
 // network/observer combination.
@@ -182,19 +170,28 @@ const INITIAL_STATE_TTL_MS = WS_CACHE_POLICIES.initialStateCache.ttlMs; // 60 s 
 type InitialStateEntry = {
   ts: number;
   generation: number;
-  nodes: InitialStateRow[];
-  packets: InitialStateRow[];
-  messages: InitialStateRow[];
-  viableLinks: Awaited<ReturnType<typeof getViableLinks>>;
+  members: string[];
+  legacy: InitialStateFrame | undefined;
+  columns: InitialStateFrame | undefined;
+  counts: { nodes: number; packets: number; messages: number; viableLinks: number };
 };
 const initialStateCache = new BoundedTtlMap<string, InitialStateEntry>(
   WS_CACHE_POLICIES.initialStateCache, { weightOf: preparedSnapshotWeight },
 );
 const initialStateInflight = new Map<string, Promise<InitialStateEntry>>();
-async function fetchInitialState(network: string | undefined, observer: string | undefined, region?: string): Promise<InitialStateEntry> {
-  const policy = await loadCurrentPublicPrivacyPolicy();
+let initialAuthorityInflight: ReturnType<typeof loadCurrentPublicPrivacyPolicy> | undefined;
+
+function initialAuthority(): ReturnType<typeof loadCurrentPublicPrivacyPolicy> {
+  // Share concurrent preflight reads only. Each socket still checks authority
+  // again immediately before sending, and builders certify before caching.
+  initialAuthorityInflight ??= loadCurrentPublicPrivacyPolicy().finally(() => { initialAuthorityInflight = undefined; });
+  return initialAuthorityInflight;
+}
+
+async function fetchInitialState(gate: BoundedAsyncGate, network: string | undefined, observer: string | undefined, region?: string): Promise<InitialStateEntry> {
+  const policy = await initialAuthority();
   if (!policy) throw new Error('WS_PUBLIC_AUTHORITY_UNAVAILABLE');
-  const key = `${network ?? ''}:${observer ?? ''}${region ? `:region-${region}` : ''}`;
+  const key = JSON.stringify([network, observer, region, policy.currentGeneration]);
   const cached = initialStateCache.get(key);
   if (cached && cached.generation === policy.currentGeneration && (Date.now() - cached.ts) < INITIAL_STATE_TTL_MS) return cached;
 
@@ -205,61 +202,82 @@ async function fetchInitialState(network: string | undefined, observer: string |
     throw new Error('WS_INITIAL_STATE_OVERLOADED');
   }
 
-  const promise = (async () => {
-    try {
-      // Keep the configured read deadline so cold work cannot retain an
-      // initial-state gate slot and a pool connection for minutes.
-      const signal = AbortSignal.timeout(WS_INITIAL_STATE_DB_TIMEOUT_MS);
-      // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
-      // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
-      //   seed a proper message cache on first load instead of relying on live traffic.
-      const [packets, messages, rawViableLinks] = await Promise.all([
-        readRecentWithPending(
-          (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes, region),
-          { limit: 7, network, observer, region },
-        ),
-        readRecentWithPending(
-          (hashes) => getRecentMessages(200, network, observer, signal, analyticsQuery, hashes, region),
-          // Message history is group-text only: keep the pending merge in the
-          // same contract as getRecentMessages (packet_type = 5).
-          { limit: 200, network, observer, region, includePayload: true, packetTypes: [5], rowKind: 'messages' },
-        ),
-        getCachedViableLinks(network, observer, signal, policy.currentGeneration, region),
-      ]);
-      const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
-      const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
-      const rawNodes = await loadInitialMapNodes(
-        getNodes, network, observer, [...packets, ...messages], region, signal,
-      );
-      const nodes = rawNodes.map((node) => slimInitialNode(node as InitialStateRow));
-      const regionNodeIds = new Set(nodes.map((node) => String(node['node_id']).toUpperCase()));
-      const viableLinks = selectInitialViableLinks(
-        rawViableLinks.filter((link) => (
-          ['ukmesh', 'test'].every((scope) => policy.classify({ network: scope,
-            rxNodeId: link.node_a_id, srcNodeId: link.node_b_id, pathHashes: null, pathHashSizeBytes: null }).visibilityOk)
-          && (!region || (regionNodeIds.has(link.node_a_id.toUpperCase())
-            && regionNodeIds.has(link.node_b_id.toUpperCase())))
-        )),
-        WS_INITIAL_STATE_MAX_VIABLE_LINKS,
-      );
-      const entry: InitialStateEntry = {
-        ts: Date.now(),
-        generation: policy.currentGeneration,
-        nodes,
-        packets: slimPackets,
-        messages: slimMessages,
-        viableLinks,
-      };
-      snapshotWeights.set(entry, await measureSnapshotWeight(entry, signal));
-      const current = await loadCurrentPublicPrivacyPolicy();
-      signal.throwIfAborted();
-      if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
-      initialStateCache.set(key, entry);
-      return entry;
-    } finally {
-      initialStateInflight.delete(key);
+  const promise = gate.run(async () => {
+    // Keep the configured read deadline so cold work cannot retain an
+    // initial-state gate slot and a pool connection for minutes.
+    const signal = AbortSignal.timeout(WS_INITIAL_STATE_DB_TIMEOUT_MS);
+    // getRecentPackets: 5-minute window, all types (fast, CTE aggregation ~16 ms).
+    // getRecentMessages: last 200 GRP (type=5) from Postgres so the feed can
+    //   seed a proper message cache on first load instead of relying on live traffic.
+    const [packets, messages, rawViableLinks] = await Promise.all([
+      readRecentWithPending(
+        (hashes) => getRecentPackets(7, network, observer, 'full', signal, undefined, hashes, region),
+        { limit: 7, network, observer, region },
+      ),
+      readRecentWithPending(
+        (hashes) => getRecentMessages(200, network, observer, signal, analyticsQuery, hashes, region),
+        // Message history is group-text only: keep the pending merge in the
+        // same contract as getRecentMessages (packet_type = 5).
+        { limit: 200, network, observer, region, includePayload: true, packetTypes: [5], rowKind: 'messages' },
+      ),
+      getCachedViableLinks(network, observer, signal, policy.currentGeneration, region),
+    ]);
+    const slimPackets = packets.map((packet) => slimInitialPacket(packet as InitialStateRow));
+    const slimMessages = messages.map((message) => slimInitialPacket(message as InitialStateRow));
+    const rawNodes = await loadInitialMapNodes(
+      getNodes, network, observer, [...packets, ...messages], region, signal,
+    );
+    const nodes = rawNodes.map((node) => slimInitialNode(node as InitialStateRow));
+    const regionNodeIds = new Set(nodes.map((node) => String(node['node_id']).toUpperCase()));
+    const viableLinks = selectInitialViableLinks(
+      rawViableLinks.filter((link) => (
+        ['ukmesh', 'test'].every((scope) => policy.classify({ network: scope,
+          rxNodeId: link.node_a_id, srcNodeId: link.node_b_id, pathHashes: null, pathHashSizeBytes: null }).visibilityOk)
+        && (!region || (regionNodeIds.has(link.node_a_id.toUpperCase())
+          && regionNodeIds.has(link.node_b_id.toUpperCase())))
+      )),
+      WS_INITIAL_STATE_MAX_VIABLE_LINKS,
+    );
+    const data = { nodes, packets: slimPackets, messages: slimMessages, viable_links: viableLinks } satisfies InitialState['data'];
+    const members = new Set<string>();
+    for (const node of nodes) {
+      const id = String(node['node_id'] ?? '').toLowerCase();
+      if (id) members.add(id);
     }
-  })();
+    if (!region) {
+      for (const packet of slimPackets) {
+        const rx = String(packet['rx_node_id'] ?? '').toLowerCase();
+        const src = String(packet['src_node_id'] ?? '').toLowerCase();
+        if (rx) members.add(rx);
+        if (src) members.add(src);
+      }
+    }
+    const ts = Date.now();
+    const estimate = estimatedJsonBytes({ type: 'initial_state', data, ts }, WS_INITIAL_STATE_MAX_BYTES);
+    signal.throwIfAborted();
+    const legacy = estimate <= WS_INITIAL_STATE_MAX_BYTES ? prepareInitialStateFrame(data, false) : undefined;
+    const columns = prepareInitialStateFrame(data, true);
+    const timestampBytes = String(ts).length;
+    const entry: InitialStateEntry = {
+      ts,
+      generation: policy.currentGeneration,
+      members: [...members],
+      legacy: legacy && legacy.bytes + timestampBytes <= WS_INITIAL_STATE_MAX_BYTES ? legacy : undefined,
+      columns: columns.bytes + timestampBytes <= WS_INITIAL_STATE_MAX_BYTES ? columns : undefined,
+      counts: { nodes: nodes.length, packets: slimPackets.length, messages: slimMessages.length, viableLinks: viableLinks.length },
+    };
+    // Store wire forms instead of keeping the same projected row objects too.
+    // Charge the strings as two-byte code units and include their member list.
+    snapshotWeights.set(entry, ((entry.legacy?.prefix.length ?? 0) + (entry.columns?.prefix.length ?? 0)) * 2
+      + entry.members.reduce((bytes, member) => bytes + member.length * 2 + 8, 128));
+    const current = await loadCurrentPublicPrivacyPolicy();
+    signal.throwIfAborted();
+    if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
+    initialStateCache.set(key, entry);
+    return entry;
+  }).finally(() => {
+    initialStateInflight.delete(key);
+  });
 
   initialStateInflight.set(key, promise);
   return promise;
@@ -409,7 +427,7 @@ export function initWebSocketServer(
 
   const warmInitialState = () => {
     for (const net of WARMUP_NETWORKS) {
-      initialStateGate.run(() => fetchInitialState(net, undefined)).catch(() => { /* best-effort */ });
+      fetchInitialState(initialStateGate, net, undefined).catch(() => { /* best-effort */ });
     }
   };
 
@@ -542,45 +560,21 @@ export function initWebSocketServer(
     } else if (WS_INITIAL_STATE_ENABLED) {
       // Send initial state: served from cache so concurrent connects don't exhaust the DB pool.
       try {
-        const entry = await initialStateGate.run(
-          () => fetchInitialState(network, observer, region),
-        );
-        if (!columnInitialState && initialStateEstimateExceedsLimit(entry)) {
-          console.warn('[ws] initial state estimate exceeds configured limit', {
-            network,
-            observer,
-            nodes: entry.nodes.length,
-            packets: entry.packets.length,
-            messages: entry.messages.length,
-            viableLinks: entry.viableLinks.length,
-          });
-          ws.close(1013, 'initial state is temporarily unavailable');
-          return;
-        }
-        const { nodes, packets, messages, viableLinks } = entry;
-        for (const node of nodes) {
-          const nodeId = String((node as { node_id?: string }).node_id ?? '').toLowerCase();
-          if (nodeId) scope.nodeIds.add(nodeId);
-        }
-        for (const packet of region ? [] : packets) {
-          const rxNodeId = String((packet as { rx_node_id?: string }).rx_node_id ?? '').toLowerCase();
-          const srcNodeId = String((packet as { src_node_id?: string }).src_node_id ?? '').toLowerCase();
-          if (rxNodeId) scope.nodeIds.add(rxNodeId);
-          if (srcNodeId) scope.nodeIds.add(srcNodeId);
-        }
-        const initMsg = {
-          type: 'initial_state' as const,
-          data: { nodes, packets, messages, viable_links: viableLinks },
-          ts: Date.now(),
-        };
-        const serialized = JSON.stringify(columnInitialState ? encodeInitialStateColumns(initMsg) : initMsg);
-        if (Buffer.byteLength(serialized) > WS_INITIAL_STATE_MAX_BYTES) {
+        const entry = await fetchInitialState(initialStateGate, network, observer, region);
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const frame = columnInitialState ? entry.columns : entry.legacy;
+        const serialized = frame && renderInitialStateFrame(frame, Date.now(), WS_INITIAL_STATE_MAX_BYTES);
+        if (!serialized) {
+          console.warn('[ws] initial state exceeds configured limit', { network, observer, ...entry.counts });
           ws.close(1013, 'initial state is temporarily unavailable');
           return;
         }
         const current = await loadCurrentPublicPrivacyPolicy();
         if (!current || current.currentGeneration !== entry.generation) throw new Error('WS_INITIAL_STATE_POLICY_CHANGED');
-        if (ws.readyState === WebSocket.OPEN) ws.send(serialized);
+        if (ws.readyState === WebSocket.OPEN) {
+          for (const id of entry.members) scope.nodeIds.add(id);
+          ws.send(serialized);
+        }
       } catch (err) {
         console.error('[ws] initial state error', (err as Error).message);
         ws.close(

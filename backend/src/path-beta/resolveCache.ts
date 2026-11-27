@@ -18,21 +18,10 @@ const cache = new BoundedTtlMap<string, {
   invalidationVersion: number;
 }>(PATH_CACHE_POLICIES.resolutionCache, { ttlMs: RESOLVE_CACHE_TTL_MS });
 const invalidationVersions = new BoundedTtlMap<string, number>(PATH_CACHE_POLICIES.invalidationVersions);
+let nextVersion = 0;
 
 function packetHashFromKey(key: string): string {
   return key.split('|')[1]?.trim() ?? '';
-}
-
-/** Last visibility generation observed by the API read path. Background
- *  warmers have no repository dependency of their own, so they build keys from
- *  this value; if no API read has happened yet their entries are simply never
- *  served, which is safe. */
-let observedVisibilityGeneration = 1;
-
-export function noteVisibilityGeneration(generation: number): void {
-  if (Number.isSafeInteger(generation) && generation > 0) {
-    observedVisibilityGeneration = generation;
-  }
 }
 
 /** The one cache-key format for every reader and writer.
@@ -40,13 +29,13 @@ export function noteVisibilityGeneration(generation: number): void {
  * Keys embed the public-visibility generation so a privacy rematerialization
  * cannot serve a result computed under the previous policy. */
 export function resolveCacheKey(
-  kind: 'single' | 'multi',
+  kind: 'single' | 'multi' | 'lazy',
   packetHash: string,
   network: string,
-  visibilityGeneration: number = observedVisibilityGeneration,
+  visibilityGeneration: number,
   observer?: string | null,
 ): string {
-  const prefix = kind === 'single' ? 'r' : 'm';
+  const prefix = kind === 'single' ? 'r' : kind === 'multi' ? 'm' : 'l';
   const scope = observer ? `${observer}|` : '';
   return `${prefix}|${packetHash}|${network}|${scope}v${visibilityGeneration}`;
 }
@@ -56,7 +45,7 @@ export function getResolveCache(key: string): unknown | undefined {
   if (!entry) return undefined;
   if (
     entry.invalidationVersion
-    !== (invalidationVersions.get(entry.packetHash) ?? 0)
+    !== invalidationVersions.get(entry.packetHash.toUpperCase())
   ) {
     cache.delete(key);
     return undefined;
@@ -64,27 +53,40 @@ export function getResolveCache(key: string): unknown | undefined {
   return entry.data;
 }
 
-export function setResolveCache(key: string, result: unknown): void {
+export function captureResolveVersion(packetHash: string): number {
+  const normalized = packetHash.toUpperCase();
+  const current = invalidationVersions.get(normalized);
+  if (current !== undefined) return current;
+  const version = ++nextVersion;
+  invalidationVersions.set(normalized, version);
+  return version;
+}
+
+export function isCurrentResolveVersion(packetHash: string, version: number): boolean {
+  return invalidationVersions.get(packetHash.toUpperCase()) === version;
+}
+
+export function setResolveCache(key: string, result: unknown, version: number): void {
   const packetHash = packetHashFromKey(key);
-  if (!packetHash) return;
+  if (!packetHash || !isCurrentResolveVersion(packetHash, version)) return;
   cache.set(key, {
     data: result,
     packetHash,
-    invalidationVersion: invalidationVersions.get(packetHash) ?? 0,
+    invalidationVersion: version,
   });
 }
 
 /** Invalidate all cached results for a given packet hash (all networks/observers). */
 export function invalidateResolveCache(packetHash: string): void {
-  invalidationVersions.set(
-    packetHash,
-    (invalidationVersions.get(packetHash) ?? 0) + 1,
-  );
+  invalidationVersions.set(packetHash.toUpperCase(), ++nextVersion);
 }
 
 /** The Redis subscription had a gap, so any result could have missed an invalidation. */
 export function clearResolvedPaths(): void {
   cache.clear();
+  // Monotonic versions ensure clearing or evicting a token cannot make an
+  // older in-flight job look current when the packet is first seen again.
+  invalidationVersions.clear();
 }
 
 export function resolveCacheMetrics() {
