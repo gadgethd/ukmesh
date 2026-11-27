@@ -1,4 +1,4 @@
-import { PrivatePrefixCache, type PrivatePrefixRow } from './privatePrefixCache.js';
+import { PrivatePrefixCache, type PrivatePrefixRow, type PublicPrivacyPolicy } from './privatePrefixCache.js';
 import type { QueryResultRow } from 'pg';
 
 export type PublicPolicyQuery = <T extends QueryResultRow = QueryResultRow>(
@@ -7,40 +7,59 @@ export type PublicPolicyQuery = <T extends QueryResultRow = QueryResultRow>(
 
 /** Load one authoritative policy snapshot for an entire public read batch. */
 export function createPublicPolicyReader(query: PublicPolicyQuery) {
-  return async (): Promise<PrivatePrefixCache | null> => {
+  let cached: PublicPrivacyPolicy | null = null;
+  return async (): Promise<PublicPrivacyPolicy | null> => {
+    const captured = cached;
     const { rows } = await query<{
       generation: string;
       materialized_generation: string;
       remat_active: boolean;
-      prefixes: PrivatePrefixRow[];
+      prefixes: PrivatePrefixRow[] | null;
     }>(`
-      SELECT visibility.generation::text AS generation,
-             materialized.visibility_generation::text AS materialized_generation,
-             EXISTS (
-               SELECT 1 FROM ops.privacy_rematerialization_queue
-                WHERE status IN ('pending', 'processing', 'failed')
-             ) AS remat_active,
-             COALESCE(jsonb_agg(jsonb_build_object(
-               'node_id', prefix.node_id,
-               'network', prefix.network,
-               'prefix_size_bytes', prefix.prefix_size_bytes,
-               'prefix', prefix.prefix
-             )) FILTER (WHERE prefix.node_id IS NOT NULL), '[]'::jsonb) AS prefixes
-        FROM ops.public_visibility_state visibility
-        JOIN ops.packet_visibility_materialization_state materialized
-          ON materialized.singleton = visibility.singleton
-        LEFT JOIN core.private_node_prefixes prefix ON TRUE
-       WHERE visibility.singleton = TRUE
-       GROUP BY visibility.generation, materialized.visibility_generation
-    `, [], AbortSignal.timeout(30_000));
+      WITH authority AS MATERIALIZED (
+        SELECT visibility.generation::text AS generation,
+               materialized.visibility_generation::text AS materialized_generation,
+               EXISTS (
+                 SELECT 1 FROM ops.privacy_rematerialization_queue
+                  WHERE status IN ('pending', 'processing', 'failed')
+               ) AS remat_active
+          FROM ops.public_visibility_state visibility
+          JOIN ops.packet_visibility_materialization_state materialized
+            ON materialized.singleton = visibility.singleton
+         WHERE visibility.singleton = TRUE
+      )
+      SELECT authority.*, CASE
+        WHEN generation = materialized_generation AND NOT remat_active
+          AND generation IS DISTINCT FROM $1::text
+        THEN (SELECT COALESCE(jsonb_agg(jsonb_build_object(
+          'node_id', prefix.node_id,
+          'network', prefix.network,
+          'prefix_size_bytes', prefix.prefix_size_bytes,
+          'prefix', prefix.prefix
+        )), '[]'::jsonb) FROM core.private_node_prefixes prefix)
+      END AS prefixes FROM authority
+    `, [captured?.currentGeneration ?? null], AbortSignal.timeout(30_000)).catch((error: unknown) => {
+      if (cached === captured) cached = null;
+      throw error;
+    });
     const state = rows[0];
     const generation = Number(state?.generation);
     if (!state || !Number.isSafeInteger(generation) || generation < 1
       || Number(state.materialized_generation) !== generation
-      || state.remat_active !== false || !Array.isArray(state.prefixes)) return null;
+      || state.remat_active !== false) {
+      if (cached === captured) cached = null;
+      return null;
+    }
+    // A concurrent fence may already have seen a newer generation.
+    if (cached !== captured && cached && generation < cached.currentGeneration) return null;
+    if (captured?.currentGeneration === generation && state.prefixes === null) return captured;
+    if (!Array.isArray(state.prefixes)) {
+      if (cached === captured) cached = null;
+      return null;
+    }
     const policy = new PrivatePrefixCache();
     policy.replace(generation, state.prefixes);
+    if (cached === captured || (cached && generation > cached.currentGeneration)) cached = policy;
     return policy;
-  }
-
+  };
 }

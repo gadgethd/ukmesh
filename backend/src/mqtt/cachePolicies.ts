@@ -22,7 +22,7 @@ export const MQTT_CACHE_POLICIES = Object.freeze({
     maxEntries: 200,
     maxWeight: 2_097_152,
     ttlMs: 600_000,
-    scope: 'raw packet within immutable configured channel set',
+    scope: 'validated payload identity within one configured channel registry',
     invalidation: 'TTL/LRU capacity',
     negativeCaching: 'failed channel decode is cached',
     singleFlight: 'single MQTT ingest task',

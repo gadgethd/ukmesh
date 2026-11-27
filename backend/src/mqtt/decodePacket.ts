@@ -178,7 +178,7 @@ function canonicalPacketId(meta: PathMeta): string | undefined {
   return hash.digest('hex').toUpperCase();
 }
 
-export function decodePacketCompat(rawHex: string, keyStore: KeyStore): CompatDecodedPacket {
+export function decodePacketCompat(rawHex: string, keyStore?: KeyStore): CompatDecodedPacket {
   const meta = parsePathMeta(rawHex);
   if (!meta) return { metadataValid: false };
 

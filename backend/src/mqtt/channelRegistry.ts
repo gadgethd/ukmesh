@@ -14,7 +14,7 @@ import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 import { Buffer } from 'node:buffer';
 import { ChannelCrypto, MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
-import { decodePacketCompat } from './decodePacket.js';
+import { decodePacketCompat, type CompatDecodedPacket } from './decodePacket.js';
 import { BoundedTtlMap } from '../cache/boundedTtlMap.js';
 
 export type ChannelClassification = 'public' | 'confidential';
@@ -23,7 +23,6 @@ export interface ChannelEntry {
   classification: ChannelClassification;
   name: string;
   secret: string;
-  keyStore: ReturnType<typeof MeshCoreDecoder.createKeyStore>;
 }
 
 /**
@@ -93,7 +92,6 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
     classification: 'public',
     name,
     secret,
-    keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
   }));
   const seen = new Set(entries.map((e) => e.secret.toLowerCase()));
   for (const raw of (envValue ?? '').split(',').map((s) => s.trim()).filter(Boolean)) {
@@ -106,7 +104,6 @@ export function buildChannelEntries(envValue?: string): ChannelEntry[] {
       classification: 'confidential',
       name,
       secret,
-      keyStore: MeshCoreDecoder.createKeyStore({ channelSecrets: [secret] }),
     });
   }
   return entries;
@@ -223,28 +220,6 @@ export function sanitizePublicPacketPayload(
   return rest;
 }
 
-// Small cache so relay copies of the same GroupText don't trigger re-decodes
-const channelCache = new BoundedTtlMap<string, string | null>(MQTT_CACHE_POLICIES.channelCache, { weightOf: (key, value) => key.length * 2 + (value?.length ?? 0) * 2 });
-
-/** Identify which channel a GroupText was sent on by trying each single-key keyStore. */
-export function identifyChannel(rawHex: string, entries: ChannelEntry[]): string | undefined {
-  // Single channel — must be it, no re-decode needed
-  if (entries.length === 1) return entries[0]!.name;
-
-  if (channelCache.has(rawHex)) return channelCache.get(rawHex) ?? undefined;
-
-  let result: string | undefined;
-  for (const entry of entries) {
-    const { decoded: d, metadataValid } = decodePacketCompat(rawHex, entry.keyStore);
-    if (!metadataValid) continue;
-    const p = d?.payload?.decoded as GroupTextPayload | undefined;
-    if (p?.decrypted) { result = entry.name; break; }
-  }
-
-  channelCache.set(rawHex, result ?? null);
-  return result;
-}
-
 // Channel decryption and the signed ending identify the format only.
 export const MESHOS_SIGNED_MARKER = 'MeshOS-signed (unverified)';
 
@@ -288,23 +263,80 @@ function decryptGroupPlaintext(secret: Buffer, ciphertextHex: string): Buffer | 
   }
 }
 
-/** True when the decrypted group text carries the MeshOS signed ending. */
-export function hasMeshosSignature(p: GroupTextPayload, entries: ChannelEntry[], channel?: string): boolean {
-  if (typeof p.ciphertext !== 'string' || typeof p.channelHash !== 'string' || !p.decrypted) return false;
-  const expectedHash = p.channelHash.trim().toUpperCase();
-  if (expectedHash.length !== 2) return false;
+type AuthenticatedGroupText = {
+  channel: string;
+  decrypted: NonNullable<GroupTextPayload['decrypted']>;
+  signed: boolean;
+};
 
+/** One wire decoder and ordered key index per configured channel registry. */
+export function createChannelDecoder(entries: readonly ChannelEntry[]) {
+  const byHash = new Map<string, ChannelEntry[]>();
   for (const entry of entries) {
-    if (channel !== undefined && entry.name !== channel) continue;
-    if (ChannelCrypto.calculateChannelHash(entry.secret).toUpperCase() !== expectedHash) continue;
-    const plaintext = decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), p.ciphertext);
-    if (plaintext && isMeshosSignedPlaintext(plaintext)) return true;
+    const hash = ChannelCrypto.calculateChannelHash(entry.secret).toUpperCase();
+    const candidates = byHash.get(hash);
+    if (candidates) candidates.push({ ...entry });
+    else byHash.set(hash, [{ ...entry }]);
   }
-  return false;
+
+  const cache = new BoundedTtlMap<string, AuthenticatedGroupText | null>(MQTT_CACHE_POLICIES.channelCache, {
+    weightOf: (key, value) => 2 * (key.length + (value
+      ? value.channel.length + (value.decrypted.sender?.length ?? 0) + value.decrypted.message.length
+      : 0)) + 64,
+  });
+
+  function authenticate(payload: GroupTextPayload): AuthenticatedGroupText | null {
+    if (!payload.isValid) return null;
+    for (const entry of byHash.get(payload.channelHash.toUpperCase()) ?? []) {
+      const result = ChannelCrypto.decryptGroupTextMessage(payload.ciphertext, payload.cipherMac, entry.secret);
+      if (!result.success || !result.data) continue;
+
+      const { timestamp, flags, sender, message } = result.data as AuthenticatedGroupText['decrypted'];
+      // The SDK owns message decoding but does not expose the signed ending.
+      // At least 80 plaintext bytes are needed for that ending.
+      const plaintext = payload.ciphertext.length >= 160
+        ? decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), payload.ciphertext)
+        : undefined;
+      return {
+        channel: entry.name,
+        decrypted: { timestamp, flags, sender, message },
+        signed: plaintext !== undefined && isMeshosSignedPlaintext(plaintext),
+      };
+    }
+    return null;
+  }
+
+  function decode(rawHex: string): CompatDecodedPacket & { summary?: string } {
+    const packet = decodePacketCompat(rawHex);
+    const { decoded, canonicalPacketId } = packet;
+    if (!packet.metadataValid || !decoded) return packet;
+    const payload = decoded.payload.decoded;
+    let group: AuthenticatedGroupText | null = null;
+    if (decoded.payloadType === 5 && payload && canonicalPacketId) {
+      const groupPayload = payload as GroupTextPayload;
+      const cached = cache.get(canonicalPacketId);
+      if (cached === undefined) {
+        group = authenticate(groupPayload);
+        cache.set(canonicalPacketId, group);
+      } else {
+        group = cached;
+      }
+      if (group) groupPayload.decrypted = { ...group.decrypted };
+    }
+    return { ...packet, summary: buildSummary(decoded.payloadType, payload, group) };
+  }
+
+  return {
+    decode,
+    close() {
+      cache.shutdown();
+      cache.clear();
+    },
+  };
 }
 
 /** Build a short human-readable summary from a decoded payload. */
-export function buildSummary(payloadType: number, decoded: unknown, rawHex?: string, entries?: ChannelEntry[]): string | undefined {
+function buildSummary(payloadType: number, decoded: unknown, group: AuthenticatedGroupText | null): string | undefined {
   if (!decoded) return undefined;
 
   switch (payloadType) {
@@ -314,16 +346,9 @@ export function buildSummary(payloadType: number, decoded: unknown, rawHex?: str
       return name ? `${name}` : undefined;
     }
     case 5: {
-      const p = decoded as GroupTextPayload;
-      if (p.decrypted) {
-        const sender  = p.decrypted.sender ?? '?';
-        const channel = rawHex && entries ? identifyChannel(rawHex, entries) : undefined;
-        const prefix  = channel ? `[${channel}] ` : '';
-        const signed  = entries ? hasMeshosSignature(p, entries, channel) : false;
-        const suffix  = signed ? ` · ${MESHOS_SIGNED_MARKER}` : '';
-        return `${prefix}${sender}: ${p.decrypted.message}${suffix}`;
-      }
-      return '[encrypted]';
+      if (!group) return '[encrypted]';
+      const suffix = group.signed ? ` · ${MESHOS_SIGNED_MARKER}` : '';
+      return `[${group.channel}] ${group.decrypted.sender ?? '?'}: ${group.decrypted.message}${suffix}`;
     }
     case 2: {
       const p = decoded as { decrypted?: { message?: string } };

@@ -24,6 +24,8 @@ export type PacketPrivacyClassification = {
   visibilityOk: boolean;
 };
 
+export type PublicPrivacyPolicy = Pick<PrivatePrefixCache, 'currentGeneration' | 'classify'>;
+
 function networkClass(network: string): string {
   return UK_PUBLIC_NETWORKS.has(network) ? 'ukmesh-public' : network;
 }

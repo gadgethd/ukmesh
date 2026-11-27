@@ -1,9 +1,9 @@
-import type { PrivatePrefixCache } from './privatePrefixCache.js';
+import type { PublicPrivacyPolicy } from './privatePrefixCache.js';
 
 /** A bounded FIFO with one current-authority query per delivery batch. */
 export function createPublicBatch<T>(options: {
-  loadPolicy: () => Promise<PrivatePrefixCache | null>;
-  deliver: (items: T[], policy: PrivatePrefixCache) => void;
+  loadPolicy: () => Promise<PublicPrivacyPolicy | null>;
+  deliver: (items: T[], policy: PublicPrivacyPolicy) => void;
   refused: (reason: 'overflow' | 'unavailable', count: number) => void;
   maxItems: number;
   maxBytes: number;
