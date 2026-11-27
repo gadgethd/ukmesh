@@ -23,6 +23,8 @@ import {
 } from '../backup/receipt.js';
 import {
   backupAgeSeconds,
+  boundedNetworkMetricLabel,
+  statsChartSnapshotAgeSeconds,
   coreTelemetryExpiredChunks,
   coreTelemetryHypertableBytes,
   coreTelemetryHypertableChunks,
@@ -141,6 +143,29 @@ function refreshBackupAgeMetrics(now = new Date()): void {
   } catch {
     // Absence is intentional signal: BackupReceiptMissing fires when no
     // signature-verified receipt can be loaded.
+  }
+}
+
+async function refreshStatsChartSnapshotAgeMetrics(now = new Date()): Promise<void> {
+  try {
+    const result = await query<{ scope_key: string; generated_at: string | null }>(`
+      SELECT scope_key, MAX(generated_at)::text AS generated_at
+      FROM analytics.stats_chart_snapshots
+      GROUP BY scope_key
+    `);
+    statsChartSnapshotAgeSeconds.reset();
+    for (const row of result.rows) {
+      const generatedAtMs = Date.parse(row.generated_at ?? '');
+      if (!Number.isFinite(generatedAtMs)) continue;
+      statsChartSnapshotAgeSeconds.set(
+        { network: boundedNetworkMetricLabel(row.scope_key) },
+        Math.max(0, (now.getTime() - generatedAtMs) / 1_000),
+      );
+    }
+  } catch (error) {
+    // Keep the previous sample rather than clearing the series; a failed read
+    // must never be presented as a fresh snapshot.
+    console.error('[health] stats chart snapshot age refresh failed', (error as Error).message);
   }
 }
 
@@ -714,6 +739,7 @@ async function redisDurabilityState(): Promise<{
 
 export async function captureWorkerHealthSnapshot(): Promise<void> {
   await refreshPacketPathCapacityMetrics();
+  await refreshStatsChartSnapshotAgeMetrics();
   await refreshCoreTelemetryCapacityMetrics();
   const capturedAt = new Date().toISOString();
   const rows = (await currentWorkers()).map((row) => row.worker_name === 'health-worker'

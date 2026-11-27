@@ -335,6 +335,8 @@ tests:
         values: 700000x14
       - series: 'meshcore_backup_age_seconds{dataset="owner_auth"}'
         values: 10x14
+      - series: 'meshcore_stats_chart_snapshot_age_seconds{network="ukmesh"}'
+        values: 9000x14
     alert_rule_test:
       - eval_time: 3m
         alertname: DatabaseUnavailable
@@ -408,6 +410,17 @@ tests:
               summary: Verified analytics restore receipt is older than 7 days
               owner: meshcore-operations
               runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
+
+      - eval_time: 11m
+        alertname: StatsChartSnapshotStale
+        exp_alerts:
+          - exp_labels:
+              network: ukmesh
+              severity: warning
+            exp_annotations:
+              summary: Stats chart snapshot for ukmesh is more than 2 hours old
+              owner: meshcore-operations
+              runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#statschartsnapshotstale
 
   - name: lease and privacy integrity counters alert on observed failures
     interval: 1m

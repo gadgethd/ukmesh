@@ -260,34 +260,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
     );
   }
 
-  async function fetchObserverRegionSummary(
-    network: string | undefined,
-    observer: string | undefined,
-    queryFn: QueryFn = query,
-  ) {
-    const filters = networkFilters(network, observer, { includePrivacy: false });
-    return queryFn(`
-      SELECT
-        COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
-        COUNT(DISTINCT p.packet_hash) FILTER (WHERE p.time > NOW() - INTERVAL '24 hours') AS packets_24h,
-        COUNT(DISTINCT p.packet_hash) AS packets_7d,
-        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id))))
-          FILTER (WHERE p.time > NOW() - INTERVAL '1 minute') AS active_observers,
-        COUNT(DISTINCT COALESCE(rx_alias.canonical_node_id, UPPER(BTRIM(p.rx_node_id)))) AS observers,
-        MAX(p.time)::text AS last_packet_at
-      FROM mesh.packets p
-      LEFT JOIN core.node_identity_aliases rx_alias
-        ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
-      WHERE p.time > NOW() - INTERVAL '7 days'
-        AND p.rx_node_id IS NOT NULL
-        AND p.rx_node_id <> ''
-        AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
-        ${filters.packetsAlias('p')}
-      GROUP BY 1
-      ORDER BY packets_7d DESC, iata ASC
-    `, filters.params);
-  }
-
   async function fetchLiveObserverRegions(network: string | undefined, observer: string | undefined) {
     const filters = networkFilters(network, observer);
     return query<{ iata: string; active_observers: string; last_packet_at: string }>(`
@@ -1020,7 +992,7 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
 
     const [
       phResult, pdResult, rhResult, rdResult,
-      ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+      ptResult, hdResult, pcResult, sumResult,
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
     ] = await Promise.all([
@@ -1128,21 +1100,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
             WHERE p.time > NOW() - INTERVAL '24 hours'
               AND p.src_node_id IS NOT NULL ${filters.packetsAlias('p')}) AS unique_radios_24h
       `, filters.params),
-      fetchObserverRegionSummary(network, observer, query),
-      query(`
-        SELECT
-          COALESCE(NULLIF(TRIM(UPPER(p.iata)), ''), 'UNK') AS iata,
-          time_bucket('1 day', p.time) AS day,
-          COUNT(DISTINCT p.packet_hash) AS count
-        FROM mesh.packets p
-        WHERE p.time > NOW() - INTERVAL '7 days'
-          AND p.rx_node_id IS NOT NULL
-          AND p.rx_node_id <> ''
-          AND p.rx_node_id ~ '^[0-9A-Fa-f]{64}$'
-          ${filters.packetsAlias('p')}
-        GROUP BY 1, 2
-        ORDER BY iata ASC, day ASC
-      `, filters.params),
       query<{ hash_hex_len: string; hop_count: string }>(
         `SELECT length(h)::text AS hash_hex_len, COUNT(*)::text AS hop_count
          FROM (
@@ -1243,8 +1200,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
       hdResult,
       pcResult,
       sumResult,
-      orSummaryResult,
-      orSeriesResult,
       pathHashWidthsResult,
       multibyteSummaryResult,
       observerDiversityResult,
@@ -1465,7 +1420,6 @@ export function createStatsRepository(deps: StatsRepositoryDeps) {
   return {
     loadChartSnapshot,
     saveChartSnapshot,
-    fetchObserverRegionSummary,
     fetchLiveObserverRegions,
     fetchChannelTraffic,
     fetchChartsData,

@@ -13,7 +13,6 @@ test('stats response validation rejects error bodies and recognizes an empty dat
     },
     packetsPerHour: [],
     packetsPerDay: [],
-    observerRegions: [],
   };
   assert.equal(isStatsPayload(empty), true);
   assert.equal(isStatsPayloadEmpty(empty), true);

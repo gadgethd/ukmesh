@@ -7,7 +7,6 @@ export type StatsPayloadMinimum = {
   };
   packetsPerHour?: unknown[];
   packetsPerDay?: unknown[];
-  observerRegions?: unknown[];
 };
 
 export function statsGeneratedAt(value: StatsPayloadMinimum): number | null {
@@ -44,6 +43,5 @@ export function isStatsPayloadEmpty(value: StatsPayloadMinimum): boolean {
     && value.summary.totalPackets7d === 0
     && value.summary.uniqueRadios24h === 0
     && (value.packetsPerHour?.length ?? 0) === 0
-    && (value.packetsPerDay?.length ?? 0) === 0
-    && (value.observerRegions?.length ?? 0) === 0;
+    && (value.packetsPerDay?.length ?? 0) === 0;
 }

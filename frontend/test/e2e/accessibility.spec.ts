@@ -267,31 +267,22 @@ const publicRoutes = [
   '/spam',
 ] as const;
 
-test('observer activity refreshes independently of an old chart snapshot', async ({ page }) => {
+test('observer activity stays live while the chart snapshot is old', async ({ page }) => {
   await installFixtures(page);
   const generatedAt = '2026-11-01T12:00:00Z';
   await page.route('**/api/stats/charts?**', route => route.fulfill({ json: {
-    ...chartStats, snapshot: { generatedAt }, observerRegions: [{
-      iata: 'EDI', activeObservers: 0, observers: 4, packets7d: 120, packets24h: 20,
-      lastPacketAt: generatedAt, series: [], health: { score: 0, status: 'poor' },
-    }],
+    ...chartStats, snapshot: { generatedAt },
   } }));
-  let activeObservers = 2;
   await page.route('**/api/stats/observers/live?**', route => route.fulfill({ json: {
     generatedAt: new Date().toISOString(), windowMinutes: 15,
-    regions: [{ iata: 'EDI', activeObservers, lastPacketAt: new Date().toISOString() }],
+    regions: [{ iata: 'EDI', activeObservers: 2, lastPacketAt: new Date().toISOString() }],
   } }));
   await page.goto('/stats?tab=observers');
-  const card = page.locator('#observer-region-EDI');
-  await expect(card.getByText('Receiving packets', { exact: true })).toBeVisible();
-  await expect(card.getByText('2 / 4', { exact: true })).toBeVisible();
+  // The live observer line is driven by /stats/observers/live, not by the
+  // chart snapshot, so it must stay current while the snapshot is days old.
+  await expect(page.getByText(/active in the last 15 minutes/)).toBeVisible();
   const timestamp = page.getByText(/^Chart data as of/);
   await expect(timestamp).toContainText('2026');
-  const originalTimestamp = await timestamp.textContent();
-  activeObservers = 3;
-  await page.getByRole('button', { name: /refresh/i }).click();
-  await expect(card.getByText('3 / 4', { exact: true })).toBeVisible();
-  await expect(timestamp).toHaveText(originalTimestamp!);
 });
 
 for (const route of publicRoutes) {
