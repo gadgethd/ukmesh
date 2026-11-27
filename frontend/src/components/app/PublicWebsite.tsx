@@ -17,6 +17,7 @@ const UKBestPracticePage = lazy(() => import('../../pages/ukmesh/UKBestPracticeP
 const SpamPage = lazy(() => import('../../pages/SpamTransparencyPage.js').then(({ SpamPage: Component }) => ({ default: Component })));
 const TopologyPage = lazy(() => import('../../pages/TopologyPage.js').then(({ TopologyPage: Component }) => ({ default: Component })));
 const RegionsPage = lazy(() => import('../../pages/RegionsPage.js').then(({ RegionsPage: Component }) => ({ default: Component })));
+const TropoPage = lazy(() => import('../../pages/TropoPage.js').then(({ TropoPage: Component }) => ({ default: Component })));
 const NotFoundPage = lazy(() => import('../../pages/NotFoundPage.js').then(({ NotFoundPage: Component }) => ({ default: Component })));
 
 const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = {
@@ -32,6 +33,7 @@ const PUBLIC_ROUTE_ELEMENTS: Record<PublicRouteComponent, React.ReactElement> = 
   spam: <SpamPage />,
   topology: <TopologyPage />,
   regions: <RegionsPage />,
+  tropo: <TropoPage />,
   contact: <ContactPage />,
   privacy: <PrivacyPage />,
 };

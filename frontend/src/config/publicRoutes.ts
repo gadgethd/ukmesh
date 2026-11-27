@@ -11,6 +11,7 @@ export type PublicRouteComponent =
   | 'spam'
   | 'topology'
   | 'regions'
+  | 'tropo'
   | 'contact'
   | 'privacy';
 
@@ -120,6 +121,13 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     component: 'regions',
     title: 'Regions — UK Mesh Network',
     description: 'MeshCore region scoping on the UK mesh: which regions carry scoped flood traffic, the repeaters relaying it, and their observed regional footprints.',
+    sitemap: true,
+  },
+  {
+    path: '/tropo',
+    component: 'tropo',
+    title: 'Tropospheric Ducting Forecast — UK Mesh Network',
+    description: 'Five-day NOAA GFS forecast of tropospheric ducting potential over the UK, with a 3-hourly map, ducting index, and strongest-window guidance.',
     sitemap: true,
   },
   { path: '/about', redirectTo: '/', sitemap: false },

@@ -93,3 +93,5 @@ verification/
 
 # Generated Tropo tiles served read-only by the website container.
 /tropo-data/
+# Local tropo forecast data staged for the frontend dev server.
+/frontend/public/tropo/data/
