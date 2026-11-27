@@ -335,7 +335,7 @@ apply_backend_config() {
     docker compose \
       -f docker-compose.yml \
       -f docker-compose.live.yml \
-      up -d --no-deps backend
+      up -d --no-build --no-deps backend
   ) >&2
 }
 

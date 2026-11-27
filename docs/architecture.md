@@ -18,6 +18,40 @@ CoreScope, Beacon Server and Beacon Web are independent Git submodules under
 separate storage and ports while sharing the local fixture MQTT broker with
 UKMesh. They are outside UKMesh's production Compose and release builds.
 
+## Runtime failure boundaries
+
+The websites and app serve static files independently of the backend. Their
+proxy locations resolve upstream names at request time, so API and WebSocket
+traffic can recover when the backend returns. Monitoring starts independently
+of backend readiness. `/readyz` remains the aggregate release check for the
+database, MQTT intake and owner ACL. The owner ACL runtime retries its own
+startup while public HTTP and ingest start. Protected owner endpoints wait for
+the first successful reconciliation.
+
+Owner-dependent forwarding also waits for that pass. MQTT intake can commit
+while the forwarding outbox holds pending deliveries. Monitor disk capacity
+and outbox recovery during a sustained owner outage.
+
+Treat account provisioning, inventory evidence and transport configuration as
+separate operations. Broker credentials reload in Mosquitto. An approved
+inventory can be promoted in its mounted directory using the
+[live activation procedure](operations.md#owner-authorization-baseline-refresh).
+Confirmed grants in the legacy CLI still use the environment-backed grant map
+and recreate only the backend using its existing image.
+
+The next boundary is an audited operator grant that uses the existing
+`operator-database` authority. Preserve explicit node confirmation and legacy
+grants. Report success after the running reconciler and broker confirm the
+exact intended change. Promote inventory evidence only after checking that same
+change against the previous baseline.
+
+Separate MQTT ingest from the HTTP process before making connection settings
+reloadable. Validate a new credential with an independent connection before
+reconnecting the durable client on the same broker. Verify subscription
+acknowledgements and committed observations. A broker move also needs a plan
+for the source broker's retained session and unacknowledged messages. Test
+broken settings, backlog and recovery on an owned fixture before rollout.
+
 ## HopReach boundary
 
 The complete HopReach v0.1.32 source is vendored at

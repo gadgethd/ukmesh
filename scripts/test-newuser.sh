@@ -38,7 +38,7 @@ if [[ ${1:-} == compose ]]; then
   case "$*" in
     *'ps -q mosquitto') printf 'infra-mosquitto-id\n' ;;
     *'ps -q timescaledb') printf 'infra-timescaledb-id\n' ;;
-    *' up -d --no-deps backend') printf 'COMPOSE_BACKEND\n' >>"$FAKE_DOCKER_LOG" ;;
+    *' up -d --no-build --no-deps backend') printf 'COMPOSE_BACKEND\n' >>"$FAKE_DOCKER_LOG" ;;
     *) printf 'unexpected docker compose invocation: %s\n' "$*" >&2; exit 1 ;;
   esac
   exit 0

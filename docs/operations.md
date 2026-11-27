@@ -337,6 +337,13 @@ drift fails closed. A verified transition limited to public-feed read permission
 can converge without replacing the baseline; see [the exact certificate rules](privacy-convergence.md#owner-acl-readiness-convergence).
 Review approved grant changes before generating a replacement baseline.
 
+The static website and map have their own health checks. MQTT or owner ACL
+problems can degrade `/readyz` while the site continues serving its HTML and
+assets. Owner login and protected owner routes return a retryable error if the
+initial ACL pass has not completed. The backend retries that pass separately
+from live ingest and public HTTP. `/readyz` remains the aggregate deployment
+and restore check.
+
 1. Identify the change from the audit trail and confirm it was approved:
 
    ```bash
@@ -353,18 +360,32 @@ Review approved grant changes before generating a replacement baseline.
    scripts/refresh-owner-baseline.sh
    ```
 
-3. Activate it after reviewing the printed counts/generations:
+3. Activate it after reviewing the printed counts and generations. Use a stable
+   `OWNER_AUTH_INVENTORY_BASELINE_PATH=/owner-auth-inventory/current.json` for
+   live activation. To adopt it, first seed `current.json` in the mounted host
+   directory with the currently validated baseline, preserving its permissions.
+   Apply that path to the backend once, using its existing image. Later updates
+   can replace the file while the backend is running.
+
+   ```bash
+   scripts/refresh-owner-baseline.sh --activate-live
+   ```
+
+   With a legacy versioned baseline path, use the existing activation flow.
 
    ```bash
    scripts/refresh-owner-baseline.sh --apply --recreate
    curl -fsS http://127.0.0.1:3000/readyz
    ```
 
-The script refuses to overwrite an existing baseline, backs up `.env` before
-editing, keeps the previous baseline for rollback, and validates the new file
-against the live inventory before activation. To roll back, point
-`OWNER_AUTH_INVENTORY_BASELINE_PATH` at the previous file and recreate the
-backend.
+The script validates the new file against the live inventory. Live activation
+preserves the active file's permissions and retains the prior bytes under a
+timestamped filename. The existing automatic baseline job uses live activation
+when `current.json` is configured and its narrow authorization checks pass.
+Roll back by restoring the corresponding approved owner
+policy and atomically replacing `current.json` with its reviewed baseline. The
+legacy activation instead backs up `.env` and repoints the path before recreating
+only the backend.
 
 Use the `/operations`, `/observer-registrations`, and operator audit pages for
 normal mutations. They enforce authorization, CSRF, typed confirmation,

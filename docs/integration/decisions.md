@@ -38,3 +38,9 @@
 - Count identical GroupText summaries before classifying channels. DEV kept accepting MQTT while repeated channel counts exceeded the chart query budget. The scan still applies the network and observer predicates and the database privacy policy. Grouping the counts keeps the complete 24-hour total and the existing channel labels.
 - Let the Packets view load observer codes from a scoped feed lookup. Its region picker was requesting a complete chart calculation for one field. The lookup keeps the same seven-day observation window and checks the current visibility generation before delivery.
 - Remove the historical Stats page and its periodic chart refresh together. Keep the lightweight summary warmup and serve existing chart API clients on request. The historical widgets, route budgets and browser checks belong to the retired page.
+
+## Runtime isolation
+
+- Static origins verify their own assets and resolve upstreams per request. The public tunnel uses the static origin gate, and monitors can report backend failures even if the backend never becomes ready. Keep aggregate readiness for release gates and diagnostics.
+- Owner ACL reconciliation owns its startup retry. Keep protected owner access unavailable until the first reconciliation completes. Public HTTP and packet intake can start independently. The operator diagnostics and deployment readiness still check the applied ACL and reviewable inventory.
+- A stable mounted baseline filename lets an operator activate validated inventory evidence by atomic replacement. Keep versioned exports and prior bytes for rollback. Accepted MQTT credentials, approved owner grants and switchable service connection settings have different lifecycles.

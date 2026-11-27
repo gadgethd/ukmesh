@@ -47,6 +47,14 @@ x-application-hardening: &application-hardening
   tmpfs:
     - /tmp:rw,noexec,nosuid,size=64m,mode=1777
 
+# Static origins can serve their own files even if an upstream fails its probe.
+x-static-origin-health: &static-origin-health
+  test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/index.html"]
+  interval: 30s
+  timeout: 10s
+  retries: 6
+  start_period: 15s
+
 services:
   # Apply additive, versioned migrations once before the application starts.
   # Base schema creation remains in the database init hook for fresh volumes;
@@ -466,8 +474,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      backend:
-        condition: service_healthy
       alert-receiver:
         condition: service_started
 
@@ -592,9 +598,6 @@ services:
     logging: *service-journal
     mem_limit: &app-ukmesh-memory "${APP_MEMORY_LIMIT:-48m}"
     memswap_limit: *app-ukmesh-memory
-    depends_on:
-      backend:
-        condition: service_healthy
     ports:
       - "127.0.0.1:3003:8080"
     networks:
@@ -607,12 +610,7 @@ services:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null && wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   website-ukmesh:
     <<: [*internal-hosts, *application-hardening]
@@ -634,21 +632,13 @@ services:
     networks:
       default:
         ipv4_address: 172.30.0.11
-    depends_on:
-      backend:
-        condition: service_healthy
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null && wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   mesh-health-check-data-init:
     <<: *application-hardening
@@ -766,21 +756,13 @@ services:
     networks:
       default:
         ipv4_address: 172.30.0.12
-    depends_on:
-      backend:
-        condition: service_healthy
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
       - /var/run:rw,noexec,nosuid,size=4m,uid=101,gid=101,mode=0755
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/ >/dev/null"]
-      interval: 30s
-      timeout: 10s
-      retries: 6
-      start_period: 15s
+    healthcheck: *static-origin-health
 
   # ── Anubis bot protection ─────────────────────────────────────────────────────
   # One sidecar per public HTTP service. Cloudflare Tunnel routes to these
@@ -882,8 +864,6 @@ services:
     environment:
       TUNNEL_TOKEN: ${CLOUDFLARE_TUNNEL_TOKEN}
     depends_on:
-      backend:
-        condition: service_healthy
       anubis-website-ukmesh:
         condition: service_started
       anubis-app-ukmesh:
@@ -1001,8 +981,6 @@ services:
       retries: 5
       start_period: 20s
     depends_on:
-      backend:
-        condition: service_healthy
       alertmanager:
         condition: service_healthy
       postgres-exporter:

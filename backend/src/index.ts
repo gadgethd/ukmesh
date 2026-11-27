@@ -13,7 +13,6 @@ import {
   getAppliedOwnerAclArtifact,
   getOwnerAuthorizationInventory,
   getOwnerAuthorizationSnapshot,
-  initOwnerAuthDb,
 } from './owner/ownerAuth.js';
 import { createIngestRuntime } from './ingest/runtime.js';
 import { getRamIngestMode } from './ram/protocol.js';
@@ -34,10 +33,9 @@ import {
 } from './queue/publisher.js';
 import { createBackendSiteRoutes } from './backend-site/routes.js';
 import { isTrustedProxyPeer } from './http/trustedProxy.js';
-import { getConvergedOwnerAclReadiness, startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
+import { getConvergedOwnerAclReadiness, ownerAuthorizationAvailable, startOwnerAuthorizationReconciler, stopOwnerAuthorizationReconciler } from './owner/ownerAclReconciler.js';
 import { createOwnerLastHopPrewarm } from './owner/ownerLastHopPrewarm.js';
 import { resolveOwnerNodeIds } from './owner/ownerAccess.js';
-import { getAnalysisWorkloadStates } from './analysis/runState.js';
 import { applySecurityHeaders } from './security/operatorAuth.js';
 import { closeMetricsServer, startMetricsServer } from './metricsServer.js';
 import {
@@ -291,13 +289,16 @@ async function main() {
   const apiRuntime = createApiRuntime(healthRuntime, ingestRuntime);
   lifecycle.register({ name: 'api-runtime', stage: 30, close: apiRuntime.close });
   apiRuntime.startBackgroundWork();
-  await initOwnerAuthDb();
-  await startOwnerAuthorizationReconciler();
+  startOwnerAuthorizationReconciler(() => {
+    forwardingOutbox.start();
+    packetShareForwarder.start();
+    publicFeedForwarder.start();
+  });
   // Keep the owner dashboard RX-strength cache warm for every active MQTT owner
   // so the panel (and its 7d/30d toggle) never pays for a cold scan on open.
   const ownerService = apiRuntime.ownerService;
   ownerLastHopPrewarmStop = createOwnerLastHopPrewarm({
-    listOwnerNodes: getOwnerAuthorizationSnapshot,
+    listOwnerNodes: () => ownerAuthorizationAvailable() ? getOwnerAuthorizationSnapshot() : Promise.resolve([]),
     refreshLastHop: (ownedNodeIds, nodeId, windowDays, minAgeMs) => (
       ownerService.refreshOwnerLastHopStrength(ownedNodeIds, nodeId, windowDays, minAgeMs)
     ),
@@ -416,6 +417,15 @@ async function main() {
   // Telemetry uses its route budget; dashboard stats have a reserved budget.
   app.use('/api', createGlobalApiLimiter());
 
+  app.use('/api/owner', (req, res, next) => {
+    if (ownerAuthorizationAvailable() || req.path === '/csrf' || req.path === '/logout') {
+      next();
+      return;
+    }
+    res.setHeader('Cache-Control', 'no-store');
+    res.status(503).json({ error: 'Owner authorization is temporarily unavailable', retryable: true });
+  });
+
   // API routes
   app.use('/api', apiRuntime.router);
   app.use('/internal/ingest/public', createPublicRamSource());
@@ -443,17 +453,20 @@ async function main() {
           reason: 'owner-baseline-not-checked',
         },
       },
-      analysis: [] as Awaited<ReturnType<typeof getAnalysisWorkloadStates>>,
     };
     try {
       await query('SELECT 1');
       checks.database = true;
-      const ownerReadiness = await readOwnerAuthorizationReadiness();
-      Object.assign(checks.ownerAuthorization, ownerReadiness.ownerAuthorization);
-      console.log('[readyz] owner inventory baseline', checks.ownerAuthorization.inventoryBaseline);
-      checks.analysis = await getAnalysisWorkloadStates();
     } catch (err) {
       console.error('[readyz] database check failed:', (err as Error).message);
+    }
+    try {
+      if (checks.database && ownerAuthorizationAvailable()) {
+        const ownerReadiness = await readOwnerAuthorizationReadiness();
+        Object.assign(checks.ownerAuthorization, ownerReadiness.ownerAuthorization);
+      }
+    } catch (err) {
+      console.error('[readyz] owner authorization check failed:', (err as Error).message);
     }
     const ownerAclGenerationReady = checks.ownerAuthorization.aclMode !== 'apply'
       || (
@@ -466,6 +479,7 @@ async function main() {
       && checks.ownerAuthorization.inventoryBaseline.ok;
     const ready = !lifecycle.isDraining
       && checks.database
+      && ownerAuthorizationAvailable()
       && ownerAclReady
       && (!MQTT_INGEST_ENABLED || (checks.mqtt.state === 'connected' && checks.mqttConnectionMonitor.state === 'healthy'));
     // Public readiness is a documented coarse projection. Owner-authorization
@@ -537,9 +551,6 @@ async function main() {
   });
   startMetricsServer(METRICS_PORT, process.env['METRICS_HOST'] ?? '0.0.0.0');
 
-  forwardingOutbox.start();
-  packetShareForwarder.start();
-  publicFeedForwarder.start();
   if (getRamIngestMode() === 'ram') {
     void (async () => {
       let delayMs = 1_000;

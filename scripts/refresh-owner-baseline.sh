@@ -7,11 +7,12 @@
 #
 # The running backend fails readiness closed when the configured baseline no
 # longer matches the live database/ACL (counts, grants, generations). Use this
-# script ONLY after reviewing and approving the grant change, then repoint the
-# baseline and recreate the backend.
+# script after reviewing and approving the grant change. With a live baseline
+# path configured, activation replaces the mounted file atomically.
 #
 # Usage:
 #   scripts/refresh-owner-baseline.sh                 # generate + validate only
+#   scripts/refresh-owner-baseline.sh --activate-live # activate mounted current.json
 #   scripts/refresh-owner-baseline.sh --apply         # also repoint .env (backup kept)
 #   scripts/refresh-owner-baseline.sh --apply --recreate
 #   scripts/refresh-owner-baseline.sh --help
@@ -32,6 +33,7 @@ mesh_container="${OWNER_BASELINE_CONTAINER:-meshcore-analytics-backend-1}"
 mesh_compose_files=(-f docker-compose.yml -f docker-compose.live.yml)
 mesh_apply=false
 mesh_recreate=false
+mesh_activate_live=false
 
 usage() {
   sed -n '2,25p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
@@ -41,11 +43,16 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     --apply) mesh_apply=true ;;
     --recreate) mesh_recreate=true ;;
+    --activate-live) mesh_activate_live=true ;;
     --help|-h) usage; exit 0 ;;
     *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
   esac
   shift
 done
+if [ "$mesh_activate_live" = true ] && { [ "$mesh_apply" = true ] || [ "$mesh_recreate" = true ]; }; then
+  echo '--activate-live cannot be combined with --apply or --recreate' >&2
+  exit 64
+fi
 
 for command in docker python3; do
   command -v "$command" >/dev/null 2>&1 || {
@@ -75,6 +82,9 @@ if [ "$mesh_recreate" = true ] \
 fi
 
 mesh_image="$(docker inspect "$mesh_container" --format '{{.Config.Image}}')"
+if [ "$mesh_activate_live" = true ]; then
+  mesh_image="$(docker inspect "$mesh_container" --format '{{.Image}}')"
+fi
 mesh_network="${OWNER_BASELINE_NETWORK:-$(docker inspect "$mesh_container" \
   --format '{{range $name, $_ := .NetworkSettings.Networks}}{{$name}}{{"\n"}}{{end}}' | head -n1)}"
 if [ -z "$mesh_network" ]; then
@@ -107,6 +117,12 @@ mesh_export_dir="$(cd -- "$mesh_export_dir" && pwd -P)"
 mesh_export_uid="$(stat -c '%u' "$mesh_export_dir")"
 mesh_export_gid="$(stat -c '%g' "$mesh_export_dir")"
 
+if [ "$mesh_activate_live" = true ]; then
+  command -v flock >/dev/null 2>&1 || { echo 'live activation requires flock' >&2; exit 69; }
+  exec {mesh_activation_lock}>>"$mesh_export_dir/.owner-baseline-activation.lock"
+  flock -x "$mesh_activation_lock"
+fi
+
 mesh_stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 mesh_basename="owner-grants-${mesh_stamp}-rebaseline.json"
 mesh_export_path="$mesh_export_dir/$mesh_basename"
@@ -124,14 +140,42 @@ cleanup() {
 }
 trap cleanup EXIT
 
-python3 - "$mesh_container" "$mesh_tmp_env" <<'PY'
+python3 - "$mesh_container" "$mesh_tmp_env" "$mesh_activate_live" "$mesh_export_dir" "$mesh_mosquitto_dir" <<'PY'
 import json
+from pathlib import Path, PurePosixPath
 import subprocess
 import sys
 
-container, destination = sys.argv[1], sys.argv[2]
+container, destination, live, export_dir, mosquitto_dir = sys.argv[1:]
 raw = subprocess.check_output(["docker", "inspect", container]).decode()
-envs = json.loads(raw)[0]["Config"]["Env"]
+metadata = json.loads(raw)[0]
+envs = metadata["Config"]["Env"]
+if live == "true":
+    expected = "OWNER_AUTH_INVENTORY_BASELINE_PATH=/owner-auth-inventory/current.json"
+    if [entry for entry in envs if entry.startswith("OWNER_AUTH_INVENTORY_BASELINE_PATH=")] != [expected]:
+        sys.exit("live baseline activation requires the running backend to use /owner-auth-inventory/current.json")
+    mounts = [mount for mount in metadata["Mounts"] if mount["Destination"] == "/owner-auth-inventory"]
+    if (len(mounts) != 1 or mounts[0]["Type"] != "bind" or mounts[0]["RW"]
+            or Path(mounts[0]["Source"]).resolve() != Path(export_dir)):
+        sys.exit("live baseline directory must match the backend's read-only bind mount")
+    if any(mount["Destination"] == "/owner-auth-inventory/current.json" for mount in metadata["Mounts"]):
+        sys.exit("current.json must be read through the directory mount, not a file mount")
+    acl_mounts = [mount for mount in metadata["Mounts"] if mount["Destination"] == "/mosquitto/config"]
+    if (len(acl_mounts) != 1 or acl_mounts[0]["Type"] != "bind"
+            or Path(acl_mounts[0]["Source"]).resolve() != Path(mosquitto_dir).resolve()):
+        sys.exit("live baseline validation requires the running backend's Mosquitto config mount")
+    acl_dir = PurePosixPath("/mosquitto/config")
+    acl = PurePosixPath(next((entry.split("=", 1)[1] for entry in envs
+                              if entry.startswith("MOSQUITTO_ACL_PATH=")), "/mosquitto/config/acl"))
+    if acl == acl_dir or not acl.is_relative_to(acl_dir) or ".." in acl.parts:
+        sys.exit("live baseline validation requires the ACL in the Mosquitto config directory")
+    for mount in metadata["Mounts"]:
+        nested = PurePosixPath(mount["Destination"])
+        if nested != acl_dir and nested.is_relative_to(acl_dir) and acl.is_relative_to(nested):
+            sys.exit("the ACL must be read through the Mosquitto config directory mount")
+    active = Path(export_dir) / "current.json"
+    if active.is_symlink() or not active.is_file():
+        sys.exit("live baseline activation requires an existing regular current.json")
 skip = {"PATH", "HOSTNAME", "HOME", "NODE_VERSION", "YARN_VERSION", "PWD", "SHLVL", "TERM", "container"}
 kept = [entry for entry in envs if entry.split("=", 1)[0] not in skip]
 with open(destination, "w", encoding="utf-8") as handle:
@@ -187,9 +231,21 @@ if baseline_check.get("ok") is not True:
     sys.exit(1)
 PY
 
+if [ "$mesh_activate_live" = true ]; then
+  python3 "$mesh_script_dir/lib/owner-baseline-promote.py" "$mesh_export_path" \
+    "$mesh_export_dir/owner-grants-${mesh_stamp}-previous.json"
+  read -r mesh_candidate_hash _ < <(sha256sum -- "$mesh_export_path")
+  read -r mesh_active_hash _ < <(docker exec "$mesh_container" sha256sum /owner-auth-inventory/current.json)
+  if [ "$mesh_candidate_hash" != "$mesh_active_hash" ]; then
+    echo 'The running backend does not see the promoted baseline. Check its mount and permissions.' >&2
+    exit 1
+  fi
+  echo 'Validated baseline activated at /owner-auth-inventory/current.json.'
+  exit 0
+fi
+
 echo
-echo "Baseline validated. It is NOT active until OWNER_AUTH_INVENTORY_BASELINE_PATH"
-echo "points at it and the backend is recreated."
+echo 'Baseline validated and ready for activation.'
 
 if [ "$mesh_apply" != true ]; then
   echo
@@ -199,6 +255,7 @@ if [ "$mesh_apply" != true ]; then
   echo "  3. docker compose ${mesh_compose_files[*]} up -d --no-build --no-deps backend"
   echo "  4. curl -fsS http://127.0.0.1:3000/readyz"
   echo
+  echo 'With current.json already configured, use --activate-live for in-place activation.'
   echo "Or re-run with --apply (and optionally --recreate)."
   exit 0
 fi

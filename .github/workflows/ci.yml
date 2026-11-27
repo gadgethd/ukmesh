@@ -347,6 +347,8 @@ jobs:
         run: python -m py_compile viewshed-worker/worker.py viewshed-worker/link_queue_v3.py viewshed-worker/viewshed_queue_v2.py viewshed-worker/backfill_profiles.py viewshed-worker/rf/*.py
       - name: Test CI network retries
         run: python -m unittest discover -s scripts -p test_ci_retry.py -v
+      - name: Test live owner baseline activation
+        run: python -B scripts/test_owner_baseline_promote.py
       - name: Pull build and test images with bounded retries
         run: |
           # Some services reuse an image built by a different service. Exclude
