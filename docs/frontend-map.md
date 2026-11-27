@@ -107,6 +107,18 @@ chunks instead of embedding a second bundled copy of their common code.
 Library chunk budgets measure their named chunks; every shared dependency and
 worker is also counted by the unchanged all-JavaScript ceiling.
 
+MapLibre 6.19 keeps its map state in a `zustand/vanilla` store that the renderer
+graph imports at module scope. Because the module worker shares that graph,
+`zustand/vanilla` has its own `codeSplitting` chunk. Do not fold it into the
+lazily imported `components/Map/maplibre.ts` facade: that gives the MapLibre
+core chunk an inbound edge to the facade, and the resulting chunk cycle runs the
+facade's module-scope `setWorkerUrl()` before the core chunk initialises
+`src/util/config.ts` (`TypeError: Cannot set properties of undefined (setting
+'WORKER_URL')`, rendered as the app error boundary). Do not fold it into the
+React chunk either: the worker then reaches the app entry and its `document`
+access (`ReferenceError: document is not defined`) and fails to start. Keep the
+group in place when changing renderer chunking.
+
 `VITE_BUILD_TARGET=app` emits the dashboard routes; `public-website` and
 `dev-website` emit the public/owner routes. An unset target retains the combined
 local-development behaviour. Use direct `import.meta.env.VITE_BUILD_TARGET`
