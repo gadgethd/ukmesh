@@ -72,26 +72,6 @@ function countryFromLatLon(lat: number, lon: number): string | null {
   return null;
 }
 
-export function computeRegionHealth(input: {
-  activeObservers: number;
-  observers: number;
-  packets24h: number;
-  lastPacketAt: string | null;
-}, nowMs = Date.now()): { score: number; status: 'healthy' | 'watch' | 'poor'; factors: Record<string, number> } {
-  const parsedLastPacket = input.lastPacketAt ? Date.parse(input.lastPacketAt) : Number.NaN;
-  const ageMinutes = Number.isFinite(parsedLastPacket) ? Math.max(0, (nowMs - parsedLastPacket) / 60_000) : Number.POSITIVE_INFINITY;
-  const freshness = ageMinutes <= 5 ? 100 : ageMinutes >= 60 ? 0 : Math.round(100 * (1 - ((ageMinutes - 5) / 55)));
-  const observerAvailability = input.activeObservers <= 0 ? 0 : input.activeObservers === 1 ? 60 : 100;
-  const traffic = Math.min(100, Math.round((Math.log10(Math.max(0, input.packets24h) + 1) / 4) * 100));
-  const observerDiversity = Math.min(100, Math.round((input.observers / 3) * 100));
-  const score = Math.round(freshness * 0.4 + observerAvailability * 0.3 + traffic * 0.2 + observerDiversity * 0.1);
-  return {
-    score,
-    status: score >= 75 ? 'healthy' : score >= 45 ? 'watch' : 'poor',
-    factors: { freshness, observerAvailability, traffic, observerDiversity },
-  };
-}
-
 export function createStatsService(deps: StatsServiceDeps) {
   const {
     statsCache,
@@ -227,32 +207,6 @@ export function createStatsService(deps: StatsServiceDeps) {
     };
   };
 
-  function refreshCachedRegionHealth(data: unknown): unknown {
-    if (!data || typeof data !== 'object') return data;
-    const current = data as {
-      observerRegions?: Array<{
-        activeObservers: number;
-        observers: number;
-        packets24h: number;
-        lastPacketAt: string | null;
-        [key: string]: unknown;
-      }>;
-    };
-    if (!Array.isArray(current.observerRegions)) return data;
-    return {
-      ...current,
-      observerRegions: current.observerRegions.map((region) => ({
-        ...region,
-        health: computeRegionHealth({
-          activeObservers: region.activeObservers,
-          observers: region.observers,
-          packets24h: region.packets24h,
-          lastPacketAt: region.lastPacketAt,
-        }),
-      })),
-    };
-  }
-
   async function getChannelTraffic(
     network: string | undefined,
     observer: string | undefined,
@@ -296,7 +250,7 @@ export function createStatsService(deps: StatsServiceDeps) {
   ): Promise<unknown> {
     const {
       phResult, pdResult, rhResult, rdResult,
-      ptResult, hdResult, pcResult, sumResult, orSummaryResult, orSeriesResult,
+      ptResult, hdResult, pcResult, sumResult,
       pathHashWidthsResult, multibyteSummaryResult, observerDiversityResult, signalSummaryResult,
       routeTypesResult, transportCodesResult, pathDecodeTrendResult,
     } = await repository.fetchChartsData(network, observer, visibilityGeneration);
@@ -305,43 +259,6 @@ export function createStatsService(deps: StatsServiceDeps) {
       (best: any, r: any) => (Number(r.count) > Number(best?.count ?? 0) ? r : best),
       null,
     );
-
-    const observerRegionsByIata = new Map<string, {
-      iata: string;
-      activeObservers: number;
-      observers: number;
-      packets24h: number;
-      packets7d: number;
-      lastPacketAt: string | null;
-      series: { day: string; count: number }[];
-      health: ReturnType<typeof computeRegionHealth>;
-    }>();
-
-    for (const row of orSummaryResult.rows) {
-      const iata = String(row.iata ?? 'UNK');
-      observerRegionsByIata.set(iata, {
-        iata,
-        activeObservers: Number(row.active_observers ?? 0),
-        observers: Number(row.observers ?? 0),
-        packets24h: Number(row.packets_24h ?? 0),
-        packets7d: Number(row.packets_7d ?? 0),
-        lastPacketAt: row.last_packet_at ?? null,
-        series: [],
-        health: computeRegionHealth({
-          activeObservers: Number(row.active_observers ?? 0),
-          observers: Number(row.observers ?? 0),
-          packets24h: Number(row.packets_24h ?? 0),
-          lastPacketAt: row.last_packet_at ?? null,
-        }),
-      });
-    }
-
-    for (const row of orSeriesResult.rows) {
-      const iata = String(row.iata ?? 'UNK');
-      const region = observerRegionsByIata.get(iata);
-      if (!region) continue;
-      region.series.push({ day: fmtDay(row.day), count: Number(row.count ?? 0) });
-    }
 
     const widthToBucket: Record<number, 'one_byte' | 'two_byte' | 'three_byte'> = { 2: 'one_byte', 4: 'two_byte', 6: 'three_byte' };
     const pathHashStats = { one_byte: 0, two_byte: 0, three_byte: 0 };
@@ -385,7 +302,6 @@ export function createStatsService(deps: StatsServiceDeps) {
         ...row,
         allPct: totalPackets24h > 0 ? Number(((row.count / totalPackets24h) * 100).toFixed(1)) : 0,
       })),
-      observerRegions: Array.from(observerRegionsByIata.values()),
       pathHashes: {
         last24hHops: pathHashStats,
         multibytePackets24h: Number(multibyteRow?.multibyte_packets_24h ?? 0),
@@ -634,7 +550,7 @@ export function createStatsService(deps: StatsServiceDeps) {
     ) {
       // The normal cadence governs regeneration. The longer durable lifetime
       // permits an immediate stale response while one background refresh runs.
-      const refreshed = refreshCachedRegionHealth(cached.data);
+      const refreshed = cached.data;
       chartsCache.set(key, { ts: cached.ts, data: refreshed });
       return refreshed;
     }
@@ -648,14 +564,14 @@ export function createStatsService(deps: StatsServiceDeps) {
         visibilityGeneration,
       );
     } catch (error) {
-      if (cached) return refreshCachedRegionHealth(cached.data);
+      if (cached) return cached.data;
       throw error;
     }
     if (cached) {
       // Even an expired canonical snapshot is complete and privacy-filtered.
       // Serve it while one refresh runs, and retain it if that refresh fails.
       void promise.catch(() => { /* retain the last successful value */ });
-      return refreshCachedRegionHealth(cached.data);
+      return cached.data;
     }
     return promise;
   }

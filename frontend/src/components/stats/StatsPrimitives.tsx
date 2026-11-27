@@ -65,20 +65,6 @@ export interface ChartData {
   channelTraffic: { channel: string; count: number; pct: number; allPct: number }[];
   hopDistribution: { hops: number; count: number }[];
   prefixCollisions: { prefix: string; repeats: number }[];
-  observerRegions: Array<{
-    iata: string;
-    activeObservers: number;
-    observers: number;
-    packets24h: number;
-    packets7d: number;
-    lastPacketAt: string | null;
-    health: {
-      score: number;
-      status: 'healthy' | 'watch' | 'poor';
-      factors: Record<string, number>;
-    };
-    series: { day: string; count: number }[];
-  }>;
   pathHashes: {
     last24hHops: {
       one_byte: number;

@@ -457,6 +457,13 @@ export const backupAgeSeconds = new Gauge({
   registers: [metricsRegistry],
 });
 
+export const statsChartSnapshotAgeSeconds = new Gauge({
+  name: 'meshcore_stats_chart_snapshot_age_seconds',
+  help: 'Age of the newest published statistics chart snapshot by scope.',
+  labelNames: ['network'] as const,
+  registers: [metricsRegistry],
+});
+
 export const packetPathsRows30d = new Gauge({
   name: 'meshcore_packet_paths_rows_30d',
   help: 'Durable packet path rows written in the trailing 30 days.',

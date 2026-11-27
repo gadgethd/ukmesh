@@ -588,6 +588,19 @@ Run the backup immediately, verify the signature/checksum, and perform the
 isolated drill. Investigate target capacity or scheduling after a fresh
 verified receipt restores the recovery guarantee.
 
+### StatsChartSnapshotStale
+
+The statistics pages serve the newest published chart snapshot, so a stale
+snapshot means the charts are frozen while live ingest keeps flowing. Check
+`meshcore_stats_chart_snapshot_age_seconds{scope="ukmesh"}` and the backend log
+for `[stats] chart refresh failed` and `STATS_QUERY_BUDGET_EXCEEDED`. The
+refresh aborts the whole snapshot when one dimension exceeds its per-query
+budget, so identify the slow dimension and make it cheaper (aggregate read or a
+narrower window) instead of raising the budget without a measured cost. A
+stored snapshot older than the current public visibility generation is never
+served; if the gauge sits at the last successful publish, the refresh loop is
+failing rather than idle.
+
 ### TelemetryIntegrityFailures
 
 Inspect aggregate rejection reasons and a bounded redacted sample. Treat

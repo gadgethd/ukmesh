@@ -347,6 +347,16 @@ groups:
           owner: meshcore-operations
           runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#backupstale
 
+      - alert: StatsChartSnapshotStale
+        expr: meshcore_stats_chart_snapshot_age_seconds{network="ukmesh"} > 7200
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Stats chart snapshot for {{ $labels.network }} is more than 2 hours old
+          owner: meshcore-operations
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#statschartsnapshotstale
+
       - alert: TelemetryIntegrityFailures
         expr: increase(meshcore_privacy_filter_total{outcome="invalid"}[10m]) > 10
         for: 5m

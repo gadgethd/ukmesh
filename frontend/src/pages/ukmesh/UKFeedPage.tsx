@@ -13,7 +13,6 @@ import { useMessageTags } from '../../hooks/useMessageTags.js';
 import { messageTagKind, messageTagTitle } from '../../hooks/packetFeed.js';
 import {
   ApiResponseError,
-  chartStatsEndpoint,
   fetchJson,
   uncachedEndpoint,
   withScopeParams,
@@ -191,17 +190,20 @@ export const UKFeedPage: React.FC = () => {
 
   useVisibilityPoll(async (signal) => {
     const json = await fetchJson<{
-      observerRegions?: Array<{ iata?: string | null; activeObservers?: number; observers?: number }>;
+      regions?: Array<{ iata?: string | null }>;
     }>(
-      uncachedEndpoint(chartStatsEndpoint(scope)),
+      uncachedEndpoint(withScopeParams('/api/stats/observers/live', scope)),
       { cache: 'no-store', signal },
       { timeoutMs: PATH_REQUEST_TIMEOUT_MS, maxBytes: 4 * 1024 * 1024 },
     );
     if (signal.aborted) return;
-    const values = (json.observerRegions ?? [])
+    const values = (json.regions ?? [])
       .map((region) => String(region.iata ?? '').trim().toUpperCase())
       .filter((iata) => /^[A-Z0-9]{2,8}$/.test(iata));
-    setRegionOptions(Array.from(new Set(values)).sort((a, b) => a.localeCompare(b)));
+    // Regions with no traffic in the live window drop out of the feed payload,
+    // so keep every IATA seen for this scope rather than shrinking the filter.
+    setRegionOptions((previous) => Array.from(new Set([...previous, ...values]))
+      .sort((a, b) => a.localeCompare(b)));
     setRegionOptionsStatus('ready');
   }, {
     scopeKey: `feed-regions:${scopeKey}`,

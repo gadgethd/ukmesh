@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { useSearchParams } from 'react-router';
 import {
   AreaChart, Area, BarChart, Bar,
@@ -37,7 +37,6 @@ import {
 } from '../components/stats/StatsDecodedPathDialog.js';
 import { Tab, TabList, TabPanel, Tabs } from '../components/ui/Tabs.js';
 import { useStatsPageData } from '../hooks/useStatsPageData.js';
-import { useWatchlist } from '../hooks/useWatchlist.js';
 import { isStatsPayloadEmpty } from './statsState.js';
 import './path-modal.css';
 import './stats-page.css';
@@ -45,12 +44,10 @@ import { fmtAxisDay, fmtAxisTime, fmtPeakHour } from './statsTimeFormat.js';
 
 // ── Main page ─────────────────────────────────────────────────────────────────
 export const StatsPage: React.FC = () => {
-  const watchlist = useWatchlist();
   const { data, loading, refreshing, loadError, lastUpdatedAt, reload, liveObservers, observerError } = useStatsPageData();
   const [searchParams, setSearchParams] = useSearchParams();
   const [selectedDecodedPath, setSelectedDecodedPath] = useState<DecodedPathSelection | null>(null);
   const requestedTab = searchParams.get('tab');
-  const requestedRegion = searchParams.get('region')?.trim().toUpperCase() ?? '';
   const activeTab: StatsTabId = isStatsTabId(requestedTab) ? requestedTab : 'overview';
 
   const setActiveTab = (tab: StatsTabId) => {
@@ -83,28 +80,6 @@ export const StatsPage: React.FC = () => {
   const transportCodes = data?.transportCodes ?? [];
   const maxTransportCodeCount = Math.max(1, ...transportCodes.map((code) => code.count));
   const dataIsEmpty = data ? isStatsPayloadEmpty(data) : false;
-  const liveByRegion = new Map(liveObservers?.regions.map(region => [region.iata, region]));
-  const observerRegions = (data?.observerRegions ?? []).map(region => ({ ...region,
-    historyAvailable: true,
-    ...(liveObservers ? { activeObservers: liveByRegion.get(region.iata)?.activeObservers ?? 0,
-      lastPacketAt: liveByRegion.get(region.iata)?.lastPacketAt ?? region.lastPacketAt } : {}),
-  }));
-  for (const region of liveObservers?.regions ?? []) {
-    if (!observerRegions.some(existing => existing.iata === region.iata)) {
-      observerRegions.push({ ...region, historyAvailable: false, observers: region.activeObservers,
-        packets24h: 0, packets7d: 0, series: [], health: { score: 0, status: 'watch', factors: {} } });
-    }
-  }
-
-  useEffect(() => {
-    if (activeTab !== 'observers' || !requestedRegion || !data) return;
-    const frame = window.requestAnimationFrame(() => {
-      const card = document.getElementById(`observer-region-${requestedRegion}`);
-      card?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      card?.focus({ preventScroll: true });
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [activeTab, data, requestedRegion]);
 
   return (
     <div className="site-layout__inner">
@@ -454,79 +429,6 @@ export const StatsPage: React.FC = () => {
                   <StatCard label="Unique packets measured" value={formatCount(data.observerDiversity.totalPackets24h)} />
                   <StatCard label="Single-observer packets" value={formatCount(data.observerDiversity.singleObserverPackets24h)} color={C_ORANGE} />
                   <StatCard label="Single-observer share" value={fmtTrafficPct(data.observerDiversity.singleObserverPct24h)} color={C_AMBER} />
-                </div>
-
-                <div className="stats-page__observer-section">
-                  <div className="stats-page__chart-header">
-                    <span className="stats-page__chart-title">Observer regions</span>
-                    <span className="stats-page__chart-sub">sorted by observed packets over the last 7 days</span>
-                  </div>
-                  {observerRegions.length > 0 ? (
-                    <div className="stats-page__observer-grid">
-                      {observerRegions.map((region) => (
-                        <div
-                          key={region.iata}
-                          id={`observer-region-${region.iata}`}
-                          className="stats-page__observer-card"
-                          tabIndex={-1}
-                        >
-                          <div className="stats-page__observer-card-head">
-                            <span className="stats-page__observer-iata">{region.iata}</span>
-                            <span className={`stats-page__health stats-page__health--${liveObservers ? (region.activeObservers > 0 ? 'healthy' : 'watch') : region.health?.status ?? 'poor'}`} title={liveObservers ? 'Public packet reception in the last 15 minutes' : 'Health in the historical chart snapshot'}>
-                              {liveObservers ? (region.activeObservers > 0 ? 'Receiving packets' : 'No recent packets')
-                                : `${region.health?.score ?? 0}% ${region.health?.status ?? 'poor'} (snapshot)`}
-                            </span>
-                            <span className="stats-page__observer-last">last packet {formatTimeAgo(region.lastPacketAt)}</span>
-                          </div>
-                          <div className="stats-page__observer-watch">
-                            <button type="button" onClick={() => watchlist.toggle('region', region.iata, `${region.iata} region`)}>{watchlist.isWatched('region', region.iata) ? '★ Region' : '☆ Region'}</button>
-                            <button type="button" onClick={() => watchlist.toggle('observer', region.iata, `${region.iata} observers`)}>{watchlist.isWatched('observer', region.iata) ? '★ Observers' : '☆ Observers'}</button>
-                          </div>
-                          <div className="stats-page__observer-metrics">
-                            <div className="stats-page__observer-metric">
-                              <span>Packets (7D)</span>
-                              <strong>{region.historyAvailable ? formatCount(region.packets7d) : '—'}</strong>
-                            </div>
-                            <div className="stats-page__observer-metric">
-                              <span>Packets (24h)</span>
-                              <strong>{region.historyAvailable ? formatCount(region.packets24h) : '—'}</strong>
-                            </div>
-                            <div className="stats-page__observer-metric">
-                              <span>Active observers / 7D snapshot</span>
-                              <strong>{formatCount(region.activeObservers)} / {region.historyAvailable ? formatCount(region.observers) : '—'}</strong>
-                            </div>
-                          </div>
-                          <div className="stats-page__observer-chart">
-                            <ResponsiveContainer width="100%" height={90}>
-                              <AreaChart data={region.series} margin={{ top: 4, right: 0, left: 0, bottom: 0 }}>
-                                <defs>
-                                  <linearGradient id={`gObserver-${region.iata}`} x1="0" y1="0" x2="0" y2="1">
-                                    <stop offset="5%" stopColor={C_CYAN} stopOpacity={0.28} />
-                                    <stop offset="95%" stopColor={C_CYAN} stopOpacity={0} />
-                                  </linearGradient>
-                                </defs>
-                                <CartesianGrid vertical={false} {...gridProps} />
-                                <XAxis dataKey="day" hide />
-                                <YAxis hide />
-                                <Tooltip content={<CustomTooltip />} />
-                                <Area
-                                  type="monotone"
-                                  dataKey="count"
-                                  name="Packets"
-                                  stroke={C_CYAN}
-                                  fill={`url(#gObserver-${region.iata})`}
-                                  strokeWidth={2}
-                                  dot={false}
-                                />
-                              </AreaChart>
-                            </ResponsiveContainer>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <EmptyPacketState />
-                  )}
                 </div>
               </>
             )}
