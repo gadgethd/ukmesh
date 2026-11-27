@@ -23,11 +23,17 @@ import { readPendingEntries, type PendingStreamEntry } from './liveStore.js';
 import type { DatabaseQueryFn as QueryFn } from '../db/contracts.js';
 import { createPublicPolicyReader } from '../privacy/policyReader.js';
 import { query } from '../db/runtime.js';
+import { packetDecryptionJoinSql, packetIdentityReadAuthority } from '../db/packetIdentityRead.js';
+import { buildPacketScopeClause, buildPublicPacketPrivacyClause, buildScopePlaceholders } from '../db/readScope.js';
 import { networkMatchesScope } from '../networks.js';
 import { getRamIngestMode, type RamPendingEntry } from './protocol.js';
 
 export type RecentRow = Record<string, unknown>;
-export type PendingSummary = { packet_hash: string; payload: { _summary: unknown } };
+export type PendingSummary = {
+  packet_hash: string;
+  packet_uid?: string | null;
+  payload: { _summary: unknown };
+};
 
 const loadCurrentPublicPrivacyPolicy = createPublicPolicyReader(query);
 
@@ -103,12 +109,41 @@ async function resolveCanonicalAliases(nodeIds: string[]): Promise<Map<string, s
   return new Map(result.rows.map((row) => [row.source_node_id, row.canonical_node_id]));
 }
 
-export async function resolvePendingSummaries(entries: PendingSummary[], readQuery: QueryFn = query): Promise<Map<string, string | null>> {
-  const result = await readQuery(`
-    SELECT p.packet_hash, COALESCE(p.payload->>'_summary', pd.summary) AS summary
-    FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, payload jsonb)
-    LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash`, [JSON.stringify(entries)]);
-  return new Map(result.rows.map(row => [String(row.packet_hash), row.summary === null ? null : String(row.summary)]));
+/** Resolve stored summaries within the public scope, even before a UID is flushed. */
+export async function resolvePendingSummaries(
+  entries: PendingSummary[],
+  readQuery: QueryFn = query,
+  scope: Pick<MergeOptions, 'network' | 'observer' | 'region'> = {},
+): Promise<Map<string, string | null>> {
+  const authority = packetIdentityReadAuthority();
+  const placeholders = buildScopePlaceholders(2, scope.network, scope.observer, scope.region);
+  const siblingDecryption = packetDecryptionJoinSql(
+    'COALESCE(input_uid.uid, stored_uid.packet_uid)',
+    `${buildPacketScopeClause(placeholders, 'sib', scope.network)}
+     ${buildPublicPacketPrivacyClause('sib')}`,
+    authority,
+  );
+  const lookupUid = authority === 'uid' ? `
+    CROSS JOIN LATERAL (
+      SELECT CASE WHEN p.packet_uid ~ '^[0-9a-fA-F]{64}$' THEN decode(p.packet_uid, 'hex') END AS uid
+    ) input_uid
+    LEFT JOIN LATERAL (
+      SELECT pk.packet_uid
+        FROM mesh.packets pk
+       WHERE input_uid.uid IS NULL AND pk.packet_hash = p.packet_hash
+         AND pk.packet_uid IS NOT NULL
+         ${buildPacketScopeClause(placeholders, 'pk', scope.network)}
+         ${buildPublicPacketPrivacyClause('pk')}
+       ORDER BY pk.time DESC
+       LIMIT 1
+    ) stored_uid ON TRUE` : '';
+  const result = await readQuery<{ packet_hash: string; summary: string | null }>(`
+    SELECT p.packet_hash, COALESCE(p.payload->>'_summary', ${siblingDecryption.summary}) AS summary
+      FROM jsonb_to_recordset($1::jsonb) AS p(packet_hash text, packet_uid text, payload jsonb)
+      ${lookupUid}
+      ${siblingDecryption.joins}
+  `, [JSON.stringify(entries), ...(authority === 'uid' ? placeholders.params : [])]);
+  return new Map(result.rows.map(row => [row.packet_hash, row.summary]));
 }
 
 function canonical(value: string | null, aliases: Map<string, string>): string | null {
@@ -174,6 +209,7 @@ function buildMergedRow(group: EntryWithTx[], includePayload: boolean, fields: '
     _representative_rank: representativeRank(representative, rowKind),
     _representative_id: representative.entry.observationId,
     _pending_summary: payload?.['_summary'] ?? null,
+    _pending_packet_uid: input.packetUid ?? null,
   };
 }
 
@@ -229,7 +265,10 @@ function stripInternalIds<T>(rows: T[]): T[] {
     if (row && typeof row === 'object') delete (row as RecentRow)['_policy_generation'];
     if (row && typeof row === 'object') delete (row as RecentRow)['_representative_rank'];
     if (row && typeof row === 'object') delete (row as RecentRow)['_representative_id'];
-    if (row && typeof row === 'object') delete (row as RecentRow)['_pending_summary'];
+    if (row && typeof row === 'object') {
+      delete (row as RecentRow)['_pending_summary'];
+      delete (row as RecentRow)['_pending_packet_uid'];
+    }
   }
   return rows;
 }
@@ -333,9 +372,15 @@ export async function mergePendingPacketsIntoRecentRows<T>(
     }
     const combined = [...base, ...merged];
     const summaries = combined.filter(row => Object.hasOwn(row, '_pending_summary') && typeof row['_pending_summary'] !== 'string')
-      .map(row => ({ packet_hash: String(row['packet_hash']), payload: { _summary: row['_pending_summary'] } }));
+      .map(row => ({
+        packet_hash: String(row['packet_hash']),
+        packet_uid: typeof row['_pending_packet_uid'] === 'string' ? row['_pending_packet_uid'] : null,
+        payload: { _summary: row['_pending_summary'] },
+      }));
     if (summaries.length) {
-      const resolved = await (opts.resolveSummaries ?? resolvePendingSummaries)(summaries);
+      const resolved = await (opts.resolveSummaries
+        ? opts.resolveSummaries(summaries)
+        : resolvePendingSummaries(summaries, query, opts));
       for (const row of combined) if (Object.hasOwn(row, '_pending_summary') && typeof row['_pending_summary'] !== 'string') {
         row['summary'] = resolved.get(String(row['packet_hash'])) ?? null;
       }

@@ -45,7 +45,11 @@ def main(argv=None):
         help="initialize a standalone tagger schema with an owner credential, then exit",
     )
     args = parser.parse_args(argv)
-    settings = TaggerSettings.from_env()
+    try:
+        settings = TaggerSettings.from_env()
+    except (OSError, ValueError) as error:
+        log(f"FATAL: invalid tagger configuration: {error}")
+        sys.exit(2)
     if args.bootstrap_schema:
         with closing(psycopg2.connect(
             settings.database_url,
@@ -58,10 +62,13 @@ def main(argv=None):
         return
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
-    classify = lambda state: tagger_client.classify(state, settings)
-    if not settings.api_key:
-        log("FATAL: TYPESAFE_API_KEY is empty")
+    if not settings.api_url or not settings.api_key:
+        required = "TAGGER_URL and TAGGER_API_KEY" if settings.backend == "local" else "TYPESAFE_API_URL and TYPESAFE_API_KEY"
+        log(f"FATAL: {required} must be configured")
         sys.exit(2)
+
+    def classify(sender, message):
+        return tagger_client.classify(sender, message, settings)
     conn, cur = connect_database(settings)
     try:
         cur.execute("SELECT cursor_time FROM ops.tagger_state WHERE id=1")
@@ -79,7 +86,7 @@ def main(argv=None):
             cur.execute("SELECT cursor_time FROM ops.tagger_state WHERE id=1")
             cursor = cur.fetchone()[0]
         log(
-            f"started; model={settings.model} poll={settings.poll_s}s floor={settings.call_floor_s}s overlap={settings.overlap_s}s "
+            f"started; backend={settings.backend} model={settings.model} poll={settings.poll_s}s floor={settings.call_floor_s}s overlap={settings.overlap_s}s "
             f"networks={','.join(settings.networks)} cursor={cursor.isoformat()}"
         )
 

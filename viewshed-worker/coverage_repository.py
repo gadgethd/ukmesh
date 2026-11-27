@@ -34,7 +34,7 @@ def store_coverage(
     *,
     commit: bool = True,
     context,
-):
+) -> str:
     with db.cursor() as cur:
         cur.execute(
             """INSERT INTO core.node_coverage (
@@ -53,7 +53,8 @@ def store_coverage(
                      permanent_reason = NULL,
                      last_error = NULL,
                      retry_after = NULL,
-                     calculated_at = NOW()""",
+                     calculated_at = NOW()
+               RETURNING model_version::text || ':' || EXTRACT(EPOCH FROM calculated_at)::text""",
             (
                 node_id,
                 json.dumps(geom),
@@ -63,12 +64,14 @@ def store_coverage(
                 context.settings.COVERAGE_MODEL_VERSION,
             ),
         )
+        (generation,) = cur.fetchone()
         cur.execute(
             "UPDATE core.nodes SET elevation_m = %s WHERE node_id = %s",
             (round(elevation_m, 1), node_id),
         )
     if commit:
         db.commit()
+    return generation
 
 
 def store_permanent_coverage(

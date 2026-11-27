@@ -11,13 +11,14 @@ import './styles/tokens.css';
 import './styles/globals.css';
 import { registerServiceWorker } from './serviceWorkerUpdates.js';
 import { installClientErrorReporting } from './telemetry/clientErrors.js';
+import { installProductionAnalytics } from './telemetry/productionAnalytics.js';
 import { installPublicWebVitals } from './telemetry/webVitals.js';
 
 // Dedicated release targets eliminate routes belonging to the other host.
 // An unset target retains the combined local/development behaviour.
 const appOnly = import.meta.env.VITE_BUILD_TARGET === 'app';
-const websiteOnly = import.meta.env.VITE_BUILD_TARGET === 'public-website'
-  || import.meta.env.VITE_BUILD_TARGET === 'dev-website';
+const devWebsite = import.meta.env.VITE_BUILD_TARGET === 'dev-website';
+const websiteOnly = import.meta.env.VITE_BUILD_TARGET === 'public-website' || devWebsite;
 const App = websiteOnly ? null : lazy(() => import('./App.js').then(({ App: Component }) => ({ default: Component })));
 const PublicWebsite = appOnly ? null : lazy(() => import('./components/app/PublicWebsite.js')
   .then(({ PublicWebsite: Component }) => ({ default: Component })));
@@ -39,6 +40,7 @@ if (isAppDomain) document.title = 'MeshCore Analytics';
 async function bootstrap(): Promise<void> {
   // Client error capture must be installed before any module can throw.
   installClientErrorReporting();
+  if (buildSite !== 'dev' && !devWebsite) installProductionAnalytics();
   if (!isAppDomain && buildSite !== 'dev') installPublicWebVitals(window.location.pathname);
   // The map is not mounted until its same-origin kill switches have resolved.
   // initializeRuntimeFeatures handles timeout/malformed/offline failures by

@@ -50,6 +50,7 @@ test('public MQTT node status omits owner-only and unknown telemetry fields', as
     air_util_tx: 4,
     rx_air_secs: 18,
     tx_air_secs: 9,
+    radio: 'SX1262 869.618/62/8/8',
     packets_24h: '12',
     hardware_model: 'private model',
     firmware_version: 'private firmware',
@@ -94,6 +95,7 @@ test('public MQTT node status omits owner-only and unknown telemetry fields', as
       air_util_tx: storedRow.air_util_tx,
       rx_air_secs: storedRow.rx_air_secs,
       tx_air_secs: storedRow.tx_air_secs,
+      radio: storedRow.radio,
       packets_24h: storedRow.packets_24h,
     }]);
   } finally {
@@ -133,7 +135,7 @@ test('MQTT node contract keeps count strings, null counters and the anonymous pr
     assert.deepEqual(await response.json(), [{
       node_id: row.node_id, name: null, last_seen: row.last_seen,
       battery_mv: null, uptime_secs: null, tx_air_secs: null, rx_air_secs: null,
-      channel_utilization: null, air_util_tx: null, packets_24h: row.packets_24h,
+      channel_utilization: null, air_util_tx: null, radio: null, packets_24h: row.packets_24h,
     }]);
     const networks = scope.endsWith('test') ? ['test'] : ['ukmesh', 'northeast', 'teesside'];
     assert.deepEqual(calls.at(-1), [networks, networks]);

@@ -2,9 +2,24 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { randomBytes, randomUUID } from 'node:crypto';
 import pg from 'pg';
+import type { Request, Response } from 'express';
 import { bootstrapBaseSchemaFixture, POST_MOVE_SEARCH_PATH } from '../db/fixtures/baseSchema.js';
+import { createOwnerSessionGuard } from '../api/ownerSessionGuard.js';
+import { decryptOwnerSession, encryptOwnerSession, getOwnerSession } from './ownerSession.js';
 
 const testOwnerDatabaseUrl = String(process.env['TEST_OWNER_DATABASE_URL'] ?? '').trim();
+const testRedisUrl = String(process.env['TEST_REDIS_URL'] ?? '').trim();
+
+function isLoopbackRedisUrl(raw: string): boolean {
+  try {
+    const parsed = new URL(raw);
+    return ['127.0.0.1', 'localhost', '[::1]', '::1'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+const isolatedRedisUrl = isLoopbackRedisUrl(testRedisUrl) ? testRedisUrl : '';
 
 function adminUrlFor(ownerUrl: string): string {
   const url = new URL(ownerUrl);
@@ -12,9 +27,8 @@ function adminUrlFor(ownerUrl: string): string {
   return url.toString();
 }
 
-// The consolidated database keeps owner-auth structure in core (073/075); the
-// owner queries are unqualified and rely on the role's search_path, which a
-// plain test connection does not carry.
+// Test setup queries use the consolidated fixture's post-migration path.
+// The application establishes its own session-table path on its owner pool.
 function withOwnerSearchPath(url: string): string {
   const parsed = new URL(url);
   parsed.searchParams.set('options', '-c search_path=mesh,core,analytics,ops,public');
@@ -25,9 +39,13 @@ if (testOwnerDatabaseUrl) {
   // ownerAuth.ts reads its pool configuration at import time. Point it at the
   // explicit isolated test database and derive the admin connection from the
   // same URL so ambient OWNER_DATABASE_URL/DATABASE_URL can never leak in.
-  process.env['OWNER_DATABASE_URL'] = withOwnerSearchPath(testOwnerDatabaseUrl);
+  process.env['OWNER_DATABASE_URL'] = testOwnerDatabaseUrl;
   process.env['DATABASE_URL'] = adminUrlFor(testOwnerDatabaseUrl);
   process.env['OWNER_SESSION_MAX_PER_USER'] = '2';
+  // Credential-generation tests must only touch an isolated loopback Redis;
+  // never inherit a deployment REDIS_URL that could revoke real sessions.
+  if (isolatedRedisUrl) process.env['REDIS_URL'] = isolatedRedisUrl;
+  process.env['OWNER_COOKIE_SECRET'] ??= 'owner-auth-integration-test-cookie-secret';
 }
 
 // P1-9 removed runtime schema DDL, so this suite owns its fixture the same way
@@ -59,10 +77,18 @@ test.before(async () => {
 });
 
 const skip = testOwnerDatabaseUrl ? false : 'TEST_OWNER_DATABASE_URL required';
+const rotationSkip = skip || (isolatedRedisUrl ? false : 'TEST_REDIS_URL must point to a loopback fixture');
 
 type OwnerAuthModule = typeof import('./ownerAuth.js');
 let ownerAuthPromise: Promise<OwnerAuthModule> | undefined;
 let schemaInitialized = false;
+let ownerAccessPromise: Promise<typeof import('../owner/ownerAccess.js')> | undefined;
+
+async function ownerAccess(): Promise<typeof import('../owner/ownerAccess.js')> {
+  ownerAccessPromise ??= import('../owner/ownerAccess.js');
+  return ownerAccessPromise;
+}
+
 
 async function ownerAuth(): Promise<OwnerAuthModule> {
   ownerAuthPromise ??= import('./ownerAuth.js');
@@ -86,6 +112,10 @@ async function withTestClient<T>(run: (client: pg.Client) => Promise<T>): Promis
 }
 
 test.after(async () => {
+  if (ownerAccessPromise) {
+    const access = await ownerAccessPromise;
+    await access.closeOwnerCredentialGenerationClient().catch(() => undefined);
+  }
   if (!ownerAuthPromise) return;
   const module = await ownerAuthPromise;
   await module.closeOwnerAuthDb();
@@ -197,6 +227,84 @@ test('owner sessions persist, revoke, reject mismatched users, and expire', { sk
   const expiring = await createOwnerSession(user, 1);
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(await isOwnerSessionActive(expiring.sessionId, user), false);
+});
+
+test('credential rotation revokes the server session and invalidates the old cookie', { skip: rotationSkip }, async () => {
+  const {
+    createOwnerSession,
+    isOwnerSessionActive,
+  } = await ownerAuth();
+  const {
+    bumpOwnerCredentialGeneration,
+    getOwnerCredentialGeneration,
+  } = await ownerAccess();
+  const user = uniqueName('integration-rotation');
+  const cookieName = 'meshcore_owner_session';
+  const grantedNode = nodeId();
+
+  const generationBefore = await getOwnerCredentialGeneration(user);
+  const oldSession = await createOwnerSession(user, 60_000);
+  const oldCookie = encryptOwnerSession({
+    v: 4,
+    mqttUsername: user,
+    sid: oldSession.sessionId,
+    exp: oldSession.expiresAt,
+    gen: generationBefore,
+  });
+
+  await bumpOwnerCredentialGeneration(user);
+
+  assert.equal(await isOwnerSessionActive(oldSession.sessionId, user), false);
+  assert.equal(await getOwnerCredentialGeneration(user), generationBefore + 1);
+
+  function recorder() {
+    const state: { statusCode: number; body: unknown; cleared: string[] } = {
+      statusCode: 200,
+      body: undefined,
+      cleared: [],
+    };
+    const response = {
+      clearCookie(name: string) { state.cleared.push(name); return response; },
+      status(code: number) { state.statusCode = code; return response; },
+      json(body: unknown) { state.body = body; return response; },
+    } as unknown as Response;
+    return { response, state };
+  }
+
+  const guard = createOwnerSessionGuard({
+    ownerCookieName: cookieName,
+    getOwnerSession: (req) => getOwnerSession(req, cookieName),
+    getOwnerCredentialGeneration,
+    isOwnerSessionActive,
+    touchOwnerSession: async () => undefined,
+    resolveOwnerNodeIds: async () => [grantedNode],
+  });
+
+  const oldRequest = { headers: { cookie: `${cookieName}=${oldCookie}` } } as unknown as Request;
+  const oldResponse = recorder();
+  assert.equal(await guard(oldRequest, oldResponse.response), null);
+  assert.equal(oldResponse.state.statusCode, 401);
+  assert.deepEqual(oldResponse.state.body, { error: 'Credentials have been rotated — please log in again' });
+
+  // A fresh login reads the bumped generation before minting its server row,
+  // which is what makes the new cookie valid while the old one stays dead.
+  const freshGeneration = await getOwnerCredentialGeneration(user);
+  const freshSession = await createOwnerSession(user, 60_000);
+  const freshCookie = encryptOwnerSession({
+    v: 4,
+    mqttUsername: user,
+    sid: freshSession.sessionId,
+    exp: freshSession.expiresAt,
+    gen: freshGeneration,
+  });
+  assert.equal(decryptOwnerSession(freshCookie)?.gen, generationBefore + 1);
+  assert.equal(await isOwnerSessionActive(freshSession.sessionId, user), true);
+
+  const freshRequest = { headers: { cookie: `${cookieName}=${freshCookie}` } } as unknown as Request;
+  const freshResponse = recorder();
+  const nodeIds = await guard(freshRequest, freshResponse.response);
+  assert.deepEqual(nodeIds, [grantedNode]);
+  assert.equal(freshResponse.state.statusCode, 200);
 });
 
 test('owner session cap revokes the oldest session and keeps the newest', { skip }, async () => {

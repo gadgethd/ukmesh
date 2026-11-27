@@ -17,7 +17,7 @@ test('the production status writer preserves replay time without regressing pres
         last_seen timestamptz, is_online boolean);
       CREATE TABLE IF NOT EXISTS core.node_status_samples (time timestamptz, node_id text, network text,
         battery_mv integer, uptime_secs bigint, tx_air_secs bigint, rx_air_secs bigint,
-        channel_utilization float, air_util_tx float, stats jsonb, status text);`);
+        channel_utilization float, air_util_tx float, stats jsonb, status text, radio text);`);
     process.env['DATABASE_URL'] = url;
     const db = { ...await import('../repositories/nodeState.js'), ...await import('./runtime.js') };
     close = db.closeDb;
@@ -25,13 +25,14 @@ test('the production status writer preserves replay time without regressing pres
     const existing = new Date(Date.now() - 3_600_000).toISOString();
     const observedAt = new Date(Date.now() - 4 * 3_600_000).toISOString();
     await connection.query(`INSERT INTO core.nodes VALUES ($1, $2, $2, false)`, [nodeId, existing]);
-    await db.insertNodeStatusSample({ nodeId, network: 'ukmesh', observedAt, uptimeSecs: 50 });
+    await db.insertNodeStatusSample({ nodeId, network: 'ukmesh', observedAt, uptimeSecs: 50, radio: '869.618,62.500,8,8' });
     const old = await connection.query(`SELECT last_status_at, last_seen, is_online FROM core.nodes`);
     assert.equal(old.rows[0].last_status_at.toISOString(), existing);
     assert.equal(old.rows[0].last_seen.toISOString(), existing);
     assert.equal(old.rows[0].is_online, false);
-    const samples = await connection.query(`SELECT time FROM core.node_status_samples`);
+    const samples = await connection.query(`SELECT time, radio FROM core.node_status_samples`);
     assert.equal(samples.rows[0].time.toISOString(), observedAt);
+    assert.equal(samples.rows[0].radio, '869.618,62.500,8,8');
     const fresh = new Date().toISOString();
     await db.insertNodeStatusSample({ nodeId, network: 'ukmesh', observedAt: fresh, uptimeSecs: 1 });
     const current = await connection.query(`SELECT last_status_at, is_online FROM core.nodes`);

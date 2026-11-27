@@ -25,11 +25,8 @@ def tag_message(cur, ph, ts, rx_node_id, network, settings, classify, sleep=time
         if row is None:
             return "skipped", None, None
         sender, message = row
-        state = (
-            f"Message from node '{sender or 'unknown'}': \"{(message or '')[:4000]}\""
-        )
         try:
-            resp, ms = classify(state)
+            resp, ms = classify(sender, message)
             tags, conf = flatten(resp.get("answers"))
             cur.execute(
                 """INSERT INTO mesh.message_tags

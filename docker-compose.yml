@@ -186,6 +186,8 @@ services:
       STATS_BACKFILL_QUERY_TIMEOUT_MS: ${STATS_BACKFILL_QUERY_TIMEOUT_MS:-}
       STATS_AGGREGATE_READS_ENABLED: ${STATS_AGGREGATE_READS_ENABLED:-false}
       STATS_AGGREGATE_SHADOW_ENABLED: ${STATS_AGGREGATE_SHADOW_ENABLED:-false}
+      STATS_QUERY_DURATION_BUDGET_MS: ${STATS_QUERY_DURATION_BUDGET_MS:-}
+      STATS_CHART_QUERY_TIMEOUT_MS: ${STATS_CHART_QUERY_TIMEOUT_MS:-}
       WARMUP_NETWORKS: ${WARMUP_NETWORKS:-ukmesh}
       WS_INITIAL_STATE_ENABLED: "1"
       WS_INITIAL_STATE_CONCURRENCY: ${WS_INITIAL_STATE_CONCURRENCY:-8}
@@ -403,6 +405,11 @@ services:
       DATABASE_APPLICATION_NAME: ukmesh-tagger-worker
       TYPESAFE_API_URL: ${TYPESAFE_API_URL:-https://api.typesafe.ai/v1/systemone}
       TYPESAFE_API_KEY: ${TYPESAFE_API_KEY:-}
+      TYPESAFE_MODEL: ${TYPESAFE_MODEL:-jev-latest}
+      TAGGER_BACKEND: ${TAGGER_BACKEND:-jev}
+      TAGGER_MODEL_ID: ${TAGGER_MODEL_ID:-ukmesh-tagger/run-base4}
+      TAGGER_URL: ${TAGGER_URL:-}
+      TAGGER_API_KEY: ${TAGGER_API_KEY:-}
       TAGGER_START: ${TAGGER_START:-}
       TAGGER_POLL_S: ${TAGGER_POLL_S:-5}
       TAGGER_CALL_FLOOR_S: ${TAGGER_CALL_FLOOR_S:-0.5}
@@ -504,8 +511,6 @@ services:
     depends_on:
       db-migrate:
         condition: service_completed_successfully
-      alert-receiver:
-        condition: service_started
 
   link-backfill-worker:
     <<: [*internal-hosts, *application-hardening]
@@ -662,6 +667,7 @@ services:
         ipv4_address: 172.30.0.11
     volumes:
       - ${TERRAIN_TILES_PATH:-./terrain-tiles}:/terrain-tiles:ro
+      - ./tropo-data:/usr/share/nginx/html/tropo/data:ro
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
       - /var/cache/nginx:rw,noexec,nosuid,size=32m,uid=101,gid=101,mode=0755
@@ -1009,8 +1015,6 @@ services:
       retries: 5
       start_period: 20s
     depends_on:
-      alertmanager:
-        condition: service_healthy
       postgres-exporter:
         condition: service_healthy
       redis-exporter:
@@ -1022,7 +1026,7 @@ services:
 
   grafana:
     <<: *internal-hosts
-    image: grafana/grafana@sha256:0a2874cf39c6487093c682215f7c7903ed8646d78ae5f911af945d2dfcc0a447
+    image: grafana/grafana:12.4.15@sha256:2894082f6cf7081aefdc1389265c04000812309208c190d75e8c65f7a30e4b7e
     restart: always
     logging: *service-journal
     mem_limit: &grafana-memory "${GRAFANA_MEMORY_LIMIT:-192m}"
@@ -1086,7 +1090,7 @@ services:
     volumes:
       - alert_receiver_data:/var/lib/meshcore-alerts
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/readyz >/dev/null"]
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/healthz >/dev/null"]
       interval: 30s
       timeout: 5s
       retries: 5
@@ -1120,9 +1124,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
-    depends_on:
-      alert-receiver:
-        condition: service_healthy
 
   postgres-exporter:
     <<: *internal-hosts

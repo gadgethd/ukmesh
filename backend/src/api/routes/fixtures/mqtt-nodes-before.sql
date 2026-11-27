@@ -9,6 +9,7 @@ SELECT DISTINCT ON (nss.node_id)
            nss.air_util_tx,
            nss.rx_air_secs,
            nss.tx_air_secs,
+           nss.radio,
            COALESCE(pc.packet_count, 0) AS packets_24h
          FROM node_identity_status_samples nss
          LEFT JOIN node_identity_nodes n ON n.node_id = nss.node_id

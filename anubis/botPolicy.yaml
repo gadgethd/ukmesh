@@ -4,6 +4,14 @@
 ## Thresholds apply after all WEIGH rules have accumulated.
 
 bots:
+
+  # -- Analytics endpoints: never challenge ----------------------------------
+  # The cookie-free Umami tracker posts with credentials:"omit" by design, so
+  # it can never carry the Anubis auth cookie. These two paths are the only
+  # ones it needs, and both are inert for normal browsing.
+  - name: allow-analytics-beacon
+    path_regex: ^/_stats/(script\.js|api/send)$
+    action: ALLOW
   # ── WebSocket paths: always allow, no challenge ────────────────────────────
   # Upgrade requests to /ws must bypass the challenge gate. By the time the
   # browser JS opens the WebSocket, the page-load challenge is already solved

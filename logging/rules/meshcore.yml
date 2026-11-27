@@ -442,3 +442,26 @@ groups:
           severity: warning
         annotations:
           summary: Packet forwarding is failing or retrying deliveries
+
+      - alert: ObserverRegistrationWebhookFailing
+        expr: increase(meshcore_observer_registration_webhook_deliveries_total{outcome="failure"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: Observer registration webhook deliveries are failing
+          description: New observer registration notifications are not reaching the operator webhook. Check OBSERVER_REGISTRATION_WEBHOOK_URL and outbound HTTPS from the backend.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#observerregistrationwebhookfailing
+
+      - alert: ObserverRegistrationWebhookSilent
+        # A missing successful-delivery series means nothing has been delivered
+        # since the backend started, so absence must be treated as zero rather
+        # than as no data.
+        expr: (sum(increase(meshcore_observer_registration_submissions_total{outcome="accepted"}[6h])) > 0) and on() ((sum(increase(meshcore_observer_registration_webhook_deliveries_total{outcome="success"}[6h])) or vector(0)) == 0)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Observer registrations were accepted but no webhook delivery succeeded
+          description: At least one submission was accepted in the last six hours while no delivery succeeded. The webhook may be unset, misconfigured, or unreachable.
+          runbook_url: https://github.com/gadgethd/ukmesh/blob/main/docs/operations.md#observerregistrationwebhooksilent

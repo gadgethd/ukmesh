@@ -15,6 +15,7 @@ test('latest node status DTO omits owner-only and unknown telemetry fields', () 
     rx_air_secs: 28,
     channel_utilization: 7,
     air_util_tx: 3,
+    radio: '869.618,62.500,8,8',
     hardware_model: 'private model',
     firmware_version: 'private firmware',
     stats: {
@@ -39,5 +40,6 @@ test('latest node status DTO omits owner-only and unknown telemetry fields', () 
     rx_air_secs: storedRow.rx_air_secs,
     channel_utilization: storedRow.channel_utilization,
     air_util_tx: storedRow.air_util_tx,
+    radio: storedRow.radio,
   });
 });

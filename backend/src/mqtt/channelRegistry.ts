@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createDecipheriv, createHash } from 'node:crypto';
 import { MQTT_CACHE_POLICIES } from './cachePolicies.js';
 import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 /**
@@ -11,6 +11,7 @@ import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
  * Also hosts the summary + channel-identification helpers so the ingest
  * pipeline and offline tools (e.g. backfillDecrypt) share one implementation.
  */
+import { Buffer } from 'node:buffer';
 import { ChannelCrypto, MeshCoreDecoder } from '@michaelhart/meshcore-decoder';
 import type { GroupTextPayload } from '@michaelhart/meshcore-decoder';
 import { decodePacketCompat } from './decodePacket.js';
@@ -244,6 +245,64 @@ export function identifyChannel(rawHex: string, entries: ChannelEntry[]): string
   return result;
 }
 
+// Channel decryption and the signed ending identify the format only.
+export const MESHOS_SIGNED_MARKER = 'MeshOS-signed (unverified)';
+
+/**
+ * Structural MeshOS signature detector.
+ *
+ * Mirrors MeshCore-SignatureFreeZone `src/helpers/SignatureFreeZone.h`: MeshOS
+ * appends a signed ending *inside* the encrypted plaintext —
+ *   [timestamp 4B][flags 1B]["<Name>: <text>"][0x00]["S" 0x01][signer key id 8B]
+ *   [Ed25519 signature 64B][zero pad <= 15B]
+ * — so the packet still passes MeshCore's HMAC check and only the tail marks it
+ * as signed. Detection is structural only; the signature is not verified here.
+ */
+export function isMeshosSignedPlaintext(plaintext: Buffer): boolean {
+  const len = plaintext.length;
+  if (len < 6) return false;
+  let i = 5; // skip timestamp(4) + flags(1)
+  while (i < len && plaintext[i] !== 0x00) i += 1;
+  if (i >= len) return false;
+  const ext = i + 1;
+  const extEnd = ext + 74; // 0x53 0x01 + 8B key id + 64B signature
+  if (extEnd > len) return false;
+  if (plaintext[ext] !== 0x53 || plaintext[ext + 1] !== 0x01) return false;
+  if (len - extEnd > 15) return false;
+  for (let j = extEnd; j < len; j += 1) {
+    if (plaintext[j] !== 0x00) return false;
+  }
+  return true;
+}
+
+/** Decrypt a group-text ciphertext with the channel secret (no padding removal). */
+function decryptGroupPlaintext(secret: Buffer, ciphertextHex: string): Buffer | undefined {
+  const ciphertext = Buffer.from(ciphertextHex, 'hex');
+  if (ciphertext.length < 16 || ciphertext.length % 16 !== 0) return undefined;
+  try {
+    const decipher = createDecipheriv('aes-128-ecb', secret, null);
+    decipher.setAutoPadding(false);
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]);
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when the decrypted group text carries the MeshOS signed ending. */
+export function hasMeshosSignature(p: GroupTextPayload, entries: ChannelEntry[], channel?: string): boolean {
+  if (typeof p.ciphertext !== 'string' || typeof p.channelHash !== 'string' || !p.decrypted) return false;
+  const expectedHash = p.channelHash.trim().toUpperCase();
+  if (expectedHash.length !== 2) return false;
+
+  for (const entry of entries) {
+    if (channel !== undefined && entry.name !== channel) continue;
+    if (ChannelCrypto.calculateChannelHash(entry.secret).toUpperCase() !== expectedHash) continue;
+    const plaintext = decryptGroupPlaintext(Buffer.from(entry.secret, 'hex'), p.ciphertext);
+    if (plaintext && isMeshosSignedPlaintext(plaintext)) return true;
+  }
+  return false;
+}
+
 /** Build a short human-readable summary from a decoded payload. */
 export function buildSummary(payloadType: number, decoded: unknown, rawHex?: string, entries?: ChannelEntry[]): string | undefined {
   if (!decoded) return undefined;
@@ -260,7 +319,9 @@ export function buildSummary(payloadType: number, decoded: unknown, rawHex?: str
         const sender  = p.decrypted.sender ?? '?';
         const channel = rawHex && entries ? identifyChannel(rawHex, entries) : undefined;
         const prefix  = channel ? `[${channel}] ` : '';
-        return `${prefix}${sender}: ${p.decrypted.message}`;
+        const signed  = entries ? hasMeshosSignature(p, entries, channel) : false;
+        const suffix  = signed ? ` · ${MESHOS_SIGNED_MARKER}` : '';
+        return `${prefix}${sender}: ${p.decrypted.message}${suffix}`;
       }
       return '[encrypted]';
     }

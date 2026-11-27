@@ -8,6 +8,7 @@ import './stats.js';
 import './database.js';
 import './queue.js';
 import './http.js';
+import './observerRegistration.js';
 import './frontend.js';
 import './cache.js';
 import './analysis.js';

@@ -208,6 +208,9 @@ test('local exploration keeps a former-name search, map link and partial repeate
       time: new Date().toISOString(), src_node_id: 'B'.repeat(64), hop_count: 2,
     }] });
     if (url.pathname.endsWith('/adverts')) return route.fulfill({ json: [] });
+    if (url.pathname === '/api/node-status/latest') return route.fulfill({
+      json: url.searchParams.get('observer') === id ? [{ radio: '869.525,62.5,12,5' }] : [],
+    });
     return route.fulfill({ json: publicFixture(url.pathname, url.searchParams) ?? [] });
   });
   await installPublicPolicy(page);
@@ -227,6 +230,7 @@ test('local exploration keeps a former-name search, map link and partial repeate
   await expect(page.getByRole('combobox', { name: 'Search repeaters' })).toHaveValue('HarbourBeacon');
   await expect(page.getByText('Could not load neighbours.')).toBeVisible();
   await expect(page.getByRole('table')).toBeVisible();
+  await expect(page.getByText('869.525 MHz · 62.5 kHz · SF12 · CR5')).toBeVisible();
   await page.getByRole('button', { name: 'Retry neighbours' }).click();
   await expect(page.getByText('Could not load neighbours.')).toHaveCount(0);
   await expect.poll(() => linkAttempts).toBe(2);
@@ -257,6 +261,7 @@ test('local exploration keeps a former-name search, map link and partial repeate
   await expect(nearest).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('heading', { name: 'Hill repeater' })).toBeVisible();
+  await expect(page.getByText('869.525 MHz · 62.5 kHz · SF12 · CR5')).toHaveCount(0);
   expect(indexRequests).toHaveLength(lookupCount);
   expect(page.url()).not.toContain('54.60123');
 });

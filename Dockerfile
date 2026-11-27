@@ -1,5 +1,5 @@
 # Stage 1: Build frontend
-FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS frontend-builder
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS frontend-builder
 WORKDIR /build/frontend
 COPY frontend/package.json frontend/package-lock.json ./
 COPY frontend/vendor/*.tgz ./vendor/
@@ -12,7 +12,7 @@ ENV VITE_APP_HOSTNAME=$VITE_APP_HOSTNAME
 RUN npm run build
 
 # Stage 2: Build backend
-FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS backend-builder
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS backend-builder
 WORKDIR /build/backend
 COPY backend/package.json backend/package-lock.json ./
 RUN npm ci --audit
@@ -20,7 +20,7 @@ COPY backend/ ./
 RUN npm run build
 
 # Stage 3: Runtime
-FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94 AS runtime
+FROM node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS runtime
 ARG SOURCE_REVISION=unknown
 ARG UKMESH_VERSION=2.0.0
 LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \

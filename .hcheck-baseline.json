@@ -1,0 +1,39 @@
+{
+ "scripts/restore-drill.sh": {
+  "H103": [
+   "docker volume rm \\"
+  ]
+ },
+ "scripts/test-alloy-cutover.sh": {
+  "H103": [
+   "docker volume rm \"$cursor_volume\" \"$loki_volume\" >/dev/null 2>&1 || true"
+  ]
+ },
+ "tagger-worker/tagger_worker.py": {
+  "H001": [
+   "except Exception: # noqa: BLE001"
+  ],
+  "H002": [
+   "for ph, ts, attempts in due:"
+  ]
+ },
+ "viewshed-worker/link_queue_v3.py": {
+  "H001": [
+   "except Exception:"
+  ]
+ },
+ "viewshed-worker/viewshed_queue_v2.py": {
+  "H001": [
+   "except Exception:"
+  ]
+ },
+ "viewshed-worker/worker.py": {
+  "H001": [
+   "except Exception:",
+   "except Exception:",
+   "except Exception:",
+   "except Exception:",
+   "except Exception:"
+  ]
+ }
+}

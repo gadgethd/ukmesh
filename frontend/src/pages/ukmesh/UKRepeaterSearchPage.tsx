@@ -30,6 +30,10 @@ interface AdvertPacket {
   packet_hash: string;
 }
 
+interface NodeStatusLatest {
+  radio: string | null;
+}
+
 interface TopAdvertNode {
   node_id: string;
   name?: string;
@@ -66,6 +70,14 @@ function detailCache<Row>(name: string, limitMiB: number) {
 const neighbourCache = detailCache<NodeLink>('repeater-neighbours', 3);
 const historyCache = detailCache<PacketHistory>('repeater-packet-history', 6);
 const advertCache = detailCache<AdvertPacket>('repeater-advert-history', 3);
+const radioCache = detailCache<NodeStatusLatest>('repeater-radio-status', 1);
+
+function formatRadio(radio: unknown): string | null {
+  if (typeof radio !== 'string' || !radio.trim()) return null;
+  const parts = radio.split(',').map(part => part.trim());
+  if (parts.length !== 4 || !parts.every(part => /^\d+(\.\d+)?$/.test(part))) return radio;
+  return `${parts[0]} MHz · ${parts[1]} kHz · SF${parts[2]} · CR${parts[3]}`;
+}
 
 function useRepeaterDetail<Row>(path: string | undefined, scope: string, cache: ScopedCache<Row[]>, maxMiB: number) {
   const [attempt, setAttempt] = useState(0);
@@ -295,6 +307,9 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const neighbours = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/links', requestScope), detailScopeKey, neighbourCache, 2);
   const packetHistory = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/history?hours=24', requestScope), detailScopeKey, historyCache, 4);
   const advertHistory = useRepeaterDetail(nodePath && withScopeParams(nodePath + '/adverts?hours=168', requestScope), detailScopeKey, advertCache, 2);
+  const latestStatus = useRepeaterDetail(selectedId && withScopeParams('/api/node-status/latest', { network, observer: selectedId }),
+    detailScopeKey, radioCache, 0.25);
+  const radio = formatRadio(latestStatus.rows?.[0]?.radio);
   const links = neighbours.rows ?? [];
   const history = packetHistory.rows ?? [];
   const adverts = advertHistory.rows;
@@ -553,6 +568,7 @@ export const UKRepeaterSearchPage: React.FC = () => {
                       ? `${selectedNode.lat.toFixed(5)}, ${selectedNode.lon.toFixed(5)}` : 'Unknown'],
                     ['Elevation', selectedNode.elevation_m != null ? `${Math.round(selectedNode.elevation_m)} m` : 'N/A'],
                     ['Network', selectedNode.iata || 'N/A'], ['Hardware', selectedNode.hardware_model || 'Unknown'],
+                    ...(radio ? [['Radio', radio]] : []),
                     ['Advert count', selectedNode.advert_count?.toLocaleString() || '0'],
                   ].map(([label, value]) => <div className="repeater-details-card__field" key={label}>
                     <span className="repeater-details-card__label">{label}</span>

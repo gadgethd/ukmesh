@@ -1,4 +1,4 @@
-"""TypeSafe HTTP client and response normalization."""
+"""Message classifier HTTP client and response normalization."""
 
 import json
 
@@ -64,8 +64,13 @@ QUESTIONS = {
 }
 
 
-def classify(state, settings):
-    payload = {"state": state, "model": settings.model, "questions": QUESTIONS}
+def classify(sender, message, settings):
+    message = (message or "")[:4000]
+    if settings.backend == "local":
+        payload = {"items": [{"sender": sender, "message": message}]}
+    else:
+        state = f"Message from node '{sender or 'unknown'}': \"{message}\""
+        payload = {"state": state, "model": settings.model, "questions": QUESTIONS}
     req = urllib.request.Request(
         settings.api_url,
         data=json.dumps(payload).encode(),
@@ -77,7 +82,22 @@ def classify(state, settings):
     t0 = time.time()
     with urllib.request.urlopen(req, timeout=90) as r:
         resp = json.loads(r.read().decode())
-    return resp, (time.time() - t0) * 1000.0
+    latency_ms = (time.time() - t0) * 1000.0
+    if settings.backend == "local":
+        results = resp.get("results")
+        if not isinstance(results, list) or len(results) != 1:
+            raise ValueError("tagger must return one result for the submitted message")
+        row = results[0]
+        answers = {
+            field: {"choice": row[field]["value"], "confidence": row[field]["p"]}
+            for field in ("kind", "topic", "speaker")
+        }
+        answers.update({
+            field: {"score": row["flags"][field]}
+            for field in ("mentions_location", "directed", "safety")
+        })
+        resp = {"answers": answers}
+    return resp, latency_ms
 
 
 def flatten(answers):

@@ -15,6 +15,7 @@ cleanup() {
     COMPOSE_FILE="$compose_file" COMPOSE_PROJECT_NAME="$project_name" \
       docker compose logs --no-color timescaledb >&2 || true
   fi
+  # hcheck: allow H103 reason="tears down a throwaway compose project created below in $tmp_dir; no persisted data" until=2027-06-01
   COMPOSE_FILE="$compose_file" COMPOSE_PROJECT_NAME="$project_name" \
     docker compose down -v --remove-orphans >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"

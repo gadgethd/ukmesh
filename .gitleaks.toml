@@ -3,64 +3,23 @@ title = "UK Mesh gitleaks configuration"
 [extend]
 useDefault = true
 
-[allowlist]
-description = "Reviewed MeshCore public-channel material: the documented public channel key is published by the protocol, is not an application credential, and must not be treated as a leak. Private channel material enters only via MESHCORE_CHANNEL_SECRETS."
+# Global exemptions. These values are published by protocol or are explicitly
+# synthetic fixtures, so they are safe wherever they appear (including history
+# reachable from other branches). Confidential channel material belongs in
+# MESHCORE_CHANNEL_SECRETS, never in this file.
+[[allowlists]]
+description = "Protocol-default channel PSKs and synthetic/identity fixtures that are public by construction."
 regexes = [
   # Fixed CI-only health-check channel fixture, with no production authority.
   '''0123456789abcdef0123456789abcdef''',
+  # MeshCore 'Public' channel PSK. The protocol ships it as an app default and
+  # it appears verbatim in unrelated public MeshCore projects, so it is
+  # published by construction, not a credential.
   '''8b3387e9c5cdea6ac9e5edbaa115cd72''',
-  # ── Hashtag channel keys ───────────────────────────────────────────────
-  # Every value below is sha256("#<channel name>")[:32]: knowing the
-  # channel name alone reproduces the key, so these are public by
-  # construction, not credentials. Listed verbatim (rather than derived at
-  # runtime) so renaming a constant to something like FOO_SECRET cannot
-  # re-break the secret scan; the trailing comment is the channel name that
-  # reproduces each key.
-  '''eb50a1bcb3e4e5d7bf69a57c9dada211''',  # #bot
-  '''b4e5450da06c21e5338b91b3b18206ad''',  # #brentwood
-  '''88b113ee8130e832d0bf15a5c7be0ddd''',  # #cornwall
-  '''adee277d04fe73f1bfc43ce8a19f351e''',  # #crawley
-  '''ec3be8009f600059d6cd1dca32c74e1c''',  # #cumbria
-  '''848469a776c39f8bf2b774def5cd697b''',  # #dartford
-  '''84eed36f62c7b22527dbf8883585ad14''',  # #denhaag
-  '''4c3e09555ad74fde17f3a82febb610c4''',  # #derbyshire
-  '''cbd7337937131f7db971cfdb24431ae3''',  # #devon
-  '''d2de225d13760cf2e13aa368ef9e5b6b''',  # #dorset
-  '''8792638977132bc05a1f72d6bb913694''',  # #dublin
-  '''5d25cf40b1f5b4a7eb0cf9703634a948''',  # #echo
-  '''f4624be48a6c80309b4c2f6f3eb36e99''',  # #g8py
-  '''ea6b521f794e7a0e4ff41fe5d0e3f838''',  # #glasgow
-  '''83c8b01997654265938da8765cbc7db9''',  # #hamradio
-  '''549a4cd97d96c130d359748c72f0e321''',  # #huddersfield
-  '''1b2a12acc5db1517d9d407946756b1da''',  # #ireland
-  '''dea8bb392991eeee26806e4d2cdf8dd4''',  # #kent
-  '''2ca4f626387ca26ec7c2ae45641f9628''',  # #leicester
-  '''2db23106132a517f0b9ea47b4d822c4f''',  # #lincolnshire
-  '''2a223c8f7b4190b329f46d54d3a9c350''',  # #liverpool
-  '''9881d2b7ab9105a41a8d0f6ba449447e''',  # #london
-  '''3238ea75dcefd77a31ce907037901f61''',  # #marple
-  '''5b664cde0b08b220612113db980650f3''',  # #mesh
-  '''ba3707a0760d156169aea2a6c82e2d6a''',  # #midlands
-  '''3b1ca0ae6003193eb9f91984eefef5dc''',  # #northeast
-  '''90f554aa06b30c705e7ed3bdd59b38e2''',  # #nottingham
-  '''89db441e2814dccf0dbd2e8cc5f501a3''',  # #repeaters
-  '''eb9ca9764bd08712f596a054e32e336c''',  # #scilly
-  '''5e12bb2d2b8f660ab179676cbc663cd1''',  # #surrey
-  '''9cd8fcf22a47333b591d96a2b848b73f''',  # #test
-  '''1f19cc976112b77f623ec970e4805e87''',  # #thenorf
-  '''15ab8ecee7b54d18adffd4b83be33682''',  # #uckfield
-  '''22b2eed34b5cc429ce1dc5e88635ff84''',  # #uk
-  '''809573d8134fa262d284400a788f63d9''',  # #wales
-  '''d90a1f4941a7892855e473c8f9a10195''',  # #york
-  '''81eb980a4884e5859bb42b135261200e''',  # #yorks
-  '''ea19e9567eec1b148c174f0cb9d04dd7''',  # #yorkshire
-  # Local fixture: sha256("test")[:32], public well-known test material.
-  '''9f86d081884c7d659a2feaa0c55ad015''',  # test2
   # MeshCore node public keys used as fixtures in the backend/src/mqtt test
   # suite (commit c0eac55). A node public key is the node's advertised
   # identity in meshcore/<IATA>/<KEY>/packets topics, published by design --
-  # not a credential. Kept here rather than per-line in .gitleaksignore so
-  # the allowance survives edits to the test files.
+  # not a credential.
   '''67969D8FF8A2DE6FFF873638CCAB3F70E38111BE3BD599F75E9D21D907B217B5''',
   '''8CA23B78908F366D2D9F63EFE4A5726D685332FD3EC9AFF1B3B6CFF22EC2AE8A''',
   # Public MeshCore repeater node-key fixture used by the HopReach share-API
@@ -69,6 +28,85 @@ regexes = [
   # credential; the test builds it at runtime and this entry covers the
   # history of that fixture so --all scans stay clean.
   '''85953e404cd421a5d845051a8674d52bc38de2972f2357072ec1e79a79be47ed''',
+]
+
+[[allowlists]]
+description = "Throwaway local and CI stack credentials."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''scripts/test-lean-runtime[.]py$''',
+  '''scripts/full-dev/''',
+]
+regexes = [
+  '''owned-fixture-only''',
+  '''owned-fixture-secret-at-least-32-characters''',
+  '''owned-synthetic-1x''',
+]
+
+# Hashtag channel keys are public by construction: sha256("#<channel name>")[:32]
+# means knowing the name alone reproduces the key. They are still scoped to the
+# files where the reviewed values legitimately live, so the same 32-hex string
+# pasted into any other file is reported instead of silently exempted. Each
+# regex is listed verbatim so renaming a constant to FOO_SECRET cannot re-break
+# the scan; the trailing comment names the channel that reproduces it.
+[[allowlists]]
+description = "Reviewed hashtag channel keys, limited to the channel registry, its tests, and the historical derivation fixtures."
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = [
+  '''^[.]gitleaks[.]toml$''',
+  '''backend/src/mqtt/channelRegistry[.]ts$''',
+  '''backend/src/mqtt/channelRegistry[.]meshos[.]test[.]ts$''',
+  '''backend/src/mqtt/channelRegistry[.]provenance[.]test[.]ts$''',
+  # docs/decryption.md documents the Public channel PSK; included so a future
+  # reviewed hashtag derivation there is not treated as a leak.
+  '''docs/decryption[.]md$''',
+  # Historical #test derivations in the throwaway local-companion fixtures.
+  '''scripts/companion-dev/corescope[.]json$''',
+  '''scripts/full-dev/compose[.]yml$''',
+  '''scripts/full-dev/replay/prepare[.]py$''',
+]
+regexes = [
+  '''9cd8fcf22a47333b591d96a2b848b73f''',  # #test
+  '''eb50a1bcb3e4e5d7bf69a57c9dada211''',  # #bot
+  '''ea19e9567eec1b148c174f0cb9d04dd7''',  # #yorkshire
+  '''2a223c8f7b4190b329f46d54d3a9c350''',  # #liverpool
+  '''9881d2b7ab9105a41a8d0f6ba449447e''',  # #london
+  '''90f554aa06b30c705e7ed3bdd59b38e2''',  # #nottingham
+  '''3b1ca0ae6003193eb9f91984eefef5dc''',  # #northeast
+  '''89db441e2814dccf0dbd2e8cc5f501a3''',  # #repeaters
+  '''dea8bb392991eeee26806e4d2cdf8dd4''',  # #kent
+  '''809573d8134fa262d284400a788f63d9''',  # #wales
+  '''88b113ee8130e832d0bf15a5c7be0ddd''',  # #cornwall
+  '''adee277d04fe73f1bfc43ce8a19f351e''',  # #crawley
+  '''cbd7337937131f7db971cfdb24431ae3''',  # #devon
+  '''d2de225d13760cf2e13aa368ef9e5b6b''',  # #dorset
+  '''ec3be8009f600059d6cd1dca32c74e1c''',  # #cumbria
+  '''81eb980a4884e5859bb42b135261200e''',  # #yorks
+  '''2ca4f626387ca26ec7c2ae45641f9628''',  # #leicester
+  '''848469a776c39f8bf2b774def5cd697b''',  # #dartford
+  '''15ab8ecee7b54d18adffd4b83be33682''',  # #uckfield
+  '''549a4cd97d96c130d359748c72f0e321''',  # #huddersfield
+  '''4c3e09555ad74fde17f3a82febb610c4''',  # #derbyshire
+  '''2db23106132a517f0b9ea47b4d822c4f''',  # #lincolnshire
+  '''5e12bb2d2b8f660ab179676cbc663cd1''',  # #surrey
+  '''ba3707a0760d156169aea2a6c82e2d6a''',  # #midlands
+  '''83c8b01997654265938da8765cbc7db9''',  # #hamradio
+  '''5b664cde0b08b220612113db980650f3''',  # #mesh
+  '''9f86d081884c7d659a2feaa0c55ad015''',  # sha256("test") legacy alias for the test2 channel
+  '''1f19cc976112b77f623ec970e4805e87''',  # #thenorf
+  '''f4624be48a6c80309b4c2f6f3eb36e99''',  # #g8py
+  '''5d25cf40b1f5b4a7eb0cf9703634a948''',  # #echo
+  '''84eed36f62c7b22527dbf8883585ad14''',  # #denhaag
+  '''8792638977132bc05a1f72d6bb913694''',  # #dublin
+  '''ea6b521f794e7a0e4ff41fe5d0e3f838''',  # #glasgow
+  '''d90a1f4941a7892855e473c8f9a10195''',  # #york
+  '''1b2a12acc5db1517d9d407946756b1da''',  # #ireland
+  '''eb9ca9764bd08712f596a054e32e336c''',  # #scilly
+  '''b4e5450da06c21e5338b91b3b18206ad''',  # #brentwood
+  '''3238ea75dcefd77a31ce907037901f61''',  # #marple
+  '''22b2eed34b5cc429ce1dc5e88635ff84''',  # #uk
 ]
 
 # The public2 protocol key is public channel material, including this decoder fixture.

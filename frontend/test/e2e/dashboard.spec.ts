@@ -1,7 +1,7 @@
 import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
 import { installMapRoutes, installTerrainRoutes, openMapSearch, RF_COVERAGE_TILE } from './mapFixtures.js';
-import { nodeMapHandle } from '../browserMapHandle.js';
+import { mapHandle, nodeMapHandle } from '../browserMapHandle.js';
 import { encodeInitialStateColumns, INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER } from '../../src/contracts/initialStateColumns.generated.js';
 
 // Service-worker fetches bypass page.route and can load the public basemap
@@ -388,6 +388,50 @@ test('RF coverage remains available with 3D terrain', async ({ page }, testInfo)
   })), tileResponses.map((response) => response.url()));
   expect(tileSizes).toEqual([{ width: 256, height: 256 }, { width: 256, height: 256 }]);
   expect(tileErrors).toEqual([]);
+});
+
+test('RF coverage survives a forced basemap fallback with 3D terrain', async ({ page }) => {
+  // #181: the watchdog falls back while the preserved DEM can still keep
+  // isStyleLoaded() false. Revisioned RF images may already be in the cache.
+  test.setTimeout(90_000);
+  const basemapLogs: string[] = [];
+  page.on('console', (message) => {
+    if (message.text().startsWith('[basemap]')) basemapLogs.push(message.text());
+  });
+  // Fail only the vector tiles. The style itself must keep loading so the
+  // watchdog reaches retry → fallback instead of the blocking load modal.
+  await page.route('https://tiles.openfreemap.org/fixture/**', (route) => route.abort('failed'));
+
+  await page.goto('/?layers=feed%2Cterrain%2Ccoverage', { waitUntil: 'domcontentloaded' });
+  await expect(page.locator('.maplibregl-canvas')).toBeVisible();
+  const map = await mapHandle(page);
+  const mapFrame = () => map.evaluate(renderer => {
+    const style = renderer.getStyle();
+    const sourceId = 'hopreach-rf-source';
+    const source = style?.sources[sourceId];
+    const layer = style?.layers.find(layer => layer.id === 'hopreach-rf-layer');
+    const tiles = renderer.style?.tileManagers[sourceId];
+    return {
+      fallback: !!style?.layers.some(layer => layer.id === 'fallback-land'),
+      terrain: renderer.getTerrain()?.source === 'terrain-dem',
+      coverage: layer?.type === 'raster' && layer.source === sourceId
+        && layer.layout?.visibility !== 'none' && layer.paint?.['raster-opacity'] === 0.72
+        && source?.type === 'raster' && !!source.tiles?.some(tile => tile.startsWith('hopreach-rf://'))
+        && !!tiles?.getRenderableIds().some(id => !!tiles.getTileByID(id)?.texture),
+    };
+  });
+  await expect.poll(mapFrame, {
+    message: 'RF raster tiles must be ready on the original 3D map',
+    timeout: 30_000,
+  }).toEqual({ fallback: false, terrain: true, coverage: true });
+
+  const fallbackChip = page.locator('.map-basemap-status--fallback');
+  await expect(fallbackChip).toContainText('Using backup basemap', { timeout: 45_000 });
+  expect(basemapLogs.some((line) => line.includes('retrying with cache-busted style'))).toBe(true);
+  await expect.poll(mapFrame, {
+    message: 'The fallback map must retain terrain and renderable RF raster tiles',
+    timeout: 20_000,
+  }).toEqual({ fallback: true, terrain: true, coverage: true });
 });
 
 test('map modes update layers and produce a shareable URL', async ({ page }, testInfo) => {

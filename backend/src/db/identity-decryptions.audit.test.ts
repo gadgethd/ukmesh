@@ -13,12 +13,14 @@
  * complete migration path.
  */
 import assert from 'node:assert/strict';
-import test from 'node:test';
+import test, { type TestContext } from 'node:test';
 import pg from 'pg';
 import { createDisposableDatabase } from './fixtures/disposableDatabase.js';
 import type { QueryResultRow } from 'pg';
-import { getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
+import { getChannelMessageHistory, getRecentMessages, getRecentPackets } from '../repositories/packetReads.js';
 import type { QueryFn } from './packetBatch.js';
+import { channelHashesForName } from '../mqtt/channelRegistry.js';
+import { resolvePendingSummaries } from '../ram/liveRead.js';
 
 const databaseUrl = process.env['TEST_INGEST_DATABASE_URL'];
 const isLoopback = (value?: string): boolean => {
@@ -231,6 +233,174 @@ test('recent readers join packet_decryptions on the packet identity key', async 
       'hash authority must not expand observations by UID');
     assert.match(rollbackSql, /SELECT p\.packet_hash AS identity_key/,
       'hash authority resolves decryptions against the exact stored hash only');
+  } finally {
+    if (previous === undefined) delete process.env['PACKET_IDENTITY_READ_AUTHORITY'];
+    else process.env['PACKET_IDENTITY_READ_AUTHORITY'] = previous;
+  }
+});
+
+/** A disposable database carrying only the reader-shaped fixture schema. */
+async function disposableFixture(t: TestContext): Promise<pg.Pool> {
+  assert.ok(isLoopback(databaseUrl), SKIP_REASON);
+  const fixture = await createDisposableDatabase(t, databaseUrl!, 'identity_readers');
+  const pool = new pg.Pool({ connectionString: fixture.url, max: 2 });
+  fixture.addCleanup(() => pool.end());
+  await pool.query(FIXTURE_SCHEMA);
+  return pool;
+}
+
+async function insertChannelPacket(
+  pool: pg.Pool,
+  row: { time: Date; hash: string; uid: Buffer; payload: Record<string, unknown> },
+): Promise<void> {
+  await pool.query(
+    `INSERT INTO mesh.packets
+       (time, packet_hash, packet_uid, rx_node_id, src_node_id, topic, topic_prefix, iata,
+        packet_type, route_type, hop_count, rssi, snr, payload, advert_count, path_hashes,
+        path_hash_size_bytes, network, transport_codes, region_scope, visibility_ok, is_private)
+     VALUES ($1,$2,$3,$4,NULL,$5,'ukmesh','ZZZ',5,'flood',1,-90.5,6.25,$6::jsonb,NULL,'{}',1,
+             'ukmesh','{}','#uk',TRUE,FALSE)`,
+    [row.time, row.hash, row.uid, 'AB'.repeat(32), 'meshcore/ukmesh/AB/packets', JSON.stringify(row.payload)],
+  );
+}
+
+/**
+ * Channel history used to join `mesh.packet_decryptions` on the exact
+ * observation hash. A message retained under two observation hashes can carry
+ * its decryption on the older one, so the representative was either filtered
+ * out of the candidate page (no summary to match) or returned with the
+ * unhelpful ingest marker. The identity join must attribute the sibling's
+ * decryption to the representative, in both the selection and detail queries.
+ */
+test('channel history resolves decryptions through the packet identity', {
+  skip: isLoopback(databaseUrl) ? false : SKIP_REASON,
+  timeout: 120_000,
+}, async (t) => {
+  const pool = await disposableFixture(t);
+  const channel = 'test';
+  const channelHashes = channelHashesForName(channel);
+  assert.ok(channelHashes.length > 0, 'the fixture channel must have wire hashes');
+  const now = Date.now();
+
+  // A: the newest observation's summary is only the ingest marker. Pre-fix the
+  // selection query cannot match it, because the decryption lives on the older
+  // observation of the same UID.
+  const uidA = uidBytes('d1');
+  const newestA = hashes('e1');
+  const siblingA = hashes('e2');
+  await insertChannelPacket(pool, {
+    time: new Date(now - 60_000), hash: newestA, uid: uidA, payload: { _summary: '[encrypted]' },
+  });
+  await insertChannelPacket(pool, {
+    time: new Date(now - 120_000), hash: siblingA, uid: uidA, payload: { _summary: '[encrypted]' },
+  });
+  await pool.query(
+    `INSERT INTO mesh.packet_decryptions (packet_hash, decrypted, summary) VALUES ($1, '{}'::jsonb, $2)`,
+    [siblingA, '[test] sibling plaintext'],
+  );
+
+  // B: this row matches the channel hash directly, so pre-fix it is selected —
+  // but its summary still comes from its own undecrypted observation.
+  const uidB = uidBytes('d2');
+  const newestB = hashes('e3');
+  const siblingB = hashes('e4');
+  await insertChannelPacket(pool, {
+    time: new Date(now - 180_000), hash: newestB, uid: uidB,
+    payload: { _summary: '[encrypted]', channelHash: channelHashes[0] },
+  });
+  await insertChannelPacket(pool, {
+    time: new Date(now - 240_000), hash: siblingB, uid: uidB, payload: { _summary: '[encrypted]' },
+  });
+  await pool.query(
+    `INSERT INTO mesh.packet_decryptions (packet_hash, decrypted, summary) VALUES ($1, '{}'::jsonb, $2)`,
+    [siblingB, '[test] detail sibling'],
+  );
+
+  const readQuery: QueryFn = (sql, params) => pool.query(sql, params);
+  const rows = await getChannelMessageHistory(channel, 10, 'ukmesh', undefined, readQuery);
+  const byHash = new Map(rows.map((row) => [String(row.packet_hash), row]));
+
+  assert.ok(byHash.has(newestA),
+    'the representative must be selected through its sibling observation decryption');
+  assert.equal(byHash.get(newestA)?.summary, '[test] sibling plaintext',
+    'the selection and detail summary must be the identity decryption, not the ingest marker');
+  assert.equal(byHash.get(newestB)?.summary, '[test] detail sibling',
+    'a selected observation must show its sibling observation decryption');
+
+  await pool.query('UPDATE mesh.packets SET is_private = TRUE WHERE packet_hash = $1', [siblingA]);
+  await pool.query('UPDATE mesh.packets SET rx_node_id = $2 WHERE packet_hash = $1', [siblingB, 'BC'.repeat(32)]);
+  const scoped = await getChannelMessageHistory(channel, 10, 'ukmesh', 'AB'.repeat(32), readQuery);
+  const scopedByHash = new Map(scoped.map((row) => [String(row.packet_hash), row]));
+  assert.equal(scopedByHash.has(newestA), false, 'private siblings cannot qualify a packet for history');
+  assert.equal(scopedByHash.get(newestB)?.summary, '[test] [encrypted]',
+    'a sibling outside the requested observer scope cannot enrich a selected packet');
+});
+
+/**
+ * The RAM overlay resolves summaries for pending observations, which are often
+ * not yet in `mesh.packets`. When an earlier observation of the same UID is
+ * already stored and decrypted, the pending row must inherit that summary.
+ */
+test('RAM pending summaries resolve decryptions through the packet identity', {
+  skip: isLoopback(databaseUrl) ? false : SKIP_REASON,
+  timeout: 120_000,
+}, async (t) => {
+  const pool = await disposableFixture(t);
+  const uid = uidBytes('f1');
+  const pendingHash = hashes('f2');
+  const siblingHash = hashes('f3');
+  // The pending hash is already stored (a repeat observation of the same hash)
+  // so its UID is known; the decryption sits on a different observation of the
+  // same wire content.
+  await insertChannelPacket(pool, {
+    time: new Date(Date.now() - 20_000), hash: pendingHash, uid, payload: { _summary: '[encrypted]' },
+  });
+  await insertChannelPacket(pool, {
+    time: new Date(Date.now() - 30_000), hash: siblingHash, uid, payload: { _summary: '[encrypted]' },
+  });
+  await pool.query(
+    `INSERT INTO mesh.packet_decryptions (packet_hash, decrypted, summary) VALUES ($1, '{}'::jsonb, $2)`,
+    [siblingHash, 'sibling summary'],
+  );
+
+  const readQuery: QueryFn = (sql, params) => pool.query(sql, params);
+  const [summary] = await resolvePendingSummaries(
+    [{ packet_hash: pendingHash, payload: { _summary: null } }],
+    readQuery,
+  ).then((map) => [map.get(pendingHash)]);
+  assert.equal(summary, 'sibling summary',
+    'a pending observation must inherit the decrypted sibling observation of its UID');
+
+  // An ingest payload summary still outranks the durable decryption.
+  const payloadWins = await resolvePendingSummaries(
+    [{ packet_hash: pendingHash, payload: { _summary: 'payload summary' } }],
+    readQuery,
+  );
+  assert.equal(payloadWins.get(pendingHash), 'payload summary');
+
+  // A hash that is not stored yet keeps the exact fallback (no row => null).
+  const absent = await resolvePendingSummaries(
+    [{ packet_hash: hashes('f4'), payload: { _summary: null } }],
+    readQuery,
+  );
+  assert.equal(absent.get(hashes('f4')), null);
+
+  const unflushed = { packet_hash: hashes('f4'), packet_uid: uid.toString('hex'), payload: { _summary: null } };
+  const matchedUid = await resolvePendingSummaries([unflushed], readQuery, { network: 'ukmesh', region: 'uk' });
+  assert.equal(matchedUid.get(unflushed.packet_hash), 'sibling summary',
+    'a pending packet can use its assigned UID without a committed hash');
+  const otherRegion = await resolvePendingSummaries([unflushed], readQuery, { network: 'ukmesh', region: 'outside' });
+  assert.equal(otherRegion.get(unflushed.packet_hash), null);
+
+  // Rollback authority must not borrow a sibling observation's decryption.
+  const previous = process.env['PACKET_IDENTITY_READ_AUTHORITY'];
+  try {
+    process.env['PACKET_IDENTITY_READ_AUTHORITY'] = 'hash';
+    const rollback = await resolvePendingSummaries(
+      [{ packet_hash: pendingHash, payload: { _summary: null } }],
+      readQuery,
+    );
+    assert.equal(rollback.get(pendingHash), null);
   } finally {
     if (previous === undefined) delete process.env['PACKET_IDENTITY_READ_AUTHORITY'];
     else process.env['PACKET_IDENTITY_READ_AUTHORITY'] = previous;

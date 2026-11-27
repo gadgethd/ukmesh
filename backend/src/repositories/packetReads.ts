@@ -5,8 +5,7 @@ import { channelHashesForName } from '../mqtt/channelRegistry.js';
 import { isPublicChannelName } from '../mqtt/channelRegistry.js';
 import { sanitizePublicPacketPayload } from '../mqtt/channelRegistry.js';
 import { getRamIngestMode } from '../ram/protocol.js';
-import { packetIdentityKeySql } from '../db/packetIdentityRead.js';
-import { packetIdentityReadAuthority } from '../db/packetIdentityRead.js';
+import { packetDecryptionJoinSql, packetIdentityKeySql, packetIdentityReadAuthority } from '../db/packetIdentityRead.js';
 import { buildScopePlaceholders } from '../db/readScope.js';
 import { buildPacketScopeClause } from '../db/readScope.js';
 import { buildPublicPacketPrivacyClause } from '../db/readScope.js';
@@ -297,16 +296,25 @@ export async function getChannelMessageHistory(
   limit = 50,
   network?: string,
   observer?: string,
+  readQuery: QueryFn = analyticsQuery,
 ) {
   const normalizedChannel = channel.trim().toLowerCase();
   if (!isPublicChannelName(normalizedChannel)) return [];
   const channelHashes = channelHashesForName(normalizedChannel);
   const scope = buildScopePlaceholders(6, network, observer);
-  // A historical packet may retain the ingest-time "[encrypted]" marker in
-  // payload while mesh.packet_decryptions has the channel-specific summary. Prefer
-  // the durable decryption summary for channel matching and display.
-  const summaryExpr = `COALESCE(NULLIF(BTRIM(pd.summary), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`;
   const historyWindow = `NOW() - INTERVAL '90 days'`;
+  const channelDecryption = (placeholders: typeof scope) => {
+    const decryption = packetDecryptionJoinSql('p.packet_uid', `AND sib.time > ${historyWindow}
+      ${buildPacketScopeClause(placeholders, 'sib', network)}
+      ${buildPublicPacketPrivacyClause('sib')}`);
+    // The durable decryption can live on an older observation while the
+    // selected packet still carries the generic ingest-time encrypted marker.
+    return {
+      ...decryption,
+      summary: `COALESCE(NULLIF(BTRIM(${decryption.summary}), ''), NULLIF(BTRIM(p.payload->>'_summary'), ''))`,
+    };
+  };
+  const selection = channelDecryption(scope);
   const historyBatchLimit = 100;
   const selectionLimit = Math.min(100, Math.max(limit, Math.ceil(limit * 1.5)));
   const selected = new Set<string>();
@@ -314,10 +322,10 @@ export async function getChannelMessageHistory(
   let cursorHash = '\uffff';
 
   while (selected.size < selectionLimit) {
-    const batch = await analyticsQuery<{ packet_hash: string; time: Date }>(
+    const batch = await readQuery<{ packet_hash: string; time: Date }>(
       `SELECT p.time, p.packet_hash
        FROM mesh.packets p
-       LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+       ${selection.joins}
        WHERE p.packet_type = 5
          AND p.time > ${historyWindow}
          AND (
@@ -331,11 +339,11 @@ export async function getChannelMessageHistory(
          AND p.visibility_ok IS TRUE
          AND p.is_private IS NOT TRUE
          AND (
-           LOWER(${summaryExpr}) LIKE ('[' || $4 || ']%')
+           LOWER(${selection.summary}) LIKE ('[' || $4 || ']%')
            OR LOWER(COALESCE(
              p.payload->>'channelHash',
              p.payload->'decrypted'->>'channelHash',
-             pd.decrypted->>'channelHash',
+             (${selection.decrypted})->>'channelHash',
              ''
            )) = ANY($5::text[])
          )
@@ -361,7 +369,8 @@ export async function getChannelMessageHistory(
   if (selectedHashes.length === 0) return [];
 
   const detailScope = buildScopePlaceholders(2, network, observer);
-  const res = await analyticsQuery(
+  const detail = channelDecryption(detailScope);
+  const res = await readQuery(
     `WITH channel_candidates AS MATERIALIZED (
       SELECT DISTINCT ON (p.packet_hash)
              p.time, p.packet_hash,
@@ -369,11 +378,11 @@ export async function getChannelMessageHistory(
              COALESCE(src_alias.canonical_node_id, UPPER(BTRIM(p.src_node_id))) AS src_node_id, p.topic,
              p.iata,
              p.packet_type, p.hop_count, p.rssi, p.snr, p.payload,
-             ${summaryExpr} AS summary,
+             ${detail.summary} AS summary,
              p.advert_count, p.path_hashes, p.path_hash_size_bytes,
              p.network, p.visibility_ok, p.is_private
       FROM mesh.packets p
-      LEFT JOIN mesh.packet_decryptions pd ON pd.packet_hash = p.packet_hash
+      ${detail.joins}
       LEFT JOIN core.node_identity_aliases rx_alias
         ON rx_alias.source_node_id = UPPER(BTRIM(p.rx_node_id))
       LEFT JOIN core.node_identity_aliases src_alias
@@ -385,7 +394,7 @@ export async function getChannelMessageHistory(
         AND p.visibility_ok IS TRUE
         AND p.is_private IS NOT TRUE
       ORDER BY p.packet_hash,
-               CASE WHEN ${summaryExpr} IS NOT NULL THEN 1 ELSE 0 END DESC,
+               CASE WHEN ${detail.summary} IS NOT NULL THEN 1 ELSE 0 END DESC,
                CASE WHEN p.payload ? 'decrypted' THEN 1 ELSE 0 END DESC,
                CASE WHEN p.src_node_id IS NOT NULL THEN 1 ELSE 0 END DESC,
                p.time DESC
