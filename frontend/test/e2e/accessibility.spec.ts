@@ -474,6 +474,7 @@ test('repeater search exposes keyboard selection and tolerates IME composition',
   } finally { await ime.detach(); }
   await expect(search).toHaveAttribute('aria-autocomplete', 'list');
   await expect(search).toHaveValue('東');
+  await expect(page).toHaveURL(url => url.searchParams.get('q') === '東');
 });
 
 test('reduced-motion preference removes repeating CSS animation', async ({ page }, info) => {

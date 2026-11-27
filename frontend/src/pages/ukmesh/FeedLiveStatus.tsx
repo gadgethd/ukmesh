@@ -29,15 +29,15 @@ export const FeedLiveStatus = React.memo(function FeedLiveStatus({ packets, conn
   return <div className="uk-feed-stats">
     <div className="uk-feed-stats__row">
       <span className={`uk-feed-live-dot uk-feed-live-dot--${feedConnectionDot(status)}`} aria-hidden="true" />
-      <span className="uk-feed-stats__label" role="status">{feedConnectionLabel(status)}</span>
+      <span className="uk-feed-stats__label uk-feed-stats__label--connection" role="status">{feedConnectionLabel(status)}</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
-      <span className="uk-feed-stats__label">Last update {timeAgo(connection.lastMessageAt, { now, empty: 'unavailable' })}</span>
+      <span className="uk-feed-stats__label uk-feed-stats__label--update">Last update {timeAgo(connection.lastMessageAt, { now, empty: 'unavailable' })}</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
-      <span className="uk-feed-stats__label">{observerCount} observer{observerCount === 1 ? '' : 's'}</span>
+      <span className="uk-feed-stats__label uk-feed-stats__label--observers">{observerCount} observer{observerCount === 1 ? '' : 's'}</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
-      <span className="uk-feed-stats__label">{activity.packetsLastMin} pkt/min</span>
+      <span className="uk-feed-stats__label uk-feed-stats__label--rate">{activity.packetsLastMin} pkt/min</span>
       <span className="uk-feed-stats__sep" aria-hidden="true">·</span>
-      <span className="uk-feed-stats__label">Last packet: {timeAgo(packets[0]?.time, { now, empty: 'None received' })}</span>
+      <span className="uk-feed-stats__label uk-feed-stats__label--packet">Last packet: {timeAgo(packets[0]?.time, { now, empty: 'None received' })}</span>
     </div>
     {activity.types.length > 0 && <div className="uk-feed-type-tags">
       {activity.types.map(([type, count]) => <span key={type} className="uk-feed-type-tag">

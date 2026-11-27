@@ -24,3 +24,9 @@
 
 - Beacon readiness needs native connection events, process identity and the current broker epoch. Streaming hours of access logs through Docker repeatedly exhausted the probe budget. Filter the same journal by container and event fields when the service uses journald. The startup deadline and the separate intake, broker and target identity checks still apply.
 - A completed companion build can disappear between Docker listing and inspection, aborting a valid transition. Retry only after confirming a listed ID disappeared. Reinspect the entire current set and require exact full IDs before comparing owned service and broker identities.
+
+## Browser journeys
+
+- The repeater input owns immediate edits, including composition. Persist the query in the URL for reload and history navigation. A router transition can arrive after Chromium has started composing the next edit.
+- Give each mobile feed status metric an explicit grid slot. Adding a freshness label shifted the other labels through the old numbered slots and let changing text move the packet list.
+- Exercise mobile map search through Find and check the website navigation's visible tab order. Keep the privacy, alias and focus restoration assertions.

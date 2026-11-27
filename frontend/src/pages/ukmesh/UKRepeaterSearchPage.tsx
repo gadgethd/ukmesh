@@ -229,7 +229,8 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const detailScopeKey = scopeKey(publicScope);
   const [params, setParams] = useSearchParams();
   const navigation = useNavigationType();
-  const searchQuery = (params.get('q') ?? '').slice(0, 160);
+  const urlQuery = (params.get('q') ?? '').slice(0, 160);
+  const [searchQuery, setSearchQuery] = useState(urlQuery);
   const requested = params.getAll('node');
   const nodeKey = requested.length === 1 && /^[a-f0-9]{64}$/i.test(requested[0] ?? '') ? requested[0] : undefined;
   const [searchAttempt, setSearchAttempt] = useState(0);
@@ -249,8 +250,9 @@ export const UKRepeaterSearchPage: React.FC = () => {
   const currentNearby = nearby?.key === detailScopeKey ? nearby : undefined;
 
   useEffect(() => {
-    if (navigation === 'POP') setShowResults(Boolean(searchQuery) && !nodeKey);
-  }, [navigation, searchQuery, nodeKey]);
+    if (navigation !== 'REPLACE') setSearchQuery(urlQuery);
+    if (navigation === 'POP') setShowResults(Boolean(urlQuery) && !nodeKey);
+  }, [navigation, urlQuery, nodeKey]);
 
   useEffect(() => {
     if (runtimeFeatures.privacyGeneration < 1) return;
@@ -339,13 +341,15 @@ export const UKRepeaterSearchPage: React.FC = () => {
   };
 
   const changeQuery = (query: string) => {
+    const nextQuery = query.slice(0, 160);
+    setSearchQuery(nextQuery);
     const next = new URLSearchParams(params);
-    if (query) next.set('q', query.slice(0, 160));
+    if (nextQuery) next.set('q', nextQuery);
     else next.delete('q');
-    if (next.toString() !== params.toString()) setParams(next, { replace: true });
+    setParams(next, { replace: true });
     setNearby(undefined);
     locationRequest.current += 1;
-    setShowResults(Boolean(query.trim()));
+    setShowResults(Boolean(nextQuery.trim()));
   };
 
   const findNearby = () => {

@@ -470,10 +470,14 @@ test('navigation groups support keyboard opening, Escape and mobile focus restor
   const menu = page.locator('.site-nav__hamburger');
   await menu.focus();
   await page.keyboard.press('Enter');
-  await expect(page.locator('.site-nav__links').getByRole('link', { name: 'Regions', exact: true })).toBeVisible();
+  const menuLinks = page.locator('.site-nav__links');
+  await expect(menuLinks.getByRole('link', { name: 'Regions', exact: true })).toBeVisible();
+  for (const name of ['Repeaters', 'Regions', 'Feed', 'Health Check']) {
+    await page.keyboard.press('Tab');
+    await expect(menuLinks.getByRole('link', { name, exact: true })).toBeFocused();
+  }
   await page.keyboard.press('Tab');
-  await expect(page.locator('.site-nav__links').getByRole('link', { name: 'Feed', exact: true })).toBeFocused();
-  await tools.focus();
+  await expect(tools).toBeFocused();
   await page.keyboard.press('Enter');
   await expect(page.getByRole('link', { name: 'Topology', exact: true })).toBeVisible();
   await page.keyboard.press('Escape');
