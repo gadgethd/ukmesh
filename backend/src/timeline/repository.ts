@@ -1,12 +1,15 @@
 import type { QueryResultRow } from 'pg';
-import type { NetworkFilters } from '../platform/query/networkFilters.js';
+import type { networkFilters } from '../platform/query/networkFilters.js';
 import type { PublicNetworkScope } from '../http/requestScope.js';
 
 type QueryFn = <T extends QueryResultRow = QueryResultRow>(text: string, params?: unknown[]) => Promise<{ rows: T[] }>;
-export type TimelineScope = Readonly<{ network: PublicNetworkScope; minutes: number; bucketMinutes: number }>;
-export function createTimelineRepository(deps: { query: QueryFn; networkFilters: (network?: string) => NetworkFilters }) {
-  return { async load({ network, minutes, bucketMinutes }: TimelineScope) {
-    const filters = deps.networkFilters(network);
+export type TimelineScope = Readonly<{ network: PublicNetworkScope; region?: string; minutes: number; bucketMinutes: number }>;
+export function createTimelineRepository(deps: { query: QueryFn; networkFilters: typeof networkFilters }) {
+  return { async load({ network, region, minutes, bucketMinutes }: TimelineScope) {
+    const filters = deps.networkFilters(network, undefined, { region });
+    // A public scoped packet can be received outside its named region. Only
+    // current canonical region members are eligible for map highlights.
+    const memberPredicate = filters.nodeCandidates ? `AND nc.node_id IN (${filters.nodeCandidates.idsSql})` : '';
     const windowParam = `$${filters.params.length + 1}`;
     const bucketParam = `$${filters.params.length + 2}`;
           const result = await deps.query<{
@@ -23,6 +26,7 @@ export function createTimelineRepository(deps: { query: QueryFn; networkFilters:
                  p.src_node_id
                FROM mesh.packets p
                WHERE p.time > NOW() - ${windowParam}::interval
+                 ${region ? 'AND p.time <= NOW()' : ''}
                  ${filters.packetsAlias('p')}
              ),
              distinct_packets AS (
@@ -73,6 +77,7 @@ export function createTimelineRepository(deps: { query: QueryFn; networkFilters:
                  SELECT nc.node_id
                  FROM node_counts nc
                  WHERE nc.bucket = pb.bucket
+                   ${memberPredicate}
                  ORDER BY nc.observations DESC, nc.node_id
                  LIMIT 250
                ) AS active_node_ids
@@ -83,6 +88,7 @@ export function createTimelineRepository(deps: { query: QueryFn; networkFilters:
           );
           return {
             generatedAt: new Date().toISOString(),
+            ...(region ? { region } : {}),
             windowMinutes: minutes,
             bucketMinutes,
             buckets: result.rows.map((row) => ({

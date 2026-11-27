@@ -60,11 +60,12 @@ build_sample_broker() {
 }
 
 build_images() {
+  bash "$repo/scripts/healthcheck-source.sh" --verify >/dev/null
   prepare_wiring
   build_sample_broker
   for component in backend app-ukmesh website-ukmesh website-dev tagger-worker link-worker hopreach mesh-health-check mosquitto-reloader; do
     echo "Building $component (one image at a time)"
-    "${compose[@]}" build "$component" > "$state/build-$component.log" 2>&1 || { tail -40 "$state/build-$component.log" >&2; return 1; }
+    "${compose_build[@]}" build "$component" > "$state/build-$component.log" 2>&1 || { tail -40 "$state/build-$component.log" >&2; return 1; }
   done
   git rev-parse HEAD > "$state/built-revision"
 }

@@ -538,11 +538,13 @@ export const App: React.FC = () => {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [handleShare]);
 
+  const healthUrl = new URL(region ? `/health-check?${new URLSearchParams({ region })}` : '/health-check', site.appHomeUrl).href;
   return (
     <div className="app-shell" data-node-open={selectedNodeId ? 'true' : undefined} data-live-feed={filters.livePackets ? 'true' : undefined} data-mobile-fullscreen={fullScreenMap ? 'true' : undefined} data-feed-open={mobileFeedOpen ? 'true' : undefined}>
       <a href="#map-workspace" className="ui-skip-link">Skip to map</a>
       <AppTopBar
         homeUrl={site.appHomeUrl}
+        healthUrl={healthUrl}
         connection={wsConnection}
         hasData={initialStateLoaded || (pollOutcome?.scope === realtimeScopeKey && pollOutcome.at !== null)}
         refreshedAt={pollOutcome?.scope === realtimeScopeKey ? pollOutcome.at : null}
@@ -561,6 +563,7 @@ export const App: React.FC = () => {
       />
 
       <MobileControls
+        healthUrl={healthUrl}
         map={mlMap}
         scope={publicScope}
         filters={filters}

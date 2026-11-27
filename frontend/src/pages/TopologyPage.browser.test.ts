@@ -91,7 +91,11 @@ browserTest('topology preserves native layers, selection and controls across rep
       if (url.pathname.startsWith('/api/')) return route.fulfill({ json: {} });
       return route.continue();
     });
-    await page.goto(`${base}/topology`);
+    await Promise.all([
+      page.waitForResponse(response => response.ok() && response.request().method() === 'GET'
+        && new URL(response.url()).pathname === '/api/topology', { timeout: 14_000 }),
+      page.goto(`${base}/topology`, { waitUntil: 'domcontentloaded' }),
+    ]);
     const canvas = page.locator('.topology-page__workspace canvas');
     await expect(canvas).toBeVisible();
     const map = await mapHandle(page);

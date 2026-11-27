@@ -11,6 +11,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 )
 
@@ -34,8 +36,9 @@ type Node struct {
 }
 
 type nodesResponse struct {
-	Nodes []Node `json:"nodes"`
-	Total int    `json:"total"`
+	Nodes                []Node `json:"nodes"`
+	Total                int    `json:"total"`
+	VisibilityGeneration int64  `json:"visibility_generation"`
 }
 
 // ReachLink mirrors one entry of CoreScope's GET /api/nodes/:pubkey/reach
@@ -85,27 +88,73 @@ func NewClient(baseURL string, httpClient *http.Client) *Client {
 
 // FetchRepeaters fetches every role=repeater node, paginating as needed.
 func (c *Client) FetchRepeaters(ctx context.Context) ([]Node, error) {
+	nodes, _, err := c.fetchRepeaters(ctx, false)
+	return nodes, err
+}
+
+// FetchRepeaterInputs selects the generation-bound UK Mesh production input
+// when offered by the private adapter. Legacy CoreScope serves the old raw
+// products; those inputs cannot attest any public-projection tiles.
+func (c *Client) FetchRepeaterInputs(ctx context.Context) ([]Node, int64, error) {
+	endpoint, err := url.Parse(c.BaseURL)
+	if err != nil || strings.TrimSuffix(endpoint.Path, "/") != "/hopreach" {
+		nodes, err := c.FetchRepeaters(ctx)
+		return nodes, 0, err
+	}
+	nodes, generation, err := c.fetchRepeaters(ctx, true)
+	if err == nil {
+		return nodes, generation, nil
+	}
+	nodes, err = c.FetchRepeaters(ctx)
+	return nodes, 0, err
+}
+
+func (c *Client) fetchRepeaters(ctx context.Context, projected bool) ([]Node, int64, error) {
 	var nodes []Node
+	var generation int64
+	total := -1
+	lastKey := ""
 	offset := 0
 	for {
 		url := fmt.Sprintf("%s/api/nodes?role=repeater&limit=%d&offset=%d", c.BaseURL, pageLimit, offset)
+		if projected {
+			url += "&projection=public"
+			if generation > 0 {
+				url += fmt.Sprintf("&generation=%d", generation)
+			}
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
-			return nil, fmt.Errorf("corescope: building request for %s: %w", url, err)
+			return nil, 0, fmt.Errorf("corescope: building request for %s: %w", url, err)
 		}
 		resp, err := c.HTTP.Do(req)
 		if err != nil {
-			return nil, fmt.Errorf("corescope: fetching %s: %w", url, err)
+			return nil, 0, fmt.Errorf("corescope: fetching %s: %w", url, err)
 		}
 		if resp.StatusCode != http.StatusOK {
 			resp.Body.Close()
-			return nil, fmt.Errorf("corescope: fetching %s: unexpected status %d", url, resp.StatusCode)
+			return nil, 0, fmt.Errorf("corescope: fetching %s: unexpected status %d", url, resp.StatusCode)
 		}
 		var page nodesResponse
 		err = json.NewDecoder(resp.Body).Decode(&page)
 		resp.Body.Close()
 		if err != nil {
-			return nil, fmt.Errorf("corescope: decoding response from %s: %w", url, err)
+			return nil, 0, fmt.Errorf("corescope: decoding response from %s: %w", url, err)
+		}
+		if projected {
+			if page.VisibilityGeneration < 1 || page.VisibilityGeneration > 9007199254740991 ||
+				(generation != 0 && generation != page.VisibilityGeneration) ||
+				(total >= 0 && total != page.Total) || page.Total < 0 ||
+				offset+len(page.Nodes) > page.Total || (len(page.Nodes) == 0 && offset != page.Total) {
+				return nil, 0, fmt.Errorf("incomplete or changed RF visibility snapshot")
+			}
+			total, generation = page.Total, page.VisibilityGeneration
+			for _, node := range page.Nodes {
+				if len(node.PublicKey) != 64 || node.PublicKey <= lastKey {
+					return nil, 0, fmt.Errorf("unordered or duplicate RF visibility snapshot")
+				}
+				lastKey = node.PublicKey
+			}
 		}
 		nodes = append(nodes, page.Nodes...)
 		offset += len(page.Nodes)
@@ -113,7 +162,7 @@ func (c *Client) FetchRepeaters(ctx context.Context) ([]Node, error) {
 			break
 		}
 	}
-	return nodes, nil
+	return nodes, generation, nil
 }
 
 // FetchReach fetches one node's observed reach data for the given lookback

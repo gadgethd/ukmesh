@@ -17,5 +17,10 @@ regions:
     name: DEV fixture
     iatas: [LON, LHR]
 channel_keys:
+  keys:
+    # MeshCore's built-in Public channel. Private keys are excluded from the DEV feed.
+    "11":
+      key: "8b3387e9c5cdea6ac9e5edbaa115cd72"
+      name: Public
   hashtags:
     - name: test

@@ -468,6 +468,17 @@ export const API_CONTRACTS: readonly ApiContract[] = [
       ],
     };
   }
+  if (contract.path === '/activity/timeline') {
+    return {
+      ...contract,
+      summary: 'Read historical activity for the network or a named region',
+      queryParameters: [{
+        name: 'region', in: 'query', required: false,
+        description: 'Case-sensitive public region name. Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED. A scoped response echoes the bare region name, counts attributed packets, and highlights current canonical region members.',
+        schema: { type: 'string', pattern: '^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$', maxLength: 65 },
+      }],
+    };
+  }
   if (['/nodes', '/nodes/:id/links', '/packets/recent', '/path-beta/multibyte-paths'].includes(contract.path)) {
     return {
       ...contract,

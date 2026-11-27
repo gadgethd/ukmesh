@@ -11,7 +11,7 @@ import tempfile
 import time
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import startup_readiness as r
 from owned_process import session_members
@@ -176,6 +176,32 @@ class NativeContracts(unittest.TestCase):
         self.assertEqual(value.returncode,0);self.assertEqual(value.stdout,raw);self.assertEqual(value.stderr,b'')
         with patch.object(r,'_run',return_value=value)as run:r.docker_probe(['logs','owned'],time.monotonic()+5,merge_stderr=True)
         self.assertTrue(run.call_args.kwargs['merge_stderr'])
+    def test_journal_keeps_exact_native_epoch_records_and_refuses_foreign_ids(self):
+        container='a'*64
+        item={'Id':container,'State':{'StartedAt':'2026-11-15T10:00:00Z'},
+              'HostConfig':{'LogConfig':{'Type':'journald'}}}
+        def records(connection_container):
+            rows=[]
+            for index,line in enumerate(self.logs().decode().splitlines()):
+                stamp,message=line.split(' ',1)
+                rows.append(json.dumps({'MESSAGE':message,'CONTAINER_ID_FULL':connection_container if index else container,
+                     '__REALTIME_TIMESTAMP':str(int(r.timestamp(stamp)*1_000_000))}))
+            return ('\n'.join(rows)+'\n').encode()
+        with patch.object(r,'_run') as run:
+            run.return_value=subprocess.CompletedProcess([],0,records(container),b'')
+            mock_docker=Mock(side_effect=AssertionError('journal should not scan unfiltered Docker logs'))
+            deadline=time.monotonic()+60
+            raw=r._beacon_logs(item,deadline,mock_docker)
+            self.assertIn('CONTAINER_ID_FULL='+container,run.call_args.args[0])
+            self.assertEqual(run.call_args.args[1],deadline)
+            self.assertEqual(run.call_args.kwargs['limit_seconds'],5)
+            self.assertTrue(r._beacon_events(raw,item,{'started_at':'2026-11-15T10:00:04Z'},{'mqtt1'}))
+            run.return_value=subprocess.CompletedProcess([],0,records('b'*64),b'')
+            with self.assertRaisesRegex(ValueError,'event malformed'):
+                r._beacon_logs(item,deadline,mock_docker)
+            run.return_value=subprocess.CompletedProcess([],1,records(container),b'')
+            with self.assertRaisesRegex(RuntimeError,'journal read failed'):
+                r._beacon_logs(item,deadline,mock_docker)
     def test_core_actual_full_document_sources_accept_backlog(self):
         with tempfile.TemporaryDirectory()as directory:
             config=Path(directory)/'config.json';config.write_text(json.dumps({'mqttSources':[{'name':'owned','broker':'tcp://broker:1883'}]}))

@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import type * as maplibregl from 'maplibre-gl';
 import { NodeSearch } from '../Map/NodeSearch.js';
 import { visibleFilterRows } from '../../features/map/layers.js';
@@ -13,6 +13,7 @@ import { useOverlayStore } from '../../store/overlayStore.js';
 import type { PublicScope } from '../../utils/scope.js';
 
 type MobileControlsProps = {
+  healthUrl: string;
   map: maplibregl.Map | null;
   scope: PublicScope;
   filters: Filters;
@@ -33,6 +34,7 @@ type MobileControlsProps = {
 };
 
 export const MobileControls: React.FC<MobileControlsProps> = ({
+  healthUrl,
   map,
   scope,
   filters,
@@ -51,10 +53,12 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   feedOpen,
   onToggleFeed,
 }) => {
-  const [menuOpen, setMenuOpen] = useState(false);
+  const [panel, setPanel] = useState<'layers' | 'search' | null>(null);
+  const menuOpen = panel === 'layers';
+  const searchOpen = panel === 'search';
+  const closePanel = () => setPanel(null);
   const compact = useMediaQuery('(max-width: 640px)');
-  useEffect(() => { if (!compact) setMenuOpen(false); }, [compact]);
-  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (!compact) setPanel(null); }, [compact]);
   const customLosMode = useOverlayStore((state) => state.customLosMode);
   const planRepeaterMode = useOverlayStore((state) => state.planRepeaterMode);
   const setCustomLosMode = useOverlayStore((state) => state.setCustomLosMode);
@@ -66,7 +70,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
 
   if (fullScreenMap) {
     return (
-      <div className="mobile-controls mobile-controls--fullscreen" ref={rootRef}>
+      <div className="mobile-controls mobile-controls--fullscreen">
         <button
           type="button"
           className="mobile-fullscreen-toggle"
@@ -79,12 +83,14 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
   }
 
   return (
-    <div className="mobile-controls" ref={rootRef}>
+    <div className="mobile-controls">
       <div className="mobile-controls__bar">
+        <button type="button" className="mobile-menu-toggle" onClick={() => setPanel('search')}
+          aria-expanded={searchOpen} aria-haspopup="dialog" aria-controls="mobile-map-search">Find</button>
         <button
           type="button"
           className="mobile-menu-toggle"
-          onClick={() => setMenuOpen((value) => !value)}
+          onClick={() => setPanel(menuOpen ? null : 'layers')}
           aria-expanded={menuOpen}
           aria-haspopup="dialog"
           aria-controls="mobile-map-menu"
@@ -105,20 +111,27 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
           Live
         </button>
       </div>
-      {menuOpen && compact && (
-        <Dialog id="mobile-map-menu" isOpen onOpenChange={setMenuOpen} ariaLabel="Map settings" className="mobile-menu" overlayClassName="mobile-map-overlay">
+      {panel && compact && (
+        <Dialog id={searchOpen ? 'mobile-map-search' : 'mobile-map-menu'} isOpen
+          onOpenChange={open => { if (!open) closePanel(); }}
+          ariaLabel={searchOpen ? 'Find on the map' : 'Map settings'} className="mobile-menu" overlayClassName="mobile-map-overlay">
           <div className="mobile-menu__head">
-            <DialogTitle className="mobile-menu__title">Map settings</DialogTitle>
+            <DialogTitle className="mobile-menu__title">{searchOpen ? 'Find on the map' : 'Map settings'}</DialogTitle>
             <button
               type="button"
               className="mobile-menu__close"
-              onClick={() => setMenuOpen(false)}
+              onClick={closePanel}
               aria-label="Close menu"
             >
               ✕
             </button>
           </div>
           <div className="mobile-menu__body">
+            {searchOpen ? (
+              <div className="mobile-search">
+                <NodeSearch map={map} scope={scope} onNodeSelect={id => { onNodeSelect(id); closePanel(); }} />
+              </div>
+            ) : <>
             <section className="mobile-menu__section" aria-label="View">
               <h3 className="mobile-menu__heading">View</h3>
               <MapModeSelector
@@ -131,7 +144,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
               <button
                 type="button"
                 className="mobile-fullscreen-toggle"
-                onClick={() => { setMenuOpen(false); onToggleFullScreenMap(); }}
+                onClick={() => { closePanel(); onToggleFullScreenMap(); }}
               >
                 Full-screen map
               </button>
@@ -145,8 +158,9 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
             <section className="mobile-menu__section" aria-label="Map planning tools">
               <h3 className="mobile-menu__heading">Tools</h3>
               <div className="mobile-map-tools">
+                <a className="mobile-map-tools__button topbar__health-link" href={healthUrl}>Health Check</a>
                 <button type="button" className="mobile-map-tools__button" onClick={() => {
-                  setMenuOpen(false);
+                  closePanel();
                   // Restore the Layers trigger before opening the next dialog.
                   requestAnimationFrame(() => requestAnimationFrame(onShowShortcuts));
                 }}>Keyboard shortcuts</button>
@@ -155,7 +169,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                   className={customLosMode ? 'mobile-map-tools__button mobile-map-tools__button--active' : 'mobile-map-tools__button'}
                   aria-pressed={customLosMode}
                   onClick={() => {
-                    setMenuOpen(false);
+                    closePanel();
                     if (customLosMode) clearCustomLos();
                     else {
                       setPlanRepeaterMode(false);
@@ -171,7 +185,7 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                     className={planRepeaterMode ? 'mobile-map-tools__button mobile-map-tools__button--active' : 'mobile-map-tools__button'}
                     aria-pressed={planRepeaterMode}
                     onClick={() => {
-                      setMenuOpen(false);
+                      closePanel();
                       if (planRepeaterMode) setPlanRepeaterMode(false);
                       else {
                         clearCustomLos();
@@ -184,15 +198,10 @@ export const MobileControls: React.FC<MobileControlsProps> = ({
                 )}
               </div>
             </section>
-            <section className="mobile-menu__section" aria-label="Find a node">
-              <h3 className="mobile-menu__heading">Find</h3>
-              <div className="mobile-search">
-                <NodeSearch map={map} scope={scope} onNodeSelect={id => { onNodeSelect(id); setMenuOpen(false); }} />
-              </div>
-            </section>
             <section className="mobile-menu__section" aria-label="Watchlist">
               <WatchlistPanel />
             </section>
+            </>}
           </div>
         </Dialog>
       )}

@@ -1,44 +1,29 @@
-FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS builder
-
-ARG MESH_HEALTH_CHECK_REPO=https://github.com/gadgethd/meshcore-health-check.git
+FROM scratch AS healthcheck-source
 ARG MESH_HEALTH_CHECK_REF
+ADD https://github.com/gadgethd/meshcore-health-check.git#${MESH_HEALTH_CHECK_REF} /
 
-COPY docker/mesh-health-check-package-lock.json /tmp/patched-package-lock.json
-
+FROM node:26-slim@sha256:ec7758ee051e457b468b32bde57b0879010b325bb9862718e9615225ce4aaae1 AS builder
 WORKDIR /app
 
-RUN apt-get -o APT::Update::Error-Mode=any update \
-  && apt-get install -y --no-install-recommends ca-certificates git \
-  && rm -rf /var/lib/apt/lists/*
-
-RUN test -n "$MESH_HEALTH_CHECK_REF" \
-  && echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$' \
-  && git init /tmp/mesh-health-check \
-  && git -C /tmp/mesh-health-check remote add origin "$MESH_HEALTH_CHECK_REPO" \
-  && git -C /tmp/mesh-health-check fetch --depth 1 origin "$MESH_HEALTH_CHECK_REF" \
-  && git -C /tmp/mesh-health-check checkout --detach FETCH_HEAD \
-  && test "$(git -C /tmp/mesh-health-check rev-parse HEAD)" = "$MESH_HEALTH_CHECK_REF" \
-  && cp /tmp/mesh-health-check/package.json /tmp/mesh-health-check/package-lock.json ./ \
-  && mkdir -p ./scripts \
-  && cp /tmp/mesh-health-check/scripts/patch-meshcore-decoder.js ./scripts/patch-meshcore-decoder.js \
-  && cp /tmp/patched-package-lock.json ./package-lock.json \
-  && npm ci --omit=dev --no-audit --fund=false \
-  && cp /tmp/mesh-health-check/server.js ./ \
-  && cp -a /tmp/mesh-health-check/lib ./lib \
-  && cp -a /tmp/mesh-health-check/public ./public \
-  && cp -a /tmp/mesh-health-check/regions ./regions \
-  && cp /tmp/mesh-health-check/README.md /tmp/mesh-health-check/HOWTO.md /tmp/mesh-health-check/AGENTS.md /tmp/mesh-health-check/CHANGES.md ./ \
-  && rm -rf /tmp/mesh-health-check \
-  && apt-get purge -y --auto-remove git \
-  && rm -rf /var/lib/apt/lists/* /usr/local/lib/node_modules/npm \
-  && rm -f /usr/local/bin/npm /usr/local/bin/npx
+COPY --from=healthcheck-source /package.json /package-lock.json ./
+COPY --from=healthcheck-source /scripts/patch-meshcore-decoder.js ./scripts/
+RUN npm ci --omit=dev --no-audit --fund=false
+COPY --from=healthcheck-source /server.js /region-scopes.example.yml ./
+COPY --from=healthcheck-source /lib ./lib
+COPY --from=healthcheck-source /public ./public
+COPY --from=healthcheck-source /regions ./regions
+COPY --from=healthcheck-source /LICENSE ./LICENSE
+COPY --from=healthcheck-source /LICENSES ./LICENSES
 
 FROM node:26-alpine@sha256:c6ad9e9c1d80f6eb607c26b4b0a132ff7a2344fad1c78ea3baa2a7d4c8de6d94
 ARG SOURCE_REVISION=unknown
 ARG UKMESH_VERSION=2.0.0
+ARG MESH_HEALTH_CHECK_REF
+RUN echo "$MESH_HEALTH_CHECK_REF" | grep -Eq '^[0-9a-f]{40}$'
 LABEL org.opencontainers.image.version="${UKMESH_VERSION}" \
       org.opencontainers.image.revision="${SOURCE_REVISION}" \
-      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh"
+      org.opencontainers.image.source="https://github.com/gadgethd/ukmesh" \
+      io.ukmesh.health-check.revision="${MESH_HEALTH_CHECK_REF}"
 WORKDIR /app
 COPY --from=builder --chown=node:node /app /app
 COPY docker/mesh-health-check-entrypoint.sh /usr/local/bin/mesh-health-check-entrypoint.sh
@@ -50,7 +35,6 @@ RUN rm -rf /usr/local/lib/node_modules/npm \
 
 ENV NODE_ENV=production
 EXPOSE 3090
-
 USER node
 ENTRYPOINT ["mesh-health-check-entrypoint.sh"]
 CMD ["node", "server.js"]

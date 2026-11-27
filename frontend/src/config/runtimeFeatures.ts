@@ -36,7 +36,8 @@ function sameSnapshot(a: RuntimeFeatureSnapshot, b: RuntimeFeatureSnapshot): boo
 }
 
 function publish(next: RuntimeFeatureSnapshot): RuntimeFeatureSnapshot {
-  if (sameSnapshot(snapshot, next)) return snapshot;
+  const unavailable = snapshot === FAIL_CLOSED_RUNTIME_FEATURES;
+  if (unavailable === (next === FAIL_CLOSED_RUNTIME_FEATURES) && sameSnapshot(snapshot, next)) return snapshot;
   snapshot = Object.freeze(next);
   for (const listener of listeners) listener();
   return snapshot;

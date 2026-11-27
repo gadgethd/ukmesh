@@ -679,7 +679,7 @@ services:
       dockerfile: Dockerfile.mesh-health-check
       args:
         SOURCE_REVISION: ${SOURCE_REVISION:-local}
-        MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:?HEALTHCHECK_SOURCE_REF full commit required}
+        MESH_HEALTH_CHECK_REF: ${HEALTHCHECK_SOURCE_REF:-}
     restart: always
     logging: *service-journal
     mem_limit: &mesh-health-check-memory "${HEALTHCHECK_MEMORY_LIMIT:-128m}"
@@ -728,10 +728,6 @@ services:
       - "127.0.0.1:3090:3090"
     volumes:
       - mesh_health_check_data:/app/data
-      - ./healthcheck-overrides/index.html:/app/public/index.html:ro
-      - ./healthcheck-overrides/share.html:/app/public/share.html:ro
-      - ./healthcheck-overrides/sw.js:/app/public/sw.js:ro
-      - ./healthcheck-overrides/ukmesh-theme.css:/app/public/ukmesh-theme.css:ro
     healthcheck:
       # The upstream app has no /healthz route; its SPA fallback returns 200
       # there even when the API is unavailable. Probe a real JSON endpoint.

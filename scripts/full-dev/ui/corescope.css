@@ -1,0 +1,26 @@
+@import url("./tokens.css");
+
+:root:not([data-theme="light"]) {
+  color-scheme: dark;
+  --surface-0: var(--ukmesh-bg);
+  --surface-1: var(--ukmesh-panel);
+  --surface-2: var(--ukmesh-raised);
+  --surface-3: var(--ukmesh-hover);
+  --text: var(--ukmesh-text);
+  --text-muted: var(--ukmesh-muted);
+  --accent: var(--ukmesh-accent);
+  --accent-hover: var(--ukmesh-focus);
+  --link-color: var(--ukmesh-accent);
+  --border: var(--ukmesh-border);
+  --hover-bg: var(--ukmesh-hover);
+  --logo-accent: var(--ukmesh-accent);
+}
+
+body { font-family: var(--ukmesh-font); }
+body.embed #mapControls .filter-group { flex-wrap: wrap; }
+.ukmesh-live-embed :is(.top-nav, [data-bottom-nav], .nav-drawer, .nav-drawer-backdrop) {
+  display: none !important;
+}
+.ukmesh-live-embed body { padding: 0; margin: 0; --bottom-nav-reserve: 0px; }
+.ukmesh-live-embed :is(#app.app-fixed, .live-page) { height: 100vh; height: 100dvh; }
+:focus-visible { outline: 2px solid var(--ukmesh-focus); outline-offset: 2px; }

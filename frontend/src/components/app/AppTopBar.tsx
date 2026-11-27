@@ -6,6 +6,7 @@ import type { DashboardStats } from '../../hooks/useDashboardStats.js';
 
 type AppTopBarProps = {
   homeUrl: string;
+  healthUrl: string;
   connection: WSConnectionState;
   hasData: boolean;
   refreshedAt: number | null;
@@ -37,6 +38,7 @@ const MeshIcon: React.FC = () => (
 
 export const AppTopBar: React.FC<AppTopBarProps> = ({
   homeUrl,
+  healthUrl,
   connection, hasData, refreshedAt, refreshing, refreshFailed,
   onShowDisclaimer,
   stats,
@@ -62,6 +64,7 @@ export const AppTopBar: React.FC<AppTopBarProps> = ({
     <div className="topbar__divider" />
     <ConnectionStatus connection={connection} hasData={hasData} refreshedAt={refreshedAt} refreshing={refreshing} failed={refreshFailed} />
     {regionSelector}
+    <a className="topbar__tool-btn topbar__health-link" href={healthUrl}>Health Check</a>
     <button
       type="button"
       className={'topbar__tool-btn' + (mapLight ? ' topbar__tool-btn--active' : '')}

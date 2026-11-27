@@ -1078,16 +1078,23 @@
 
   html .uk-feed-right .uk-feed-stats__row {
     display: grid;
-    grid-template-columns: 8px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.2fr);
-    grid-auto-rows: minmax(20px, auto);
+    grid-template-columns: 8px repeat(2, minmax(0, 1fr));
+    grid-template-areas:
+      "dot connection update"
+      "observers observers rate"
+      "packet packet packet";
+    grid-template-rows: minmax(2lh, auto) repeat(2, minmax(20px, auto));
+    align-items: start;
     gap: 4px 8px;
+    line-height: 16px;
     margin-bottom: 0;
   }
-  /* Keep each label in place as connection and freshness text change. */
-  html .uk-feed-stats__row > :nth-child(1 of .uk-feed-stats__label) { grid-area: 1 / 2 / 2 / 4; }
-  html .uk-feed-stats__row > :nth-child(2 of .uk-feed-stats__label) { grid-area: 1 / 4; }
-  html .uk-feed-stats__row > :nth-child(3 of .uk-feed-stats__label) { grid-area: 2 / 1 / 3 / 3; }
-  html .uk-feed-stats__row > :nth-child(4 of .uk-feed-stats__label) { grid-area: 2 / 3 / 3 / 5; }
+  html .uk-feed-stats__row > .uk-feed-live-dot { grid-area: dot; margin-top: 4px; }
+  html .uk-feed-stats__label--connection { grid-area: connection; }
+  html .uk-feed-stats__label--update { grid-area: update; }
+  html .uk-feed-stats__label--observers { grid-area: observers; }
+  html .uk-feed-stats__label--rate { grid-area: rate; }
+  html .uk-feed-stats__label--packet { grid-area: packet; }
   html .uk-feed-right .uk-feed-stats__sep { display: none; }
   html .uk-feed-right .uk-feed-type-tags {
     align-content: start;

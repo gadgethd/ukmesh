@@ -1,6 +1,6 @@
 import { expect, test, type Response } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { installMapRoutes, installTerrainRoutes, RF_COVERAGE_TILE } from './mapFixtures.js';
+import { installMapRoutes, installTerrainRoutes, openMapSearch, RF_COVERAGE_TILE } from './mapFixtures.js';
 import { nodeMapHandle } from '../browserMapHandle.js';
 import { encodeInitialStateColumns, INITIAL_STATE_COLUMNS_FORMAT, INITIAL_STATE_FORMAT_PARAMETER } from '../../src/contracts/initialStateColumns.generated.js';
 
@@ -171,10 +171,8 @@ test('map search and realtime load no nodes without valid privacy authority', as
   });
   await page.route('**/api/runtime-config', route => route.fulfill({ json: {} }));
   await page.goto(`/?node=${'0'.repeat(64)}`);
-  if (testInfo.project.name === 'dashboard-mobile') {
-    await page.getByRole('button', { name: 'Layers' }).first().click();
-  }
-  await page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true }).fill('HarbourBeacon');
+  const search = await openMapSearch(page, testInfo.project.name === 'dashboard-mobile');
+  await search.fill('HarbourBeacon');
   // Observe beyond the 200ms former-name debounce after the app has mounted.
   await page.waitForTimeout(500);
   expect(nodeRequests).toEqual([]);
@@ -204,10 +202,7 @@ test('former node names resolve to the current name in map search', async ({ pag
   });
   try {
     await page.goto('/');
-    if (testInfo.project.name === 'dashboard-mobile') {
-      await page.getByRole('button', { name: 'Layers' }).first().click();
-    }
-    const input = page.getByRole('combobox', { name: 'Search map nodes' }).filter({ visible: true });
+    const input = await openMapSearch(page, testInfo.project.name === 'dashboard-mobile');
     await input.fill('HarbourBeacon');
     await expect(page.getByRole('option', { name: /Ridge current/ })).toBeVisible();
     expect(queries).toContain('HarbourBeacon');

@@ -31,13 +31,25 @@
   "paths": {
     "/api/activity/timeline": {
       "get": {
-        "summary": "Read activity timeline",
+        "summary": "Read historical activity for the network or a named region",
         "operationId": "get-activity-timeline",
         "tags": [
           "public"
         ],
         "x-access": "public",
-        "parameters": [],
+        "parameters": [
+          {
+            "name": "region",
+            "in": "query",
+            "required": false,
+            "description": "Case-sensitive public region name. Requires PUBLIC_FEATURE_REGION_SCOPING_ENABLED. A scoped response echoes the bare region name, counts attributed packets, and highlights current canonical region members.",
+            "schema": {
+              "type": "string",
+              "pattern": "^#?[A-Za-z0-9][A-Za-z0-9_-]{0,63}$",
+              "maxLength": 65
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "Successful response",

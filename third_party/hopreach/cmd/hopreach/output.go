@@ -149,7 +149,16 @@ func round1(f float64) float64 {
 	return math.Round(f*10) / 10
 }
 
+type publicRFNode struct {
+	Key                  string  `json:"key"`
+	DatasetID            string  `json:"dataset_id"`
+	Lat                  float64 `json:"lat"`
+	Lon                  float64 `json:"lon"`
+	VisibilityGeneration int64   `json:"visibility_generation"`
+}
+
 type coverageMeta struct {
+	PublicRFNode *publicRFNode   `json:"public_rf_node,omitempty"`
 	Tiles        []coverage.Tile `json:"tiles"`
 	FrequencyMHz float64         `json:"frequency_mhz"`
 	MaxSearchKm  float64         `json:"max_search_range_km"`
@@ -271,7 +280,8 @@ type nodeCoverageMeta struct {
 }
 
 type meta struct {
-	GeneratedAt string `json:"generated_at"`
+	VisibilityGeneration int64  `json:"visibility_generation,omitempty"`
+	GeneratedAt          string `json:"generated_at"`
 	// CompletedAt is set only by the final successful publication. Keep
 	// generated_at unchanged for the ordinary startup interval guard.
 	CompletedAt           string           `json:"completed_at,omitempty"`

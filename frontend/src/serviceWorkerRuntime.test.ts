@@ -35,9 +35,11 @@ class FakeCache {
     return this.values.delete(requestUrl(request, this.origin));
   }
 
-  async keys(): Promise<Request[]> {
+  async keys(request?: RequestLike, options?: { ignoreSearch?: boolean }): Promise<Request[]> {
     this.keysCalls += 1;
-    return [...this.values.keys()].map((url) => new Request(url));
+    const requestKey = (url: string) => options?.ignoreSearch ? url.split('?')[0] : url;
+    const match = request && requestKey(requestUrl(request, this.origin));
+    return [...this.values.keys()].filter((url) => !match || requestKey(url) === match).map((url) => new Request(url));
   }
 }
 
@@ -401,19 +403,45 @@ test('an activated worker can load retained old hashed assets offline until the 
   assert.equal((await fixture.runtime.handleFetch(request)).status, 0, 'old assets expire at the seven-day boundary');
 });
 
-test('v10 cache and metadata identity retain v9 as the previous generation', async () => {
+test('v11 cache and metadata identity retain v10 as the previous generation', async () => {
   const fixture = await createRuntimeFixture();
   const policy = fixture.runtime.policy;
-  assert.equal(policy['version'], 'v10');
+  assert.equal(policy['version'], 'v11');
   for (const [current, previous] of [['tileCache', 'previousTileCache'], ['appCache', 'previousAppCache'], ['metadataCache', 'previousMetadataCache'], ['basemapMetadataCache', 'previousBasemapMetadataCache']]) {
-    assert.ok(String(policy[current]).endsWith('-v10'));
-    assert.ok(String(policy[previous]).endsWith('-v9'));
+    assert.ok(String(policy[current]).endsWith('-v11'));
+    assert.ok(String(policy[previous]).endsWith('-v10'));
   }
   assert.equal(policy['rollbackWindowMs'], 7 * 24 * 60 * 60_000);
   await fixture.runtime.install();
   const metadata = await fixture.cacheStorage.open(String(policy['metadataCache']));
-  assert.ok(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v10__'));
-  assert.equal(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v9__'), undefined);
+  assert.ok(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v11__'));
+  assert.equal(await metadata.match('https://mesh.test/__meshcore_sw_metadata_v10__'), undefined);
+});
+
+test('CoreScope versioned assets work offline and companion data stays network only', async () => {
+  let online = true;
+  const fixture = await createRuntimeFixture({ fetch: async () => {
+    if (!online) throw new Error('offline');
+    return new Response('CoreScope script');
+  } });
+  const { runtime } = fixture;
+  const asset = new Request('https://mesh.test/corescope/static/map.js?v=1002');
+  assert.equal(runtime.shouldHandle(asset), true);
+  assert.equal(await (await runtime.handleFetch(asset)).text(), 'CoreScope script');
+  for (const version of [1003, 1004]) {
+    await runtime.handleFetch(new Request(`https://mesh.test/corescope/static/map.js?v=${version}`));
+  }
+  const cache = await fixture.cacheStorage.open(String(runtime.policy['appCache']));
+  assert.equal(await cache.match(asset), undefined, 'the third companion release expires the oldest path version');
+  online = false;
+  assert.equal(await (await runtime.handleFetch(new Request('https://mesh.test/corescope/static/map.js?v=1003'))).text(),
+    'CoreScope script');
+  assert.equal(runtime.shouldHandle(new Request('https://mesh.test/corescope/static/map.js')), false);
+  assert.equal(runtime.shouldHandle(new Request('https://mesh.test/corescope/static/map.js?v=1003&extra=1')), false);
+  for (const path of ['/corescope/config.js', '/corescope/api/nodes', '/beacon/readyz',
+    '/beacon/api/v1/channels/1/messages', '/rf-coverage/tiles/nodes/node/0-0.png', '/api/nodes/map']) {
+    assert.equal(runtime.shouldHandle({ url: 'https://mesh.test' + path, mode: 'navigate' }), false, path);
+  }
 });
 
 test('missing old assets can use the retained cache without masking new asset errors or reviving stale workers', async () => {

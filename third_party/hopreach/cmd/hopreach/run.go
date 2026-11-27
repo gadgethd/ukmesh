@@ -380,6 +380,12 @@ func run(cfg appConfig) (err error) {
 	// dispatch issues).
 	cleanStaleGridScratch(cfg.demCacheDir)
 
+	previous := readPreviousMeta(cfg.outputDir)
+	httpClient := &http.Client{Timeout: cfg.timeout}
+	client := corescope.NewClient(cfg.apiURL, httpClient)
+	var nodes []corescope.Node
+	var visibilityGeneration int64
+	reuseInputs := false
 	if !cfg.forceRecompute {
 		now := time.Now()
 		slot, fixedDaily := mostRecentScheduledSlot(cfg.scheduleCron, now)
@@ -387,7 +393,16 @@ func run(cfg appConfig) (err error) {
 		if cfg.scheduled && fixedDaily {
 			last, ok = lastCompletedAt(cfg.outputDir)
 		}
-		if !recomputeDue(cfg, last, ok, now) {
+		due := recomputeDue(cfg, last, ok, now)
+		if !due && previous.VisibilityGeneration > 0 {
+			// A published public raster becomes obsolete when the authority moves,
+			// even if its regular recompute interval has not elapsed.
+			var inputErr error
+			nodes, visibilityGeneration, inputErr = client.FetchRepeaterInputs(ctx)
+			reuseInputs = inputErr == nil && visibilityGeneration > 0
+			due = reuseInputs && visibilityGeneration != previous.VisibilityGeneration
+		}
+		if !due {
 			if cfg.scheduled && fixedDaily {
 				log.Printf("coverage: run completed at %s, at or after scheduled slot %s — nothing to do", last.Format(time.RFC3339), slot.Format(time.RFC3339))
 			} else {
@@ -412,11 +427,9 @@ func run(cfg appConfig) (err error) {
 
 	recordLocalHardwareInfo(cfg.outputDir, engine)
 
-	httpClient := &http.Client{Timeout: cfg.timeout}
 	if err := os.MkdirAll(cfg.outputDir, 0o755); err != nil {
 		return fmt.Errorf("creating output dir: %w", err)
 	}
-	previous := readPreviousMeta(cfg.outputDir)
 	activeRunID := runID(previous)
 	prog := progress.New(cfg.outputDir)
 	prog.SetRunID(activeRunID)
@@ -438,13 +451,15 @@ func run(cfg appConfig) (err error) {
 		return err
 	}
 
-	client := corescope.NewClient(cfg.apiURL, httpClient)
-	nodes, err := client.FetchRepeaters(ctx)
-	if err != nil {
-		prog.Update("error", 0, 0, coverageFailure(err))
-		return err
+	if !reuseInputs {
+		nodes, visibilityGeneration, err = client.FetchRepeaterInputs(ctx)
+		if err != nil {
+			prog.Update("error", 0, 0, coverageFailure(err))
+			return err
+		}
 	}
 
+	prog.SetVisibilityGeneration(visibilityGeneration)
 	selected := selectRepeaters(nodes, region, cfg)
 	prog.Update("fetching_repeaters", 1, 1, fmt.Sprintf("%d repeaters in region", len(selected)))
 
@@ -568,6 +583,7 @@ func run(cfg appConfig) (err error) {
 	}
 
 	m := meta{
+		VisibilityGeneration:  visibilityGeneration,
 		GeneratedAt:           time.Now().UTC().Format(time.RFC3339),
 		Source:                cfg.apiURL,
 		Boundary:              cfg.regionBoundaryLabel,
@@ -689,6 +705,18 @@ func run(cfg appConfig) (err error) {
 	// restart or an /admin/recompute call hits.
 	// Scheduled mode instead reuses only tiers completed since its cron slot.
 	shouldComputeTier := func(name string, existing *coverageMeta) bool {
+		if visibilityGeneration > 0 && cfg.coverageProgressive && (name == "standard" || name == "precision") {
+			if existing == nil || len(existing.Tiles) == 0 {
+				return true
+			}
+			for _, tile := range existing.Tiles {
+				image := filepath.ToSlash(tile.Image)
+				if !strings.HasPrefix(image, "tiles/"+name+"/") || strings.Contains(image, "..") ||
+					!tile.PublicRFProof.Matches(filepath.Join(cfg.outputDir, filepath.FromSlash(image)), visibilityGeneration) {
+					return true
+				}
+			}
+		}
 		return incompleteTier(previous, name) || tierNeedsCompute(cfg, existing, time.Now())
 	}
 	allowTier := func(requiresGPU bool) bool {
@@ -722,7 +750,7 @@ func run(cfg appConfig) (err error) {
 					httpClient, sites, cfg.coverageImageWidth, 1, cfg.propagation,
 					cfg.coverageMaxAlpha,
 					coverage.ProgressiveOptions{
-						OutputDir: cfg.outputDir, Tier: "standard", RunID: activeRunID,
+						OutputDir: cfg.outputDir, Tier: "standard", RunID: activeRunID, VisibilityGeneration: visibilityGeneration,
 						TileSize: cfg.coveragePublicationTileSize,
 						OnTile: func(completed, total int, current []coverage.Tile) error {
 							cm := buildCoverageMeta(mergeCoverageTiles(previousTiles, current), rangeKm, cfg, standardNote)
@@ -982,7 +1010,7 @@ func run(cfg appConfig) (err error) {
 						cfg.coveragePrecisionWidth, cfg.coveragePrecisionSupersample,
 						cfg.propagation, cfg.coverageMaxAlpha,
 						coverage.ProgressiveOptions{
-							OutputDir: cfg.outputDir, Tier: "precision", RunID: activeRunID,
+							OutputDir: cfg.outputDir, Tier: "precision", RunID: activeRunID, VisibilityGeneration: visibilityGeneration,
 							TileSize: cfg.coveragePublicationTileSize,
 							OnTile: func(completed, total int, current []coverage.Tile) error {
 								cm := buildCoverageMetaAtZoom(mergeCoverageTiles(previousTiles, current), rangeKm, cfg, cfg.coveragePrecisionDemZoom, precisionNote)

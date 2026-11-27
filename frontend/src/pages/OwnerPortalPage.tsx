@@ -1,6 +1,7 @@
 import './docs-pages.css';
 import './owner-portal.css';
 import React from 'react';
+import { Link } from 'react-router';
 import { LoadingIndicator } from '../components/LoadingIndicator.js';
 import { OwnerLoginSection, OwnerPacketSharingSection, OwnerPublicFeedSection } from '../components/owner/OwnerPortalSections.js';
 import { useRuntimeFeatures } from '../config/runtimeFeatures.js';
@@ -57,9 +58,10 @@ export const OwnerPortalPage: React.FC = () => {
                   <h1>Repeater owner dashboard</h1>
                   <p className="prose-note">Live status, identity history, telemetry, and packet activity for your owned nodes.</p>
                 </div>
-                <button type="button" className="site-btn site-btn--ghost" onClick={handleLogout}>
-                  Logout
-                </button>
+                <div className="owner-head__actions">
+                  <Link className="site-btn site-btn--ghost" to="/health-check">Open Health Check</Link>
+                  <button type="button" className="site-btn site-btn--ghost" onClick={handleLogout}>Logout</button>
+                </div>
               </div>
               {dashboard.mqttDiagnostic ? (
                 <div className="prose-note" role="status">
@@ -222,7 +224,7 @@ export const OwnerPortalPage: React.FC = () => {
                     </article>
                   ))}
                   {(live?.linkHealth ?? []).length === 0 ? (
-                    <p className="prose-note">No link health data has been calculated for this node yet.</p>
+                    <p className="prose-note">No link health results yet. Run a Health Check to see which observers heard your repeater.</p>
                   ) : null}
                 </div>
                 </OwnerPanel>

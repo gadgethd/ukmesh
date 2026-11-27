@@ -20,3 +20,4 @@ mosquitto
 third_party/corescope
 third_party/beacon-server
 third_party/beacon-web
+third_party/meshcore-health-check

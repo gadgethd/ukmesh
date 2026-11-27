@@ -115,6 +115,10 @@ test('linked owner sees a recent default-root denial and the hint clears on sess
   const hint = page.getByRole('status').filter({ hasText: 'Recent MQTT publish denial' });
   await expect(hint).toContainText('meshcore/{IATA}/{PUBLIC_KEY}/packets');
   await expect(page.getByLabel('Owned repeater identities')).toContainText('Alpha Repeater');
+  await expect(page.getByRole('link', { name: 'Open Health Check' }))
+    .toHaveAttribute('href', '/health-check');
+  await expect(page.getByRole('button', { name: 'Retry RF Link Health' })).toBeVisible();
+  await expect(page.locator('.owner-node-identity[aria-pressed="true"]')).toContainText('Alpha Repeater');
   showDiagnostic = false;
   const before = requests;
   await page.clock.fastForward(17_001);

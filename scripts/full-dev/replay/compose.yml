@@ -1,0 +1,48 @@
+name: ukmesh-replay
+services:
+  broker:
+    image: ukmesh-sample-mosquitto:2.1.2-session-accounting-v1
+    command: ["mosquitto", "-c", "/mosquitto/config/archive.conf"]
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/archive.conf:ro
+      - broker-data:/mosquitto/data
+    networks: [ingress, sample]
+    cpus: 0.25
+    mem_limit: 64m
+    memswap_limit: 64m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "test \"$(mosquitto_sub -h 127.0.0.1 -t local/archive/bridge -C 1 -W 2)\" = 1"]
+      interval: 3s
+      timeout: 3s
+      retries: 12
+  player:
+    image: ukmesh-full-backend:local
+    entrypoint: ["node", "--max-old-space-size=48", "/app/dev-replay/play.mjs"]
+    command: []
+    user: "${REPLAY_UID:-1000}:${REPLAY_GID:-1000}"
+    environment:
+      REPLAY_SPEED: "60"
+      REPLAY_RATE: "16"
+    volumes:
+      - ./play.mjs:/app/dev-replay/play.mjs:ro
+      - ../../../plans/lean-runtime/runtime/replay/input:/archive:ro
+      - ../../../plans/lean-runtime/runtime/replay/progress:/progress
+    networks: [ingress]
+    cpus: 0.25
+    mem_limit: 96m
+    memswap_limit: 96m
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    restart: unless-stopped
+    depends_on:
+      broker: {condition: service_healthy}
+networks:
+  ingress:
+    internal: true
+  sample:
+    external: true
+    name: ukmesh-sample_default
+volumes:
+  broker-data:

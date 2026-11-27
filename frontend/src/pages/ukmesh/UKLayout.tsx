@@ -15,19 +15,7 @@ export const UKLayout: React.FC = () => {
       brandName={site.displayName}
       footerName={site.footerName}
       appUrl={site.appUrl}
-      showFeed
-      showRepeaterSearch
-      showCompanion
-      showRegions
-      showTopology
-      showSpam
-      showAbout={false}
-      showInstall
-      showBestPractice
-      showMqtt={false}
-      showPackets={false}
-      showOpenSource={false}
-      showStats={false}
+      integratedMap={Boolean(site.embeddedTools)}
     />
     </>
   );

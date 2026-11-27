@@ -6,6 +6,18 @@ import { decodePacketCompat, verifyAdvertSignature } from './decodePacket.js';
 const keyStore = MeshCoreDecoder.createKeyStore({ channelSecrets: [] });
 const VALID_ADVERT = '11007E7662676F7F0850A8A355BAAFBFC1EB7B4174C340442D7D7161C9474A2C94006CE7CF682E58408DD8FCC51906ECA98EBF94A037886BDADE7ECD09FD92B839491DF3809C9454F5286D1D3370AC31A34593D569E9A042A3B41FD331DFFB7E18599CE1E60992A076D50238C5B8F85757375354522F50756765744D65736820436F75676172';
 
+test('GroupText identity agrees with the Beacon source fixture and retains the wire version', () => {
+  const payload = '11AABB01010101010101010101010101010101';
+  const direct = decodePacketCompat('1500' + payload, keyStore);
+  const relayed = decodePacketCompat('141122334442AABBCCDD' + payload, keyStore);
+  const otherVersion = decodePacketCompat('5500' + payload, keyStore);
+
+  assert.equal(direct.decoded?.payloadType, 5);
+  assert.equal(direct.canonicalPacketId, '9D54CEA2F71AF7AFF8E0C9A07DED55EAF3BEE5F32F2385942166564BA6C91B74');
+  assert.equal(relayed.canonicalPacketId, direct.canonicalPacketId);
+  assert.equal(otherVersion.canonicalPacketId, '0597AC33C59FDE5EC1F29FD55D8F1390F35F8C5C2243167F7910AE301A136F28');
+});
+
 test('preserves native two-byte path decoding', () => {
   // Header: ACK/Flood; path length 0x42 = two 2-byte hashes.
   const result = decodePacketCompat('0D42AABBCCDDDEADBEEF', keyStore);

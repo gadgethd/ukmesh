@@ -1,6 +1,8 @@
 export type PublicRouteComponent =
   | 'home'
   | 'feed'
+  | 'live-map'
+  | 'health-check'
   | 'repeater'
   | 'companion'
   | 'install'
@@ -22,6 +24,12 @@ export type PublicRouteDefinition = {
   description?: string;
   sitemap: boolean;
 };
+
+const packetFeed = {
+  component: 'feed',
+  title: 'Live Packet Feed — UK Mesh Network',
+  description: 'Live LoRa adverts, messages and traceroutes from UK MeshCore observers.',
+} as const;
 
 export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
   {
@@ -52,11 +60,20 @@ export const PUBLIC_ROUTES: readonly PublicRouteDefinition[] = [
     description: 'Live statistics for the UK MeshCore network: active nodes, packet counts, repeater uptime, and coverage trends.',
     sitemap: true,
   },
+  { ...packetFeed, path: '/feed', sitemap: true },
+  { ...packetFeed, path: '/feed/packets', sitemap: false },
   {
-    path: '/feed',
-    component: 'feed',
-    title: 'Live Packet Feed — UK Mesh Network',
-    description: 'Real-time decoded LoRa packet stream from UK MeshCore observers. Watch adverts, messages, and traceroutes as they arrive.',
+    path: '/live-map',
+    component: 'live-map',
+    title: 'Live Map — UK Mesh Network',
+    description: 'Explore MeshCore nodes and paths on the CoreScope live map.',
+    sitemap: false,
+  },
+  {
+    path: '/health-check',
+    component: 'health-check',
+    title: 'Health Check — UK Mesh Network',
+    description: 'Send a test message on MeshCore and see which observers heard your radio.',
     sitemap: true,
   },
   {

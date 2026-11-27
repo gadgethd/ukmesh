@@ -24,6 +24,7 @@ import {
 } from './mqtt/connectionMonitor.js';
 import { initWebSocketServer, closeWebSocketServer, broadcastPacket, broadcastNodeUpdate, broadcastNodeUpsert } from './ws/server.js';
 import { createPublicRamSource } from './ram/publicSource.js';
+import { createBeaconPublicAuthority } from './beacon/publicAuthority.js';
 import { createApiRuntime } from './api/routes.js';
 import { initSpamMessageAnalyzer, stopSpamMessageAnalyzer } from './spam/analyzer.js';
 import {
@@ -53,6 +54,8 @@ import { observeHttpRequest } from './metrics/http.js';
 import { closeOperatorOperations } from './operations/operatorOperations.js';
 import { createGlobalApiLimiter } from './api/bootstrap/limiters.js';
 import { createHopReachCompatibilityRoutes } from './api/hopreachCompatibility.js';
+import { createPublicRfProjectionRoutes } from './rf/publicProjection.js';
+import { createRfVisibilityReader } from './rf/visibility.js';
 import { readAclFile } from './mqtt/aclManager.js';
 import { parseOwnerGrantConfig } from './owner/ownerGrantConfig.js';
 import { createPacketShareForwarder } from './owner/packetShareForwarder.js';
@@ -377,6 +380,14 @@ async function main() {
     createHopReachCompatibilityRoutes(query),
   );
 
+  const publicRfOutput = process.env['RF_PUBLIC_PROJECTION_OUTPUT_DIRECTORY'];
+  if (publicRfOutput) {
+    app.use('/internal/rf-coverage-public', createPublicRfProjectionRoutes({
+      outputDirectory: publicRfOutput,
+      readVisibility: createRfVisibilityReader(query),
+    }));
+  }
+
   app.use(express.json({ limit: '50kb' }));
 
   const readOwnerAuthorizationReadiness = createOwnerAuthorizationReadiness({
@@ -408,6 +419,7 @@ async function main() {
   // API routes
   app.use('/api', apiRuntime.router);
   app.use('/internal/ingest/public', createPublicRamSource());
+  app.use('/internal/beacon', createBeaconPublicAuthority());
 
   // Health check
   app.get('/healthz', (_req, res) => res.json({ status: 'ok', ts: Date.now() }));

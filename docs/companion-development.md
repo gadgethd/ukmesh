@@ -83,6 +83,29 @@ inherited application settings and passes Compose an empty env file. The apps
 use explicit fixture configuration, and Beacon Web selects an empty Vite env
 directory. A deployment `.env` is not needed.
 
+## Replay the local archive
+
+`bash scripts/dev-all.sh replay start` loops the local 10 November 2026 capture.
+The replay has its own broker. Two outbound bridge routes deliver packet and
+status events to the existing DEV broker over Docker's private sample network.
+UKMesh, Beacon, CoreScope and Health Check use their regular MQTT subscribers.
+The replay broker has no published ports. Playback advances in capture order at
+up to 60× recorded time and sends at most 16 events per second.
+
+The local archive is excluded from Git. The prepared input contains unscoped
+ACKs and advertisements, authenticated Public and DEV test chat, and selected
+numeric observer telemetry. Archive observer topics get stable replay IDs.
+Their map locations use rounded IATA area centres as estimates. The original
+observer coordinates stay in the archive.
+Message timestamps and packet identities stay intact. Repeated packets still
+deduplicate. Health Check can receive observer activity from the archive.
+Receipts for new test codes require a radio message with that code.
+
+Use `bash scripts/dev-all.sh replay status` for the current position and cycle
+count. Normal DEV starts resume the replay on this VM after opt-in. Use
+`bash scripts/dev-all.sh replay stop` to disable it before choosing a qualification
+fixture. Production Compose uses its configured MQTT intake independently.
+
 ```sh
 bash scripts/dev-all.sh stop
 bash scripts/dev-all.sh start

@@ -10,7 +10,8 @@ export OPERATOR_SITE_TOKEN=local-only-token
 export ALERT_RECEIVER_TOKEN=local-full-alert-token-0123456789abcdef
 export GRAFANA_ADMIN_PASSWORD=local-full-grafana-only
 export ANUBIS_ED25519_PRIVATE_KEY_HEX=0101010101010101010101010101010101010101010101010101010101010101
-export HEALTHCHECK_SOURCE_REF=c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
+HEALTHCHECK_SOURCE_REF=$(bash "$repo/scripts/healthcheck-source.sh")
+export HEALTHCHECK_SOURCE_REF
 export CLOUDFLARE_TUNNEL_TOKEN= SOURCE_REVISION="$(git -C "$repo" rev-parse HEAD)"
 export BACKEND_IMAGE=ukmesh-full-backend:local APP_IMAGE=ukmesh-full-app:local
 export WEBSITE_IMAGE=ukmesh-full-website:local WEBSITE_DEV_IMAGE=ukmesh-full-website-dev:local

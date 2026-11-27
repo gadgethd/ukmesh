@@ -49,13 +49,14 @@ if [[ $action != status && $action != logs && ${UKMESH_COMPANION_LOCKED:-} != 1 
   fi
 fi
 if [[ $action == init ]]; then
-  for name in corescope beacon-server beacon-web; do
+  for name in corescope beacon-server beacon-web meshcore-health-check; do
     path="third_party/$name"
     # Preserve existing branches, edits and pending merges.
     if [[ ! -e $path/.git ]]; then git submodule update --init -- "$path"; fi
     if ! git -C "$path" remote get-url upstream >/dev/null 2>&1; then
       case "$name" in
         corescope) upstream=https://github.com/Kpa-clawbot/CoreScope.git ;;
+        meshcore-health-check) upstream=https://github.com/yellowcooln/meshcore-health-check.git ;;
         *) upstream="https://github.com/MeshCore-Beacon/$name.git" ;;
       esac
       git -C "$path" remote add upstream "$upstream"
@@ -69,6 +70,8 @@ docker info >/dev/null
 export COMPANION_UID=$(id -u) COMPANION_GID=$(id -g)
 source "$repo/scripts/full-dev/environment.sh"
 compose=(docker compose --project-name ukmesh-companions --env-file /dev/null -f "$repo/scripts/companion-dev/compose.yml")
+ui_override=$(python3 "$repo/scripts/full-dev/ui/control.py" file companions)
+if [[ -n $ui_override ]]; then compose+=(-f "$ui_override"); fi
 state="$repo/plans/companion-dev/runtime"
 mkdir -p "$state/bin" "$state/corescope" "$state/npm-cache" "$repo/plans/companion-dev/go-cache" "$repo/plans/companion-dev/go-mod"
 chmod 700 "$repo/plans/companion-dev" "$state"

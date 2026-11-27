@@ -48,7 +48,7 @@ export function uncachedEndpoint(url: string): string {
   return `${url}${sep}_ts=${Date.now()}`;
 }
 
-async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
+export async function boundedResponseText(response: Response, maxBytes: number): Promise<string> {
   const declaredLength = Number(response.headers.get('content-length'));
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new Error('maxBytes must be a positive integer');
   if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {

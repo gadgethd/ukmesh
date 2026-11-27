@@ -293,14 +293,14 @@ export const UKFeedPage: React.FC = () => {
 
   return (
     <>
-      <h1 className="ui-visually-hidden">Live feed</h1>
+      <h1 className="ui-visually-hidden">Packet Feed</h1>
 
       <div className={`uk-feed-layout${selectedPacketHash ? ' uk-feed-layout--has-selection' : ''}`}>
 
         {/* ── Channels sidebar ───────────────────────────────────────── */}
-        <nav className="uk-feed-channels">
+        <nav className="uk-feed-channels" aria-label="Packet filters">
           <div className="uk-feed-channels__header">Channels</div>
-                    <button
+          <button
             type="button"
             className={`uk-feed-channel-item${selectedMessageScope === 'all' ? ' uk-feed-channel-item--active' : ''}`}
             onClick={() => setSelectedMessageScope('all')}
@@ -319,7 +319,7 @@ export const UKFeedPage: React.FC = () => {
           ))}
 
           <div className="uk-feed-channels__divider" />
-          <div className="uk-feed-channels__header">Regions</div>
+          <div className="uk-feed-channels__header">Observer areas</div>
           <button
             type="button"
             className={`uk-feed-channel-item${selectedIata === 'all' ? ' uk-feed-channel-item--active' : ''}`}
@@ -345,7 +345,7 @@ export const UKFeedPage: React.FC = () => {
               checked={messagesOnly}
               onChange={(e) => setMessagesOnly(e.target.checked)}
             />
-            Msgs only
+            Messages only
           </label>
         </nav>
 

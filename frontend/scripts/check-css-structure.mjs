@@ -109,7 +109,8 @@ async function sourceFiles(directory) {
 
 const customPropertyDefinitions = new Set();
 const customPropertyUsages = new Map();
-for (const file of await sourceFiles(sourceRoot)) {
+const variablesSources = [...await sourceFiles(sourceRoot), path.resolve('public/ukmesh-theme/tokens.css')];
+for (const file of variablesSources) {
   const source = await fs.readFile(file, 'utf8');
   for (const match of source.matchAll(/(^|[;{\s])(--[a-zA-Z0-9_-]+)\s*:/gm)) {
     customPropertyDefinitions.add(match[2]);

@@ -3,13 +3,13 @@ import Fuse from 'fuse.js';
 import type * as maplibregl from 'maplibre-gl';
 import type { MeshNode } from '../../types/domain.js';
 import { useNodeMetadata } from '../../hooks/useNodes.js';
-import { PROHIBITED_NODE_MARKER, isProhibitedMapNode } from '../../utils/pathing.js';
-import type { PublicScope } from '../../utils/scope.js';
+import { PROHIBITED_NODE_MARKER, isProhibitedMapNode, isValidMapCoord } from '../../utils/pathing.js';
+import { scopeKey, type PublicScope } from '../../utils/scope.js';
 import { FOCUS_SEARCH_EVENT } from '../../utils/appEvents.js';
 import { useNodeNameSearch } from '../../hooks/useNodeNameSearch.js';
-import { isValidMapCoord } from '../../utils/pathing.js';
 import { useWatchlist } from '../../hooks/useWatchlist.js';
 import { Combobox, type ComboboxOption } from '../ui/Combobox.js';
+import { nearestRepeaters } from '../../utils/exploreLinks.js';
 
 interface NodeSearchProps {
   map: maplibregl.Map | null;
@@ -25,8 +25,15 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
   const [open, setOpen] = useState(Boolean(restoredQuery));
   const inputRef = useRef<HTMLInputElement>(null);
   const watchlist = useWatchlist();
-  const [nearbyNodes, setNearbyNodes] = useState<MeshNode[] | null>(null);
+  const nearbyScope = scopeKey(scope);
+  const [nearby, setNearby] = useState<{ scope: string; nodes: MeshNode[] } | null>(null);
+  const nearbyNodes = nearby?.scope === nearbyScope ? nearby.nodes : null;
+  const locationRequest = useRef(0);
   const [geoStatus, setGeoStatus] = useState<string | null>(null);
+  useEffect(() => {
+    setGeoStatus(null);
+    return () => { locationRequest.current += 1; };
+  }, [nearbyScope]);
 
   const searchableNodes = useMemo(() => Array.from(nodes.values()).filter(
     (node) => isValidMapCoord(node.lat, node.lon) && !node.name?.includes(PROHIBITED_NODE_MARKER),
@@ -78,6 +85,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
   }, [restoredQuery]);
 
   const findNearby = () => {
+    const request = ++locationRequest.current;
     if (!navigator.geolocation) {
       setGeoStatus('Location is not supported by this browser.');
       setOpen(true);
@@ -87,25 +95,17 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
     setOpen(true);
     navigator.geolocation.getCurrentPosition(
       ({ coords }) => {
-        const distanceKm = (node: MeshNode) => {
-          const lat1 = coords.latitude * Math.PI / 180;
-          const lat2 = node.lat! * Math.PI / 180;
-          const dLat = lat2 - lat1;
-          const dLon = (node.lon! - coords.longitude) * Math.PI / 180;
-          const a = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
-          return 6371 * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-        };
-        const nearest = searchableNodes
-          .filter((node) => node.role === undefined || node.role === 2)
-          .sort((a, b) => distanceKm(a) - distanceKm(b))
-          .slice(0, 6);
-        setNearbyNodes(nearest);
+        if (request !== locationRequest.current) return;
+        const nearest = nearestRepeaters(searchableNodes, coords, 6);
+        setNearby({ scope: nearbyScope, nodes: nearest });
         setGeoStatus(nearest.length ? 'Nearest repeaters' : 'No nearby repeaters found.');
-        map?.flyTo({ center: [coords.longitude, coords.latitude], zoom: 11 });
       },
-      (error) => setGeoStatus(error.code === error.PERMISSION_DENIED
-        ? 'Location permission was denied.'
-        : 'Unable to determine your location.'),
+      (error) => {
+        if (request !== locationRequest.current) return;
+        setGeoStatus(error.code === error.PERMISSION_DENIED
+          ? 'Location access was denied. Search by name or observer code.'
+          : 'Could not get your location. Search by name or observer code.');
+      },
       { enableHighAccuracy: false, timeout: 10_000, maximumAge: 300_000 },
     );
   };
@@ -115,7 +115,8 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
     map?.flyTo({ center: [node.lon!, node.lat!], zoom: 15 });
     onNodeSelect?.(node.node_id);
     setQuery('');
-    setNearbyNodes(null);
+    locationRequest.current += 1;
+    setNearby(null);
     setGeoStatus(null);
     setOpen(false);
     const url = new URL(window.location.href);
@@ -144,7 +145,8 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
           value={query}
           onValueChange={(value) => {
             setQuery(value);
-            setNearbyNodes(null);
+            locationRequest.current += 1;
+            setNearby(null);
             setGeoStatus(null);
             setOpen(true);
           }}
@@ -153,7 +155,7 @@ export const NodeSearch: React.FC<NodeSearchProps> = ({ map, scope, onNodeSelect
             if (node) select(node);
           }}
           options={options}
-          placeholder="Name, IATA or prefix…"
+          placeholder="Name, observer code or key prefix"
           isOpen={open && (results.length > 0 || Boolean(geoStatus) || Boolean(query.trim()))}
           onOpenChange={setOpen}
           inputRef={inputRef}

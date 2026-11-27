@@ -7,5 +7,5 @@
   {"id":"prometheus","name":"Prometheus","port":8086,"group":"observability","upstream":"http://prometheus:9090","probe":"/-/ready","access":"operator","note":"Metrics"},
   {"id":"website-dev","name":"Website (dev)","port":8087,"group":"main","upstream":"http://website-dev:8080","probe":"/readyz","origin":"app","access":"app","note":"Development website"},
   {"id":"beacon-api","name":"Beacon API","port":8088,"group":"companions","upstream":"http://beacon:8080","probe":"/api/v1/info","access":"operator","note":"Direct API access"},
-  {"id":"health","name":"Mesh health check","port":8089,"group":"observability","upstream":"http://mesh-health-check:3090","probe":"/","origin":"health","access":"app","note":"Health checks"}
+  {"id":"health","name":"Health Check","port":8089,"group":"main","upstream":"http://mesh-health-check:3090","probe":"/","origin":"health","access":"app","note":"Health checks"}
 ]

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { MQTT_CACHE_POLICIES } from './cachePolicies.js';
 import { PUBLIC_CHANNEL_METADATA } from '../contracts/publicData.generated.js';
 /**
@@ -82,6 +83,9 @@ if (Object.keys(PUBLIC_CHANNEL_KEYS).length !== publicSlugs.size
 export const PUBLIC_CHANNELS: ReadonlyArray<{ name: string; secret: string }> =
   PUBLIC_CHANNEL_METADATA.map(({ label, slug }) => ({ name: label, secret: PUBLIC_CHANNEL_KEYS[slug]! }));
 
+const normalizeChannelName = (name: string) => name.trim().toLowerCase();
+const configuredPublicNames = (value?: string) => (value ?? '').split(',').map(normalizeChannelName).filter(Boolean);
+
 /** Build the channel entry list: committed defaults + env extras (dedup by secret). */
 export function buildChannelEntries(envValue?: string): ChannelEntry[] {
   const entries: ChannelEntry[] = PUBLIC_CHANNELS.map(({ name, secret }) => ({
@@ -141,13 +145,39 @@ export function isPublicChannelName(
   name: string,
   allowlist = process.env['PUBLIC_DECRYPT_CHANNELS'],
 ): boolean {
-  const normalized = name.trim().toLowerCase();
-  if (PUBLIC_CHANNELS.some((channel) => channel.name.toLowerCase() === normalized)) return true;
-  return String(allowlist ?? '')
-    .split(',')
-    .map((value) => value.trim().toLowerCase())
-    .filter(Boolean)
-    .includes(normalized);
+  const normalized = normalizeChannelName(name);
+  if (PUBLIC_CHANNELS.some((channel) => normalizeChannelName(channel.name) === normalized)) return true;
+  return configuredPublicNames(allowlist).includes(normalized);
+}
+
+/** Exact publication registry for the credentialed Beacon consumer. */
+export function beaconPublicationRegistry(secretsEnv?: string, allowlist?: string) {
+  const optedIn = new Set(configuredPublicNames(allowlist));
+  const registeredNames = new Set(PUBLIC_CHANNELS.map(({ name }) => normalizeChannelName(name)));
+  const canonicalIds = new Map<string, string>(PUBLIC_CHANNEL_METADATA.map(({ label, slug }) => [normalizeChannelName(label), slug]));
+  const usedIds = new Set<string>();
+  const channels = [];
+  for (const { classification, name, secret } of buildChannelEntries(secretsEnv)) {
+    const normalized = normalizeChannelName(name);
+    if (classification === 'confidential' && !optedIn.has(normalized)) continue;
+    if (classification === 'confidential' && registeredNames.has(normalized)) {
+      throw new Error('BEACON_PUBLIC_CHANNEL_NAME_CONFLICT');
+    }
+    if (!/^[0-9a-f]{32}$/i.test(secret)) throw new Error('BEACON_PUBLIC_CHANNEL_KEY_INVALID');
+    const id = classification === 'public'
+      ? canonicalIds.get(normalized)!
+      : createHash('sha256').update(normalized, 'utf8').digest('hex');
+    if (usedIds.has(id)) throw new Error('BEACON_PUBLIC_CHANNEL_NAME_CONFLICT');
+    usedIds.add(id);
+    channels.push({ id, name: name.trim(),
+      keyFingerprint: createHash('sha256').update(Buffer.from(secret, 'hex')).digest('hex'),
+      secretHex: secret.toLowerCase(),
+    });
+  }
+  channels.sort((left, right) => left.id < right.id ? -1 : left.id === right.id ? 0 : 1);
+  const descriptors = channels.map(({ id, name, keyFingerprint }) => ({ id, name, keyFingerprint }));
+  const registryVersion = createHash('sha256').update(JSON.stringify(descriptors)).digest('hex');
+  return { registryVersion, channels };
 }
 
 /** Wire-level hashes whose plaintext the public API may return. */

@@ -1,7 +1,9 @@
 """One nonauthorizing reconnect preparation; target protection remains separate."""
+import datetime as dt
 import json
 import os
 from pathlib import Path
+import re
 import shlex
 import signal
 import subprocess
@@ -35,12 +37,12 @@ def _check_cancellation(state):
         raise InterruptedError('startup readiness canceled')
 
 
-def _run_owned(argv,deadline,*,cancellation,after_spawn=None,merge_stderr=False,spawn=subprocess.Popen):
+def _run_owned(argv,deadline,*,cancellation,after_spawn=None,merge_stderr=False,spawn=subprocess.Popen,limit_seconds=2):
     """Own only short read-only probe processes, including local sg descendants."""
     _check_cancellation(cancellation)
     left=deadline-time.monotonic()
     if left<=0:raise TimeoutError('startup readiness60 expired')
-    end=time.monotonic()+min(2,left)
+    end=time.monotonic()+min(limit_seconds,left)
     inherited,descriptors=child_context();child=None;ticks=None
     with tempfile.TemporaryFile()as out,tempfile.TemporaryFile()as err:
         try:
@@ -62,15 +64,15 @@ def _run_owned(argv,deadline,*,cancellation,after_spawn=None,merge_stderr=False,
     return subprocess.CompletedProcess(argv,child.returncode,stdout,stderr)
 
 
-def _run(argv,deadline,*,after_spawn=None,merge_stderr=False,spawn=subprocess.Popen):
+def _run(argv,deadline,*,after_spawn=None,merge_stderr=False,spawn=subprocess.Popen,limit_seconds=2):
     with _cancellation_scope()as cancellation:
         return _run_owned(argv,deadline,cancellation=cancellation,after_spawn=after_spawn,
-                          merge_stderr=merge_stderr,spawn=spawn)
+                          merge_stderr=merge_stderr,spawn=spawn,limit_seconds=limit_seconds)
 
 
 def docker_probe(args,deadline,**options):
     result=_run(['sg','docker','-c',shlex.join(['docker','--host','unix:///var/run/docker.sock',*args])],deadline,merge_stderr=options.get('merge_stderr',False))
-    if result.returncode:raise RuntimeError('native Docker read failed')
+    if result.returncode and options.get('check',True):raise RuntimeError('native Docker read failed')
     return result
 
 
@@ -95,6 +97,32 @@ except(URLError,TimeoutError,ConnectionError):sys.exit(75)
 
 
 def _env(item):return dict(row.split('=',1)for row in item['Config'].get('Env',[]))
+
+
+def _beacon_logs(item,deadline,execute):
+    container=item['Id'];started=item['State']['StartedAt']
+    log_driver=item.get('HostConfig',{}).get('LogConfig',{}).get('Type')
+    if log_driver!='journald':
+        return execute(['logs','--timestamps','--since',started,container],merge_stderr=True).stdout
+    if not re.fullmatch(r'[0-9a-f]{64}',container):raise ValueError('invalid Beacon journal identity')
+    # Read the same Docker log records without streaming hours of access logs
+    # through the daemon. Keep the enclosing readiness and output limits.
+    pattern=r'beacon starting|component=ingest|"component"[[:space:]]*:[[:space:]]*"ingest"'
+    result=_run(['journalctl','--no-pager','--quiet','--output=json',
+                 '--output-fields=MESSAGE,CONTAINER_ID_FULL','--since',f'@{int(timestamp(started))}',
+                 '--grep',pattern,f'CONTAINER_ID_FULL={container}'],deadline,limit_seconds=5)
+    if result.returncode and (result.returncode!=1 or result.stdout):
+        raise RuntimeError('native Beacon journal read failed')
+    if not result.stdout:raise Unavailable('native Beacon journal events unavailable')
+    rows=[]
+    for line in result.stdout.splitlines():
+        row=json.loads(line);message=row.get('MESSAGE');sampled=row.get('__REALTIME_TIMESTAMP')
+        if row.get('CONTAINER_ID_FULL')!=container or not isinstance(message,str) or '\n' in message \
+                or not isinstance(sampled,str) or not sampled.isascii() or not sampled.isdigit():
+            raise ValueError('native Beacon journal event malformed')
+        at=dt.datetime.fromtimestamp(int(sampled)/1_000_000,dt.timezone.utc).isoformat()
+        rows.append(f'{at} {message}\n')
+    return ''.join(rows).encode()
 
 
 def _beacon_events(raw,item,broker,configured):
@@ -156,7 +184,7 @@ def probe(app,item,snapshot,deadline):
     if any(states[name]is not(name in configured)for name in states):raise Unavailable('Beacon native broker status pending')
     events={}
     if configured:
-        raw=execute(['logs','--timestamps','--since',item['State']['StartedAt'],item['Id']],merge_stderr=True).stdout
+        raw=_beacon_logs(item,deadline,execute)
         events=_beacon_events(raw,item,snapshot['broker'],configured)
     return {'ready':True,'process_started_at':native['process_started_at'],'native_events':events,
             'api_state_is_only_hint':True,'quiescence_claim':False}

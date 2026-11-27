@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
-import { installMapRoutes } from './mapFixtures.js';
+import { installMapRoutes, openMapSearch } from './mapFixtures.js';
 
 test.setTimeout(60_000);
 
@@ -95,15 +95,12 @@ test('default-off ignores region hashes and preserves global socket/poll request
   const fixture = await installRegionFixture(page, false);
   await page.goto('/#region=eng-ne');
   await page.locator('.app-shell').waitFor({ timeout: 30_000 });
-  if (testInfo.project.name.includes('mobile')) {
-    await page.getByRole('button', { name: 'Layers' }).first().click();
-  }
-  const search = page.getByRole('combobox', { name: 'Search map nodes' });
+  const search = await openMapSearch(page, testInfo.project.name === 'dashboard-mobile');
   await search.fill('Europe');
   await expect(page.getByRole('option', { name: /Europe/ })).toBeVisible();
   await search.fill('eng-ne');
   await expect(page.getByRole('option', { name: /eng-ne/ })).toBeVisible();
-  await expect(page.getByRole('combobox', { name: 'Region', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Region', exact: true, includeHidden: true })).toHaveCount(0);
   expect(fixture.requested.some((url) => url.pathname.endsWith('/regions/summary'))).toBe(false);
   expect(fixture.requested.some((url) => url.searchParams.has('region'))).toBe(false);
   expect(await page.evaluate(() => (window as unknown as { regionSockets: { url: string }[] }).regionSockets.every((socket) => !new URL(socket.url).searchParams.has('region')))).toBe(true);
@@ -161,8 +158,7 @@ test('former-name search stays in the selected region when an older response arr
     await page.goto('/#region=eng-ne');
     const select = page.getByRole('combobox', { name: 'Region', exact: true });
     await expect(select).toHaveValue('eng-ne', { timeout: 30_000 });
-    if (testInfo.project.name.includes('mobile')) await page.getByRole('button', { name: 'Layers' }).first().click();
-    const search = page.getByRole('combobox', { name: 'Search map nodes' });
+    const search = await openMapSearch(page, testInfo.project.name === 'dashboard-mobile');
     await search.fill('HistoricalName');
     await expect.poll(() => searched).toContain('eng-ne');
     await page.evaluate(() => { window.location.hash = 'region=Europe'; });

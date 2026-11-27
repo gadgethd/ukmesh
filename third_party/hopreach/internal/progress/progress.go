@@ -12,14 +12,15 @@ import (
 )
 
 type state struct {
-	RunID      string   `json:"run_id,omitempty"`
-	Stage      string   `json:"stage"` // fetching_repeaters | loading_terrain | computing_coverage | fetching_reach_data | computing_coverage_calibrated | loading_precision_terrain | computing_coverage_precision | computing_coverage_calibrated_precision | done | error
-	Done       int      `json:"done"`
-	Total      int      `json:"total"`
-	Percent    float64  `json:"percent"`
-	Message    string   `json:"message"`
-	UpdatedAt  string   `json:"updated_at"`
-	EtaSeconds *float64 `json:"eta_seconds,omitempty"`
+	VisibilityGeneration int64    `json:"visibility_generation,omitempty"`
+	RunID                string   `json:"run_id,omitempty"`
+	Stage                string   `json:"stage"` // fetching_repeaters | loading_terrain | computing_coverage | fetching_reach_data | computing_coverage_calibrated | loading_precision_terrain | computing_coverage_precision | computing_coverage_calibrated_precision | done | error
+	Done                 int      `json:"done"`
+	Total                int      `json:"total"`
+	Percent              float64  `json:"percent"`
+	Message              string   `json:"message"`
+	UpdatedAt            string   `json:"updated_at"`
+	EtaSeconds           *float64 `json:"eta_seconds,omitempty"`
 	// Backend: "cpu" | "gpu" | "remote_gpu" — which compute path is
 	// actually serving the *current* computing_coverage* stage, set by
 	// compute.Engine right before it commits to trying one. Empty outside
@@ -39,13 +40,14 @@ const minSampleInterval = 500 * time.Millisecond
 type Writer struct {
 	path string
 
-	mu             sync.Mutex
-	currentStage   string
-	currentBackend string
-	runID          string
-	lastSampleTime time.Time
-	lastSampleDone int
-	smoothedRate   float64 // units/sec, recency-weighted; 0 = not established yet
+	mu                   sync.Mutex
+	currentStage         string
+	currentBackend       string
+	runID                string
+	visibilityGeneration int64
+	lastSampleTime       time.Time
+	lastSampleDone       int
+	smoothedRate         float64 // units/sec, recency-weighted; 0 = not established yet
 }
 
 // SetRunID attaches the resumable generation identifier to every subsequent
@@ -53,6 +55,13 @@ type Writer struct {
 func (w *Writer) SetRunID(runID string) {
 	w.mu.Lock()
 	w.runID = runID
+	w.mu.Unlock()
+}
+
+// SetVisibilityGeneration records the provenance of the live run's inputs.
+func (w *Writer) SetVisibilityGeneration(generation int64) {
+	w.mu.Lock()
+	w.visibilityGeneration = generation
 	w.mu.Unlock()
 }
 
@@ -125,7 +134,7 @@ func (w *Writer) Update(stage string, done, total int, message string) {
 	}
 	rate := w.smoothedRate
 	backend := w.currentBackend
-	runID := w.runID
+	runID, generation := w.runID, w.visibilityGeneration
 	w.mu.Unlock()
 
 	// Skip the file write entirely between samples (except stage transitions
@@ -146,15 +155,16 @@ func (w *Writer) Update(stage string, done, total int, message string) {
 	}
 
 	s := state{
-		RunID:      runID,
-		Stage:      stage,
-		Done:       done,
-		Total:      total,
-		Percent:    pct,
-		Message:    message,
-		UpdatedAt:  time.Now().UTC().Format(time.RFC3339),
-		EtaSeconds: eta,
-		Backend:    backend,
+		RunID:                runID,
+		VisibilityGeneration: generation,
+		Stage:                stage,
+		Done:                 done,
+		Total:                total,
+		Percent:              pct,
+		Message:              message,
+		UpdatedAt:            time.Now().UTC().Format(time.RFC3339),
+		EtaSeconds:           eta,
+		Backend:              backend,
 	}
 	// Best-effort, non-atomic: this file is polled frequently during a long
 	// run, so skip the write-tmp-then-rename dance and just overwrite it.

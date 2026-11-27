@@ -35,6 +35,16 @@ INTENT=STATE/'runtime/target-intent.json'
 VALUES={'UKMESH_DATABASE':'ukmesh','OWNER_DATABASE':'owner','BEACON_DATABASE':'beacon','CORESCOPE_DATA_DIR':'corescope'}
 
 
+def require_originals():
+    from fixtures import original_values, selection_values
+    originals = original_values()
+    if selection_values() != originals:
+        raise ValueError('select the original DEV stores first')
+    intent = read_intent()
+    if (intent and intent['status'] == 'pending') or changing(inspect_snapshot(), target_values(originals)):
+        raise ValueError('apply the original DEV stores first')
+
+
 class InactiveChangingConsumerError(ValueError):
     """The previous store must be resumed before publishing a changed target."""
 
@@ -62,9 +72,23 @@ def inspect_containers(deadline=None,*,execute_fn=None):
         remaining=deadline-time.monotonic() if deadline is not None else 10
         if remaining<=0:raise TimeoutError('target inspection deadline')
         return (execute_fn or docker)(args,timeout=min(10,remaining),**options)
-    ids=execute(['ps','-aq']).stdout.decode().split()
-    items=json.loads(execute(['inspect',*ids]).stdout) if ids else []
-    return {item['Name'].lstrip('/'):item for item in items}
+    def listed_ids():
+        return execute(['ps','-aq','--no-trunc']).stdout.decode().split()
+    ids=listed_ids()
+    for _ in range(3):
+        if not ids:return {}
+        result=execute(['inspect',*ids],check=False)
+        if result.returncode==0:
+            items=json.loads(result.stdout)
+            if len(items)!=len(ids) or {item['Id'] for item in items}!=set(ids):
+                raise ValueError('Docker container snapshot incomplete')
+            return {item['Name'].lstrip('/'):item for item in items}
+        # A one-shot build can disappear after listing. Inspect a new complete
+        # set; the protection step still compares the owned service identities.
+        current=listed_ids()
+        if not set(ids).difference(current):raise RuntimeError('Docker container snapshot inspection failed')
+        ids=current
+    raise RuntimeError('Docker container snapshot did not stabilize')
 
 
 def inspect_snapshot(deadline=None,*,execute_fn=None):
@@ -117,6 +141,12 @@ def changing(snapshot,targets,scope=None):
             and row['refs']!=requested_refs(row,targets)}
 
 
+def archive_replay_running(snapshot):
+    return any((item['State']['Running'] or item['State'].get('Restarting', False))
+               and (item['Config'].get('Labels') or {}).get('com.docker.compose.project') == 'ukmesh-replay'
+               for item in snapshot.get('containers', {}).values())
+
+
 def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe,path=INTENT,prepare_fn=None):
     requested=target_values(values);intent=read_intent(path)
     actual=snapshot()
@@ -126,6 +156,7 @@ def check_start(values,*,scope=None,snapshot=inspect_snapshot,observe_fn=observe
         return {'passed':True,'kind':'same-store-bootstrap','observability_required':False,
                 'note':'Missing/inactive intake is not asserted empty; same refs may bootstrap their existing stores.'}
     if not intent or intent['status']!='pending':raise ValueError('changing stores requires the owned pending selection intent')
+    if archive_replay_running(actual):raise ValueError('stop the DEV archive replay before changing data stores')
     assessed=assess_intent(intent,actual['consumers'],requested)
     if not assessed['may_observe']:raise ValueError('changing inactive consumer; resume previous retained store')
     assert_no_publishers()
@@ -144,6 +175,8 @@ def select(values,previous_values,commit,*,snapshot=inspect_snapshot,observe_fn=
     kwargs={} if lock_path is None else {'path':lock_path}
     with target_lease(exclusive=True,**kwargs):
         requested=target_values(values);prior=read_intent(path);actual=snapshot()
+        if requested_selection and requested_selection.get('token') and archive_replay_running(actual):
+            raise ValueError('stop the DEV archive replay before selecting a qualification fixture')
         if requested_selection and requested_selection.get('token') and any(
             item['State']['Running']
             and (item['Config'].get('Labels') or {}).get('com.docker.compose.project') == 'ukmesh-lan'

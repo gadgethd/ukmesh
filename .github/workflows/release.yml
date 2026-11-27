@@ -113,7 +113,7 @@ jobs:
             image: meshcore-health-check
             context: .
             file: Dockerfile.mesh-health-check
-            build_args: MESH_HEALTH_CHECK_REF=c93af192ec7cc0ecdfb3e9d0ea163840202ccbfc
+            build_args: ''
     env:
       REGISTRY: ghcr.io
       IMAGE_NAME: ${{ github.repository_owner }}/${{ matrix.image }}
@@ -126,6 +126,13 @@ jobs:
       - name: Read validated release identity
         id: identity
         run: node scripts/check-release-identity.mjs >> "$GITHUB_OUTPUT"
+      - name: Check out the pinned Health Check source
+        if: matrix.component == 'health-check'
+        id: health_source
+        run: |
+          git submodule update --init -- third_party/meshcore-health-check
+          revision=$(bash scripts/healthcheck-source.sh --verify)
+          printf 'revision=%s\n' "$revision" >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
       - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
@@ -156,6 +163,7 @@ jobs:
           build-args: |
             SOURCE_REVISION=${{ env.SOURCE_REVISION }}
             UKMESH_VERSION=${{ steps.identity.outputs.version }}
+            ${{ matrix.component == 'health-check' && format('MESH_HEALTH_CHECK_REF={0}', steps.health_source.outputs.revision) || '' }}
             ${{ matrix.build_args }}
           provenance: false
           sbom: false
