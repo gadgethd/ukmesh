@@ -4,6 +4,9 @@ Status: candidate preparation. Publication, production migration, cutover and
 cleanup require a separately authorized release. Local branch qualification
 does not authorize those operations.
 
+For the local stack and the current differences between `main` and
+`ukmesh-dev`, start with the [DEV migration guide](dev-migration-2.0.md).
+
 ## Release identity
 
 The backend, frontend and contributor scripts identify version `2.0.0`, including

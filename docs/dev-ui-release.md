@@ -1,10 +1,21 @@
 # Switch the DEV interface
 
-Run these commands from the UKMesh checkout.
+Check the current and previous releases from the UKMesh checkout.
 
 ```bash
 bash scripts/dev-all.sh ui status
-bash scripts/dev-all.sh ui apply ukmesh-ui-20261126-2
+```
+
+Set `release_id` to a sealed candidate in `plans/ui-overhaul/releases` before
+applying it.
+
+```bash
+bash scripts/dev-all.sh ui apply "$release_id"
+```
+
+Switch back to the recorded previous release when needed.
+
+```bash
 bash scripts/dev-all.sh ui rollback
 ```
 
@@ -21,7 +32,9 @@ keep their own origins and cookies. The LAN gateway allows their frames only
 on the bound UKMesh website. Run `bash scripts/dev-all.sh lan refresh` to
 install an updated gateway policy without restarting backend or MQTT services.
 The standalone tools and the legacy map remain available through the DEV hub.
-Apply `ukmesh-ui-20261126-2` to restore the website before the tool integration.
+On the existing DEV VM, `ukmesh-ui-20261126-2` identifies the recorded
+pre-integration website release if its sealed files and local images are
+still present. Use `ui status` to identify the previous release on this host.
 
 The integrated chat uses the existing LAN-only Beacon service. The public
 Beacon projection still requires a matching privacy generation and registry
@@ -35,9 +48,14 @@ with their local images.
 
 ## Prepare a candidate
 
-1. Capture the currently served UI files and image IDs before changing any
-   live-mounted sources. The local baseline is under
-   `plans/ui-overhaul/baseline`.
+1. Start the complete managed DEV stack and its LAN gateway on the original
+   DEV stores. On a fresh checkout, this gives you the baseline for a UI
+   rollback. Capture the currently served UI files and image IDs before
+   changing any live-mounted sources. The local capture goes under
+   `plans/ui-overhaul/baseline/<container>/<asset-directory>`. The
+   [assembler](../scripts/full-dev/ui/assemble.py) defines the asset directory
+   names and the [release controller](../scripts/full-dev/ui/control.py)
+   defines the container names and mounts.
 2. Build the app, public website, test website, and both Beacon Web modes.
    Place the checked builds in the candidate's `app`, `website`,
    `website-dev`, and `beacon-web` directories.
@@ -45,5 +63,11 @@ with their local images.
    Check, CoreScope, the DEV hub and the shared theme. Use
    `--classic-name <new-classic-id>` to prepare a new classic bundle when the
    candidate needs additional retained assets.
-4. Run `bash scripts/dev-all.sh ui seal <release-id>` once for each assembled
-   release. Keep browser validation and rollout evidence alongside the baseline.
+4. Seal the baseline with `bash scripts/dev-all.sh ui seal classic` on the
+   first rollout, while its original images are present. Seal the candidate
+   with `bash scripts/dev-all.sh ui seal "$release_id"` while the intended
+   candidate images are present. The controller records the image IDs from
+   the named service containers at seal time. Apply verifies both the new
+   release and the active one. On the first apply, it uses the sealed
+   `classic` release as the previous release. Keep both sets of files, both
+   image sets and the browser verification results.

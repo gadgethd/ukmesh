@@ -25,6 +25,9 @@ and starts UKMesh, CoreScope and Beacon. Open `http://127.0.0.1:5173`. See the
 
 ## 2.0 candidate
 
+For DEV setup, branch differences and a retained-data rehearsal, follow the
+[DEV migration guide](docs/dev-migration-2.0.md).
+
 Read the [candidate changelog](CHANGELOG.md) and [upgrade guide](docs/upgrade-2.0.md)
 for schema, owner-session and rollback requirements. Release publication and
 production cutover remain pending candidate qualification and authorization.

@@ -1,5 +1,8 @@
 # Installation and local development
 
+For the complete 2.0 DEV stack or a rehearsal with retained `main` data,
+use the [DEV migration guide](docs/dev-migration-2.0.md).
+
 For a synthetic local environment, install Node (see `.nvmrc`), npm, Docker
 Engine and Docker Compose, then run `scripts/dev-stack.sh up` from the repository
 root. Open `http://127.0.0.1:5173`. Setup, readiness, fixture profiles and explicit
