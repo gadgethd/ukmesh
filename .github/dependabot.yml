@@ -17,12 +17,17 @@ updates:
         exclude-patterns:
           - 'maplibre-gl'
           - '@maplibre/*'
+          - 'recharts'
     ignore:
       # maplibre-gl is version-locked on purpose: frontend/src/plugins/maplibre-source.ts
       # rebuilds MapLibre from its own source maps and refuses to build for any other
       # version until that source/worker inventory is re-qualified (#239).
       - dependency-name: 'maplibre-gl'
       - dependency-name: '@maplibre/*'
+      # Held: recharts 3.11.0 pushes the Recharts chunk to 442.8 KiB raw /
+      # 121.3 KiB gzip against the 400/110 budget (#266). Revisit with a
+      # measured budget decision rather than bundling it into the weekly group.
+      - dependency-name: 'recharts'
   - package-ecosystem: npm
     directory: /scripts
     schedule:
